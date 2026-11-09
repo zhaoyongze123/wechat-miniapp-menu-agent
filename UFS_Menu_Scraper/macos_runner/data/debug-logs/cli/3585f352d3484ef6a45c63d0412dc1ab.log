@@ -1,0 +1,38 @@
+[Information] Starting execution...
+[Information] UFS_Menu_Capture_CrossPlatform 执行开始
+[Information] 当前作业已禁用 Healing Agent。
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Information] UFS_Menu_Capture_CrossPlatform 执行结束 in: 00:03:47
+{
+  "Result": "Success",
+  "Code": "ToolResult",
+  "Data": {
+    "output": "{}",
+    "hasErrors": false,
+    "errorMessage": null,
+    "profiling": null,
+    "debugState": null,
+    "debugDetails": null,
+    "errorScope": null
+  }
+}

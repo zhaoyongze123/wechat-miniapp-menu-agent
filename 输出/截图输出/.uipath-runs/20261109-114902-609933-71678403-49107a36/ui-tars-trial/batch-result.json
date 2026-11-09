@@ -1,0 +1,359 @@
+{
+  "run_id": "f9efa923008443208673f3b1ebd0093c",
+  "status": "completed",
+  "results": [
+    {
+      "task_id": "9069140e6aaad0c23540",
+      "run_id": "f9efa923008443208673f3b1ebd0093c",
+      "source_name": "E00887＿龙师傅卤炒＿长沙市＿龙师傅卤炒（旺龙路店）",
+      "model": "gui-plus-2026-02-26",
+      "navigation": {
+        "outcome": "needs_review",
+        "reason": "模型动作无效或超出允许范围",
+        "source": "runtime",
+        "frame": "evidence/ui-tars-008.png"
+      },
+      "capture": {
+        "status": "not_started",
+        "pages": []
+      },
+      "timing_ms": {
+        "startup": 49048,
+        "navigation": 78495,
+        "total": 149236
+      },
+      "material": {
+        "material_version_id": "aea0462ceb7f407091044eedf061ee0f",
+        "material_batch_id": "a87220341e0447ed865c9c6f32994228",
+        "material_version": "v1.0.0",
+        "material_snapshot": "3097a387b722c7feb0a8ba1a2ba3025f595d76e95d0335286ba7a43567209642"
+      },
+      "initial_frame": "evidence/ui-tars-001.png",
+      "wechat_return": {
+        "status": "ready"
+      },
+      "result_file": "9069140e6aaad0c23540/navigation-result.json"
+    },
+    {
+      "task_id": "8e81ac247a8f01a2a018",
+      "run_id": "f9efa923008443208673f3b1ebd0093c",
+      "source_name": "E00397＿郭姐·威海渔村＿上海市＿郭姐·威海渔村（柳州路店）",
+      "model": "gui-plus-2026-02-26",
+      "navigation": {
+        "outcome": "needs_review",
+        "reason": "UiPath 命令失败：目标窗口 foreground=false；已拒绝窗口截图或键盘输入",
+        "source": "runtime",
+        "frame": "evidence/ui-tars-004.png"
+      },
+      "capture": {
+        "status": "not_started",
+        "pages": []
+      },
+      "timing_ms": {
+        "startup": 45418,
+        "navigation": 44621,
+        "total": 113363
+      },
+      "material": {
+        "material_version_id": "aea0462ceb7f407091044eedf061ee0f",
+        "material_batch_id": "a87220341e0447ed865c9c6f32994228",
+        "material_version": "v1.0.0",
+        "material_snapshot": "3097a387b722c7feb0a8ba1a2ba3025f595d76e95d0335286ba7a43567209642"
+      },
+      "initial_frame": "evidence/ui-tars-001.png",
+      "wechat_return": {
+        "status": "ready"
+      },
+      "result_file": "8e81ac247a8f01a2a018/navigation-result.json"
+    },
+    {
+      "task_id": "eb72d975cf6eedf562d7",
+      "run_id": "f9efa923008443208673f3b1ebd0093c",
+      "source_name": "E00510＿丰圆轩粤式茶楼＿上海市＿丰圆轩粤式茶楼（静安大融城店）",
+      "model": "gui-plus-2026-02-26",
+      "navigation": {
+        "outcome": "needs_review",
+        "reason": "模型动作无效或超出允许范围",
+        "source": "runtime",
+        "frame": "evidence/ui-tars-001.png"
+      },
+      "capture": {
+        "status": "not_started",
+        "pages": []
+      },
+      "timing_ms": {
+        "startup": 45174,
+        "navigation": 7840,
+        "total": 74500
+      },
+      "material": {
+        "material_version_id": "aea0462ceb7f407091044eedf061ee0f",
+        "material_batch_id": "a87220341e0447ed865c9c6f32994228",
+        "material_version": "v1.0.0",
+        "material_snapshot": "3097a387b722c7feb0a8ba1a2ba3025f595d76e95d0335286ba7a43567209642"
+      },
+      "initial_frame": "evidence/ui-tars-001.png",
+      "wechat_return": {
+        "status": "ready"
+      },
+      "result_file": "eb72d975cf6eedf562d7/navigation-result.json"
+    },
+    {
+      "task_id": "90d0deacc92c7e00e8c3",
+      "run_id": "f9efa923008443208673f3b1ebd0093c",
+      "source_name": "E0058＿过锅瘾三汁焖锅＿潍坊市＿过锅瘾三汁焖锅",
+      "model": "gui-plus-2026-02-26",
+      "navigation": {
+        "outcome": "needs_review",
+        "reason": "模型动作无效或超出允许范围",
+        "source": "runtime",
+        "frame": "evidence/ui-tars-001.png"
+      },
+      "capture": {
+        "status": "not_started",
+        "pages": []
+      },
+      "timing_ms": {
+        "startup": 44436,
+        "navigation": 7096,
+        "total": 72539
+      },
+      "material": {
+        "material_version_id": "aea0462ceb7f407091044eedf061ee0f",
+        "material_batch_id": "a87220341e0447ed865c9c6f32994228",
+        "material_version": "v1.0.0",
+        "material_snapshot": "3097a387b722c7feb0a8ba1a2ba3025f595d76e95d0335286ba7a43567209642"
+      },
+      "initial_frame": "evidence/ui-tars-001.png",
+      "wechat_return": {
+        "status": "ready"
+      },
+      "result_file": "90d0deacc92c7e00e8c3/navigation-result.json"
+    },
+    {
+      "task_id": "fc17e2a78a93263dcf4c",
+      "run_id": "f9efa923008443208673f3b1ebd0093c",
+      "source_name": "E00629＿三品香泗泾古镇店＿上海市＿三品香泗泾古镇店",
+      "model": "gui-plus-2026-02-26",
+      "navigation": {
+        "outcome": "needs_review",
+        "reason": "模型动作无效或超出允许范围",
+        "source": "runtime",
+        "frame": "evidence/ui-tars-005.png"
+      },
+      "capture": {
+        "status": "not_started",
+        "pages": []
+      },
+      "timing_ms": {
+        "startup": 44516,
+        "navigation": 53506,
+        "total": 141347
+      },
+      "material": {
+        "material_version_id": "aea0462ceb7f407091044eedf061ee0f",
+        "material_batch_id": "a87220341e0447ed865c9c6f32994228",
+        "material_version": "v1.0.0",
+        "material_snapshot": "3097a387b722c7feb0a8ba1a2ba3025f595d76e95d0335286ba7a43567209642"
+      },
+      "initial_frame": "evidence/ui-tars-001.png",
+      "wechat_return": {
+        "status": "ready"
+      },
+      "result_file": "fc17e2a78a93263dcf4c/navigation-result.json"
+    },
+    {
+      "task_id": "78de45894e00783d87da",
+      "run_id": "f9efa923008443208673f3b1ebd0093c",
+      "source_name": "E00656＿茶记餐厅＿广州市＿茶记餐厅（市桥店）",
+      "model": "gui-plus-2026-02-26",
+      "navigation": {
+        "outcome": "needs_review",
+        "reason": "模型动作无效或超出允许范围",
+        "source": "runtime",
+        "frame": "evidence/ui-tars-001.png"
+      },
+      "capture": {
+        "status": "not_started",
+        "pages": []
+      },
+      "timing_ms": {
+        "startup": 45033,
+        "navigation": 7723,
+        "total": 73774
+      },
+      "material": {
+        "material_version_id": "aea0462ceb7f407091044eedf061ee0f",
+        "material_batch_id": "a87220341e0447ed865c9c6f32994228",
+        "material_version": "v1.0.0",
+        "material_snapshot": "3097a387b722c7feb0a8ba1a2ba3025f595d76e95d0335286ba7a43567209642"
+      },
+      "initial_frame": "evidence/ui-tars-001.png",
+      "wechat_return": {
+        "status": "ready"
+      },
+      "result_file": "78de45894e00783d87da/navigation-result.json"
+    },
+    {
+      "task_id": "cec633504e8589347d10",
+      "run_id": "f9efa923008443208673f3b1ebd0093c",
+      "source_name": "E01453＿唐宫海鲜舫＿北京市＿唐宫海鲜舫（总店）",
+      "model": "gui-plus-2026-02-26",
+      "navigation": {
+        "outcome": "needs_review",
+        "reason": "自动化未到达有效业务终态",
+        "source": "runtime",
+        "frame": "evidence/ui-tars-018.png"
+      },
+      "capture": {
+        "status": "not_started",
+        "pages": []
+      },
+      "timing_ms": {
+        "startup": 45120,
+        "navigation": 176113,
+        "total": 242327
+      },
+      "material": {
+        "material_version_id": "aea0462ceb7f407091044eedf061ee0f",
+        "material_batch_id": "a87220341e0447ed865c9c6f32994228",
+        "material_version": "v1.0.0",
+        "material_snapshot": "3097a387b722c7feb0a8ba1a2ba3025f595d76e95d0335286ba7a43567209642"
+      },
+      "initial_frame": "evidence/ui-tars-001.png",
+      "wechat_return": {
+        "status": "ready"
+      },
+      "result_file": "cec633504e8589347d10/navigation-result.json"
+    },
+    {
+      "task_id": "47342d99170756f8b8e9",
+      "run_id": "f9efa923008443208673f3b1ebd0093c",
+      "source_name": "E00425＿玛嘉烈澳门葡式冰室＿上海市＿玛嘉烈澳门葡式冰室（太阳宫店）",
+      "model": "gui-plus-2026-02-26",
+      "navigation": {
+        "outcome": "needs_review",
+        "reason": "模型动作无效或超出允许范围",
+        "source": "runtime",
+        "frame": "evidence/ui-tars-001.png"
+      },
+      "capture": {
+        "status": "not_started",
+        "pages": []
+      },
+      "timing_ms": {
+        "startup": 45352,
+        "navigation": 9862,
+        "total": 76572
+      },
+      "material": {
+        "material_version_id": "aea0462ceb7f407091044eedf061ee0f",
+        "material_batch_id": "a87220341e0447ed865c9c6f32994228",
+        "material_version": "v1.0.0",
+        "material_snapshot": "3097a387b722c7feb0a8ba1a2ba3025f595d76e95d0335286ba7a43567209642"
+      },
+      "initial_frame": "evidence/ui-tars-001.png",
+      "wechat_return": {
+        "status": "ready"
+      },
+      "result_file": "47342d99170756f8b8e9/navigation-result.json"
+    },
+    {
+      "task_id": "a2a9aa202e3a97617937",
+      "run_id": "f9efa923008443208673f3b1ebd0093c",
+      "source_name": "E00580＿永昌盛大食堂＿上海市＿永昌盛大食堂（平顺路店）",
+      "model": "gui-plus-2026-02-26",
+      "navigation": {
+        "outcome": "needs_review",
+        "reason": "模型动作无效或超出允许范围",
+        "source": "runtime",
+        "frame": "evidence/ui-tars-005.png"
+      },
+      "capture": {
+        "status": "not_started",
+        "pages": []
+      },
+      "timing_ms": {
+        "startup": 45371,
+        "navigation": 101956,
+        "total": 168758
+      },
+      "material": {
+        "material_version_id": "aea0462ceb7f407091044eedf061ee0f",
+        "material_batch_id": "a87220341e0447ed865c9c6f32994228",
+        "material_version": "v1.0.0",
+        "material_snapshot": "3097a387b722c7feb0a8ba1a2ba3025f595d76e95d0335286ba7a43567209642"
+      },
+      "initial_frame": "evidence/ui-tars-001.png",
+      "wechat_return": {
+        "status": "ready"
+      },
+      "result_file": "a2a9aa202e3a97617937/navigation-result.json"
+    },
+    {
+      "task_id": "11952de2c99fc8770b31",
+      "run_id": "f9efa923008443208673f3b1ebd0093c",
+      "source_name": "ZA0071077＿温粥人＿温州市＿恒申餐饮单店",
+      "model": "gui-plus-2026-02-26",
+      "navigation": {
+        "outcome": "needs_review",
+        "reason": "自动化未到达有效业务终态",
+        "source": "runtime",
+        "frame": "evidence/ui-tars-018.png"
+      },
+      "capture": {
+        "status": "not_started",
+        "pages": []
+      },
+      "timing_ms": {
+        "startup": 45286,
+        "navigation": 152326,
+        "total": 219087
+      },
+      "material": {
+        "material_version_id": "8a490766a1ff45e19b059ad814d6c970",
+        "material_batch_id": "8ac2097d99a041c8aea9300bb0cf5e6b",
+        "material_version": "v1.0.2",
+        "material_snapshot": "8c7a0afefee00866776a5916415a60bdb6aeb0bfc3cff300224b1b36cdfeccfe"
+      },
+      "initial_frame": "evidence/ui-tars-001.png",
+      "wechat_return": {
+        "status": "ready"
+      },
+      "result_file": "11952de2c99fc8770b31/navigation-result.json"
+    },
+    {
+      "task_id": "1c0e55ea3321a1d70b53",
+      "run_id": "f9efa923008443208673f3b1ebd0093c",
+      "source_name": "ZA0074428＿云里·云南铜锅米线＿上海市＿云里云南铜锅米线单店",
+      "model": "gui-plus-2026-02-26",
+      "navigation": {
+        "outcome": "needs_review",
+        "reason": "自动化未到达有效业务终态",
+        "source": "runtime",
+        "frame": "evidence/ui-tars-018.png"
+      },
+      "capture": {
+        "status": "not_started",
+        "pages": []
+      },
+      "timing_ms": {
+        "startup": 45399,
+        "navigation": 171346,
+        "total": 238722
+      },
+      "material": {
+        "material_version_id": "8a490766a1ff45e19b059ad814d6c970",
+        "material_batch_id": "8ac2097d99a041c8aea9300bb0cf5e6b",
+        "material_version": "v1.0.2",
+        "material_snapshot": "8c7a0afefee00866776a5916415a60bdb6aeb0bfc3cff300224b1b36cdfeccfe"
+      },
+      "initial_frame": "evidence/ui-tars-001.png",
+      "wechat_return": {
+        "status": "ready"
+      },
+      "result_file": "1c0e55ea3321a1d70b53/navigation-result.json"
+    }
+  ],
+  "unstarted_task_ids": []
+}

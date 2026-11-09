@@ -1,0 +1,6 @@
+{
+  "Name": "UFS_Menu_Capture_CrossPlatform",
+  "ProjectType": "Process",
+  "Description": "项目",
+  "MainFile": "Main.xaml"
+}

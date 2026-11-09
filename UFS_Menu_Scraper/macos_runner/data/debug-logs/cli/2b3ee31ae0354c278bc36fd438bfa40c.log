@@ -1,0 +1,8 @@
+[Information] Validating Main.xaml and what it invokes (1 file(s) reachable from the target)...
+{
+  "Result": "Failure",
+  "ErrorCode": "unknown_error",
+  "Message": "{\"output\":\"\",\"hasErrors\":true,\"errorMessage\":\"Validation failed with 1 error(s):\\nMain.xaml: 无法加载 /Users/mac/项目/意谱科技/小程序截图项目/UFS_Menu_Capture_CrossPlatform/Main.xaml 文件：'Failed to create a 'IsDesktop' from the text '[action = \\\"screenshot_desktop\\\"]'.' Line number '475' and line position '74'.\",\"profiling\":null,\"debugState\":null,\"debugDetails\":null,\"errorScope\":\"target\"}",
+  "Instructions": "If this is not the expected result check command arguments.",
+  "Retry": "RetryWillNotFix"
+}

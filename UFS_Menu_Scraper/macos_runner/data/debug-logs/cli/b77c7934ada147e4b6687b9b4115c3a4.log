@@ -1,0 +1,16 @@
+[run-file] error: Studio instance (PID 9742) did not become Available within 60s after 60 polls
+{
+  "Result": "Failure",
+  "ErrorCode": "unknown_error",
+  "Message": "Studio instance (PID 9742) did not become Available within 60s after 60 polls",
+  "Instructions": "If this is not the expected result check command arguments.",
+  "Retry": "RetryWillNotFix"
+}
+[run-file] error: Studio instance (PID 9742) did not become Available within 60s after 60 polls
+{
+  "Result": "Failure",
+  "ErrorCode": "unknown_error",
+  "Message": "Studio instance (PID 9742) did not become Available within 60s after 60 polls",
+  "Instructions": "If this is not the expected result check command arguments.",
+  "Retry": "RetryWillNotFix"
+}

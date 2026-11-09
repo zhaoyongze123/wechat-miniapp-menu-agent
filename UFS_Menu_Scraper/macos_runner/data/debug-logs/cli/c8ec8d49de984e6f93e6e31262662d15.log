@@ -1,0 +1,67 @@
+[Information] Starting execution...
+{
+  "Result": "Failure",
+  "ErrorCode": "unknown_error",
+  "Message": "{\"output\":\"\",\"hasErrors\":true,\"errorMessage\":\"Message: Could not load file or assembly 'UFS_Menu_Capture_CrossPlatform, Culture=neutral, PublicKeyToken=null'. The system cannot find the file specified.\\n\\nException Type: System.IO.FileNotFoundException\\n   at System.Reflection.RuntimeAssembly.InternalLoad(AssemblyName assemblyName, StackCrawlMark& stackMark, AssemblyLoadContext assemblyLoadContext, RuntimeAssembly requestingAssembly, Boolean throwOnFileNotFound)\\n   at System.Runtime.Loader.AssemblyLoadContext.LoadFromAssemblyName(AssemblyName assemblyName)\\n   at UiPath.Executor.WorkflowLoader.GetWorkflowFromXamlPath(WorkflowFile workflowFile) in /Users/runner/work/1/s/Robot/UiPath.Executor.Core/NetCore/WorkflowLoader.cs:line 100\\n   at UiPath.Executor.WorkflowLoader.<>c__DisplayClass14_0.<LoadWorkflow>b__0(WorkflowFile workflowFile) in /Users/runner/work/1/s/Robot/UiPath.Executor.Core/NetCore/WorkflowLoader.cs:line 86\\n   at System.Collections.Concurrent.ConcurrentDictionary`2.GetOrAdd(TKey key, Func`2 valueFactory)\\n   at UiPath.Executor.Core.WorkflowBuilder.Build() in /Users/runner/work/1/s/Robot/UiPath.Executor.Core/WorkflowBuilder.cs:line 79\\n   at UiPath.Executor.RobotRunner.BuildWorkflow() in /Users/runner/work/1/s/Robot/UiPath.Executor.Core/RobotRunner.cs:line 366\\n   at UiPath.Executor.RobotRunner.InitWorkflowApplication() in /Users/runner/work/1/s/Robot/UiPath.Executor.Core/RobotRunner.cs:line 350\\n   at UiPath.Executor.RobotRunner.ExecuteJob(Boolean preLoaded) in /Users/runner/work/1/s/Robot/UiPath.Executor.Core/RobotRunner.cs:line 645\",\"profiling\":null,\"debugState\":null,\"debugDetails\":null,\"errorScope\":null}",
+  "Instructions": "If this is not the expected result check command arguments.",
+  "Retry": "RetryWillNotFix"
+}
+[Information] Validating Main.xaml and what it invokes (2 file(s) reachable from the target)...
+[Information] Building for execution...
+[Information] Starting execution...
+[Information] UFS_Menu_Capture_CrossPlatform 执行开始
+[Information] 当前作业已禁用 Healing Agent。
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Information] UFS_Menu_Capture_CrossPlatform 执行结束 in: 00:02:46
+{
+  "Result": "Success",
+  "Code": "ToolResult",
+  "Data": {
+    "output": "{}",
+    "hasErrors": false,
+    "errorMessage": null,
+    "profiling": null,
+    "debugState": null,
+    "debugDetails": null,
+    "errorScope": null
+  }
+}

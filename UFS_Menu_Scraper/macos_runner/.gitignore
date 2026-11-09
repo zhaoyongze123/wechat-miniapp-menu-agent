@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+data/*
+!data/debug-logs/
+config.local.json
+secrets.local.json
+*.log
+!data/debug-logs/*.log
+!data/debug-logs/**/*.log

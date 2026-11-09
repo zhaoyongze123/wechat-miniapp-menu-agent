@@ -1,0 +1,45 @@
+.DS_Store
+
+# 环境、依赖与缓存
+.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+.playwright-cli/
+
+# 本地密钥与参数（禁止入库）
+*.local.json
+config.local.json
+secrets.local.json
+uipath.profile.json
+
+# 大体积素材与历史归档
+素材/
+历史归档/
+outputs/
+
+# UiPath 本地缓存与生成物
+UFS_Menu_Capture_CrossPlatform/.local/
+UFS_Menu_Capture_CrossPlatform/.objects/
+UFS_Menu_Capture_CrossPlatform/.screenshots/
+
+# 文档只保留 Agent PRD
+文档/*
+!文档/微信小程序菜单导航 Agent PRD.md
+
+# 采集输出只保留本轮 11 家试验批次
+输出/诊断/
+输出/截图输出/.uipath-build/
+输出/截图输出/.uipath-staging/
+输出/截图输出/.annotation-runs/
+输出/截图输出/.历史截图/
+输出/截图输出/清洗批次/
+输出/截图输出/.uipath-runs/*
+!输出/截图输出/.uipath-runs/20261109-114902-609933-71678403-49107a36/
+
+# 运行数据：素材库、动作证据、任务库不入库，仅保留调试日志
+UFS_Menu_Scraper/macos_runner/data/*
+!UFS_Menu_Scraper/macos_runner/data/debug-logs/
+UFS_Menu_Scraper/macos_runner/output/*
+!UFS_Menu_Scraper/macos_runner/output/playwright/

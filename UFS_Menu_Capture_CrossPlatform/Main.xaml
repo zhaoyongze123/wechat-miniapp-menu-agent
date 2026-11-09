@@ -1,0 +1,1063 @@
+<Activity mc:Ignorable="sap sap2010" x:Class="Main" xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:s="clr-namespace:System;assembly=System.Private.CoreLib" xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation" xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation" xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Private.CoreLib" xmlns:sco="clr-namespace:System.Collections.ObjectModel;assembly=System.Private.CoreLib" xmlns:sd="clr-namespace:System.Drawing;assembly=System.Drawing.Primitives" xmlns:ui="http://schemas.uipath.com/workflow/activities" xmlns:uix="http://schemas.uipath.com/workflow/activities/uix" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <x:Members>
+    <x:Property Name="in_RunDirectory" Type="InArgument(x:String)" />
+  </x:Members>
+  <VisualBasic.Settings>
+    <x:Null />
+  </VisualBasic.Settings>
+  <sap2010:WorkflowViewState.IdRef>ActivityBuilder_1</sap2010:WorkflowViewState.IdRef>
+  <TextExpression.NamespacesForImplementation>
+    <sco:Collection x:TypeArguments="x:String">
+      <x:String>GlobalConstantsNamespace</x:String>
+      <x:String>GlobalVariablesNamespace</x:String>
+      <x:String>System</x:String>
+      <x:String>System.Activities</x:String>
+      <x:String>System.Activities.Statements</x:String>
+      <x:String>System.Collections.Generic</x:String>
+      <x:String>System.Collections.ObjectModel</x:String>
+      <x:String>System.Drawing</x:String>
+      <x:String>System.IO</x:String>
+      <x:String>System.Linq</x:String>
+      <x:String>System.Text.Json</x:String>
+      <x:String>UiPath.Core</x:String>
+      <x:String>UiPath.Core.Activities</x:String>
+      <x:String>UiPath.UIAutomationNext</x:String>
+      <x:String>UiPath.UIAutomationNext.Activities</x:String>
+      <x:String>UiPath.UIAutomationNext.Enums</x:String>
+      <x:String>UiPath.UIAutomationNext.Models</x:String>
+      <x:String>UiPath.UIAutomationCore.Contracts</x:String>
+      <x:String>System.Runtime.Serialization</x:String>
+      <x:String>System.Collections</x:String>
+      <x:String>UiPath.Shared.Activities</x:String>
+      <x:String>UiPath.Platform.ObjectLibrary</x:String>
+      <x:String>UiPath.Platform.SyncObjects</x:String>
+      <x:String>UiPath.UIAutomationNext.Contracts</x:String>
+      <x:String>System.Reflection</x:String>
+    </sco:Collection>
+  </TextExpression.NamespacesForImplementation>
+  <TextExpression.ReferencesForImplementation>
+    <sco:Collection x:TypeArguments="AssemblyReference">
+      <AssemblyReference>System.Activities</AssemblyReference>
+      <AssemblyReference>System.Private.CoreLib</AssemblyReference>
+      <AssemblyReference>System.Text.Json</AssemblyReference>
+      <AssemblyReference>System.Drawing.Primitives</AssemblyReference>
+      <AssemblyReference>System.Drawing.Common</AssemblyReference>
+      <AssemblyReference>UiPath.System.Activities</AssemblyReference>
+      <AssemblyReference>UiPath.UiAutomation.Activities</AssemblyReference>
+      <AssemblyReference>UiPath.UIAutomationNext.Activities</AssemblyReference>
+      <AssemblyReference>System.Linq</AssemblyReference>
+      <AssemblyReference>System.ObjectModel</AssemblyReference>
+      <AssemblyReference>System.ComponentModel.TypeConverter</AssemblyReference>
+      <AssemblyReference>UiPath.Studio.Constants</AssemblyReference>
+      <AssemblyReference>System.Private.DataContractSerialization</AssemblyReference>
+      <AssemblyReference>System.Runtime.Serialization.Formatters</AssemblyReference>
+      <AssemblyReference>System.Runtime.Serialization.Primitives</AssemblyReference>
+      <AssemblyReference>System.Collections.NonGeneric</AssemblyReference>
+      <AssemblyReference>System.Collections</AssemblyReference>
+      <AssemblyReference>UiPath.Testing.Activities</AssemblyReference>
+      <AssemblyReference>UiPath.Web.Activities</AssemblyReference>
+      <AssemblyReference>UiPath.Platform</AssemblyReference>
+      <AssemblyReference>System.Reflection.TypeExtensions</AssemblyReference>
+      <AssemblyReference>System.Reflection.Metadata</AssemblyReference>
+      <AssemblyReference>System.Reflection.DispatchProxy</AssemblyReference>
+    </sco:Collection>
+  </TextExpression.ReferencesForImplementation>
+  <Sequence DisplayName="UiPath 桌面 IPC 执行器" sap:VirtualizedContainerService.HintSize="790,2680" sap2010:WorkflowViewState.IdRef="Sequence_15">
+    <Sequence.Variables>
+      <Variable x:TypeArguments="x:String" Name="lastId" />
+      <Variable x:TypeArguments="x:Int64" Name="lastActivityTicks" />
+      <Variable x:TypeArguments="x:Boolean" Name="hasNew" />
+      <Variable x:TypeArguments="x:Boolean" Name="shouldExit" />
+      <Variable x:TypeArguments="x:String" Name="commandId" />
+      <Variable x:TypeArguments="x:String" Name="action" />
+      <Variable x:TypeArguments="x:String" Name="selector" />
+      <Variable x:TypeArguments="x:Double" Name="commandX" />
+      <Variable x:TypeArguments="x:Double" Name="commandY" />
+      <Variable x:TypeArguments="x:Boolean" Name="hasX" />
+      <Variable x:TypeArguments="x:Boolean" Name="hasY" />
+      <Variable x:TypeArguments="x:Boolean" Name="hasCoordinates" />
+      <Variable x:TypeArguments="x:Double" Name="commandSeconds" />
+      <Variable x:TypeArguments="x:Boolean" Name="secondsProvided" />
+      <Variable x:TypeArguments="x:Boolean" Name="secondsValid" />
+      <Variable x:TypeArguments="x:Double" Name="expectedWindowWidth" />
+      <Variable x:TypeArguments="x:Double" Name="expectedWindowHeight" />
+      <Variable x:TypeArguments="x:String" Name="commandText" />
+      <Variable x:TypeArguments="x:String" Name="commandPath" />
+      <Variable x:TypeArguments="x:String" Name="direction" />
+      <Variable x:TypeArguments="x:String" Name="commandKey" />
+      <Variable x:TypeArguments="x:Boolean" Name="hasForegrounded" />
+      <Variable x:TypeArguments="x:String" Name="commandError" />
+      <Variable x:TypeArguments="x:String" Name="shortcut" />
+      <Variable x:TypeArguments="x:Boolean" Name="replyOk" />
+      <Variable x:TypeArguments="x:String" Name="replyError" />
+      <Variable x:TypeArguments="x:String" Name="replyPath" />
+      <Variable x:TypeArguments="x:Double" Name="windowWidth" />
+      <Variable x:TypeArguments="x:Double" Name="windowHeight" />
+      <Variable x:TypeArguments="x:Double" Name="windowX" />
+      <Variable x:TypeArguments="x:Double" Name="windowY" />
+      <Variable x:TypeArguments="sd:Rectangle" Name="targetRect" />
+      <Variable x:TypeArguments="x:String" Name="runDirectory" />
+      <Variable x:TypeArguments="x:String" Name="discoveredWindows" />
+      <Variable x:TypeArguments="x:Int32" Default="0" Name="commandUnits" />
+      <Variable x:TypeArguments="x:Int32" Default="0" Name="resizeWidth" />
+      <Variable x:TypeArguments="x:Int32" Default="0" Name="resizeHeight" />
+      <Variable x:TypeArguments="x:Int32" Default="0" Name="pixelWidth" />
+      <Variable x:TypeArguments="x:Int32" Default="0" Name="pixelHeight" />
+      <Variable x:TypeArguments="x:String" Name="targetApp" />
+      <Variable x:TypeArguments="x:String" Name="targetTitle" />
+      <Variable x:TypeArguments="x:Boolean" Default="False" Name="targetForeground" />
+      <Variable x:TypeArguments="x:Boolean" Default="False" Name="targetWindowMeasured" />
+    </Sequence.Variables>
+    <sap:WorkflowViewStateService.ViewState>
+      <scg:Dictionary x:TypeArguments="x:String, x:Object">
+        <x:Boolean x:Key="IsExpanded">True</x:Boolean>
+      </scg:Dictionary>
+    </sap:WorkflowViewStateService.ViewState>
+    <While sap:VirtualizedContainerService.HintSize="770,2656" sap2010:WorkflowViewState.IdRef="While_1" Condition="[Not shouldExit]">
+      <Sequence DisplayName="Poll command.json" sap:VirtualizedContainerService.HintSize="770,2566" sap2010:WorkflowViewState.IdRef="Sequence_14">
+        <sap:WorkflowViewStateService.ViewState>
+          <scg:Dictionary x:TypeArguments="x:String, x:Object">
+            <x:Boolean x:Key="IsExpanded">True</x:Boolean>
+          </scg:Dictionary>
+        </sap:WorkflowViewStateService.ViewState>
+        <ui:InvokeCode Code="hasNew = False&#xA;shouldExit = False&#xA;commandError = String.Empty&#xA;commandId = String.Empty&#xA;action = String.Empty&#xA;selector = String.Empty&#xA;commandX = 0&#xA;commandY = 0&#xA;hasX = False&#xA;hasY = False&#xA;hasCoordinates = False&#xA;commandSeconds = 0&#xA;secondsProvided = False&#xA;secondsValid = True&#xA;expectedWindowWidth = 0&#xA;expectedWindowHeight = 0&#xA;commandText = String.Empty&#xA;commandPath = String.Empty&#xA;direction = String.Empty&#xA;commandKey = String.Empty&#xA;commandUnits = 0&#xA;resizeWidth = 0&#xA;resizeHeight = 0&#xA;runDirectory = System.IO.Path.GetFullPath(in_RunDirectory)&#xA;System.IO.Directory.CreateDirectory(runDirectory)&#xA;Dim nowTicks As Long = DateTime.UtcNow.Ticks&#xA;If lastActivityTicks = 0 Then lastActivityTicks = nowTicks&#xA;If lastId Is Nothing Then lastId = String.Empty&#xA;Dim commandFile As String = System.IO.Path.Combine(runDirectory, &quot;command.json&quot;)&#xA;If System.IO.File.Exists(commandFile) Then&#xA;    Try&#xA;        Using document As System.Text.Json.JsonDocument = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(commandFile))&#xA;            Dim root As System.Text.Json.JsonElement = document.RootElement&#xA;            Dim value As System.Text.Json.JsonElement&#xA;            If root.TryGetProperty(&quot;id&quot;, value) Then commandId = value.ToString()&#xA;            If root.TryGetProperty(&quot;action&quot;, value) Then action = value.ToString().Trim().ToLowerInvariant()&#xA;            If root.TryGetProperty(&quot;selector&quot;, value) Then selector = value.ToString()&#xA;            If root.TryGetProperty(&quot;x&quot;, value) Then&#xA;                hasX = True&#xA;                If Not Double.TryParse(value.ToString(), Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture, commandX) Then commandError = &quot;x must be numeric&quot;&#xA;            End If&#xA;            If root.TryGetProperty(&quot;y&quot;, value) Then&#xA;                hasY = True&#xA;                If Not Double.TryParse(value.ToString(), Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture, commandY) Then commandError = &quot;y must be numeric&quot;&#xA;            End If&#xA;            If root.TryGetProperty(&quot;seconds&quot;, value) Then&#xA;                secondsProvided = True&#xA;                secondsValid = Double.TryParse(value.ToString(), Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture, commandSeconds)&#xA;            End If&#xA;            If root.TryGetProperty(&quot;expected_window_width&quot;, value) Then Double.TryParse(value.ToString(), Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture, expectedWindowWidth)&#xA;            If root.TryGetProperty(&quot;expected_window_height&quot;, value) Then Double.TryParse(value.ToString(), Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture, expectedWindowHeight)&#xA;            If root.TryGetProperty(&quot;text&quot;, value) Then commandText = value.ToString()&#xA;            If root.TryGetProperty(&quot;path&quot;, value) Then commandPath = value.ToString()&#xA;            If root.TryGetProperty(&quot;direction&quot;, value) Then direction = value.ToString().Trim().ToLowerInvariant()&#xA;            If root.TryGetProperty(&quot;key&quot;, value) Then commandKey = value.ToString()&#xA;            If root.TryGetProperty(&quot;units&quot;, value) Then Integer.TryParse(value.ToString(), Globalization.NumberStyles.Integer, Globalization.CultureInfo.InvariantCulture, commandUnits)&#xA;            If root.TryGetProperty(&quot;width&quot;, value) Then Integer.TryParse(value.ToString(), Globalization.NumberStyles.Integer, Globalization.CultureInfo.InvariantCulture, resizeWidth)&#xA;            If root.TryGetProperty(&quot;height&quot;, value) Then Integer.TryParse(value.ToString(), Globalization.NumberStyles.Integer, Globalization.CultureInfo.InvariantCulture, resizeHeight)&#xA;        End Using&#xA;    Catch ex As Exception&#xA;        commandId = &quot;invalid-json-&quot; &amp; System.IO.File.GetLastWriteTimeUtc(commandFile).Ticks.ToString(Globalization.CultureInfo.InvariantCulture)&#xA;        commandError = &quot;command.json 无法解析：&quot; &amp; ex.Message&#xA;    End Try&#xA;    hasCoordinates = hasX AndAlso hasY&#xA;    If String.IsNullOrWhiteSpace(commandError) AndAlso action &lt;&gt; &quot;stop&quot; AndAlso secondsProvided AndAlso (Not secondsValid OrElse Double.IsNaN(commandSeconds) OrElse Double.IsInfinity(commandSeconds) OrElse commandSeconds &lt; 0 OrElse commandSeconds &gt; 30) Then commandError = &quot;seconds 必须是 0 到 30 之间的有限数值&quot;&#xA;    If String.IsNullOrWhiteSpace(commandError) AndAlso ({&quot;click&quot;, &quot;click_desktop_overlay&quot;, &quot;right_click&quot;, &quot;double_click&quot;, &quot;scroll&quot;, &quot;scroll_capture&quot;, &quot;resize&quot;}.Contains(action)) AndAlso (hasX Xor hasY) Then commandError = &quot;x 与 y 必须同时提供或同时省略&quot;&#xA;    If String.IsNullOrWhiteSpace(commandError) AndAlso {&quot;scroll&quot;, &quot;scroll_capture&quot;}.Contains(action) AndAlso (direction &lt;&gt; &quot;up&quot; AndAlso direction &lt;&gt; &quot;down&quot; OrElse commandUnits &lt;= 0) Then commandError = &quot;scroll 需要 direction=up/down 且 units 大于 0&quot;&#xA;    If String.IsNullOrWhiteSpace(commandError) AndAlso action = &quot;resize&quot; AndAlso (resizeWidth &lt; 240 OrElse resizeWidth &gt; 1200 OrElse resizeHeight &lt; 300 OrElse resizeHeight &gt; 6000) Then commandError = &quot;resize 需要 width=240..1200、height=300..6000（逻辑点）&quot;&#xA;    If commandId.Length = 0 Then commandId = &quot;invalid-id-&quot; &amp; System.IO.File.GetLastWriteTimeUtc(commandFile).Ticks.ToString(Globalization.CultureInfo.InvariantCulture)&#xA;    If commandId &lt;&gt; lastId Then&#xA;        hasNew = True&#xA;        lastId = commandId&#xA;        lastActivityTicks = nowTicks&#xA;    Else&#xA;        commandId = String.Empty&#xA;    End If&#xA;End If&#xA;If Not hasNew AndAlso nowTicks - lastActivityTicks &gt;= TimeSpan.FromSeconds(600).Ticks Then shouldExit = True" ContinueOnError="False" sap:VirtualizedContainerService.HintSize="740,48" sap2010:WorkflowViewState.IdRef="InvokeCode_1">
+          <ui:InvokeCode.Arguments>
+            <InArgument x:TypeArguments="x:String" x:Key="in_RunDirectory">[in_RunDirectory]</InArgument>
+            <OutArgument x:TypeArguments="x:String" x:Key="runDirectory">[runDirectory]</OutArgument>
+            <InOutArgument x:TypeArguments="x:String" x:Key="lastId">[lastId]</InOutArgument>
+            <InOutArgument x:TypeArguments="x:Int64" x:Key="lastActivityTicks">[lastActivityTicks]</InOutArgument>
+            <OutArgument x:TypeArguments="x:Boolean" x:Key="hasNew">[hasNew]</OutArgument>
+            <OutArgument x:TypeArguments="x:Boolean" x:Key="shouldExit">[shouldExit]</OutArgument>
+            <OutArgument x:TypeArguments="x:String" x:Key="commandId">[commandId]</OutArgument>
+            <OutArgument x:TypeArguments="x:String" x:Key="action">[action]</OutArgument>
+            <OutArgument x:TypeArguments="x:String" x:Key="selector">[selector]</OutArgument>
+            <OutArgument x:TypeArguments="x:Double" x:Key="commandX">[commandX]</OutArgument>
+            <OutArgument x:TypeArguments="x:Double" x:Key="commandY">[commandY]</OutArgument>
+            <OutArgument x:TypeArguments="x:Boolean" x:Key="hasX">[hasX]</OutArgument>
+            <OutArgument x:TypeArguments="x:Boolean" x:Key="hasY">[hasY]</OutArgument>
+            <OutArgument x:TypeArguments="x:Boolean" x:Key="hasCoordinates">[hasCoordinates]</OutArgument>
+            <OutArgument x:TypeArguments="x:Double" x:Key="commandSeconds">[commandSeconds]</OutArgument>
+            <OutArgument x:TypeArguments="x:Boolean" x:Key="secondsProvided">[secondsProvided]</OutArgument>
+            <OutArgument x:TypeArguments="x:Boolean" x:Key="secondsValid">[secondsValid]</OutArgument>
+            <OutArgument x:TypeArguments="x:Double" x:Key="expectedWindowWidth">[expectedWindowWidth]</OutArgument>
+            <OutArgument x:TypeArguments="x:Double" x:Key="expectedWindowHeight">[expectedWindowHeight]</OutArgument>
+            <OutArgument x:TypeArguments="x:String" x:Key="commandText">[commandText]</OutArgument>
+            <OutArgument x:TypeArguments="x:String" x:Key="commandPath">[commandPath]</OutArgument>
+            <OutArgument x:TypeArguments="x:String" x:Key="direction">[direction]</OutArgument>
+            <OutArgument x:TypeArguments="x:String" x:Key="commandKey">[commandKey]</OutArgument>
+            <OutArgument x:TypeArguments="x:Int32" x:Key="commandUnits">[commandUnits]</OutArgument>
+            <OutArgument x:TypeArguments="x:Int32" x:Key="resizeWidth">[resizeWidth]</OutArgument>
+            <OutArgument x:TypeArguments="x:Int32" x:Key="resizeHeight">[resizeHeight]</OutArgument>
+            <OutArgument x:TypeArguments="x:String" x:Key="commandError">[commandError]</OutArgument>
+          </ui:InvokeCode.Arguments>
+          <sap:WorkflowViewStateService.ViewState>
+            <scg:Dictionary x:TypeArguments="x:String, x:Object">
+              <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+            </scg:Dictionary>
+          </sap:WorkflowViewStateService.ViewState>
+        </ui:InvokeCode>
+        <If Condition="[hasNew]" sap:VirtualizedContainerService.HintSize="740,2332" sap2010:WorkflowViewState.IdRef="If_17">
+          <If.Then>
+            <Sequence DisplayName="Handle one command" sap:VirtualizedContainerService.HintSize="740,2197" sap2010:WorkflowViewState.IdRef="Sequence_13">
+              <sap:WorkflowViewStateService.ViewState>
+                <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                  <x:Boolean x:Key="IsExpanded">True</x:Boolean>
+                </scg:Dictionary>
+              </sap:WorkflowViewStateService.ViewState>
+              <Assign sap:VirtualizedContainerService.HintSize="710,48" sap2010:WorkflowViewState.IdRef="Assign_1">
+                <Assign.To>
+                  <OutArgument x:TypeArguments="x:Boolean">[replyOk]</OutArgument>
+                </Assign.To>
+                <Assign.Value>
+                  <InArgument x:TypeArguments="x:Boolean">[String.IsNullOrWhiteSpace(commandError)]</InArgument>
+                </Assign.Value>
+                <sap:WorkflowViewStateService.ViewState>
+                  <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                    <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                  </scg:Dictionary>
+                </sap:WorkflowViewStateService.ViewState>
+              </Assign>
+              <Assign sap:VirtualizedContainerService.HintSize="710,48" sap2010:WorkflowViewState.IdRef="Assign_2">
+                <Assign.To>
+                  <OutArgument x:TypeArguments="x:String">[replyError]</OutArgument>
+                </Assign.To>
+                <Assign.Value>
+                  <InArgument x:TypeArguments="x:String">[commandError]</InArgument>
+                </Assign.Value>
+                <sap:WorkflowViewStateService.ViewState>
+                  <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                    <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                  </scg:Dictionary>
+                </sap:WorkflowViewStateService.ViewState>
+              </Assign>
+              <Assign sap:VirtualizedContainerService.HintSize="710,48" sap2010:WorkflowViewState.IdRef="Assign_3">
+                <Assign.To>
+                  <OutArgument x:TypeArguments="x:String">[replyPath]</OutArgument>
+                </Assign.To>
+                <Assign.Value>
+                  <InArgument x:TypeArguments="x:String">[String.Empty]</InArgument>
+                </Assign.Value>
+                <sap:WorkflowViewStateService.ViewState>
+                  <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                    <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                  </scg:Dictionary>
+                </sap:WorkflowViewStateService.ViewState>
+              </Assign>
+              <Assign sap:VirtualizedContainerService.HintSize="710,48" sap2010:WorkflowViewState.IdRef="Assign_4">
+                <Assign.To>
+                  <OutArgument x:TypeArguments="x:Int32">[pixelWidth]</OutArgument>
+                </Assign.To>
+                <Assign.Value>
+                  <InArgument x:TypeArguments="x:Int32">0</InArgument>
+                </Assign.Value>
+                <sap:WorkflowViewStateService.ViewState>
+                  <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                    <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                  </scg:Dictionary>
+                </sap:WorkflowViewStateService.ViewState>
+              </Assign>
+              <Assign sap:VirtualizedContainerService.HintSize="710,48" sap2010:WorkflowViewState.IdRef="Assign_5">
+                <Assign.To>
+                  <OutArgument x:TypeArguments="x:Int32">[pixelHeight]</OutArgument>
+                </Assign.To>
+                <Assign.Value>
+                  <InArgument x:TypeArguments="x:Int32">0</InArgument>
+                </Assign.Value>
+                <sap:WorkflowViewStateService.ViewState>
+                  <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                    <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                  </scg:Dictionary>
+                </sap:WorkflowViewStateService.ViewState>
+              </Assign>
+              <Assign sap:VirtualizedContainerService.HintSize="710,48" sap2010:WorkflowViewState.IdRef="Assign_6">
+                <Assign.To>
+                  <OutArgument x:TypeArguments="x:Double">[windowWidth]</OutArgument>
+                </Assign.To>
+                <Assign.Value>
+                  <InArgument x:TypeArguments="x:Double">0</InArgument>
+                </Assign.Value>
+                <sap:WorkflowViewStateService.ViewState>
+                  <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                    <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                  </scg:Dictionary>
+                </sap:WorkflowViewStateService.ViewState>
+              </Assign>
+              <Assign sap:VirtualizedContainerService.HintSize="710,48" sap2010:WorkflowViewState.IdRef="Assign_7">
+                <Assign.To>
+                  <OutArgument x:TypeArguments="x:Double">[windowHeight]</OutArgument>
+                </Assign.To>
+                <Assign.Value>
+                  <InArgument x:TypeArguments="x:Double">0</InArgument>
+                </Assign.Value>
+                <sap:WorkflowViewStateService.ViewState>
+                  <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                    <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                  </scg:Dictionary>
+                </sap:WorkflowViewStateService.ViewState>
+              </Assign>
+              <Assign sap2010:WorkflowViewState.IdRef="Assign_ResetTargetApp">
+                <Assign.To><OutArgument x:TypeArguments="x:String">[targetApp]</OutArgument></Assign.To>
+                <Assign.Value><InArgument x:TypeArguments="x:String">[Nothing]</InArgument></Assign.Value>
+              </Assign>
+              <Assign sap2010:WorkflowViewState.IdRef="Assign_ResetTargetTitle">
+                <Assign.To><OutArgument x:TypeArguments="x:String">[targetTitle]</OutArgument></Assign.To>
+                <Assign.Value><InArgument x:TypeArguments="x:String">[Nothing]</InArgument></Assign.Value>
+              </Assign>
+              <Assign sap2010:WorkflowViewState.IdRef="Assign_ResetTargetForeground">
+                <Assign.To><OutArgument x:TypeArguments="x:Boolean">[targetForeground]</OutArgument></Assign.To>
+                <Assign.Value><InArgument x:TypeArguments="x:Boolean">False</InArgument></Assign.Value>
+              </Assign>
+              <Assign sap2010:WorkflowViewState.IdRef="Assign_ResetTargetWindowMeasured">
+                <Assign.To><OutArgument x:TypeArguments="x:Boolean">[targetWindowMeasured]</OutArgument></Assign.To>
+                <Assign.Value><InArgument x:TypeArguments="x:Boolean">False</InArgument></Assign.Value>
+              </Assign>
+              <If Condition="[action = &quot;stop&quot;]" sap:VirtualizedContainerService.HintSize="710,1510" sap2010:WorkflowViewState.IdRef="If_15">
+                <If.Then>
+                  <Assign sap:VirtualizedContainerService.HintSize="650,24" sap2010:WorkflowViewState.IdRef="Assign_8">
+                    <Assign.To>
+                      <OutArgument x:TypeArguments="x:Boolean">[shouldExit]</OutArgument>
+                    </Assign.To>
+                    <Assign.Value>
+                      <InArgument x:TypeArguments="x:Boolean">True</InArgument>
+                    </Assign.Value>
+                    <sap:WorkflowViewStateService.ViewState>
+                      <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                        <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                      </scg:Dictionary>
+                    </sap:WorkflowViewStateService.ViewState>
+                  </Assign>
+                </If.Then>
+                <If.Else>
+                  <Sequence DisplayName="Handle non-stop actions" sap:VirtualizedContainerService.HintSize="710,1351" sap2010:WorkflowViewState.IdRef="Sequence_NonStop">
+                    <sap:WorkflowViewStateService.ViewState>
+                      <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                        <x:Boolean x:Key="IsExpanded">True</x:Boolean>
+                      </scg:Dictionary>
+                    </sap:WorkflowViewStateService.ViewState>
+                    <If Condition="[action &lt;&gt; &quot;noop&quot; AndAlso action &lt;&gt; &quot;discover&quot;]" sap:VirtualizedContainerService.HintSize="680,1021" sap2010:WorkflowViewState.IdRef="If_14">
+                      <If.Then>
+                        <If Condition="[String.IsNullOrWhiteSpace(commandError) AndAlso Not {&quot;screenshot&quot;, &quot;screenshot_desktop&quot;, &quot;capture_rect&quot;, &quot;click&quot;, &quot;click_desktop_overlay&quot;, &quot;right_click&quot;, &quot;double_click&quot;, &quot;scroll&quot;, &quot;scroll_capture&quot;, &quot;type_text&quot;, &quot;key&quot;, &quot;resize&quot;, &quot;discover&quot;}.Contains(action)]" sap:VirtualizedContainerService.HintSize="680,910" sap2010:WorkflowViewState.IdRef="If_13">
+                          <If.Then>
+                            <Sequence DisplayName="Then" sap:VirtualizedContainerService.HintSize="680,144" sap2010:WorkflowViewState.IdRef="Sequence_16">
+                              <sap:WorkflowViewStateService.ViewState>
+                                <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                                  <x:Boolean x:Key="IsExpanded">True</x:Boolean>
+                                </scg:Dictionary>
+                              </sap:WorkflowViewStateService.ViewState>
+                              <Assign sap:VirtualizedContainerService.HintSize="650,48" sap2010:WorkflowViewState.IdRef="Assign_9">
+                                <Assign.To>
+                                  <OutArgument x:TypeArguments="x:Boolean">[replyOk]</OutArgument>
+                                </Assign.To>
+                                <Assign.Value>
+                                  <InArgument x:TypeArguments="x:Boolean">False</InArgument>
+                                </Assign.Value>
+                                <sap:WorkflowViewStateService.ViewState>
+                                  <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                                    <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                                  </scg:Dictionary>
+                                </sap:WorkflowViewStateService.ViewState>
+                              </Assign>
+                              <Assign sap:VirtualizedContainerService.HintSize="650,48" sap2010:WorkflowViewState.IdRef="Assign_10">
+                                <Assign.To>
+                                  <OutArgument x:TypeArguments="x:String">[replyError]</OutArgument>
+                                </Assign.To>
+                                <Assign.Value>
+                                  <InArgument x:TypeArguments="x:String">["不支持的动作：" + action]</InArgument>
+                                </Assign.Value>
+                                <sap:WorkflowViewStateService.ViewState>
+                                  <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                                    <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                                  </scg:Dictionary>
+                                </sap:WorkflowViewStateService.ViewState>
+                              </Assign>
+                            </Sequence>
+                          </If.Then>
+                          <If.Else>
+                            <If Condition="[String.IsNullOrWhiteSpace(commandError) AndAlso String.IsNullOrWhiteSpace(selector)]" sap:VirtualizedContainerService.HintSize="680,679" sap2010:WorkflowViewState.IdRef="If_12">
+                              <If.Then>
+                                <Sequence DisplayName="Then" sap:VirtualizedContainerService.HintSize="680,144" sap2010:WorkflowViewState.IdRef="Sequence_2">
+                                  <sap:WorkflowViewStateService.ViewState>
+                                    <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                                      <x:Boolean x:Key="IsExpanded">True</x:Boolean>
+                                    </scg:Dictionary>
+                                  </sap:WorkflowViewStateService.ViewState>
+                                  <Assign sap:VirtualizedContainerService.HintSize="650,48" sap2010:WorkflowViewState.IdRef="Assign_11">
+                                    <Assign.To>
+                                      <OutArgument x:TypeArguments="x:Boolean">[replyOk]</OutArgument>
+                                    </Assign.To>
+                                    <Assign.Value>
+                                      <InArgument x:TypeArguments="x:Boolean">False</InArgument>
+                                    </Assign.Value>
+                                    <sap:WorkflowViewStateService.ViewState>
+                                      <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                                        <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                                      </scg:Dictionary>
+                                    </sap:WorkflowViewStateService.ViewState>
+                                  </Assign>
+                                  <Assign sap:VirtualizedContainerService.HintSize="650,48" sap2010:WorkflowViewState.IdRef="Assign_12">
+                                    <Assign.To>
+                                      <OutArgument x:TypeArguments="x:String">[replyError]</OutArgument>
+                                    </Assign.To>
+                                    <Assign.Value>
+                                      <InArgument x:TypeArguments="x:String">["GUI 动作缺少窗口 selector，已拒绝执行"]</InArgument>
+                                    </Assign.Value>
+                                    <sap:WorkflowViewStateService.ViewState>
+                                      <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                                        <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                                      </scg:Dictionary>
+                                    </sap:WorkflowViewStateService.ViewState>
+                                  </Assign>
+                                </Sequence>
+                              </If.Then>
+                              <If.Else>
+                                <If Condition="[Not String.IsNullOrWhiteSpace(commandError)]" sap:VirtualizedContainerService.HintSize="680,448" sap2010:WorkflowViewState.IdRef="If_11">
+                                  <If.Then>
+                                    <Assign sap:VirtualizedContainerService.HintSize="650,24" sap2010:WorkflowViewState.IdRef="Assign_13">
+                                      <Assign.To>
+                                        <OutArgument x:TypeArguments="x:Boolean">[replyOk]</OutArgument>
+                                      </Assign.To>
+                                      <Assign.Value>
+                                        <InArgument x:TypeArguments="x:Boolean">False</InArgument>
+                                      </Assign.Value>
+                                      <sap:WorkflowViewStateService.ViewState>
+                                        <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                                          <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                                        </scg:Dictionary>
+                                      </sap:WorkflowViewStateService.ViewState>
+                                    </Assign>
+                                  </If.Then>
+                                  <If.Else>
+                                    <TryCatch sap:VirtualizedContainerService.HintSize="680,292" sap2010:WorkflowViewState.IdRef="TryCatch_2">
+                                      <TryCatch.Try>
+                                        <uix:NApplicationCard AttachMode="ByInstance" DisplayName="Attach 当前窗口 selector" HealingAgentBehavior="Job" sap2010:WorkflowViewState.IdRef="NApplicationCard_1" ScopeGuid="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Version="V2">
+                                          <uix:NApplicationCard.Body>
+                                            <ActivityAction x:TypeArguments="x:Object">
+                                              <ActivityAction.Argument>
+                                                <DelegateInArgument x:TypeArguments="x:Object" Name="WSSessionData" />
+                                              </ActivityAction.Argument>
+                                              <Sequence DisplayName="UiPath 原生桌面动作" sap2010:WorkflowViewState.IdRef="Sequence_10">
+                                                <If Condition="[action &lt;&gt; &quot;scroll_capture&quot; AndAlso action &lt;&gt; &quot;screenshot_desktop&quot; AndAlso action &lt;&gt; &quot;click_desktop_overlay&quot;]" sap2010:WorkflowViewState.IdRef="If_ForegroundOnce">
+                                                  <If.Then>
+                                                    <uix:NWindowOperation DisplayName="激活并置前目标窗口" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NWindowOperation_1" Operation="ToForeground" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="5" Version="V5">
+                                                      <uix:NWindowOperation.Target>
+                                                        <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="080ad065-15d6-4aa4-b662-150f5c654bc9" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                      </uix:NWindowOperation.Target>
+                                                    </uix:NWindowOperation>
+                                                  </If.Then>
+                                                  <If.Else>
+                                                    <Sequence sap2010:WorkflowViewState.IdRef="Sequence_ForegroundAlready" />
+                                                  </If.Else>
+                                                </If>
+                                                <If Condition="[Not hasForegrounded AndAlso action &lt;&gt; &quot;screenshot_desktop&quot; AndAlso action &lt;&gt; &quot;click_desktop_overlay&quot;]" sap2010:WorkflowViewState.IdRef="If_FirstForegroundDelay">
+                                                  <If.Then>
+                                                    <Sequence sap2010:WorkflowViewState.IdRef="Sequence_FirstForegroundDelay">
+                                                      <Delay Duration="00:00:00.5000000" sap2010:WorkflowViewState.IdRef="Delay_3" />
+                                                      <Assign sap2010:WorkflowViewState.IdRef="Assign_FirstForegrounded">
+                                                        <Assign.To>
+                                                          <OutArgument x:TypeArguments="x:Boolean">[hasForegrounded]</OutArgument>
+                                                        </Assign.To>
+                                                        <Assign.Value>
+                                                          <InArgument x:TypeArguments="x:Boolean">True</InArgument>
+                                                        </Assign.Value>
+                                                      </Assign>
+                                                    </Sequence>
+                                                  </If.Then>
+                                                  <If.Else>
+                                                    <Sequence sap2010:WorkflowViewState.IdRef="Sequence_NoForegroundDelay" />
+                                                  </If.Else>
+                                                </If>
+                                                <If Condition="[action = &quot;screenshot&quot; OrElse action = &quot;key&quot; OrElse action = &quot;type_text&quot;]" sap2010:WorkflowViewState.IdRef="If_ReadTargetWindowContract">
+                                                  <If.Then>
+                                                    <Sequence DisplayName="置前后读取目标窗口事实" sap2010:WorkflowViewState.IdRef="Sequence_ReadTargetWindowContract">
+                                                      <uix:NGetAttributeGeneric x:TypeArguments="x:String" Attribute="app" DisplayName="读取实际窗口应用" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NGetAttribute_WindowApp" Result="[targetApp]" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="3" Version="V5">
+                                                        <uix:NGetAttributeGeneric.Target>
+                                                          <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="cc471bbe-29f6-4a31-b082-61a3e3939c51" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                        </uix:NGetAttributeGeneric.Target>
+                                                      </uix:NGetAttributeGeneric>
+                                                      <uix:NGetAttributeGeneric x:TypeArguments="x:String" Attribute="title" DisplayName="读取实际窗口标题" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NGetAttribute_WindowTitle" Result="[targetTitle]" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="3" Version="V5">
+                                                        <uix:NGetAttributeGeneric.Target>
+                                                          <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="f3fa6c74-5dae-40fc-8833-b90dafdcb2d0" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                        </uix:NGetAttributeGeneric.Target>
+                                                      </uix:NGetAttributeGeneric>
+                                                      <If Condition="[String.IsNullOrWhiteSpace(targetApp) OrElse String.IsNullOrWhiteSpace(targetTitle)]" sap2010:WorkflowViewState.IdRef="If_TargetWindowIdentityMissing">
+                                                        <If.Then>
+                                                          <Throw Exception="[New InvalidOperationException(&quot;目标窗口 app/title 属性为空；无法确认窗口身份&quot;)]" sap2010:WorkflowViewState.IdRef="Throw_TargetWindowIdentityMissing" />
+                                                        </If.Then>
+                                                        <If.Else><Sequence sap2010:WorkflowViewState.IdRef="Sequence_TargetWindowIdentityPresent" /></If.Else>
+                                                      </If>
+                                                      <uix:NGetAttributeGeneric x:TypeArguments="x:Boolean" Attribute="foreground" DisplayName="读取实际窗口前台状态" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NGetAttribute_WindowForeground" Result="[targetForeground]" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="3" Version="V5">
+                                                        <uix:NGetAttributeGeneric.Target>
+                                                          <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="05322285-306f-4d9d-980b-67e87c5ebee4" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                        </uix:NGetAttributeGeneric.Target>
+                                                      </uix:NGetAttributeGeneric>
+                                                      <If Condition="[(action = &quot;key&quot; OrElse action = &quot;type_text&quot;) AndAlso Not targetForeground]" sap2010:WorkflowViewState.IdRef="If_RetryForegroundOnce">
+                                                        <If.Then>
+                                                          <Sequence DisplayName="键盘前台失败时仅重试置前一次" sap2010:WorkflowViewState.IdRef="Sequence_RetryForegroundOnce">
+                                                            <uix:NWindowOperation DisplayName="重试置前键盘目标窗口" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NWindowOperation_RetryForeground" Operation="ToForeground" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="5" Version="V5">
+                                                              <uix:NWindowOperation.Target>
+                                                                <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="4cb7ae8c-2a11-421c-9ee1-867a720a8d46" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                              </uix:NWindowOperation.Target>
+                                                            </uix:NWindowOperation>
+                                                            <Delay Duration="00:00:00.2500000" sap2010:WorkflowViewState.IdRef="Delay_RetryForeground" />
+                                                            <uix:NGetAttributeGeneric x:TypeArguments="x:String" Attribute="app" DisplayName="重读实际窗口应用" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NGetAttribute_RetryWindowApp" Result="[targetApp]" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="3" Version="V5">
+                                                              <uix:NGetAttributeGeneric.Target>
+                                                                <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="a9ea2c57-0a5d-44b8-9828-e46e97947a09" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                              </uix:NGetAttributeGeneric.Target>
+                                                            </uix:NGetAttributeGeneric>
+                                                            <uix:NGetAttributeGeneric x:TypeArguments="x:String" Attribute="title" DisplayName="重读实际窗口标题" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NGetAttribute_RetryWindowTitle" Result="[targetTitle]" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="3" Version="V5">
+                                                              <uix:NGetAttributeGeneric.Target>
+                                                                <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="35b65e16-5ac0-41b4-a349-3b0ad823d1f7" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                              </uix:NGetAttributeGeneric.Target>
+                                                            </uix:NGetAttributeGeneric>
+                                                            <uix:NGetAttributeGeneric x:TypeArguments="x:Boolean" Attribute="foreground" DisplayName="重读实际窗口前台状态" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NGetAttribute_RetryWindowForeground" Result="[targetForeground]" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="3" Version="V5">
+                                                              <uix:NGetAttributeGeneric.Target>
+                                                                <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="2fa9092f-7c5c-4231-a3c1-025ab45c51b1" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                              </uix:NGetAttributeGeneric.Target>
+                                                            </uix:NGetAttributeGeneric>
+                                                            <If Condition="[String.IsNullOrWhiteSpace(targetApp) OrElse String.IsNullOrWhiteSpace(targetTitle)]" sap2010:WorkflowViewState.IdRef="If_RetryTargetIdentityMissing">
+                                                              <If.Then>
+                                                                <Throw Exception="[New InvalidOperationException(&quot;重试后目标窗口 app/title 属性为空；无法确认窗口身份&quot;)]" sap2010:WorkflowViewState.IdRef="Throw_RetryTargetIdentityMissing" />
+                                                              </If.Then>
+                                                              <If.Else><Sequence sap2010:WorkflowViewState.IdRef="Sequence_RetryTargetIdentityPresent" /></If.Else>
+                                                            </If>
+                                                          </Sequence>
+                                                        </If.Then>
+                                                        <If.Else>
+                                                          <Sequence sap2010:WorkflowViewState.IdRef="Sequence_NoForegroundRetry" />
+                                                        </If.Else>
+                                                      </If>
+                                                      <Assign sap2010:WorkflowViewState.IdRef="Assign_TargetWindowMeasured">
+                                                        <Assign.To>
+                                                          <OutArgument x:TypeArguments="x:Boolean">[targetWindowMeasured]</OutArgument>
+                                                        </Assign.To>
+                                                        <Assign.Value>
+                                                          <InArgument x:TypeArguments="x:Boolean">True</InArgument>
+                                                        </Assign.Value>
+                                                      </Assign>
+                                                      <If Condition="[(action = &quot;key&quot; OrElse action = &quot;type_text&quot; OrElse action = &quot;screenshot&quot;) AndAlso Not targetForeground]" sap2010:WorkflowViewState.IdRef="If_RejectUnfocusedAction">
+                                                        <If.Then>
+                                                          <Throw Exception="[New InvalidOperationException(&quot;目标窗口 foreground=false；已拒绝窗口截图或键盘输入&quot;)]" sap2010:WorkflowViewState.IdRef="Throw_UnfocusedAction" />
+                                                        </If.Then>
+                                                        <If.Else>
+                                                          <Sequence sap2010:WorkflowViewState.IdRef="Sequence_ForegroundConfirmed" />
+                                                        </If.Else>
+                                                      </If>
+                                                    </Sequence>
+                                                  </If.Then>
+                                                  <If.Else>
+                                                    <Sequence sap2010:WorkflowViewState.IdRef="Sequence_NoTargetWindowContract" />
+                                                  </If.Else>
+                                                </If>
+                                                <If Condition="[action = &quot;resize&quot;]" sap2010:WorkflowViewState.IdRef="If_Resize">
+                                                  <If.Then>
+                                                    <uix:NWindowOperation DisplayName="调整目标窗口大小" HealingAgentBehavior="SameAsCard" Height="[resizeHeight]" sap2010:WorkflowViewState.IdRef="NWindowOperation_Resize" Operation="Move" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="5" Version="V5" Width="[resizeWidth]" X="[CInt(commandX)]" Y="[CInt(commandY)]">
+                                                      <uix:NWindowOperation.Target>
+                                                        <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="2935bbda-7953-46c4-93e2-000f5c654bc9" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                      </uix:NWindowOperation.Target>
+                                                    </uix:NWindowOperation>
+                                                  </If.Then>
+                                                  <If.Else>
+                                                    <Sequence sap2010:WorkflowViewState.IdRef="Sequence_NoResize" />
+                                                  </If.Else>
+                                                </If>
+                                                <If Condition="[action = &quot;capture_rect&quot;]" sap2010:WorkflowViewState.IdRef="If_CaptureRect">
+                                                  <If.Then>
+                                                    <TryCatch sap2010:WorkflowViewState.IdRef="TryCatch_CaptureRect">
+                                                      <TryCatch.Try>
+                                                        <Sequence sap2010:WorkflowViewState.IdRef="Sequence_CaptureRect">
+                                                          <ui:InvokeCode Code="Dim rect As String = CInt(rectX).ToString(Globalization.CultureInfo.InvariantCulture) &amp; &quot;,&quot; &amp; CInt(rectY).ToString(Globalization.CultureInfo.InvariantCulture) &amp; &quot;,&quot; &amp; rectWidth.ToString(Globalization.CultureInfo.InvariantCulture) &amp; &quot;,&quot; &amp; rectHeight.ToString(Globalization.CultureInfo.InvariantCulture)&#xA;Dim info As New System.Diagnostics.ProcessStartInfo(&quot;/usr/sbin/screencapture&quot;)&#xA;info.UseShellExecute = False&#xA;info.ArgumentList.Add(&quot;-x&quot;)&#xA;info.ArgumentList.Add(&quot;-t&quot;)&#xA;info.ArgumentList.Add(&quot;png&quot;)&#xA;info.ArgumentList.Add(&quot;-R&quot;)&#xA;info.ArgumentList.Add(rect)&#xA;info.ArgumentList.Add(targetPath)&#xA;Dim proc As System.Diagnostics.Process = System.Diagnostics.Process.Start(info)&#xA;If proc Is Nothing Then Throw New InvalidOperationException(&quot;无法启动 screencapture&quot;)&#xA;If Not proc.WaitForExit(6000) Then&#xA;    Try&#xA;        proc.Kill()&#xA;    Catch&#xA;    End Try&#xA;    Throw New TimeoutException(&quot;screencapture 超时&quot;)&#xA;End If&#xA;If proc.ExitCode &lt;&gt; 0 Then Throw New InvalidOperationException(&quot;screencapture 退出码 &quot; &amp; proc.ExitCode.ToString(Globalization.CultureInfo.InvariantCulture))&#xA;If Not System.IO.File.Exists(targetPath) Then Throw New InvalidOperationException(&quot;screencapture 未生成文件&quot;)" ContinueOnError="False" DisplayName="按矩形截屏" sap:VirtualizedContainerService.HintSize="650,48" sap2010:WorkflowViewState.IdRef="InvokeCode_CaptureRect">
+                                                            <ui:InvokeCode.Arguments>
+                                                              <InArgument x:TypeArguments="x:Double" x:Key="rectX">[commandX]</InArgument>
+                                                              <InArgument x:TypeArguments="x:Double" x:Key="rectY">[commandY]</InArgument>
+                                                              <InArgument x:TypeArguments="x:Int32" x:Key="rectWidth">[resizeWidth]</InArgument>
+                                                              <InArgument x:TypeArguments="x:Int32" x:Key="rectHeight">[resizeHeight]</InArgument>
+                                                              <InArgument x:TypeArguments="x:String" x:Key="targetPath">[commandPath]</InArgument>
+                                                            </ui:InvokeCode.Arguments>
+                                                          </ui:InvokeCode>
+                                                          <Assign sap2010:WorkflowViewState.IdRef="Assign_CaptureRectPath">
+                                                            <Assign.To>
+                                                              <OutArgument x:TypeArguments="x:String">[replyPath]</OutArgument>
+                                                            </Assign.To>
+                                                            <Assign.Value>
+                                                              <InArgument x:TypeArguments="x:String">[commandPath]</InArgument>
+                                                            </Assign.Value>
+                                                          </Assign>
+                                                          <ui:InvokeCode Code="Dim png() As Byte = System.IO.File.ReadAllBytes(commandPath)&#xA;If png.Length &lt; 24 Then Throw New InvalidDataException(&quot;截图PNG文件头不完整&quot;)&#xA;If png(0) &lt;&gt; 137 OrElse png(1) &lt;&gt; 80 OrElse png(2) &lt;&gt; 78 OrElse png(3) &lt;&gt; 71 Then Throw New InvalidDataException(&quot;screencapture 输出不是PNG格式&quot;)&#xA;pixelWidth = CInt(png(16)) * 16777216 + CInt(png(17)) * 65536 + CInt(png(18)) * 256 + CInt(png(19))&#xA;pixelHeight = CInt(png(20)) * 16777216 + CInt(png(21)) * 65536 + CInt(png(22)) * 256 + CInt(png(23))" ContinueOnError="False" DisplayName="读取截图尺寸" sap:VirtualizedContainerService.HintSize="650,48" sap2010:WorkflowViewState.IdRef="InvokeCode_CaptureRectSize">
+                                                            <ui:InvokeCode.Arguments>
+                                                              <InArgument x:TypeArguments="x:String" x:Key="commandPath">[commandPath]</InArgument>
+                                                              <OutArgument x:TypeArguments="x:Int32" x:Key="pixelWidth">[pixelWidth]</OutArgument>
+                                                              <OutArgument x:TypeArguments="x:Int32" x:Key="pixelHeight">[pixelHeight]</OutArgument>
+                                                            </ui:InvokeCode.Arguments>
+                                                          </ui:InvokeCode>
+                                                          <Assign sap2010:WorkflowViewState.IdRef="Assign_CaptureRectWindowX">
+                                                            <Assign.To>
+                                                              <OutArgument x:TypeArguments="x:Double">[windowX]</OutArgument>
+                                                            </Assign.To>
+                                                            <Assign.Value>
+                                                              <InArgument x:TypeArguments="x:Double">[commandX]</InArgument>
+                                                            </Assign.Value>
+                                                          </Assign>
+                                                          <Assign sap2010:WorkflowViewState.IdRef="Assign_CaptureRectWindowY">
+                                                            <Assign.To>
+                                                              <OutArgument x:TypeArguments="x:Double">[windowY]</OutArgument>
+                                                            </Assign.To>
+                                                            <Assign.Value>
+                                                              <InArgument x:TypeArguments="x:Double">[commandY]</InArgument>
+                                                            </Assign.Value>
+                                                          </Assign>
+                                                          <Assign sap2010:WorkflowViewState.IdRef="Assign_CaptureRectWindowWidth">
+                                                            <Assign.To>
+                                                              <OutArgument x:TypeArguments="x:Double">[windowWidth]</OutArgument>
+                                                            </Assign.To>
+                                                            <Assign.Value>
+                                                              <InArgument x:TypeArguments="x:Double">[CDbl(resizeWidth)]</InArgument>
+                                                            </Assign.Value>
+                                                          </Assign>
+                                                          <Assign sap2010:WorkflowViewState.IdRef="Assign_CaptureRectWindowHeight">
+                                                            <Assign.To>
+                                                              <OutArgument x:TypeArguments="x:Double">[windowHeight]</OutArgument>
+                                                            </Assign.To>
+                                                            <Assign.Value>
+                                                              <InArgument x:TypeArguments="x:Double">[CDbl(resizeHeight)]</InArgument>
+                                                            </Assign.Value>
+                                                          </Assign>
+                                                        </Sequence>
+                                                      </TryCatch.Try>
+                                                      <TryCatch.Catches>
+                                                        <Catch x:TypeArguments="s:Exception" sap2010:WorkflowViewState.IdRef="Catch_CaptureRect">
+                                                          <ActivityAction x:TypeArguments="s:Exception">
+                                                            <ActivityAction.Argument>
+                                                              <DelegateInArgument x:TypeArguments="s:Exception" Name="captureRectException" />
+                                                            </ActivityAction.Argument>
+                                                            <Sequence sap2010:WorkflowViewState.IdRef="Sequence_CaptureRectError">
+                                                              <Assign sap2010:WorkflowViewState.IdRef="Assign_CaptureRectOk">
+                                                                <Assign.To>
+                                                                  <OutArgument x:TypeArguments="x:Boolean">[replyOk]</OutArgument>
+                                                                </Assign.To>
+                                                                <Assign.Value>
+                                                                  <InArgument x:TypeArguments="x:Boolean">False</InArgument>
+                                                                </Assign.Value>
+                                                              </Assign>
+                                                              <Assign sap2010:WorkflowViewState.IdRef="Assign_CaptureRectError">
+                                                                <Assign.To>
+                                                                  <OutArgument x:TypeArguments="x:String">[replyError]</OutArgument>
+                                                                </Assign.To>
+                                                                <Assign.Value>
+                                                                  <InArgument x:TypeArguments="x:String">[captureRectException.Message]</InArgument>
+                                                                </Assign.Value>
+                                                              </Assign>
+                                                            </Sequence>
+                                                          </ActivityAction>
+                                                        </Catch>
+                                                      </TryCatch.Catches>
+                                                    </TryCatch>
+                                                  </If.Then>
+                                                  <If.Else>
+                                                    <Sequence sap2010:WorkflowViewState.IdRef="Sequence_NoCaptureRect" />
+                                                  </If.Else>
+                                                </If>
+                                                <If Condition="[{&quot;click&quot;, &quot;click_desktop_overlay&quot;, &quot;right_click&quot;, &quot;double_click&quot;, &quot;scroll&quot;}.Contains(action)]" sap2010:WorkflowViewState.IdRef="If_3">
+                                                  <If.Then>
+                                                    <Sequence sap2010:WorkflowViewState.IdRef="Sequence_5">
+                                                      <uix:NGetAttributeGeneric x:TypeArguments="sd:Rectangle" Attribute="position" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NGetAttributeGeneric`1_1" Result="[targetRect]" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="3" Version="V5">
+                                                        <uix:NGetAttributeGeneric.Target>
+                                                          <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="4f4c37a3-7903-4e09-8017-fcd0d96de460" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                        </uix:NGetAttributeGeneric.Target>
+                                                      </uix:NGetAttributeGeneric>
+                                                      <If Condition="[hasCoordinates AndAlso (commandX &lt; 0 OrElse commandY &lt; 0 OrElse commandX &gt;= targetRect.Width OrElse commandY &gt;= targetRect.Height)]" sap2010:WorkflowViewState.IdRef="If_1">
+                                                        <If.Then>
+                                                          <Throw Exception="[New ArgumentOutOfRangeException(&quot;x/y&quot;, &quot;坐标超出当前窗口 points bounds&quot;)]" sap2010:WorkflowViewState.IdRef="Throw_1" />
+                                                        </If.Then>
+                                                        <If.Else>
+                                                          <Sequence sap2010:WorkflowViewState.IdRef="Sequence_3" />
+                                                        </If.Else>
+                                                      </If>
+                                                      <If Condition="[(expectedWindowWidth &gt; 0 AndAlso Math.Abs(targetRect.Width - expectedWindowWidth) &gt; 2) OrElse (expectedWindowHeight &gt; 0 AndAlso Math.Abs(targetRect.Height - expectedWindowHeight) &gt; 2)]" sap2010:WorkflowViewState.IdRef="If_2">
+                                                        <If.Then>
+                                                          <Throw Exception="[New InvalidOperationException(&quot;截图后窗口 points bounds 已变化；拒绝使用过期坐标&quot;)]" sap2010:WorkflowViewState.IdRef="Throw_2" />
+                                                        </If.Then>
+                                                        <If.Else>
+                                                          <Sequence sap2010:WorkflowViewState.IdRef="Sequence_4" />
+                                                        </If.Else>
+                                                      </If>
+                                                      <Assign sap2010:WorkflowViewState.IdRef="Assign_ClickWindowX">
+                                                        <Assign.To>
+                                                          <OutArgument x:TypeArguments="x:Double">[windowX]</OutArgument>
+                                                        </Assign.To>
+                                                        <Assign.Value>
+                                                          <InArgument x:TypeArguments="x:Double">[targetRect.X]</InArgument>
+                                                        </Assign.Value>
+                                                      </Assign>
+                                                      <Assign sap2010:WorkflowViewState.IdRef="Assign_ClickWindowY">
+                                                        <Assign.To>
+                                                          <OutArgument x:TypeArguments="x:Double">[windowY]</OutArgument>
+                                                        </Assign.To>
+                                                        <Assign.Value>
+                                                          <InArgument x:TypeArguments="x:Double">[targetRect.Y]</InArgument>
+                                                        </Assign.Value>
+                                                      </Assign>
+                                                      <Assign sap2010:WorkflowViewState.IdRef="Assign_ClickWindowWidth">
+                                                        <Assign.To>
+                                                          <OutArgument x:TypeArguments="x:Double">[windowWidth]</OutArgument>
+                                                        </Assign.To>
+                                                        <Assign.Value>
+                                                          <InArgument x:TypeArguments="x:Double">[targetRect.Width]</InArgument>
+                                                        </Assign.Value>
+                                                      </Assign>
+                                                      <Assign sap2010:WorkflowViewState.IdRef="Assign_ClickWindowHeight">
+                                                        <Assign.To>
+                                                          <OutArgument x:TypeArguments="x:Double">[windowHeight]</OutArgument>
+                                                        </Assign.To>
+                                                        <Assign.Value>
+                                                          <InArgument x:TypeArguments="x:Double">[targetRect.Height]</InArgument>
+                                                        </Assign.Value>
+                                                      </Assign>
+                                                    </Sequence>
+                                                  </If.Then>
+                                                  <If.Else>
+                                                    <Sequence sap2010:WorkflowViewState.IdRef="Sequence_6" />
+                                                  </If.Else>
+                                                </If>
+                                                <If Condition="[action = &quot;screenshot&quot; OrElse action = &quot;screenshot_desktop&quot; OrElse action = &quot;scroll_capture&quot;]" sap2010:WorkflowViewState.IdRef="If_10">
+                                                  <If.Then>
+                                                    <Sequence sap2010:WorkflowViewState.IdRef="Sequence_9">
+                                                      <TryCatch sap2010:WorkflowViewState.IdRef="TryCatch_1">
+                                                        <TryCatch.Try>
+                                                          <Sequence sap2010:WorkflowViewState.IdRef="Sequence_7">
+                                                            <If Condition="[action = &quot;scroll_capture&quot;]" sap2010:WorkflowViewState.IdRef="If_ScrollCapture">
+                                                              <If.Then>
+                                                                <If Condition="[direction = &quot;up&quot;]" sap2010:WorkflowViewState.IdRef="If_ScrollCaptureDirection">
+                                                                  <If.Then>
+                                                                    <uix:NMouseScroll KeyModifiers="{x:Null}" Direction="Up" DisplayName="组合动作：滚动后截图（向上）" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NMouseScroll_ScrollCaptureUp" InteractionMode="HardwareEvents" MovementUnits="[commandUnits]" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="5" Version="V5">
+                                                                      <uix:NMouseScroll.Target>
+                                                                        <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="2df3a0f7-51f4-4e46-a15e-13a1e6a5e8c1" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6">
+                                                                          <uix:TargetAnchorable.PointOffset>
+                                                                            <uix:PointOffset Position="TopLeft" X="[If(hasCoordinates, CInt(commandX), CInt(targetRect.Width / 2))]" Y="[If(hasCoordinates, CInt(commandY), CInt(targetRect.Height / 2))]" />
+                                                                          </uix:TargetAnchorable.PointOffset>
+                                                                        </uix:TargetAnchorable>
+                                                                      </uix:NMouseScroll.Target>
+                                                                    </uix:NMouseScroll>
+                                                                  </If.Then>
+                                                                  <If.Else>
+                                                                    <uix:NMouseScroll KeyModifiers="{x:Null}" Direction="Down" DisplayName="组合动作：滚动后截图（向下）" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NMouseScroll_ScrollCaptureDown" InteractionMode="HardwareEvents" MovementUnits="[commandUnits]" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="5" Version="V5">
+                                                                      <uix:NMouseScroll.Target>
+                                                                        <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="ae34a581-e32b-47cb-b5ec-a363682c7903" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6">
+                                                                          <uix:TargetAnchorable.PointOffset>
+                                                                            <uix:PointOffset Position="TopLeft" X="[If(hasCoordinates, CInt(commandX), CInt(targetRect.Width / 2))]" Y="[If(hasCoordinates, CInt(commandY), CInt(targetRect.Height / 2))]" />
+                                                                          </uix:TargetAnchorable.PointOffset>
+                                                                        </uix:TargetAnchorable>
+                                                                      </uix:NMouseScroll.Target>
+                                                                    </uix:NMouseScroll>
+                                                                  </If.Else>
+                                                                </If>
+                                                              </If.Then>
+                                                              <If.Else>
+                                                                <Sequence sap2010:WorkflowViewState.IdRef="Sequence_NoScrollCapture" />
+                                                              </If.Else>
+                                                            </If>
+                                                            <uix:NGetAttributeGeneric x:TypeArguments="sd:Rectangle" Attribute="position" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NGetAttributeGeneric`1_2" Result="[targetRect]" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="3" Version="V5">
+                                                              <uix:NGetAttributeGeneric.Target>
+                                                                <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="ced5c752-030c-45e4-95c7-0c0e9a8e7c85" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                              </uix:NGetAttributeGeneric.Target>
+                                                            </uix:NGetAttributeGeneric>
+                                                            <Assign sap2010:WorkflowViewState.IdRef="Assign_WindowX">
+                                                              <Assign.To>
+                                                                <OutArgument x:TypeArguments="x:Double">[windowX]</OutArgument>
+                                                              </Assign.To>
+                                                              <Assign.Value>
+                                                                <InArgument x:TypeArguments="x:Double">[targetRect.X]</InArgument>
+                                                              </Assign.Value>
+                                                            </Assign>
+                                                            <Assign sap2010:WorkflowViewState.IdRef="Assign_WindowY">
+                                                              <Assign.To>
+                                                                <OutArgument x:TypeArguments="x:Double">[windowY]</OutArgument>
+                                                              </Assign.To>
+                                                              <Assign.Value>
+                                                                <InArgument x:TypeArguments="x:Double">[targetRect.Y]</InArgument>
+                                                              </Assign.Value>
+                                                            </Assign>
+                                                            <Assign sap2010:WorkflowViewState.IdRef="Assign_14">
+                                                              <Assign.To>
+                                                                <OutArgument x:TypeArguments="x:Double">[windowWidth]</OutArgument>
+                                                              </Assign.To>
+                                                              <Assign.Value>
+                                                                <InArgument x:TypeArguments="x:Double">[targetRect.Width]</InArgument>
+                                                              </Assign.Value>
+                                                            </Assign>
+                                                            <Assign sap2010:WorkflowViewState.IdRef="Assign_15">
+                                                              <Assign.To>
+                                                                <OutArgument x:TypeArguments="x:Double">[windowHeight]</OutArgument>
+                                                              </Assign.To>
+                                                              <Assign.Value>
+                                                                <InArgument x:TypeArguments="x:Double">[targetRect.Height]</InArgument>
+                                                              </Assign.Value>
+                                                            </Assign>
+                                                          </Sequence>
+                                                        </TryCatch.Try>
+                                                        <TryCatch.Catches>
+                                                          <Catch x:TypeArguments="s:Exception" sap2010:WorkflowViewState.IdRef="Catch`1_1">
+                                                            <ActivityAction x:TypeArguments="s:Exception">
+                                                              <ActivityAction.Argument>
+                                                                <DelegateInArgument x:TypeArguments="s:Exception" Name="boundsException" />
+                                                              </ActivityAction.Argument>
+                                                              <Sequence sap2010:WorkflowViewState.IdRef="Sequence_8">
+                                                                <If Condition="[action = &quot;scroll_capture&quot;]" sap2010:WorkflowViewState.IdRef="If_ScrollCaptureError">
+                                                                  <If.Then>
+                                                                    <Throw Exception="[boundsException]" sap2010:WorkflowViewState.IdRef="Throw_ScrollCaptureError" />
+                                                                  </If.Then>
+                                                                  <If.Else>
+                                                                    <Sequence sap2010:WorkflowViewState.IdRef="Sequence_NoScrollCaptureError" />
+                                                                  </If.Else>
+                                                                </If>
+                                                                <Assign sap2010:WorkflowViewState.IdRef="Assign_16">
+                                                                  <Assign.To>
+                                                                    <OutArgument x:TypeArguments="x:Double">[windowWidth]</OutArgument>
+                                                                  </Assign.To>
+                                                                  <Assign.Value>
+                                                                    <InArgument x:TypeArguments="x:Double">0</InArgument>
+                                                                  </Assign.Value>
+                                                                </Assign>
+                                                                <Assign sap2010:WorkflowViewState.IdRef="Assign_17">
+                                                                  <Assign.To>
+                                                                    <OutArgument x:TypeArguments="x:Double">[windowHeight]</OutArgument>
+                                                                  </Assign.To>
+                                                                  <Assign.Value>
+                                                                    <InArgument x:TypeArguments="x:Double">0</InArgument>
+                                                                  </Assign.Value>
+                                                                </Assign>
+                                                              </Sequence>
+                                                            </ActivityAction>
+                                                          </Catch>
+                                                        </TryCatch.Catches>
+                                                      </TryCatch>
+                                                      <If Condition="[action = &quot;screenshot_desktop&quot;]" sap2010:WorkflowViewState.IdRef="If_DesktopScreenshot">
+                                                        <If.Then>
+                                                          <uix:NTakeScreenshot DisplayName="截取整个桌面" FileName="[commandPath]" FileNameMode="None" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NTakeScreenshot_Desktop" IsDesktop="True" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="10" Version="V5">
+                                                            <uix:NTakeScreenshot.Target>
+                                                              <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="4604f3a9-6c1b-4881-965d-54e992914376" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                            </uix:NTakeScreenshot.Target>
+                                                          </uix:NTakeScreenshot>
+                                                        </If.Then>
+                                                        <If.Else>
+                                                          <uix:NTakeScreenshot DisplayName="截取目标窗口" FileName="[commandPath]" FileNameMode="None" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NTakeScreenshot_Window" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="10" Version="V5">
+                                                            <uix:NTakeScreenshot.Target>
+                                                              <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="55a785be-be9e-43fe-9424-88edf43761ae" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                            </uix:NTakeScreenshot.Target>
+                                                          </uix:NTakeScreenshot>
+                                                        </If.Else>
+                                                      </If>
+                                                      <Assign sap2010:WorkflowViewState.IdRef="Assign_18">
+                                                        <Assign.To>
+                                                          <OutArgument x:TypeArguments="x:String">[replyPath]</OutArgument>
+                                                        </Assign.To>
+                                                        <Assign.Value>
+                                                          <InArgument x:TypeArguments="x:String">[commandPath]</InArgument>
+                                                        </Assign.Value>
+                                                      </Assign>
+                                                      <ui:InvokeCode Code="Dim png() As Byte = System.IO.File.ReadAllBytes(commandPath)&#xA;If png.Length &lt; 24 Then Throw New InvalidDataException(&quot;截图PNG文件头不完整&quot;)&#xA;If png(0) &lt;&gt; 137 OrElse png(1) &lt;&gt; 80 OrElse png(2) &lt;&gt; 78 OrElse png(3) &lt;&gt; 71 Then Throw New InvalidDataException(&quot;UiPath截图不是PNG格式&quot;)&#xA;pixelWidth = CInt(png(16)) * 16777216 + CInt(png(17)) * 65536 + CInt(png(18)) * 256 + CInt(png(19))&#xA;pixelHeight = CInt(png(20)) * 16777216 + CInt(png(21)) * 65536 + CInt(png(22)) * 256 + CInt(png(23))" ContinueOnError="False" sap2010:WorkflowViewState.IdRef="InvokeCode_2">
+                                                        <ui:InvokeCode.Arguments>
+                                                          <InArgument x:TypeArguments="x:String" x:Key="commandPath">[commandPath]</InArgument>
+                                                          <OutArgument x:TypeArguments="x:Int32" x:Key="pixelWidth">[pixelWidth]</OutArgument>
+                                                          <OutArgument x:TypeArguments="x:Int32" x:Key="pixelHeight">[pixelHeight]</OutArgument>
+                                                        </ui:InvokeCode.Arguments>
+                                                      </ui:InvokeCode>
+                                                    </Sequence>
+                                                  </If.Then>
+                                                  <If.Else>
+                                                    <If Condition="[action = &quot;click&quot; OrElse action = &quot;click_desktop_overlay&quot;]" sap2010:WorkflowViewState.IdRef="If_9">
+                                                      <If.Then>
+                                                        <uix:NClick ActivateBefore="[action &lt;&gt; &quot;click_desktop_overlay&quot;]" ClickType="Single" DisplayName="单击坐标" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NClick_1" InteractionMode="HardwareEvents" KeyModifiers="None" MouseButton="Left" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="5" Version="V5">
+                                                          <uix:NClick.Target>
+                                                            <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="b3d2ab19-0735-42ed-950d-e158cdd5033c" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6">
+                                                              <uix:TargetAnchorable.PointOffset>
+                                                                <uix:PointOffset Position="TopLeft" X="[If(hasCoordinates, CInt(commandX), CInt(targetRect.Width / 2))]" Y="[If(hasCoordinates, CInt(commandY), CInt(targetRect.Height / 2))]" />
+                                                              </uix:TargetAnchorable.PointOffset>
+                                                            </uix:TargetAnchorable>
+                                                          </uix:NClick.Target>
+                                                        </uix:NClick>
+                                                      </If.Then>
+                                                      <If.Else>
+                                                        <If Condition="[action = &quot;right_click&quot;]" sap2010:WorkflowViewState.IdRef="If_8">
+                                                          <If.Then>
+                                                            <uix:NClick ActivateBefore="True" ClickType="Single" DisplayName="右键单击坐标" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NClick_2" InteractionMode="HardwareEvents" KeyModifiers="None" MouseButton="Right" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="5" Version="V5">
+                                                              <uix:NClick.Target>
+                                                                <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="30d4b056-a259-434c-ad14-f2e5cf1ffbc3" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6">
+                                                                  <uix:TargetAnchorable.PointOffset>
+                                                                    <uix:PointOffset Position="TopLeft" X="[If(hasCoordinates, CInt(commandX), CInt(targetRect.Width / 2))]" Y="[If(hasCoordinates, CInt(commandY), CInt(targetRect.Height / 2))]" />
+                                                                  </uix:TargetAnchorable.PointOffset>
+                                                                </uix:TargetAnchorable>
+                                                              </uix:NClick.Target>
+                                                            </uix:NClick>
+                                                          </If.Then>
+                                                          <If.Else>
+                                                            <If Condition="[action = &quot;double_click&quot;]" sap2010:WorkflowViewState.IdRef="If_7">
+                                                              <If.Then>
+                                                                <uix:NClick ActivateBefore="True" ClickType="Double" DisplayName="双击坐标" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NClick_3" InteractionMode="HardwareEvents" KeyModifiers="None" MouseButton="Left" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="5" Version="V5">
+                                                                  <uix:NClick.Target>
+                                                                    <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="d49ab960-dfad-48e8-86c7-e11399e3ec8c" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6">
+                                                                      <uix:TargetAnchorable.PointOffset>
+                                                                        <uix:PointOffset Position="TopLeft" X="[If(hasCoordinates, CInt(commandX), CInt(targetRect.Width / 2))]" Y="[If(hasCoordinates, CInt(commandY), CInt(targetRect.Height / 2))]" />
+                                                                      </uix:TargetAnchorable.PointOffset>
+                                                                    </uix:TargetAnchorable>
+                                                                  </uix:NClick.Target>
+                                                                </uix:NClick>
+                                                              </If.Then>
+                                                              <If.Else>
+                                                                <If Condition="[action = &quot;scroll&quot;]" sap2010:WorkflowViewState.IdRef="If_6">
+                                                                  <If.Then>
+                                                                    <If Condition="[direction = &quot;up&quot;]" sap2010:WorkflowViewState.IdRef="If_4">
+                                                                      <If.Then>
+                                                                        <uix:NMouseScroll KeyModifiers="{x:Null}" Direction="Up" DisplayName="向上滚动" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NMouseScroll_1" InteractionMode="HardwareEvents" MovementUnits="[commandUnits]" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="5" Version="V5">
+                                                                          <uix:NMouseScroll.Target>
+                                                                            <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="fb478e90-f19b-48e5-be89-08bf2ee66d8a" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6">
+                                                                              <uix:TargetAnchorable.PointOffset>
+                                                                                <uix:PointOffset Position="TopLeft" X="[If(hasCoordinates, CInt(commandX), CInt(targetRect.Width / 2))]" Y="[If(hasCoordinates, CInt(commandY), CInt(targetRect.Height / 2))]" />
+                                                                              </uix:TargetAnchorable.PointOffset>
+                                                                            </uix:TargetAnchorable>
+                                                                          </uix:NMouseScroll.Target>
+                                                                        </uix:NMouseScroll>
+                                                                      </If.Then>
+                                                                      <If.Else>
+                                                                        <uix:NMouseScroll KeyModifiers="{x:Null}" Direction="Down" DisplayName="向下滚动" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NMouseScroll_2" InteractionMode="HardwareEvents" MovementUnits="[commandUnits]" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" Timeout="5" Version="V5">
+                                                                          <uix:NMouseScroll.Target>
+                                                                            <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="f20460d8-6f21-4a27-a0be-8b562c81377d" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6">
+                                                                              <uix:TargetAnchorable.PointOffset>
+                                                                                <uix:PointOffset Position="TopLeft" X="[If(hasCoordinates, CInt(commandX), CInt(targetRect.Width / 2))]" Y="[If(hasCoordinates, CInt(commandY), CInt(targetRect.Height / 2))]" />
+                                                                              </uix:TargetAnchorable.PointOffset>
+                                                                            </uix:TargetAnchorable>
+                                                                          </uix:NMouseScroll.Target>
+                                                                        </uix:NMouseScroll>
+                                                                      </If.Else>
+                                                                    </If>
+                                                                  </If.Then>
+                                                                  <If.Else>
+                                                                    <If Condition="[action = &quot;key&quot; OrElse action = &quot;type_text&quot;]" sap2010:WorkflowViewState.IdRef="If_5">
+                                                                      <If.Then>
+                                                                        <uix:NKeyboardShortcuts ActivateBefore="True" ClickBeforeMode="None" DisplayName="向当前应用发送键盘输入" HealingAgentBehavior="SameAsCard" sap2010:WorkflowViewState.IdRef="NKeyboardShortcuts_1" InteractionMode="HardwareEvents" ScopeIdentifier="7c8f5580-5ef8-4c0d-95b6-65a25a4de11c" ShortcutsArgument="[If(action = &quot;key&quot;, commandKey, &quot;[d(hk)]&quot; + commandText.Replace(&quot;[&quot;, &quot;[[&quot;) + &quot;[u(hk)]&quot;)]" Timeout="5" Version="V5">
+                                                                          <uix:NKeyboardShortcuts.Target>
+                                                                            <uix:TargetAnchorable DesignTimeRectangle="0, 0, 0, 0" FullSelectorArgument="[selector]" Guid="a9e9d2ec-72ea-4eb2-a056-fb2a6d835448" ScopeSelectorArgument="[selector]" SearchSteps="Selector" Version="V6" />
+                                                                          </uix:NKeyboardShortcuts.Target>
+                                                                        </uix:NKeyboardShortcuts>
+                                                                      </If.Then>
+                                                                      <If.Else>
+                                                                        <If Condition="[action &lt;&gt; &quot;resize&quot;]" sap2010:WorkflowViewState.IdRef="If_ResizeHandled">
+                                                                          <If.Then>
+                                                                            <Throw Exception="[New InvalidOperationException(&quot;动作分支无法识别&quot;)]" sap2010:WorkflowViewState.IdRef="Throw_3" />
+                                                                          </If.Then>
+                                                                          <If.Else>
+                                                                            <Sequence sap2010:WorkflowViewState.IdRef="Sequence_ResizeHandled" />
+                                                                          </If.Else>
+                                                                        </If>
+                                                                      </If.Else>
+                                                                    </If>
+                                                                  </If.Else>
+                                                                </If>
+                                                              </If.Else>
+                                                            </If>
+                                                          </If.Else>
+                                                        </If>
+                                                      </If.Else>
+                                                    </If>
+                                                  </If.Else>
+                                                </If>
+                                              </Sequence>
+                                            </ActivityAction>
+                                          </uix:NApplicationCard.Body>
+                                          <uix:NApplicationCard.TargetApp>
+                                            <uix:TargetApp Area="0, 0, 0, 0" Selector="[selector]" Version="V3" />
+                                          </uix:NApplicationCard.TargetApp>
+                                        </uix:NApplicationCard>
+                                      </TryCatch.Try>
+                                      <TryCatch.Catches>
+                                        <Catch x:TypeArguments="s:Exception" sap2010:WorkflowViewState.IdRef="Catch`1_2">
+                                          <ActivityAction x:TypeArguments="s:Exception">
+                                            <ActivityAction.Argument>
+                                              <DelegateInArgument x:TypeArguments="s:Exception" Name="actionException" />
+                                            </ActivityAction.Argument>
+                                            <Sequence DisplayName="捕获内容" sap2010:WorkflowViewState.IdRef="Sequence_11">
+                                              <Assign sap2010:WorkflowViewState.IdRef="Assign_19">
+                                                <Assign.To>
+                                                  <OutArgument x:TypeArguments="x:Boolean">[replyOk]</OutArgument>
+                                                </Assign.To>
+                                                <Assign.Value>
+                                                  <InArgument x:TypeArguments="x:Boolean">False</InArgument>
+                                                </Assign.Value>
+                                              </Assign>
+                                              <Assign sap2010:WorkflowViewState.IdRef="Assign_20">
+                                                <Assign.To>
+                                                  <OutArgument x:TypeArguments="x:String">[replyError]</OutArgument>
+                                                </Assign.To>
+                                                <Assign.Value>
+                                                  <InArgument x:TypeArguments="x:String">[actionException.Message]</InArgument>
+                                                </Assign.Value>
+                                              </Assign>
+                                            </Sequence>
+                                          </ActivityAction>
+                                        </Catch>
+                                      </TryCatch.Catches>
+                                    </TryCatch>
+                                  </If.Else>
+                                </If>
+                              </If.Else>
+                            </If>
+                          </If.Else>
+                        </If>
+                      </If.Then>
+                    </If>
+                    <If Condition="[action = &quot;discover&quot;]" sap:VirtualizedContainerService.HintSize="680,282" sap2010:WorkflowViewState.IdRef="If_Discover">
+                      <If.Then>
+                        <Sequence DisplayName="Discover WeChat windows" sap:VirtualizedContainerService.HintSize="680,96" sap2010:WorkflowViewState.IdRef="Sequence_Discover">
+                          <sap:WorkflowViewStateService.ViewState>
+                            <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                              <x:Boolean x:Key="IsExpanded">True</x:Boolean>
+                            </scg:Dictionary>
+                          </sap:WorkflowViewStateService.ViewState>
+                          <ui:InvokeWorkflowFile ArgumentsVariable="{x:Null}" ContinueOnError="False" DisplayName="只读发现 WeChat 窗口" sap:VirtualizedContainerService.HintSize="650,48" sap2010:WorkflowViewState.IdRef="InvokeWorkflowFile_Discover" UnSafe="False" WorkflowFileName="DiscoverWeChatWindows.xaml">
+                            <ui:InvokeWorkflowFile.Arguments>
+                              <OutArgument x:TypeArguments="x:String" x:Key="out_Windows">[discoveredWindows]</OutArgument>
+                            </ui:InvokeWorkflowFile.Arguments>
+                            <sap:WorkflowViewStateService.ViewState>
+                              <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                                <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                              </scg:Dictionary>
+                            </sap:WorkflowViewStateService.ViewState>
+                          </ui:InvokeWorkflowFile>
+                        </Sequence>
+                      </If.Then>
+                      <If.Else>
+                        <Sequence DisplayName="Else" sap:VirtualizedContainerService.HintSize="680,96" sap2010:WorkflowViewState.IdRef="Sequence_1">
+                          <sap:WorkflowViewStateService.ViewState>
+                            <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                              <x:Boolean x:Key="IsExpanded">True</x:Boolean>
+                            </scg:Dictionary>
+                          </sap:WorkflowViewStateService.ViewState>
+                        </Sequence>
+                      </If.Else>
+                    </If>
+                  </Sequence>
+                </If.Else>
+              </If>
+              <If Condition="[action = &quot;noop&quot; AndAlso replyOk AndAlso commandSeconds &gt; 0]" sap:VirtualizedContainerService.HintSize="710,255" sap2010:WorkflowViewState.IdRef="If_16">
+                <If.Then>
+                  <Delay Duration="[TimeSpan.FromSeconds(commandSeconds)]" sap:VirtualizedContainerService.HintSize="650,24" sap2010:WorkflowViewState.IdRef="Delay_1">
+                    <sap:WorkflowViewStateService.ViewState>
+                      <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                        <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                      </scg:Dictionary>
+                    </sap:WorkflowViewStateService.ViewState>
+                  </Delay>
+                </If.Then>
+                <If.Else>
+                  <Sequence DisplayName="Else" sap:VirtualizedContainerService.HintSize="680,96" sap2010:WorkflowViewState.IdRef="Sequence_12">
+                    <sap:WorkflowViewStateService.ViewState>
+                      <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                        <x:Boolean x:Key="IsExpanded">True</x:Boolean>
+                      </scg:Dictionary>
+                    </sap:WorkflowViewStateService.ViewState>
+                  </Sequence>
+                </If.Else>
+              </If>
+              <ui:InvokeCode Code="Dim payload As New System.Collections.Generic.Dictionary(Of String, Object) From {&#xA;    {&quot;id&quot;, commandId},&#xA;    {&quot;ok&quot;, replyOk},&#xA;    {&quot;error&quot;, replyError}&#xA;}&#xA;If Not String.IsNullOrWhiteSpace(replyPath) Then payload(&quot;path&quot;) = replyPath&#xA;If action = &quot;discover&quot; Then payload(&quot;windows&quot;) = discoveredWindows&#xA;If pixelWidth &gt; 0 Then payload(&quot;width&quot;) = pixelWidth&#xA;If pixelHeight &gt; 0 Then payload(&quot;height&quot;) = pixelHeight&#xA;If windowWidth &gt; 0 Then payload(&quot;window_width&quot;) = windowWidth&#xA;If windowHeight &gt; 0 Then payload(&quot;window_height&quot;) = windowHeight&#xA;If windowWidth &gt; 0 Then payload(&quot;window_x&quot;) = windowX&#xA;If windowHeight &gt; 0 Then payload(&quot;window_y&quot;) = windowY&#xA;If {&quot;screenshot&quot;, &quot;screenshot_desktop&quot;, &quot;key&quot;, &quot;type_text&quot;}.Contains(action) Then&#xA;    Dim appValue As Object = If(targetWindowMeasured, CType(targetApp, Object), Nothing)&#xA;    Dim titleValue As Object = If(targetWindowMeasured, CType(targetTitle, Object), Nothing)&#xA;    Dim foregroundValue As Object = If(targetWindowMeasured, CType(targetForeground, Object), Nothing)&#xA;    Dim captureScope As String = If(action = &quot;screenshot_desktop&quot;, &quot;desktop&quot;, &quot;window&quot;)&#xA;    payload(&quot;target_window&quot;) = New System.Collections.Generic.Dictionary(Of String, Object) From {&#xA;        {&quot;selector&quot;, selector},&#xA;        {&quot;app&quot;, appValue},&#xA;        {&quot;title&quot;, titleValue},&#xA;        {&quot;foreground&quot;, foregroundValue},&#xA;        {&quot;capture_scope&quot;, captureScope}&#xA;    }&#xA;End If&#xA;Dim destination As String = System.IO.Path.Combine(runDirectory, &quot;reply.json&quot;)&#xA;Dim temporary As String = destination &amp; &quot;.tmp&quot;&#xA;Dim json As String = System.Text.Json.JsonSerializer.Serialize(payload)&#xA;System.IO.File.WriteAllText(temporary, json, New System.Text.UTF8Encoding(False))&#xA;System.IO.File.Move(temporary, destination, True)" ContinueOnError="False" sap:VirtualizedContainerService.HintSize="710,48" sap2010:WorkflowViewState.IdRef="InvokeCode_3">
+                <ui:InvokeCode.Arguments>
+                  <InArgument x:TypeArguments="x:String" x:Key="runDirectory">[runDirectory]</InArgument>
+                  <InArgument x:TypeArguments="x:String" x:Key="commandId">[commandId]</InArgument>
+                  <InArgument x:TypeArguments="x:Boolean" x:Key="replyOk">[replyOk]</InArgument>
+                  <InArgument x:TypeArguments="x:String" x:Key="replyError">[replyError]</InArgument>
+                  <InArgument x:TypeArguments="x:String" x:Key="replyPath">[replyPath]</InArgument>
+                  <InArgument x:TypeArguments="x:Int32" x:Key="pixelWidth">[pixelWidth]</InArgument>
+                  <InArgument x:TypeArguments="x:Int32" x:Key="pixelHeight">[pixelHeight]</InArgument>
+                  <InArgument x:TypeArguments="x:Double" x:Key="windowWidth">[windowWidth]</InArgument>
+                  <InArgument x:TypeArguments="x:Double" x:Key="windowHeight">[windowHeight]</InArgument>
+                  <InArgument x:TypeArguments="x:Double" x:Key="windowX">[windowX]</InArgument>
+                  <InArgument x:TypeArguments="x:Double" x:Key="windowY">[windowY]</InArgument>
+                  <InArgument x:TypeArguments="x:String" x:Key="action">[action]</InArgument>
+                  <InArgument x:TypeArguments="x:String" x:Key="selector">[selector]</InArgument>
+                  <InArgument x:TypeArguments="x:String" x:Key="targetApp">[targetApp]</InArgument>
+                  <InArgument x:TypeArguments="x:String" x:Key="targetTitle">[targetTitle]</InArgument>
+                  <InArgument x:TypeArguments="x:Boolean" x:Key="targetForeground">[targetForeground]</InArgument>
+                  <InArgument x:TypeArguments="x:Boolean" x:Key="targetWindowMeasured">[targetWindowMeasured]</InArgument>
+                  <InArgument x:TypeArguments="x:String" x:Key="discoveredWindows">[discoveredWindows]</InArgument>
+                </ui:InvokeCode.Arguments>
+                <sap:WorkflowViewStateService.ViewState>
+                  <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                    <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                  </scg:Dictionary>
+                </sap:WorkflowViewStateService.ViewState>
+              </ui:InvokeCode>
+            </Sequence>
+          </If.Then>
+          <If.Else>
+            <Delay Duration="00:00:00.0500000" sap:VirtualizedContainerService.HintSize="650,24" sap2010:WorkflowViewState.IdRef="Delay_2">
+              <sap:WorkflowViewStateService.ViewState>
+                <scg:Dictionary x:TypeArguments="x:String, x:Object">
+                  <x:Boolean x:Key="IsExpanded">False</x:Boolean>
+                </scg:Dictionary>
+              </sap:WorkflowViewStateService.ViewState>
+            </Delay>
+          </If.Else>
+        </If>
+
+      </Sequence>
+    </While>
+  </Sequence>
+</Activity>

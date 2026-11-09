@@ -1,0 +1,25 @@
+[Information] Starting execution...
+[Information] UFS_Menu_Capture_CrossPlatform 执行开始
+[Information] 当前作业已禁用 Healing Agent。
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+[Trace] 审核: 使用桌面应用程序。应用程序:  参数:
+{
+  "Result": "Failure",
+  "ErrorCode": "unknown_error",
+  "Message": "{\"output\":\"\",\"hasErrors\":true,\"errorMessage\":\"Message: 作业停止，并包含意外退出代码: 0x0000008F\\nException Type: System.Exception\",\"profiling\":null,\"debugState\":null,\"debugDetails\":null,\"errorScope\":null}",
+  "Instructions": "If this is not the expected result check command arguments.",
+  "Retry": "RetryWillNotFix"
+}

@@ -1,0 +1,883 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>菜单采集 · 本地控制台</title>
+  <link rel="stylesheet" href="/assets/materials.css">
+  <style>
+    :root{--ink:#182624;--muted:#74817e;--line:#e4eae7;--paper:#fff;--canvas:#f4f7f5;--teal:#168b78;--teal-dark:#0c6d5e;--teal-pale:#e8f5f1;--amber:#a96818;--amber-pale:#fff4e4;--red:#ba4d45;--red-pale:#fff0ee;--shadow:0 8px 28px rgba(24,52,45,.055);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",sans-serif}
+    *{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font-size:14px;line-height:1.5}button,input,select,textarea{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.5}.shell{min-height:100vh;display:grid;grid-template-columns:230px minmax(0,1fr)}
+    .sidebar{background:#fbfcfb;border-right:1px solid var(--line);padding:24px 16px;display:flex;flex-direction:column;gap:28px}.brand{display:flex;align-items:center;gap:11px;padding:2px 9px}.brand-mark{width:35px;height:35px;border-radius:11px;background:var(--teal-pale);color:var(--teal);display:grid;place-items:center}.brand-mark svg{width:20px;height:20px}.brand strong{display:block;font-size:15px;letter-spacing:.01em}.brand small{color:var(--muted);font-size:11px}.nav-label{padding:0 10px;color:#9aa5a2;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px}.nav{display:grid;gap:5px}.nav button{border:0;background:transparent;color:#64716e;text-align:left;padding:10px 11px;border-radius:9px;display:flex;align-items:center;gap:11px;font-weight:550}.nav button:hover{background:#f0f4f2;color:var(--ink)}.nav button.active{background:var(--teal-pale);color:var(--teal-dark)}.nav svg{width:17px;height:17px;flex:none}.side-foot{margin-top:auto;padding:14px 10px 0;border-top:1px solid var(--line);color:var(--muted);font-size:11px}.side-foot .dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:var(--teal);margin-right:7px}
+    main{min-width:0;padding:30px clamp(18px,4vw,54px) 50px;max-width:1500px;width:100%;margin:0 auto}.topbar{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:25px}.eyebrow{font-size:11px;color:var(--teal);font-weight:700;letter-spacing:.08em;margin-bottom:5px}.topbar h1{margin:0;font-size:25px;line-height:1.25;letter-spacing:-.035em}.subtitle{color:var(--muted);margin:6px 0 0;font-size:13px}.top-actions{display:flex;align-items:center;gap:9px}.pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:white;border-radius:99px;padding:7px 11px;color:#66736f;font-size:12px;white-space:nowrap}.status-dot{width:7px;height:7px;border-radius:50%;background:#aeb9b5}.status-dot.live{background:var(--teal);box-shadow:0 0 0 3px #e4f4ef}.status-dot.busy{background:#dd9b3e;box-shadow:0 0 0 3px #fff1dc}.page{display:none}.page.active{display:block}.grid{display:grid;gap:16px}.overview-grid{grid-template-columns:minmax(0,1.55fr) minmax(280px,.85fr);align-items:start}.card{background:var(--paper);border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow);padding:20px;min-width:0}.card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}.card h2{font-size:15px;margin:0;font-weight:680;letter-spacing:-.01em}.card-desc{font-size:12px;color:var(--muted);margin:4px 0 0}.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:16px}.stat{border:1px solid var(--line);border-radius:10px;padding:13px 14px;min-width:0}.stat span{font-size:11px;color:var(--muted)}.stat strong{display:block;font-size:23px;line-height:1.3;margin-top:4px;font-weight:680;letter-spacing:-.04em}.stat .stat-note{font-size:10px;color:#98a39f;margin-top:2px}.run-card{padding:21px}.run-top{display:flex;justify-content:space-between;gap:15px;align-items:flex-start}.run-title{display:flex;align-items:center;gap:9px}.run-title h2{font-size:16px}.run-state{font-size:11px;border-radius:99px;background:#f0f3f2;color:#64716e;padding:4px 9px}.run-state.running{background:var(--amber-pale);color:var(--amber)}.run-state.done{background:var(--teal-pale);color:var(--teal-dark)}.run-controls{display:flex;gap:8px;flex-wrap:wrap}.btn{border:1px solid #dfe6e3;background:white;color:#41504c;border-radius:8px;padding:8px 12px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:7px;white-space:nowrap}.btn:hover{background:#f8faf9;border-color:#cbd7d2}.btn svg{width:15px;height:15px}.btn-primary{color:white;background:var(--teal);border-color:var(--teal)}.btn-primary:hover{background:var(--teal-dark);border-color:var(--teal-dark)}.btn-danger{color:var(--red);border-color:#f0d5d2}.btn-danger:hover{background:var(--red-pale)}.btn-quiet{border-color:transparent;background:transparent;color:var(--muted)}.checklist{border-top:1px solid var(--line);margin-top:17px;padding-top:14px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.check{display:flex;align-items:flex-start;gap:8px;color:#53615d;font-size:12px;min-width:0}.check-mark{width:17px;height:17px;border-radius:50%;display:grid;place-items:center;background:#edf1ef;color:#98a49f;flex:none;margin-top:1px;font-size:10px}.check.ok .check-mark{background:var(--teal-pale);color:var(--teal)}.check.warn .check-mark{background:var(--amber-pale);color:var(--amber)}.run-hint{font-size:11px;color:#87928e;margin-top:13px}.current-task{margin-top:15px;padding:12px 14px;background:#f7faf8;border-radius:9px;display:none}.current-task.visible{display:block}.current-task .label{font-size:10px;color:var(--muted)}.current-task strong{display:block;margin-top:2px;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.current-task span{font-size:11px;color:#63716d}.check-error{font-size:12px;color:var(--red);margin-top:9px;display:none}.check-error.visible{display:block}
+    .quick-list{display:grid;gap:0}.quick-row{display:flex;justify-content:space-between;gap:14px;padding:11px 0;border-top:1px solid #edf0ef;font-size:12px}.quick-row:first-child{border-top:0;padding-top:1px}.quick-row span{color:var(--muted)}.quick-row strong{font-weight:550;text-align:right;overflow-wrap:anywhere}.folder-actions{display:flex;gap:8px;margin-top:14px}.folder-actions .btn{flex:1}.table-card{padding:0;overflow:hidden}.table-head{padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:14px;border-bottom:1px solid var(--line)}.table-head h2{margin:0}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:720px}th{text-align:left;font-size:10px;color:#8a9692;font-weight:650;letter-spacing:.04em;padding:11px 15px;background:#fbfcfb;border-bottom:1px solid var(--line);white-space:nowrap}td{font-size:12px;padding:12px 15px;border-bottom:1px solid #eef1ef;color:#45534f;vertical-align:middle}tbody tr:last-child td{border-bottom:0}.source-name{font-weight:630;color:#273632;max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.subline{font-size:10px;color:#8a9692;margin-top:2px;max-width:250px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.badge{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:99px;background:#f1f4f2;color:#60706a;font-size:10px;white-space:nowrap}.badge::before{content:"";width:5px;height:5px;border-radius:50%;background:#9da9a5}.badge-running{background:var(--amber-pale);color:var(--amber)}.badge-running::before{background:#dc9634}.badge-success{background:var(--teal-pale);color:var(--teal-dark)}.badge-success::before{background:var(--teal)}.badge-error{background:var(--red-pale);color:var(--red)}.badge-error::before{background:var(--red)}.empty{padding:38px 16px;text-align:center;color:var(--muted);font-size:12px}.log-list{display:grid;gap:0;max-height:360px;overflow:auto}.log-row{display:grid;grid-template-columns:116px 53px minmax(0,1fr);gap:10px;padding:10px 0;border-top:1px solid #edf0ef;font-size:11px}.log-row:first-child{border-top:0}.log-time,.log-level{color:#899590;font-variant-numeric:tabular-nums}.log-level{font-weight:650}.log-level.error{color:var(--red)}.log-level.warning{color:var(--amber)}.log-message{color:#4c5b56;overflow-wrap:anywhere}.log-empty{color:var(--muted);padding:16px 0;font-size:12px}.section-gap{margin-top:16px}
+    .settings-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start}.form-card h2{margin-bottom:3px}.form-section{padding-top:19px;margin-top:18px;border-top:1px solid var(--line)}.form-section:first-of-type{border-top:0;padding-top:0;margin-top:16px}.form-section-title{font-size:12px;font-weight:700;margin-bottom:12px}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px 14px}.field{min-width:0}.field.full{grid-column:1/-1}.field label{display:block;font-size:11px;font-weight:620;color:#53615d;margin-bottom:6px}.field input,.field select,.field textarea{width:100%;border:1px solid #dfe6e3;background:#fff;border-radius:8px;padding:9px 10px;color:var(--ink);outline:none;font-size:12px;transition:border .15s,box-shadow .15s}.field input:focus,.field select:focus,.field textarea:focus{border-color:#73b9aa;box-shadow:0 0 0 3px #e6f4f0}.field textarea{min-height:136px;resize:vertical;line-height:1.6}.field input::placeholder,.field textarea::placeholder{color:#aab4b0}.field-help{font-size:10px;color:#8b9792;margin-top:5px}.field-inline{display:flex;gap:8px}.field-inline input{min-width:0}.secret-note{padding:10px 12px;background:#f6f9f7;border-radius:8px;color:#70807a;font-size:11px;margin-top:9px}.form-actions{display:flex;align-items:center;gap:10px;margin-top:18px}.save-status{font-size:11px;color:var(--muted)}.side-card{padding:18px}.side-card h2{font-size:13px}.model-status{padding:12px;background:#f6f9f7;border-radius:9px;margin-top:13px}.model-status strong{font-size:12px;display:block}.model-status span{font-size:11px;color:var(--muted)}.doctor-list{display:grid;gap:9px;margin-top:13px}.doctor-item{display:flex;justify-content:space-between;gap:10px;font-size:11px}.doctor-item span{color:var(--muted)}.doctor-item strong{font-weight:600;text-align:right}.issue-list{margin:10px 0 0;padding-left:17px;color:var(--amber);font-size:11px}.test-result{font-size:11px;margin-top:10px;padding:9px 10px;border-radius:7px;display:none}.test-result.visible{display:block}.test-result.ok{color:var(--teal-dark);background:var(--teal-pale)}.test-result.bad{color:var(--red);background:var(--red-pale)}
+    .toast{position:fixed;bottom:22px;left:50%;transform:translate(-50%,12px);opacity:0;pointer-events:none;z-index:20;background:#20342f;color:white;padding:10px 15px;border-radius:9px;font-size:12px;box-shadow:var(--shadow);transition:.2s}.toast.show{opacity:1;transform:translate(-50%,0)}
+    .engine-notice{display:flex;gap:13px;align-items:flex-start;margin:-7px 0 20px;padding:15px 17px;background:#fff7e8;border:1px solid #f0dfbd;border-radius:11px;color:#71501d}.engine-tag{flex:none;border-radius:99px;background:#f4e7c9;color:#85601e;padding:4px 9px;font-size:10px;font-weight:750;letter-spacing:.04em}.engine-notice strong{display:block;font-size:13px;color:#684715}.engine-notice p{margin:3px 0 0;font-size:11px;line-height:1.6;color:#856b3c}.btn:disabled{background:#eef1ef;border-color:#e0e6e3;color:#899590;opacity:1}
+    .robot-task-list{height:440px;max-height:62vh;overflow-y:auto;border-top:1px solid var(--line);background:#fff}.robot-task-row{display:grid;grid-template-columns:18px minmax(0,1fr) auto auto;align-items:center;gap:11px;padding:10px 17px;border-bottom:1px solid #edf0ef;font-size:12px;color:#45534f;cursor:pointer}.robot-task-row:hover{background:#f8faf9}.robot-task-row.is-running{background:#fffaf1}.robot-task-row input,.robot-task-select-all input{width:auto;flex:none;accent-color:var(--teal)}.robot-task-main{display:grid;min-width:0}.robot-task-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:620;color:#273632}.robot-task-sub{font-size:10px;color:#8a9692;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}.robot-task-toolbar{display:flex;align-items:center;gap:12px;padding:0 17px;margin:10px 0;color:var(--muted);font-size:11px}.robot-task-select-all{display:flex;align-items:center;gap:6px;cursor:pointer}.robot-task-count{margin-left:auto}.task-toolbar{display:grid;grid-template-columns:minmax(120px,1fr) 138px 145px;gap:8px;padding:0 17px 12px}.task-toolbar input,.task-toolbar select,.queue-settings select{min-width:0;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px 9px;color:var(--ink);font-size:11px;outline:none}.task-toolbar input:focus,.task-toolbar select:focus,.queue-settings select:focus{border-color:#73b9aa;box-shadow:0 0 0 3px #e6f4f0}.workbench-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(290px,.85fr);gap:16px;align-items:start}.task-browser{padding:0;overflow:hidden}.task-browser .table-head{padding:17px 17px 12px;border:0}.queue-panel{position:sticky;top:16px;padding:17px}.queue-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}.queue-heading h2{margin:0}.queue-total{display:grid;place-items:center;min-width:30px;height:30px;border-radius:9px;background:var(--teal-pale);color:var(--teal-dark);font-weight:700;font-variant-numeric:tabular-nums}.queue-settings{display:grid;gap:7px;padding:14px 0 10px;border-bottom:1px solid var(--line)}.queue-settings>label{font-size:11px;color:#62706b;font-weight:650}.queue-settings .card-desc{line-height:1.55}.queue-settings img{max-height:130px;max-width:100%;object-fit:contain;justify-self:start;border:1px solid var(--line);border-radius:7px}.queue-panel.attached-mode .run-queue-list{display:none}.run-queue-list{list-style:none;margin:0;padding:8px 0;max-height:420px;overflow-y:auto}.queue-item{display:grid;grid-template-columns:24px minmax(0,1fr) auto;align-items:center;gap:7px;padding:10px 0;border-bottom:1px solid #edf0ef}.queue-number{display:grid;place-items:center;width:22px;height:22px;border-radius:7px;background:#f1f4f2;color:#697671;font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}.queue-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:620}.queue-actions{grid-column:2;display:flex;gap:5px}.queue-move,.queue-remove{border:0;background:transparent;color:#71807a;padding:2px 4px;font-size:10px}.queue-move:hover,.queue-remove:hover{color:var(--teal-dark)}.queue-move:disabled{opacity:.35}.queue-item>.badge{grid-column:3;grid-row:1}.queue-empty{padding:24px 8px;text-align:center;color:#899590;font-size:11px}.queue-output{border-top:1px solid var(--line);padding-top:11px}.queue-output summary,.robot-advanced>summary{font-size:11px;color:#66736f;font-weight:650;cursor:pointer}.queue-output .quick-row{padding:7px 0;font-size:10px}.queue-output .folder-actions{margin-top:5px}.queue-output .folder-actions .btn{font-size:10px;padding:6px 7px}.run-strip{margin-top:15px;padding:12px 13px;background:#f7faf8;border:1px solid var(--line);border-radius:9px}.run-strip[hidden]{display:none}.run-strip-main{display:flex;justify-content:space-between;gap:12px;font-size:11px}.run-strip-main strong{font-weight:680}.run-strip-main span{color:var(--muted);font-variant-numeric:tabular-nums}.run-progress{height:5px;background:#e7eeeb;border-radius:99px;overflow:hidden;margin-top:9px}.run-progress span{display:block;height:100%;width:0;background:var(--teal);border-radius:inherit;transition:width .25s ease}.run-strip p{font-size:10px;color:var(--muted);margin:7px 0 0}.robot-advanced{padding:14px 17px}.robot-settings{display:grid;gap:12px;margin-top:14px}.robot-settings>details{border-top:1px solid var(--line);padding-top:11px}.robot-settings>details>summary{font-size:11px;color:#66736f;cursor:pointer;margin-bottom:10px}.robot-settings .form-grid{margin-top:10px}.robot-verified{display:flex;align-items:center;gap:8px;font-size:11px;color:#53615d}.robot-verified input{accent-color:var(--teal)}.task-drawer[hidden]{display:none}.task-drawer{position:fixed;inset:0;z-index:30}.drawer-backdrop{position:absolute;inset:0;background:rgba(18,32,29,.28)}.drawer-content{position:absolute;right:0;top:0;height:100%;width:min(540px,94vw);overflow-y:auto;background:#fff;padding:24px;box-shadow:-14px 0 38px rgba(24,52,45,.15)}.drawer-content>header{display:flex;align-items:flex-start;justify-content:space-between;gap:15px;margin-bottom:16px}.drawer-content h2{font-size:18px;margin:0;overflow-wrap:anywhere}.drawer-message{color:#586762;font-size:12px;line-height:1.6}.drawer-meta{display:grid;grid-template-columns:95px minmax(0,1fr);gap:8px;margin:15px 0;padding:12px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);font-size:10px;color:var(--muted)}.drawer-meta code{overflow-wrap:anywhere;color:#384843}.drawer-images{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.drawer-images figure{margin:0;border:1px solid var(--line);border-radius:8px;overflow:hidden}.drawer-images img{display:block;width:100%;aspect-ratio:3/4;object-fit:contain;background:#f5f7f6}.drawer-images figcaption{padding:6px 8px;color:var(--muted);font-size:10px}.drawer-empty{grid-column:1/-1;padding:20px;text-align:center;color:var(--muted);font-size:11px}.drawer-open{overflow:hidden}
+    .env-summary{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.env-summary-copy{min-width:0}.env-summary-title{font-size:14px;font-weight:700}.env-summary-meta{font-size:11px;color:var(--muted);margin-top:4px}.env-blockers{margin:12px 0 0;padding-left:18px;color:var(--red);font-size:12px}.env-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}.env-row{padding:16px;border:1px solid var(--line);border-radius:11px;background:#fff;min-width:0}.env-row-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.env-row-title{font-size:13px;font-weight:680}.env-row-time{font-size:10px;color:#899590;margin-top:3px}.env-status{display:inline-flex;align-items:center;gap:6px;border-radius:99px;padding:4px 9px;font-size:10px;font-weight:650;white-space:nowrap;background:#f1f4f2;color:#60706a}.env-status::before{content:"";width:6px;height:6px;border-radius:50%;background:#9da9a5}.env-status.ready{background:var(--teal-pale);color:var(--teal-dark)}.env-status.ready::before{background:var(--teal)}.env-status.warning,.env-status.checking{background:var(--amber-pale);color:var(--amber)}.env-status.warning::before,.env-status.checking::before{background:#dc9634}.env-status.error{background:var(--red-pale);color:var(--red)}.env-status.error::before{background:var(--red)}.env-row-summary{font-size:12px;color:#53615d;line-height:1.6;margin:11px 0 0;overflow-wrap:anywhere}.env-row details{margin-top:9px;border-top:1px solid #edf0ef;padding-top:9px}.env-row summary{font-size:11px;color:var(--muted);cursor:pointer}.env-detail{font-size:11px;color:#65726e;line-height:1.6;margin:8px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.env-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.env-actions .btn{font-size:11px;padding:6px 9px}.env-empty{grid-column:1/-1;padding:30px 16px;text-align:center;border:1px dashed var(--line);border-radius:10px;color:var(--muted);font-size:12px}.env-inline-error{font-size:11px;color:var(--red);margin-top:8px}.connection-disconnected{display:flex;align-items:center;justify-content:space-between;gap:12px}.connection-disconnected strong{display:block;color:var(--red);font-size:13px}.connection-disconnected span{display:block;color:var(--muted);font-size:11px;margin-top:3px}
+    #connection-modules{grid-template-columns:1fr}.diagnostic-meta{font-size:11px;color:var(--muted);margin:12px 0}.diagnostic-checks{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}.diagnostic-checks>summary,#connection-diagnostics>summary{font-size:12px;color:#53615d;font-weight:650;cursor:pointer}.diagnostic-checks .env-grid{margin-top:12px}
+    @media(max-width:1050px){.overview-grid,.workbench-grid{grid-template-columns:1fr}.queue-panel{position:static}.settings-layout{grid-template-columns:1fr}.settings-side{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.settings-side .card{margin:0}.stats{grid-template-columns:repeat(4,minmax(0,1fr))}}
+    @media(max-width:700px){.shell{grid-template-columns:1fr}.sidebar{position:sticky;top:0;z-index:5;padding:9px 12px;border-right:0;border-bottom:1px solid var(--line);display:flex;flex-direction:row;align-items:center;gap:12px}.brand{padding:0;flex:none}.brand-mark{width:32px;height:32px}.brand strong{font-size:13px}.brand small,.nav-label,.side-foot{display:none}.nav{display:flex;gap:3px;margin-left:auto}.nav button{padding:8px;border-radius:8px;font-size:11px;gap:6px}.nav svg{width:15px;height:15px}.nav button span{display:none}main{padding:22px 14px 38px}.topbar{margin-bottom:19px}.topbar h1{font-size:21px}.subtitle{font-size:12px}.top-actions .pill{padding:6px 8px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.checklist{grid-template-columns:1fr}.env-grid{grid-template-columns:1fr}.env-summary{align-items:flex-start;flex-direction:column}.settings-side{grid-template-columns:1fr}.card{padding:16px}.table-head{padding:15px}.run-top{align-items:flex-start;flex-direction:column}.run-controls{width:100%}.run-controls .btn{flex:1}.task-toolbar{grid-template-columns:1fr 1fr}.task-toolbar input{grid-column:1/-1}.robot-task-list{height:360px}.robot-task-row{grid-template-columns:18px minmax(0,1fr) auto}.robot-task-row>.badge{grid-column:3;grid-row:1}.task-open{display:none}.log-row{grid-template-columns:90px 45px minmax(0,1fr);gap:7px}.form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}}
+    @media(max-width:390px){.brand strong{max-width:77px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.nav button{padding:8px 6px}.top-actions .pill{font-size:10px}.btn{padding:8px 9px;font-size:11px}}
+
+    /* 工作台共用的桌面视觉：以边线、字号和间距区分区域。 */
+    :root {
+      --ink:#1d1d1f; --muted:#66666b; --line:#e6e6e9;
+      --paper:#fff; --canvas:#fff; --teal:#27272a; --teal-dark:#1d1d1f;
+      --teal-pale:#ededf0; --shadow:none; --focus:#0071e3;
+    }
+    .shell {grid-template-columns:200px minmax(0,1fr)}
+    .sidebar {background:#f5f5f7;padding:26px 13px;gap:26px}
+    .brand-mark {background:#252527;color:#fff;border-radius:9px;width:30px;height:30px}
+    .brand small,.nav-label,.topbar .eyebrow {display:none}
+    .nav button {min-height:40px;color:#49494e;border-radius:7px}
+    .nav button:hover,.nav button.active {background:#e8e8ec;color:var(--ink)}
+    .side-foot .dot,.status-dot.live {background:#248451;box-shadow:none}
+    main {max-width:1440px;padding:38px clamp(24px,4vw,60px) 48px}
+    .topbar {align-items:center;margin-bottom:22px}
+    .topbar h1 {font-size:32px;font-weight:680;letter-spacing:-.035em}
+    .subtitle:empty,.card-desc:empty,.run-hint:empty {display:none}
+    .pill {border:0;background:transparent;padding:4px 0;color:var(--muted)}
+    #poll-clock {display:none}
+    .card {border-radius:0;box-shadow:none}
+    .workbench-run,.task-browser,.activity-panel,.robot-advanced {border:0;padding:0}
+    .workbench-run {border-bottom:1px solid var(--line);padding-bottom:18px}
+    .run-top {align-items:center}
+    .run-title h2 {font-size:14px}
+    .btn {border-radius:8px;min-height:36px;font-size:12px;color:#333337;border-color:#dedee2}
+    .btn:hover {background:#f5f5f7;border-color:#ceced3}
+    .btn-primary {background:#202022;color:#fff;border-color:#202022}
+    .btn-primary:hover {background:#39393d;border-color:#39393d}
+    .btn-danger {color:#a32c28}
+    .btn:disabled {background:#f5f5f7;color:#77777d;border-color:#e6e6e9}
+    button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible {
+      outline:2px solid var(--focus);outline-offset:3px;
+    }
+    .engine-notice {background:transparent;border:0;padding:0;margin:0 0 20px}
+    .engine-notice strong,.engine-tag {display:none}
+    .engine-notice p {color:var(--muted);font-size:12px;margin:0}
+    .checklist {display:flex;flex-wrap:wrap;gap:8px 18px;border-top:0;margin-top:12px;padding-top:0}
+    .check {color:var(--muted)}
+    .workbench-stats {display:flex;flex-wrap:wrap;gap:8px 24px;margin:14px 0 0}
+    .workbench-stats .stat {display:flex;align-items:baseline;gap:6px;border:0;padding:0}
+    .workbench-stats .stat span,.workbench-stats .stat strong {font-size:13px;margin:0}
+    .workbench-grid {grid-template-columns:minmax(0,1fr) minmax(240px,290px);gap:24px;margin-top:24px}
+    .task-browser .table-head {padding:0 0 14px}
+    .card h2 {font-size:16px}
+    .task-toolbar {padding:0 0 10px;grid-template-columns:minmax(100px,1fr) auto auto}
+    .robot-task-toolbar {padding:0;margin:6px 0 10px}
+    .task-columns,.robot-task-row {
+      display:grid;grid-template-columns:18px minmax(0,1fr) 112px 96px 44px;gap:10px;
+      align-items:center;padding:10px 6px;
+    }
+    .task-columns {font-size:11px;color:var(--muted);background:#f5f5f7;border-radius:6px 6px 0 0}
+    .robot-task-list {border:0;height:440px}
+    .robot-task-row {min-height:52px}
+    .robot-task-name {color:var(--ink);font-size:13px}
+    .robot-task-sub,.task-time {color:var(--muted);font-size:11px}
+    .task-time {font-variant-numeric:tabular-nums}
+    .task-open {background:transparent;border:0;color:#4e4e55;padding:6px 0}
+    .task-open:hover {text-decoration:underline}
+    .badge,.run-state,.env-status {background:transparent;color:var(--muted);font-size:11px;padding:0}
+    .badge-success,.env-status.ready {color:#226a46}
+    .badge-error,.env-status.error {color:#a32c28}
+    .badge-running,.run-state.running,.env-status.warning {color:#80520e;background:transparent}
+    .badge-success::before,.env-status.ready::before {background:#248451}
+    .queue-panel {border:0;border-left:1px solid var(--line);padding:0 0 0 20px}
+    .queue-total {height:25px;min-width:25px;border-radius:6px}
+    .queue-settings select,.task-toolbar input,.task-toolbar select {font-size:12px;background:#f7f7f8}
+    .queue-item .queue-name {font-size:12px}
+    .queue-move,.queue-remove {font-size:11px;color:#55555c}
+    .robot-advanced,.activity-panel {padding-top:16px;border-top:1px solid var(--line)}
+    .run-strip,.current-task {background:#f5f5f7}
+    .settings-layout .card,.materials-workspace .card,.materials-import,.materials-batch-bar {
+      border-radius:10px;border-color:var(--line);
+    }
+    .materials-steps {border:0;border-bottom:1px solid var(--line);border-radius:0;padding:0 0 14px}
+    .env-row {border:0;border-bottom:1px solid var(--line);border-radius:0}
+    .env-row:last-child {border-bottom:0}
+    #connection-modules {gap:0}
+    #robot-task-list .badge {white-space:normal}
+    [hidden] {display:none!important}
+    @media(max-width:1050px) {
+      .workbench-grid {grid-template-columns:minmax(0,1fr)}
+      .queue-panel {border-left:0;border-top:1px solid var(--line);padding:16px 0 0}
+    }
+    @media(max-width:700px) {
+      .shell {grid-template-columns:1fr}
+      .sidebar {padding:8px 12px;gap:10px}
+      .nav button span {display:inline}
+      main {padding:22px 14px 32px}
+      .topbar h1 {font-size:24px}
+      .task-columns,.robot-task-row {grid-template-columns:18px minmax(0,1fr) 86px 42px;gap:7px}
+      .task-time,.task-time-heading {display:none}
+      .task-open {display:block}
+    }
+    @media(prefers-reduced-motion:reduce) {
+      *,*::before,*::after {scroll-behavior:auto!important;transition:none!important}
+    }
+    .debug-log-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;background:#f6f9f7;border:1px solid var(--line);border-radius:8px}.debug-log-summary span{font-size:11px;color:var(--muted)}
+    .debug-block{margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:#fbfcfb}.debug-block>summary{font-size:11px;color:#52615c;font-weight:650;cursor:pointer}.debug-json{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;margin:8px 0 0;font:10px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#34413d}.debug-expired{margin:8px 0;padding:8px 10px;border-radius:7px;background:#f5f6f5;color:#77817d;font-size:11px}.debug-run-export{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin:8px 0}.debug-run-export[hidden]{display:none}.debug-run-export select{min-width:150px;max-width:250px;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px 10px;color:var(--ink);font-size:12px}
+  </style>
+  <link rel="stylesheet" href="/assets/workspace.css">
+  <link rel="stylesheet" href="/assets/model-usage.css">
+  <link rel="stylesheet" href="/assets/annotation.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 7.5h14M5 12h9M5 16.5h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="18" cy="16" r="3" stroke="currentColor" stroke-width="1.7"/></svg></div>
+        <div><strong>菜单采集</strong><small>本地运行控制台</small></div>
+      </div>
+      <div><div class="nav-label">工作区</div><nav class="nav" aria-label="主导航">
+        <button class="active" data-page="overview" aria-label="工作台" title="工作台"><svg viewBox="0 0 24 24" fill="none"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/></svg><span>工作台</span></button>
+        <button data-page="rejections" aria-label="不合格清单" title="不合格清单"><svg viewBox="0 0 24 24" fill="none"><path d="M5 5.5h14v13H5z" stroke="currentColor" stroke-width="1.7"/><path d="M8 9h8M8 12h5M8 15h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="m16.5 14.5 3 3m0-3-3 3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>不合格清单</span></button>
+        <button data-page="materials" aria-label="素材清洗" title="素材清洗"><svg viewBox="0 0 24 24" fill="none"><path d="M4 5.5h16v13H4z" stroke="currentColor" stroke-width="1.7"/><path d="M7 15l3.2-3.3 2.2 2.1 2.1-2.2 2.5 3.4M8 9h.01" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>素材清洗</span></button>
+        <button data-page="annotation" aria-label="人工标注" title="人工标注"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v3M12 17v3M4 12h3M17 12h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="12" r="4.2" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="1" fill="currentColor"/></svg><span>人工标注</span></button>
+        <button data-page="settings" aria-label="设置" title="设置"><svg viewBox="0 0 24 24" fill="none"><path d="M12 8.3a3.7 3.7 0 1 0 0 7.4 3.7 3.7 0 0 0 0-7.4Z" stroke="currentColor" stroke-width="1.7"/><path d="m19.4 13.7 1.1.9-1.5 2.6-1.4-.5a7.8 7.8 0 0 1-1.7 1l-.3 1.5h-3l-.3-1.5a7.8 7.8 0 0 1-1.7-1l-1.4.5-1.5-2.6 1.1-.9a7 7 0 0 1 0-2l-1.1-.9 1.5-2.6 1.4.5a7.8 7.8 0 0 1 1.7-1l.3-1.5h3l.3 1.5a7.8 7.8 0 0 1 1.7 1l1.4-.5 1.5 2.6-1.1.9a7 7 0 0 1 0 2Z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/></svg><span>设置</span></button>
+      </nav></div>
+      <div class="side-foot" title="服务连接状态"><span class="dot" id="sidebar-connection-dot"></span><span id="sidebar-connection-label">连接中</span></div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <div><div class="eyebrow" id="page-eyebrow">工作台 / 批次</div><h1 id="page-title">菜单采集</h1><p class="subtitle" id="page-subtitle"></p></div>
+        <div class="top-actions"><button class="btn btn-primary" id="materials-new-batch" type="button">新建批次</button><span class="pill" id="connection-status-pill"><i class="status-dot" id="connection-dot"></i><span id="connection-label">连接中</span></span><span class="pill" id="poll-clock">等待同步</span></div>
+      </header>
+
+
+      <section class="page active" id="page-overview">
+        <div class="card run-card workbench-run">
+          <div class="run-top"><div><div class="run-title"><h2 id="run-heading">采集运行</h2><span class="run-state" id="run-state">等待选择任务</span></div><p class="card-desc" id="run-instruction"></p></div>
+            <div class="run-controls"><button class="btn queue-toggle" id="queue-toggle" type="button" aria-expanded="false" aria-controls="queue-panel">执行队列</button><button class="btn" type="button" data-go="materials">导入素材</button><button class="btn" id="scan-btn" type="button">扫描输入目录</button><button class="btn btn-primary" id="start-btn" type="button" disabled aria-disabled="true">开始采集</button><button class="btn" id="resume-btn" type="button" hidden>恢复批次</button><button class="btn" id="stop-btn" type="button" disabled>请求暂停</button><button class="btn btn-danger" id="terminate-btn" type="button" disabled>终止批次</button></div>
+          </div>
+          <p class="card-desc" id="active-material-release" aria-live="polite"></p>
+          <div class="run-strip" id="run-strip" aria-live="polite" hidden>
+            <div class="run-strip-metric"><strong id="run-strip-percent">0%</strong><div class="run-strip-caption"><span>本次批次处理进度</span><span id="run-strip-done">0 / 0 家</span></div></div>
+            <div class="run-progress" role="progressbar" aria-label="本次批次处理进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="run-progress-fill"></span></div>
+            <div class="run-strip-count" id="run-strip-count"></div>
+            <p id="run-strip-message"></p>
+          </div>
+          <div class="checklist" id="preflight-list"></div><div class="check-error" id="preflight-error"></div>
+          <div class="current-task" id="current-task"><span class="label">当前门店 · <span id="current-stage"></span></span><strong id="current-name"></strong><span id="current-id"></span></div><div class="run-hint" id="robot-run-help" style="overflow-wrap:anywhere"></div>
+          <div class="stats workbench-stats"><div class="stat"><span>待处理</span><strong id="count-pending">—</strong></div><div class="stat"><span>运行中</span><strong id="count-running">—</strong></div><div class="stat"><span>已采集</span><strong id="count-completed">—</strong></div><div class="stat"><span>需重试</span><strong id="count-retry">—</strong></div><div class="stat"><span>需检查</span><strong id="count-attention">—</strong></div></div>
+        </div>
+        <div class="workbench-grid section-gap">
+          <section class="card task-browser" aria-label="门店素材列表">
+            <div class="table-head"><div><h2>门店列表</h2><p class="card-desc"></p></div><button class="btn" type="button" data-go="settings">设置</button></div>
+            <div class="task-toolbar"><input id="task-search" type="search" placeholder="搜索门店或来源图片" aria-label="搜索门店或来源图片"><select id="task-filter" aria-label="按状态筛选"><option value="all">全部状态</option><option value="pending">待处理</option><option value="running">运行中</option><option value="captured">已采集</option><option value="review">需检查</option><option value="needs_retry">需重试</option></select><select id="task-sort" aria-label="列表排序"><option value="source">按门店名称</option><option value="recent">按最近更新</option><option value="status">按状态</option></select></div>
+            <div class="robot-task-toolbar"><label class="robot-task-select-all"><input id="robot-task-select-all" type="checkbox">全选当前列表</label><span id="robot-task-count" class="robot-task-count">执行队列 0 家</span></div>
+            <div class="task-columns" aria-hidden="true"><span></span><span>门店 / 素材</span><span>状态</span><span class="task-time-heading">更新时间</span><span></span></div>
+            <div id="robot-task-list" class="robot-task-list visible" role="group" aria-label="可选门店"></div>
+            <div id="tasks-empty" class="empty">暂无门店</div>
+          </section>
+          <aside id="queue-panel" class="card queue-panel" aria-label="执行队列">
+            <div class="queue-heading"><button class="btn queue-toggle" id="queue-close" type="button" aria-label="关闭执行队列">关闭</button><div><h2>执行队列</h2><p class="card-desc"></p></div><span class="queue-total" id="queue-total">0</span></div>
+            <div class="queue-settings"><label for="robot-mode">采集方式</label><select id="robot-mode"><option value="automatic">自动扫码并逐店处理</option><option value="attached">接管已打开的小程序（单店）</option></select><select id="robot-task" aria-label="接管模式门店"><option value="">选择一间门店</option></select><p class="card-desc" id="robot-task-hint">自动模式按队列逐店上传二维码并采集；接管模式只处理已打开的小程序。</p><img id="source-preview" alt="所选二维码素材" hidden></div>
+            <ol id="run-queue-list" class="run-queue-list"><li class="queue-empty">队列为空</li></ol>
+            <details class="queue-output"><summary>输出位置</summary><div class="quick-row"><span>输入</span><strong id="overview-input">尚未配置</strong></div><div class="quick-row"><span>输出</span><strong id="overview-output">尚未配置</strong></div><div class="folder-actions"><button class="btn" id="reveal-input" type="button">打开输入</button><button class="btn" id="reveal-output" type="button">打开输出</button></div></details>
+          </aside>
+        </div>
+        <button type="button" class="queue-backdrop" id="queue-backdrop" hidden aria-label="关闭执行队列"></button>
+        <div id="task-drawer" class="task-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden><div class="drawer-backdrop" data-drawer-close></div><section class="drawer-content"><header><div><p class="eyebrow">门店详情</p><h2 id="drawer-title">门店</h2></div><button class="btn" type="button" data-drawer-close aria-label="关闭详情">关闭</button></header><div class="drawer-body"><div id="drawer-status"></div><p id="drawer-message" class="drawer-message"></p><div id="drawer-rejection" class="quality-rejection-inline" hidden></div><div class="drawer-meta"><span>来源二维码</span><code id="drawer-source"></code><span>截图目录</span><code id="drawer-output"></code></div><details id="drawer-timeline"><summary>动作时间线</summary><div id="drawer-debug-runs" class="debug-run-export" hidden><select id="drawer-debug-run-select" aria-label="选择调试轮次"></select><a class="btn" id="drawer-debug-run-export" href="#" target="_blank" rel="noopener">导出调试包</a></div><button class="btn" id="drawer-load-actions" type="button">刷新记录</button><div id="drawer-actions"></div></details><div id="drawer-images" class="drawer-images"></div><div class="drawer-quality-actions"><button class="btn btn-danger" id="drawer-reject" type="button" hidden>标记不合格</button><button class="btn btn-primary" id="drawer-retry" type="button">重新采集此店</button></div></div></section></div>
+        <dialog id="task-rejection-dialog" aria-labelledby="task-rejection-title"><form id="task-rejection-form"><h2 id="task-rejection-title">标记为不合格</h2><p id="task-rejection-store" class="card-desc"></p><label for="task-rejection-reason">不合格原因</label><select id="task-rejection-reason" required><option value="blur">图片模糊 / 无法识别</option><option value="invalid_qr">二维码无效</option><option value="store_mismatch">门店信息不匹配</option><option value="store_closed">门店已关店 / 停业</option><option value="miniapp_unavailable">小程序到期或未绑定</option><option value="scan_order_unsupported">门店不支持扫码点餐</option><option value="qr_external_web">二维码指向外部网页（非小程序）</option><option value="menu_unavailable">门店未配置菜单 / 无可用菜品</option><option value="duplicate">重复素材</option><option value="other">其他原因</option></select><label for="task-rejection-detail">补充说明</label><textarea id="task-rejection-detail" maxlength="200" rows="3"></textarea><p id="task-rejection-error" role="alert" class="card-desc" hidden></p><div class="quality-dialog-actions"><button class="btn" id="task-rejection-cancel" type="button">取消</button><button class="btn btn-danger" id="task-rejection-submit" type="submit">保存</button></div></form></dialog>
+      </section>
+
+      <section class="page" id="page-rejections" aria-labelledby="rejections-heading">
+        <div class="quality-overview">
+          <div class="quality-card"><span>不合格门店</span><strong id="quality-store-count">0</strong></div>
+          <div class="quality-card"><span>素材清洗</span><strong id="quality-material-count">0</strong></div>
+          <div class="quality-card"><span>采集任务</span><strong id="quality-capture-count">0</strong></div>
+          <div class="quality-record-count" id="quality-record-count">0 条记录</div>
+        </div>
+        <section class="card quality-browser" aria-labelledby="rejections-heading">
+          <div class="quality-toolbar">
+            <div><h2 id="rejections-heading">不合格门店</h2><p class="card-desc">撤销或重新处理后，记录会从当前清单和导出中移除。</p></div>
+            <div class="quality-actions"><button class="btn" id="quality-refresh" type="button">刷新</button><button class="btn btn-primary" id="quality-export" type="button">导出 Excel</button></div>
+          </div>
+          <div class="quality-filters"><select id="quality-batch" class="quality-batch-filter" aria-label="筛选批次"><option value="all">全部批次</option></select><input id="quality-search" type="search" placeholder="搜索门店、批次或原因" aria-label="搜索不合格门店"><select id="quality-source" class="quality-source-filter"><option value="all">全部来源</option><option value="materials">素材清洗</option><option value="capture">采集任务</option></select><select id="quality-reason" class="quality-reason-filter"><option value="all">全部原因</option><option value="blur">图片模糊 / 无法识别</option><option value="invalid_qr">二维码无效</option><option value="store_mismatch">门店信息不匹配</option><option value="store_closed">门店已关店 / 停业</option><option value="miniapp_unavailable">小程序到期或未绑定</option><option value="scan_order_unsupported">门店不支持扫码点餐</option><option value="qr_external_web">二维码指向外部网页（非小程序）</option><option value="menu_unavailable">门店未配置菜单 / 无可用菜品</option><option value="duplicate">重复素材</option><option value="other">其他原因</option></select></div>
+          <div id="quality-list" class="quality-list" aria-live="polite"><div class="empty">正在读取不合格记录…</div></div>
+        </section>
+      </section>
+
+       <section class="page" id="page-environment" aria-labelledby="environment-heading">
+        <div class="card section-gap">
+          <div class="card-head"><div><h2 id="environment-heading">环境与连接</h2><p class="card-desc">页面不会自动轮询检测；点击“检查连接”时执行一轮检测。</p></div><div class="env-actions" style="margin-top:0"><button class="btn" id="environment-refresh" type="button">检查连接</button></div></div>
+          <div class="env-summary"><div class="env-summary-copy"><div class="env-summary-title" id="environment-preflight-title">尚未手动检查连接状态</div><div class="env-summary-meta" id="environment-checked-at">需要时点击“检查连接”</div><ul class="env-blockers" id="environment-blockers" hidden></ul></div><span class="env-status unknown" id="environment-preflight-status">未知</span></div>
+        </div>
+        <div class="env-grid section-gap" id="connection-modules" aria-live="polite"><div class="env-empty">正在获取连接状态…</div></div>
+        <details class="card section-gap" id="connection-diagnostics"><summary>高级诊断 · 原始检查项与连接事件</summary><div class="diagnostic-meta" id="connection-diagnostic-stage"></div><div class="log-list" id="connection-events"></div><details class="diagnostic-checks"><summary>底层检查项</summary><div class="env-grid section-gap" id="connection-checks"></div></details></details>
+      </section>
+
+      <section class="page" id="page-materials" aria-labelledby="materials-heading">
+        <div class="materials-steps" aria-label="素材处理流程">
+          <div class="materials-step active"><span>1</span><strong>导入</strong></div><i></i><div class="materials-step"><span>2</span><strong>分析</strong></div><i></i><div class="materials-step"><span>3</span><strong>逐店确认</strong></div><i></i><div class="materials-step"><span>4</span><strong>发布采集</strong></div>
+        </div>
+        <div class="materials-page-head"><div><h2 id="materials-heading">二维码素材清洗</h2><p class="card-desc">导入原图后手动开始本地分析；确认门店素材后再发布版本供采集使用。</p></div></div>
+        <dialog id="materials-new-dialog" class="materials-dialog" aria-labelledby="materials-new-title"><form id="materials-new-form"><h2 id="materials-new-title">新建清洗批次</h2><label for="materials-new-name">批次名称 <span class="required-mark">必填</span></label><input id="materials-new-name" required maxlength="80" autocomplete="off" placeholder="例如：上海门店点餐码"><label for="materials-new-description">描述（选填）</label><textarea id="materials-new-description" maxlength="500" rows="3" placeholder="记录来源、范围或本次清洗目的"></textarea><fieldset class="materials-source"><legend>素材来源</legend><label><input type="radio" name="materials-source" value="path" checked> 本机目录路径</label><label><input type="radio" name="materials-source" value="files"> 上传文件</label><label><input type="radio" name="materials-source" value="folder"> 上传文件夹</label></fieldset><div id="materials-source-path"><label for="materials-new-path">本机绝对目录</label><input id="materials-new-path" autocomplete="off" placeholder="/Users/you/Documents/menu-images"><p class="card-desc">目录由本机服务直接读取；请输入绝对路径。</p></div><div id="materials-source-files" hidden><div class="materials-upload-controls"><button class="btn" id="materials-new-pick-files" type="button">选择文件</button><button class="btn" id="materials-new-pick-folder" type="button">选择文件夹</button></div><button class="materials-dropzone" id="materials-dropzone" type="button" aria-label="拖放图片上传，或点击选择图片">拖放图片到这里，或点击选择图片</button><input id="materials-files" class="visually-hidden" type="file" multiple accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"><input id="materials-folder" class="visually-hidden" type="file" webkitdirectory directory multiple accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"><p id="materials-file-count" class="card-desc">尚未选择图片</p></div><div class="materials-upload-meta"><span id="materials-upload-progress" role="status" aria-live="polite"></span><span id="materials-new-upload-count"></span></div><div class="materials-progress-track" aria-hidden="true"><div id="materials-progress-bar"></div></div><div class="inline-error" id="materials-import-error" role="alert" hidden></div><div class="release-form-actions"><button class="btn" id="materials-new-cancel" type="button">取消</button><button class="btn btn-primary" id="materials-new-submit" type="submit">创建批次</button></div></form></dialog>
+        <dialog id="materials-analysis-dialog" class="materials-dialog materials-analysis-dialog" aria-labelledby="materials-analysis-title">
+          <div class="materials-analysis-body">
+            <h2 id="materials-analysis-title">正在分析素材</h2>
+            <p class="card-desc" id="materials-analysis-stage">正在启动本地分析…</p>
+            <div class="materials-analysis-track" id="materials-analysis-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="素材分析进度"><div id="materials-analysis-fill"></div></div>
+            <div class="materials-analysis-meta"><span id="materials-analysis-count" role="status" aria-live="polite"></span><span id="materials-analysis-percent"></span></div>
+            <p class="card-desc">分析全部在本机完成，关闭此窗口不会中断任务。</p>
+            <div class="materials-analysis-actions"><button class="btn" id="materials-analysis-hide" type="button">后台运行</button></div>
+          </div>
+        </dialog>
+        <div class="card section-gap materials-batch-bar">
+          <div class="field materials-batch-field"><label for="materials-batch">当前批次</label><div class="materials-batch-control"><select id="materials-batch" disabled><option value="">选择或新建批次</option></select><button class="btn" id="materials-manage-batches" type="button">管理批次</button></div><div id="materials-current-description" class="card-desc"></div></div>
+          <div class="field materials-release-field"><label for="materials-release-version">发布版本</label><div class="materials-batch-control"><select id="materials-release-version" disabled><option value="">暂无已发布版本</option></select><button class="btn" id="materials-activate-release" type="button" disabled>正在使用</button></div></div>
+          <div class="materials-batch-toolbar"><p class="card-desc" id="materials-release-info"></p><div class="materials-batch-actions"><button class="btn btn-primary" id="materials-analyze" type="button" disabled>开始分析</button><button class="btn" id="materials-accept-recommended" type="button" disabled>批量接受自动推荐</button><button class="btn btn-primary" id="materials-publish" type="button" disabled>发布已确认门店</button></div></div>
+          <div class="inline-error" id="materials-batch-error" role="alert" hidden></div>
+          <dialog id="materials-release-dialog" aria-labelledby="materials-release-title">
+            <form id="materials-release-form">
+              <h2 id="materials-release-title">发布素材版本</h2>
+              <p id="materials-release-count" class="card-desc"></p>
+              <label for="materials-release-name">批次名称</label>
+              <input id="materials-release-name" readonly aria-readonly="true">
+              <label for="materials-release-version-input">版本号</label>
+              <input id="materials-release-version-input" required pattern="v\d+\.\d+\.\d+" title="格式如 v1.0.0" maxlength="32" autocomplete="off" placeholder="v1.0.0">
+              <label for="materials-release-description">发布说明（选填）</label>
+              <textarea id="materials-release-description" maxlength="200" rows="3" placeholder="例如：补充 5 家门店，替换聚味美炒鸡的点餐码"></textarea>
+              <p id="materials-release-error" role="alert" class="card-desc" hidden></p>
+              <div class="release-form-actions"><button class="btn" id="materials-release-cancel" type="button">取消</button>
+              <button class="btn btn-primary" id="materials-release-submit" type="submit">发布版本</button></div>
+            </form>
+          </dialog>
+        </div>
+        <div class="materials-view-switch" role="group" aria-label="素材工作区视图"><button class="btn" id="materials-show-list" type="button" aria-pressed="true">门店列表</button><button class="btn" id="materials-show-review" type="button" aria-pressed="false">图片复核</button></div>
+        <dialog id="materials-manage-dialog" class="materials-manage-dialog" aria-labelledby="materials-manage-title"><div class="materials-manage-shell"><header><div><h2 id="materials-manage-title">批次管理</h2><p class="card-desc">查看清洗批次及回收站中的批次。</p></div><button class="btn" id="materials-manage-close" type="button" aria-label="关闭">关闭</button></header><div class="materials-manage-tabs" role="tablist"><button type="button" role="tab" id="materials-tab-active" aria-selected="true">批次</button><button type="button" role="tab" id="materials-tab-trash" aria-selected="false">回收站</button></div><label class="visually-hidden" for="materials-manage-search">搜索批次</label><input id="materials-manage-search" type="search" placeholder="搜索批次名称或描述"><div id="materials-manage-error" class="inline-error" role="alert" hidden></div><div id="materials-manage-list" class="materials-manage-list" aria-live="polite"><div class="materials-placeholder">正在加载批次…</div></div></div></dialog>
+        <dialog id="materials-edit-dialog" class="materials-dialog" aria-labelledby="materials-edit-title"><form id="materials-edit-form"><h2 id="materials-edit-title">编辑批次</h2><label for="materials-edit-name">批次名称</label><input id="materials-edit-name" required maxlength="80"><label for="materials-edit-description">描述</label><textarea id="materials-edit-description" maxlength="500" rows="4"></textarea><p id="materials-edit-error" class="inline-error" role="alert" hidden></p><div class="release-form-actions"><button class="btn" id="materials-edit-cancel" type="button">取消</button><button class="btn btn-primary" type="submit">保存</button></div></form></dialog>
+        <dialog id="materials-action-dialog" class="materials-dialog" aria-labelledby="materials-action-title" aria-describedby="materials-action-copy"><form method="dialog"><h2 id="materials-action-title"></h2><p id="materials-action-copy" class="materials-confirm-copy"></p><div class="release-form-actions"><button class="btn" value="cancel" autofocus>取消</button><button class="btn btn-danger" id="materials-action-confirm" value="confirm">确认</button></div></form></dialog>
+        <div class="materials-workspace section-gap">
+          <section class="card materials-store-panel" aria-label="门店列表">
+            <div class="materials-store-tools"><label class="visually-hidden" for="materials-search">搜索门店</label><input id="materials-search" type="search" placeholder="搜索门店"></div>
+            <div class="materials-filters" role="group" aria-label="门店状态筛选"><button data-material-filter="all" type="button">全部 <span data-filter-count="all">0</span></button><button class="active" data-material-filter="pending" type="button">待审核 <span data-filter-count="pending">0</span></button><button data-material-filter="confirmed" type="button">已确认 <span data-filter-count="confirmed">0</span></button><button data-material-filter="skipped" type="button">不合格 <span data-filter-count="skipped">0</span></button></div>
+            <div id="materials-store-list" class="materials-store-list"><div class="empty">选择或创建批次后显示门店。</div></div>
+          </section>
+          <section class="card materials-review-panel" aria-label="门店素材确认">
+            <div class="materials-review-header"><div><h2 id="materials-store-title">未选择门店</h2><p class="card-desc" id="materials-store-subtitle"></p></div><div class="materials-nav-actions"><button class="btn" id="materials-prev" type="button" disabled>上一家</button><button class="btn" id="materials-next" type="button" disabled>下一家</button></div></div>
+            <div class="materials-store-actions" id="materials-store-actions"><details class="materials-source-menu"><summary class="btn">素材管理</summary><div class="materials-source-menu-popover"><button class="btn" id="materials-store-add-files" type="button" disabled>补充图片</button><button class="btn" id="materials-store-replace-files" type="button" disabled>替换全部图片</button></div></details><button class="btn" id="materials-store-reanalyze" type="button" disabled>重新分析</button><button class="btn" id="materials-manual-toggle" type="button" disabled>框选二维码</button><button class="btn btn-quiet" id="materials-manual-remove" type="button" hidden>移除框选</button><input id="materials-store-files" class="visually-hidden" type="file" multiple accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"></div>
+            <div class="materials-review-body" id="materials-review-body" tabindex="0" aria-label="原图与二维码候选">
+            <div id="materials-image-list" class="materials-image-list" aria-label="选择原始图片"></div><div class="materials-original-wrap"><img id="materials-original" alt="门店原始图片" hidden><canvas id="materials-canvas" tabindex="0" aria-describedby="materials-manual-note" hidden aria-label="拖动框选二维码区域"></canvas><div id="materials-original-empty" class="materials-image-empty">暂无原图</div></div>
+            <p class="materials-manual-note" id="materials-manual-note" role="status" aria-live="polite" hidden></p>
+            <div class="materials-candidate-heading"><div><h3>二维码候选</h3></div><span id="materials-candidate-count" class="badge">等待分析</span></div>
+            <div id="materials-candidates" class="materials-candidates" role="radiogroup" aria-label="选择二维码候选"><div class="materials-placeholder">暂无候选</div></div>
+            </div>
+            <div class="materials-review-actions"><div id="materials-rejection-summary" class="materials-rejection-summary" hidden></div><div class="materials-decision-actions"><button class="btn btn-danger" id="materials-skip" type="button" disabled>标记不合格</button><button class="btn" id="materials-undo" type="button" disabled>撤销确认</button><button class="btn btn-primary" id="materials-confirm" type="button" disabled>确认并下一家</button><button class="btn btn-primary" id="materials-next-pending" type="button" hidden>重新处理</button><button class="btn btn-primary" id="materials-review-next" type="button" hidden>下一家</button></div><p class="materials-review-feedback" id="materials-review-feedback" role="status" aria-live="polite" hidden></p></div>
+            <div class="inline-error" id="materials-review-error" role="alert" hidden></div>
+            <dialog id="materials-rejection-dialog" aria-labelledby="materials-rejection-title"><form id="materials-rejection-form"><h2 id="materials-rejection-title">标记为不合格</h2><label for="materials-rejection-code">不合格原因</label><select id="materials-rejection-code" required><option value="blur">图片模糊 / 无法识别</option><option value="invalid_qr">二维码无效</option><option value="store_mismatch">门店信息不匹配</option><option value="duplicate">重复素材</option><option value="other">其他原因</option></select><label for="materials-rejection-detail">补充说明（选填）</label><textarea id="materials-rejection-detail" maxlength="200" rows="3"></textarea><p id="materials-rejection-error" role="alert" class="card-desc" hidden></p><div class="release-form-actions"><button class="btn" id="materials-rejection-cancel" type="button">取消</button><button class="btn btn-danger" id="materials-rejection-submit" type="submit">保存并下一家</button></div></form></dialog>
+          </section>
+        </div>
+        <div class="materials-preview" id="materials-preview" role="dialog" aria-modal="true" aria-label="大图预览" hidden><button class="btn materials-preview-close" id="materials-preview-close" type="button">关闭</button><img id="materials-preview-image" alt="候选大图预览"></div>
+      </section>
+
+      <section class="page" id="page-annotation" aria-labelledby="annotation-heading">
+        <div class="anno-layout">
+          <aside class="card anno-queue" aria-label="选择门店">
+            <div class="card-head"><div><h2 id="annotation-heading">人工标注</h2><p class="card-desc">逐店打开小程序，先按批处理顺序由本地规则 / 模型给出初始判断位置，再由你核对、重新框选或采纳；标注本身不会真实点击。</p></div></div>
+            <div class="anno-queue-tools"><label class="anno-select-all"><input type="checkbox" id="anno-select-all"> 全选当前筛选</label><span id="anno-selected-count">已选 0 家</span></div>
+            <div class="anno-filters" role="group" aria-label="按状态筛选门店">
+              <button data-anno-filter="all" type="button" class="active" aria-pressed="true">全部 <span data-anno-count="all">0</span></button>
+              <button data-anno-filter="pending" type="button" aria-pressed="false">待处理 <span data-anno-count="pending">0</span></button>
+              <button data-anno-filter="review" type="button" aria-pressed="false">未检查 <span data-anno-count="review">0</span></button>
+              <button data-anno-filter="captured" type="button" aria-pressed="false">已成功 <span data-anno-count="captured">0</span></button>
+              <button data-anno-filter="annotated" type="button" aria-pressed="false">已标注 <span data-anno-count="annotated">0</span></button>
+              <button data-anno-filter="rejected" type="button" aria-pressed="false">不合格 <span data-anno-count="rejected">0</span></button>
+            </div>
+            <div class="anno-store-list" id="anno-store-list"><div class="empty">正在读取门店…</div></div>
+            <div class="anno-queue-actions">
+              <button class="btn btn-primary" id="anno-start" type="button" disabled>开始标注</button>
+              <button class="btn btn-danger" id="anno-stop" type="button" disabled>结束标注</button>
+            </div>
+            <p class="anno-note">开始前请把微信停留在“文件传输助手”，并保持屏幕解锁。</p>
+          </aside>
+          <section class="card anno-stage" aria-label="标注工作区">
+            <div class="anno-stage-head">
+              <div class="anno-stage-title"><div><span class="anno-status" id="anno-status">尚未开始</span><span class="anno-progress" id="anno-progress" hidden></span></div><p class="card-desc" id="anno-message">选择门店后点击“开始标注”。</p></div>
+              <div class="anno-stage-actions">
+                <button class="btn" id="anno-exit-review" type="button" hidden>退出回看</button>
+                <button class="btn" id="anno-pause" type="button" disabled>暂停</button>
+                <button class="btn" id="anno-retry" type="button" hidden>重试</button>
+                <button class="btn btn-danger" id="anno-reject" type="button" disabled>标记不合格</button>
+                <button class="btn" id="anno-skip" type="button" disabled>跳过本店</button>
+                <button class="btn btn-primary" id="anno-complete" type="button" disabled>完成标注 / 已进入菜单</button>
+              </div>
+            </div>
+            <div class="anno-canvas-wrap" id="anno-canvas-wrap">
+              <canvas id="anno-canvas" tabindex="0" aria-label="小程序截图：拖动鼠标框选要点击的位置"></canvas>
+              <div class="anno-empty" id="anno-empty">开始标注后，当前小程序截图会显示在这里。</div>
+            </div>
+            <div class="anno-frame-meta" id="anno-frame-meta"></div>
+            <div class="anno-suggestion" id="anno-suggestion" hidden></div>
+            <div class="anno-form">
+              <div class="field"><label for="anno-category">页面 / 场景</label><select id="anno-category"><option value="">请选择</option></select></div>
+              <div class="field"><label for="anno-target">目标含义</label><input id="anno-target" maxlength="80" autocomplete="off" placeholder="例如：选择 2 人用餐 / 关闭广告"></div>
+              <label class="anno-negative"><input type="checkbox" id="anno-hard-negative"> 这次点击无效，记录为硬负样本</label>
+              <p class="anno-negative-hint">仅用于把“看起来像目标、实际不该点”的位置教给规则和模型（manifest 中记为 sub_type=hard_negative）。误点、没点中或只是点击后无变化请勿勾选，完成时会自动跳过；二维码无效、门店不存在请用“标记不合格”。</p>
+            </div>
+            <div class="anno-mapping" id="anno-mapping">尚未框选：在截图上按住鼠标拖动即可。</div>
+            <div class="anno-actions">
+              <button class="btn btn-primary" id="anno-click" type="button" disabled>确认点击</button>
+              <button class="btn" id="anno-decide" type="button" disabled>生成建议（本地 / 模型）</button>
+              <button class="btn" id="anno-refresh" type="button" disabled>刷新截图</button>
+              <button class="btn" id="anno-apply-suggestion" type="button" disabled>应用系统建议</button>
+            </div>
+            <div class="anno-decision" id="anno-decision" hidden></div>
+            <div class="anno-result" id="anno-result" hidden></div>
+            <p class="anno-foot" id="anno-foot">点击前会重新截图并校验窗口尺寸；每次点击都会保存前后截图和坐标。</p>
+          </section>
+        </div>
+        <dialog id="anno-reject-dialog" aria-labelledby="anno-reject-title">
+          <form id="anno-reject-form">
+            <h2 id="anno-reject-title">标记为不合格</h2>
+            <p id="anno-reject-store" class="card-desc"></p>
+            <label for="anno-reject-reason">不合格原因</label>
+            <select id="anno-reject-reason" required>
+              <option value="invalid_qr">二维码过期 / 无效 / 扫不出小程序</option>
+              <option value="store_mismatch">二维码门店不一致 / 没有该门店</option>
+              <option value="authorization_unavailable">需要验证码 / 扫码授权（自动化无法进入）</option>
+              <option value="blur">图片模糊 / 无法识别</option>
+              <option value="duplicate">重复素材</option>
+              <option value="other">其他原因</option>
+            </select>
+            <label for="anno-reject-detail">补充说明（选填）</label>
+            <textarea id="anno-reject-detail" maxlength="200" rows="3" placeholder="例如：二维码已过期，提示活动结束"></textarea>
+            <p id="anno-reject-error" role="alert" class="card-desc" hidden></p>
+            <div class="release-form-actions">
+              <button class="btn" id="anno-reject-cancel" type="button">取消</button>
+              <button class="btn btn-danger" id="anno-reject-submit" type="submit">保存并下一家</button>
+            </div>
+          </form>
+        </dialog>
+      </section>
+
+      <section class="page" id="page-settings">
+      <div class="engine-notice" role="status"><span class="engine-tag">桌面自动化</span><div><strong>本机自动化引擎与调试</strong><p id="engine-message"></p></div></div>
+        <details class="card section-gap robot-advanced"><summary>UiPath 执行配置</summary><form id="robot-form" class="robot-settings"><div class="field"><label for="robot-launch-mode">启动方式</label><select id="robot-launch-mode"><option value="cli">通过 UiPath CLI 启动</option><option value="manual">在 Studio 手动启动</option></select></div>
+          <details><summary>自动打开二维码所需配置</summary><div class="field"><label for="robot-miniapp">小程序窗口选择器（接管模式）</label><textarea id="robot-miniapp" rows="2"></textarea></div><div class="field"><label for="robot-wechat">微信主窗口选择器</label><textarea id="robot-wechat" rows="2"></textarea></div><div class="field"><label for="robot-preview">微信图片预览窗口选择器</label><textarea id="robot-preview" rows="2"></textarea></div><p class="card-desc">识别二维码：自动视觉定位</p>
+          <div class="form-grid"><div class="field"><label for="robot-input-x">微信输入区横向比例</label><input id="robot-input-x" type="number" min="0.05" max="0.95" step="0.01"></div><div class="field"><label for="robot-input-y">微信输入区纵向比例</label><input id="robot-input-y" type="number" min="0.05" max="0.95" step="0.01"></div></div>
+          <div class="form-grid"><div class="field"><label for="robot-paste">粘贴快捷键</label><input id="robot-paste"></div><div class="field"><label for="robot-send">发送按键</label><input id="robot-send"></div><div class="field"><label for="robot-close">关闭窗口按键</label><input id="robot-close"></div><div class="field"><label for="robot-scroll">滚动步数</label><input id="robot-scroll" type="number" min="1" max="10"></div></div><label class="robot-verified"><input id="robot-verified" type="checkbox">已在 Studio 校准窗口定位和输入区</label></details>
+          <div class="form-actions"><button class="btn btn-primary" type="submit">保存 UiPath 配置</button><span id="robot-save-message" role="status"></span></div></form></details>
+        <div class="card section-gap activity-panel"><div class="card-head"><div><h2>最近活动</h2><p class="card-desc"></p></div></div><div class="log-list" id="overview-logs"></div></div>
+
+        <div class="settings-layout">
+          <form class="card form-card" id="config-form">
+            <div><h2>采集配置</h2><p class="card-desc">保存配置与开始采集相互独立。密钥仅在提交时发送。</p></div>
+            <div class="form-section"><div class="form-section-title">目录</div><div class="form-grid">
+              <div class="field"><label for="input-dir">输入目录</label><div class="field-inline"><input id="input-dir" name="input_dir" placeholder="尚未选择" autocomplete="off" readonly><button class="btn" id="select-input-dir" type="button">选择目录</button></div></div>
+              <div class="field"><label for="output-dir">输出目录</label><div class="field-inline"><input id="output-dir" name="output_dir" placeholder="尚未选择" autocomplete="off" readonly><button class="btn" id="select-output-dir" type="button">选择目录</button></div></div>
+            </div></div>
+            <div class="form-section"><div class="form-section-title">模型服务</div><div class="form-grid">
+              <div class="field"><label for="provider">供应商</label><select id="provider" name="provider"><option value="openai_compatible">OpenAI 兼容接口</option><option value="anthropic">Anthropic</option></select></div>
+              <div class="field"><label for="model-name">模型名称</label><input id="model-name" name="model" placeholder="例如：模型部署名称"></div>
+              <div class="field full"><label for="base-url">接口地址</label><input id="base-url" name="base_url" placeholder="https://…" autocomplete="url"></div>
+              <div class="field full"><label for="api-key">API 密钥</label><input id="api-key" name="api_key" type="password" placeholder="留空表示保留已保存的密钥" autocomplete="new-password"><div class="secret-note" id="key-note">密钥状态加载中。服务端不会在读取配置时返回密钥。</div></div>
+              <div class="field"><label for="enable-thinking">模型思考模式</label><select id="enable-thinking"><option value="auto">服务默认</option><option value="off">关闭（支持该参数的兼容接口）</option><option value="on">开启</option></select></div><div class="field"><label for="timeout-seconds">请求超时（秒）</label><input id="timeout-seconds" type="number" min="1" step="1"></div>
+              <div class="field"><label for="people-count">就餐人数</label><input id="people-count" type="number" min="1" step="1"><div class="field-help">用于小程序要求选择人数时；采集始终逐个执行。</div></div>
+              <div class="field full"><label style="display:flex;align-items:center;gap:8px"><input id="auto-authorize" type="checkbox" style="width:auto">自动同意进入菜单所需的隐私协议和授权</label><div class="field-help">包括必要权限、手机号快捷授权和微信快捷登录；无法自动完成的验证码或登录会记录原因并尝试跳过该店。授权处理不代表菜单已完整采集。</div></div><div class="field full"><label for="prompt">系统提示词</label><textarea id="prompt" placeholder="输入模型分析菜单截图时使用的提示词"></textarea></div>
+            </div></div>
+            <div class="form-section"><div class="form-section-title">截图与循环参数</div><p class="card-desc">运行时自动调整窗口大小；实际滚动距离使用总览中的“滚动步数”。</p><div class="form-grid">
+              <div class="field"><label for="window-width">目标窗口宽度（预留）</label><input disabled id="window-width" type="number" min="1"></div><div class="field"><label for="window-height">目标窗口高度（预留）</label><input disabled id="window-height" type="number" min="1"></div>
+              <div class="field"><label for="overlap-ratio">重叠比例（预留）</label><input disabled id="overlap-ratio" type="number" min="0" max="1" step="0.05"></div><div class="field"><label for="max-pages">最大页数</label><input id="max-pages" type="number" min="1"></div>
+              <div class="field"><label for="max-agent-steps">最大 Agent 步数</label><input id="max-agent-steps" type="number" min="1"></div><div class="field"><label for="max-task-seconds">单任务上限（秒）</label><input id="max-task-seconds" type="number" min="1"></div>
+              <div class="field"><label for="settle-seconds">页面稳定等待（秒）</label><input id="settle-seconds" type="number" min="0" step="0.1"></div>
+            </div></div>
+            <div class="form-section"><div class="form-section-title">开发调试日志</div><div class="form-grid"><div class="field"><label for="debug-log-limit">最大存储空间（MB）</label><input id="debug-log-limit" type="number" min="64" max="4096" step="64" value="512"><div class="field-help">达到上限后自动清理较早的调试记录。</div></div><div class="field"><label>当前占用</label><div class="debug-log-summary"><span id="debug-log-usage">尚未读取占用</span><button class="btn" id="debug-log-refresh" type="button">刷新占用</button><button class="btn" id="debug-log-clear" type="button">清理旧日志</button></div></div></div></div>
+            <div class="form-actions"><button class="btn btn-primary" id="save-config" type="submit">保存配置</button><span class="save-status" id="save-status" aria-live="polite"></span></div>
+          </form>
+          <div class="grid settings-side">
+            <div class="card side-card"><div class="card-head"><div><h2>模型连接</h2><p class="card-desc">使用已保存配置发起连接测试。</p></div></div><div class="model-status"><strong id="model-status-title">尚未检查</strong><span id="model-status-subtitle">先保存模型供应商、地址和密钥。</span></div><button class="btn" id="test-model-btn" style="width:100%;margin-top:12px">测试模型连接</button><div class="test-result" id="test-result"></div><button class="btn" type="button" id="model-usage-open" style="width:100%;margin-top:10px">查看模型用量</button></div>
+            <div class="card side-card"><div class="card-head"><div><h2>环境与连接</h2><p class="card-desc">权限状态以实际检测为准；请在此查看授权入口、连接测试和失败原因。</p></div></div><button class="btn" type="button" data-go="environment" style="width:100%">打开环境诊断</button></div>
+            <div class="card side-card"><div class="card-head"><div><h2>采集边界</h2></div></div><p class="card-desc" style="line-height:1.7">本工具一次运行一个任务。暂停请求在当前任务边界和循环检查点处理；不会通过重复触发操作来模拟暂停。完成后请检查截图覆盖率。</p></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+  <script>
+    (() => {
+      'use strict';
+      let TOKEN = '__CAPTURE_TOKEN__';
+      const $ = (id) => document.getElementById(id);
+      const state = {config:null,status:null,connections:null,queueIds:[],visibleTaskIds:[],drawerTaskId:null,connectionsLoading:false,connectionActionRunning:false,connectionErrors:{},connectionRecoveryRunning:false,serviceDisconnected:false,configLoaded:false,polling:false,statusPollTimer:null,toastTimer:null};
+      let qualityRefreshTimer=null,qualityRequestSeq=0,qualityRefreshBusy=false;
+      const pageMeta = {
+        overview:['工作台 / 批次','菜单采集',''],
+        environment:['设置 / 高级诊断','环境与连接','需要时手动检查微信、自动化引擎和 AI 模型；不后台重复测试。'],
+        settings:['设置','采集设置','配置模型、素材目录、输出位置和截图参数。'],
+        materials:['素材清洗','二维码素材','导入原图，逐店确认点餐二维码并发布到采集队列。'],
+        annotation:['人工标注','人工框选点击','不使用模型或本地规则判定；人工框选目标、确认点击，并把前后截图归档为规则样本。'],
+        rejections:['质量管理','不合格清单','集中查看素材清洗和采集过程中标记不合格的门店。']
+      };
+      let activePageName='overview';
+      const escapeSafe = (value) => String(value ?? '');
+      function el(tag, cls, value){const node=document.createElement(tag);if(cls)node.className=cls;if(value!==undefined)node.textContent=escapeSafe(value);return node;}
+      function toast(message){const box=$('toast');box.textContent=message;box.classList.add('show');clearTimeout(state.toastTimer);state.toastTimer=setTimeout(()=>box.classList.remove('show'),2600);}
+      async function api(path, options={}){
+        const method=(options.method||'GET').toUpperCase(),isMutation=!['GET','HEAD'].includes(method);
+        const send=async()=>{
+          const headers={...(options.headers||{})};
+          // 所有写请求统一附带本机令牌，不能仅覆盖 POST 而遗漏编辑和删除。
+          if(isMutation){headers['Content-Type']='application/json';headers['X-Capture-Token']=TOKEN;}
+          const response=await fetch(path,{...options,headers,cache:'no-store'});
+          let data;try{data=await response.json();}catch{data={detail:`服务器返回了无法读取的响应（${response.status}）`};}
+          return {response,data};
+        };
+        let {response,data}=await send();
+        if(isMutation&&response.status===403&&String(data?.detail||'').includes('本机操作令牌无效')){
+          const originalError=new Error(data?.detail||`请求失败（${response.status}）`);
+          let sessionResponse,session;
+          try{
+            sessionResponse=await fetch('/api/session',{cache:'no-store'});
+            try{session=await sessionResponse.json();}catch{session=null;}
+          }catch{throw originalError;}
+          if(!sessionResponse.ok||typeof session?.token!=='string'||!session.token)throw originalError;
+          TOKEN=session.token;({response,data}=await send());
+        }
+        if(!response.ok)throw new Error(data?.detail || `请求失败（${response.status}）`);
+        return data;
+      }
+      function syncQualityRefresh(){
+        clearInterval(qualityRefreshTimer);qualityRefreshTimer=null;
+        const page=$('page-rejections');
+        if(document.hidden||!page?.classList.contains('active'))return;
+        qualityRefreshTimer=setInterval(()=>void loadRejections(true),5000);
+      }
+      document.addEventListener('visibilitychange',()=>{
+        syncQualityRefresh();
+        if(!document.hidden&&$('page-rejections')?.classList.contains('active'))void loadRejections(true);
+      });
+      function pageFromLocation(){const name=window.location.hash.slice(1);return pageMeta[name]?name:'overview';}
+      function setPage(name,syncLocation=true){
+        if(!pageMeta[name])return;
+        if(syncLocation&&name!==activePageName)history.pushState({page:name},'',`${window.location.pathname}${window.location.search}#${name}`);
+        activePageName=name;
+        setQueueOpen(false);
+        document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id===`page-${name}`));
+        document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===name));
+        document.querySelector('.engine-notice').hidden=['materials','environment'].includes(name);
+        $('page-eyebrow').textContent=pageMeta[name][0];$('page-title').textContent=pageMeta[name][1];$('page-subtitle').textContent=pageMeta[name][2];
+        syncQualityRefresh();
+        window.dispatchEvent(new CustomEvent('menu:page',{detail:name}));
+        if(name==='rejections')void loadRejections();
+      }
+      document.querySelectorAll('.nav button').forEach(b=>b.addEventListener('click',()=>setPage(b.dataset.page)));
+      document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>setPage(b.dataset.go)));
+      window.addEventListener('popstate',()=>setPage(pageFromLocation(),false));
+      const initialPage=pageFromLocation();
+      if(window.location.hash!==`#${initialPage}`)history.replaceState({page:initialPage},'',`${window.location.pathname}${window.location.search}#${initialPage}`);
+      setPage(initialPage,false);
+      function setQueueOpen(open){
+        document.querySelector('.workbench-grid').classList.toggle('queue-open',open);
+        $('queue-backdrop').hidden=!open;
+        $('queue-toggle').setAttribute('aria-expanded',String(open));
+        const panel=$('queue-panel');
+        if(open){panel.setAttribute('role','dialog');panel.setAttribute('aria-modal','true');$('queue-close').focus();}
+        else {panel.removeAttribute('role');panel.removeAttribute('aria-modal');}
+      }
+      $('queue-toggle').addEventListener('click',()=>setQueueOpen($('queue-toggle').getAttribute('aria-expanded')!=='true'));
+      for(const id of ['queue-close','queue-backdrop'])$(id).addEventListener('click',()=>{setQueueOpen(false);$('queue-toggle').focus();});
+      document.addEventListener('keydown',event=>{if(event.key==='Escape')setQueueOpen(false);});
+      for(const button of document.querySelectorAll('.nav button'))button.title=button.textContent.trim();
+      window.matchMedia('(min-width:900px)').addEventListener('change',()=>setQueueOpen(false));
+      document.addEventListener('keydown',event=>{
+        if(event.key!=='Tab')return;
+        const panel=!$('task-drawer').hidden?document.querySelector('.drawer-content'):
+          !$('queue-backdrop').hidden?$('queue-panel'):null;
+        if(!panel)return;
+        const controls=[...panel.querySelectorAll('button,a[href],input,select,textarea,[tabindex="0"],summary')]
+          .filter(element=>!element.disabled&&element.getClientRects().length);
+        if(!controls.length)return;
+        if(event.shiftKey&&document.activeElement===controls[0]){
+          event.preventDefault();controls.at(-1).focus();
+        }else if(!event.shiftKey&&document.activeElement===controls.at(-1)){
+          event.preventDefault();controls[0].focus();
+        }
+      });
+      function asNumber(value){return value===''||value===null||value===undefined?null:Number(value);}
+      function fillConfig(c){
+        if(!c)return;state.config=c;state.configLoaded=true;
+        $('input-dir').value=c.input_dir||'';$('output-dir').value=c.output_dir||'';
+        const m=c.model||{};$('provider').value=m.provider==='anthropic'?'anthropic':'openai_compatible';$('model-name').value=m.model||'';$('enable-thinking').value=m.enable_thinking===false?'off':m.enable_thinking===true?'on':'auto';$('base-url').value=m.base_url||'';$('api-key').value='';$('timeout-seconds').value=m.timeout_seconds??'';$('prompt').value=m.prompt||'';$('people-count').value=c.people_count??'';$('auto-authorize').checked=!!c.auto_authorize;
+        const cap=c.capture||{};$('window-width').value=cap.window_width??'';$('window-height').value=cap.window_height??'';$('overlap-ratio').value=cap.overlap_ratio??'';$('max-pages').value=cap.max_pages??'';$('max-agent-steps').value=cap.max_agent_steps??'';$('max-task-seconds').value=cap.max_task_seconds??'';$('settle-seconds').value=cap.settle_seconds??'';$('debug-log-limit').value=(c.debug_logging||{}).max_storage_mb??512;
+        $('key-note').textContent=m.api_key_configured?'已有密钥已保存。留空会保留原密钥；输入新值将替换。':'尚未配置密钥。请填写后保存，再进行模型连接测试。';
+        $('model-status-title').textContent=m.api_key_configured?'密钥已配置':'尚未配置密钥';$('model-status-subtitle').textContent=`${m.provider==='anthropic'?'Anthropic':'OpenAI 兼容'} · ${m.model||'未填写模型名称'}`;
+        $('overview-input').textContent=c.input_dir||'尚未配置';$('overview-output').textContent=c.output_dir||'尚未配置';
+      }
+      function readConfig(){
+        const provider=$('provider').value;
+        const model={provider,base_url:$('base-url').value.trim(),model:$('model-name').value.trim(),api_key:$('api-key').value,timeout_seconds:asNumber($('timeout-seconds').value),enable_thinking:$('enable-thinking').value==='auto'?null:$('enable-thinking').value==='on',prompt:$('prompt').value};
+        if(!model.api_key && state.config?.model?.api_key_configured){} // 空密钥由服务端按契约解释为保留。
+        return {input_dir:$('input-dir').value.trim(),output_dir:$('output-dir').value.trim(),model,capture:{window_width:asNumber($('window-width').value),window_height:asNumber($('window-height').value),overlap_ratio:asNumber($('overlap-ratio').value),max_pages:asNumber($('max-pages').value),max_agent_steps:asNumber($('max-agent-steps').value),max_task_seconds:asNumber($('max-task-seconds').value),settle_seconds:asNumber($('settle-seconds').value)},debug_logging:{max_storage_mb:asNumber($('debug-log-limit').value)},people_count:asNumber($('people-count').value),auto_authorize:$('auto-authorize').checked};
+      }
+      async function chooseDirectory(kind,targetId,buttonId){const button=$(buttonId);button.disabled=true;try{const result=await api('/api/select-directory',{method:'POST',body:JSON.stringify({kind})});if(!result.cancelled)$(targetId).value=result.path||'';}catch(error){toast(error.message);}finally{button.disabled=false;}}
+      $('select-input-dir').addEventListener('click',()=>chooseDirectory('input','input-dir','select-input-dir'));
+      $('select-output-dir').addEventListener('click',()=>chooseDirectory('output','output-dir','select-output-dir'));
+      function formatBytes(value){const bytes=Number(value)||0;if(bytes<1024)return bytes+' B';if(bytes<1024*1024)return (bytes/1024).toFixed(1)+' KB';if(bytes<1024*1024*1024)return (bytes/1024/1024).toFixed(1)+' MB';return (bytes/1024/1024/1024).toFixed(2)+' GB';}
+      $('debug-log-refresh').addEventListener('click',async event=>{const button=event.currentTarget,usage=$('debug-log-usage');button.disabled=true;usage.textContent='读取中…';try{const result=await api('/api/debug/summary');if(result.max_storage_mb!=null)$('debug-log-limit').value=result.max_storage_mb;usage.textContent=`${formatBytes(result.total_bytes??result.used_bytes)} · ${result.file_count??0} 个文件 · 丢弃 ${result.dropped_records??0} 条`;usage.title=`上限 ${result.max_storage_mb??$('debug-log-limit').value} MB`;}catch(error){usage.textContent='读取失败：'+error.message;}finally{button.disabled=false;}});
+      $('debug-log-clear').addEventListener('click',async event=>{if(!confirm('清理已保存的调试日志和调试截图？门店素材与菜单截图会保留。'))return;const b=event.currentTarget;b.disabled=true;try{await api('/api/debug/clear',{method:'POST'});$('debug-log-refresh').click();}catch(error){toast(error.message);}finally{b.disabled=false;}});
+      $('config-form').addEventListener('submit',async e=>{e.preventDefault();const btn=$('save-config');btn.disabled=true;$('save-status').textContent='保存中…';try{const updated=await api('/api/config',{method:'POST',body:JSON.stringify(readConfig())});fillConfig(updated);state.connections=null;renderUncheckedConnections();$('save-status').textContent='配置已保存';toast('配置已保存；需要时手动检查连接');}catch(err){$('save-status').textContent=err.message;toast(err.message);}finally{btn.disabled=false;}});
+      const TASK_STATUS_LABELS={captured:'已截图待复核',needs_review:'需检查',needs_retry:'需重试',pending:'待处理',running:'运行中',error:'错误',blocked:'已阻止'};
+      function countStatuses(status,statuses){if(status?.counts&&typeof status.counts==='object')return statuses.reduce((sum,key)=>sum+(Number(status.counts[key])||0),0);return (status?.tasks||[]).filter(t=>statuses.includes(t.status)).length;}
+      function isDone(t){return t.status==='captured';}
+      function isFail(t){return ['needs_review','error','blocked'].includes(t.status);}
+      function isActive(t){return t.status==='running';}
+      function hasRobotSelection(){return $('robot-mode').value==='automatic'?state.queueIds.length>0:!!$('robot-task').value;}
+      function promptRobotTaskSelection(){setPage('overview');toast('请先从门店列表勾选要执行的门店');window.requestAnimationFrame(()=>$('task-search').focus({preventScroll:true}));}
+      function syncStartButton(){const disabled=!!state.status?.running||!hasRobotSelection();$('start-btn').disabled=disabled;$('start-btn').setAttribute('aria-disabled',String(disabled));}
+      const RUN_LABELS={running:'运行中',pause_requested:'暂停中',resuming:'恢复检查中',paused:'已暂停',blocked:'无法继续',interrupted:'需要检查',terminating:'正在终止',terminated:'已终止',completed:'已完成'};
+      function renderStatus(s){
+        state.status=s||{};const running=!!s?.running,tasks=Array.isArray(s?.tasks)?s.tasks:[],run=s?.run||null;
+        $('connection-dot').className=`status-dot ${running?'busy':'live'}`;$('connection-label').textContent=running?'采集中':'服务已连接';$('poll-clock').textContent=`同步于 ${new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
+        $('sidebar-connection-label').textContent='本地服务已连接';
+        const resumable=!!run&&['paused','blocked','interrupted'].includes(run.status);$('run-state').textContent=running?(RUN_LABELS[run?.status]||'运行中'):run?(RUN_LABELS[run.status]||'等待运行'):hasRobotSelection()?'可开始':'等待选择门店';$('run-state').className=`run-state ${running?'running':run?.status==='completed'?'done':''}`;
+        $('start-btn').textContent=s.launch_mode==='cli'?'开始采集':'准备采集任务';$('start-btn').title='按执行队列开始采集';$('run-instruction').textContent=running?'暂停会等当前门店处理结束，终止会在当前 UiPath 命令结束后生效。':'';
+        const trial=running&&s.current_task?.navigation==='gui_agent';
+        const busy=!!state.runAction, phase=run?.status, single=(trial?s.current_task:run)?.mode==='attached';
+        $('run-heading').textContent=trial?(single?'GUI Agent 单店试验':'GUI Agent 批量试验'):run?(single?'单店采集':'批量采集'):'采集运行';
+        $('stop-btn').hidden=!running||single||trial;
+        if(trial)$('run-state').textContent='运行中';
+        if(running&&(single||trial))$('run-instruction').textContent='终止会在当前 UiPath 动作结束后生效。';
+        $('stop-btn').disabled=busy||phase!=='running';
+        $('stop-btn').textContent=phase==='pause_requested'?'暂停中':'本店完成后暂停';
+        $('terminate-btn').hidden=!running&&!resumable;
+        $('terminate-btn').disabled=busy||(!trial&&(phase==='terminating'||(running&&resumable)));
+        $('scan-btn').disabled=running||busy;
+        const material=s.material_release;
+        $('overview-output').textContent=s.batch_output_dir||'尚未配置';
+        $('active-material-release').textContent=material
+          ? ['当前采集素材',material.batch_name,material.version,`${material.store_count??tasks.length} 家`].filter(Boolean).join(' · ')
+          : '当前采集素材 · '+(s.input_name||'未设置输入目录');
+
+        $('resume-btn').hidden=!resumable&&phase!=='resuming';
+        $('resume-btn').disabled=running||busy;
+        $('resume-btn').textContent=phase==='resuming'?'恢复检查中…':single?'重试当前门店':phase==='paused'?'继续采集':'重试恢复';
+        $('terminate-btn').textContent=single?'终止本店采集':'终止批次';
+        $('start-btn').hidden=resumable||running;
+        $('engine-message').textContent=s.engine_ready===false?(s.engine_message||'自动化引擎异常'):'';$('robot-run-help').textContent=s.launch_mode==='cli'?(s.run_directory?'本轮 UiPath IPC 目录：'+s.run_directory:''):(s.run_directory?`在 Studio 运行 Main.xaml，并将 in_RunDirectory 设为：${s.run_directory}`:'');
+        const strip=$('run-strip');
+        strip.hidden=!run||trial;
+        if(run&&!trial){
+          strip.dataset.phase=phase||'';
+          const total=Array.isArray(run.task_ids)?run.task_ids.length:0;
+          const cursor=Math.max(0,Number(run.current_index)||0);
+          const saved=Math.min(total,Math.max(0,Number(run.captured)||0));
+          const byId=new Map(tasks.map(task=>[String(task.id),task]));
+          const currentTask=run.current_task_id?byId.get(String(run.current_task_id)):null;
+          // 百分比表示本轮已有结果的门店；需检查也算已处理，但不会被误读为成功采集。
+          const currentNeedsReview=!running&&cursor<total&&currentTask&&isFail(currentTask)?1:0;
+          const review=Math.min(total-saved,Math.max(0,Number(run.review)||0)+currentNeedsReview);
+          const processed=Math.min(total,saved+review);
+          const runningCount=running&&cursor<total?1:0;
+          const remaining=Math.max(0,total-processed-runningCount);
+          const percent=total?Math.min(100,Math.round(processed/total*100)):0;
+          $('run-strip-percent').textContent=`${percent}%`;
+          $('run-strip-done').textContent=`${processed} / ${total} 家`;
+          $('run-strip-count').textContent=`已保存 ${saved} · 待检查 ${review} · 运行中 ${runningCount} · 待处理 ${remaining}`;
+          const progress=$('run-strip').querySelector('.run-progress');
+          progress.setAttribute('aria-valuenow',String(percent));
+          progress.setAttribute('aria-valuetext',`${processed} / ${total} 家门店已有处理结果`);
+          $('run-progress-fill').style.width=`${percent}%`;
+          const next=run.next_name?`继续后从「${run.next_name}」开始。`:'';
+          const messages={
+            pause_requested:'已请求暂停。当前门店处理完毕后，将在下一家开始前暂停。',
+            paused:next,
+            resuming:run.mode==='automatic'?'正在准备恢复，并确认微信文件传输助手。':'正在确认小程序窗口。',
+            blocked:[run.message,run.mode==='automatic'?'确认微信已打开文件传输助手后，可重试恢复。':'确认目标小程序已打开后，可重试恢复。'].filter(Boolean).join(' '),
+            terminated:single?'本店采集已结束，可重新发起采集。':'本轮已结束。已保存的截图仍可查看，可重新选择剩余门店采集。'
+          };
+          $('run-strip-message').textContent=messages[phase]??run.message??'';
+        }
+        const current=s.current_task;$('current-task').classList.toggle('visible',!!current);if(current){$('current-name').textContent=current.source_name||'当前门店';$('current-stage').textContent=current.stage||'处理中';$('current-id').textContent=current.id?`任务 ${current.id}`:'';}
+        $('count-pending').textContent=countStatuses(s,['pending']);$('count-running').textContent=countStatuses(s,['running']);$('count-completed').textContent=countStatuses(s,['captured']);$('count-attention').textContent=countStatuses(s,['needs_review','error','blocked']);$('count-retry').textContent=countStatuses(s,['needs_retry']);
+        renderRobotTasks(tasks);renderActivity(s.events||[]);syncStartButton();
+      }
+      const rejectionLabels={blur:'图片模糊 / 无法识别',invalid_qr:'二维码无效',store_mismatch:'二维码门店不一致',store_closed:'门店已关店 / 停业',miniapp_unavailable:'小程序到期或未绑定',scan_order_unsupported:'门店不支持扫码点餐',qr_external_web:'二维码指向外部网页（非小程序）',menu_unavailable:'门店未配置菜单 / 无可用菜品',authorization_unavailable:'需要验证码 / 扫码授权',duplicate:'重复素材',other:'其他原因'};
+      function badgeFor(t){if(t.reject_reason)return el('span','badge badge-error','不合格');const cls=isActive(t)?'badge-running':isDone(t)?'badge-success':isFail(t)?'badge-error':'';return el('span','badge '+cls,TASK_STATUS_LABELS[t.status]||t.status||'未知');}
+      function renderActivity(events){const target=$('overview-logs');target.replaceChildren();const latest=[...events].reverse();if(!latest.length){target.append(el('div','log-empty','暂无运行日志'));return;}for(const event of latest.slice(0,40)){const row=el('div','log-row'),time=el('span','log-time',timeLabel(event.time)),level=el('span',`log-level ${/error/i.test(event.level||'')?'error':/warn/i.test(event.level||'')?'warning':''}`,event.level||'info'),message=el('span','log-message',event.message||'');if(event.task_id)message.title=`任务 ${event.task_id}`;row.append(time,level,message);target.append(row);}}
+      function visibleTasks(tasks){const query=$('task-search').value.trim().toLocaleLowerCase(),filter=$('task-filter').value,sort=$('task-sort').value;let rows=tasks.filter(task=>{const text=`${task.source_name||''} ${task.source_path||''}`.toLocaleLowerCase();if(query&&!text.includes(query))return false;if(filter==='review'&&!isFail(task))return false;if(filter!=='all'&&filter!=='review'&&task.status!==filter)return false;return true;});rows.sort((a,b)=>sort==='recent'?String(b.updated_at||'').localeCompare(String(a.updated_at||'')):sort==='status'?String(a.status).localeCompare(String(b.status))||String(a.source_name).localeCompare(String(b.source_name),'zh-CN'):String(a.source_name||'').localeCompare(String(b.source_name||''),'zh-CN'));return rows;}
+      function renderRobotTasks(tasks,fromProfile=false){
+        const list=$('robot-task-list'),select=$('robot-task'),allTasks=tasks||[],available=allTasks.filter(canSelectRobotTask),useProfile=fromProfile||!robotTasksInitialized,scrollTop=list.scrollTop;
+        if(useProfile){const selected=Array.isArray(robotProfile?.selected_task_ids)?robotProfile.selected_task_ids.map(String):[];state.queueIds=[...new Set(selected.filter(id=>allTasks.some(task=>String(task.id)===id&&canSelectRobotTask(task))))];if(robotProfile?.mode!=='automatic'&&!state.queueIds.length&&robotProfile?.selected_task_id){const attached=allTasks.find(task=>String(task.id)===String(robotProfile.selected_task_id));if(attached&&canSelectRobotTask(attached))state.queueIds=[String(robotProfile.selected_task_id)];}}
+        else state.queueIds=state.queueIds.filter(id=>allTasks.some(task=>String(task.id)===String(id)&&canSelectRobotTask(task)));
+        const rows=visibleTasks(allTasks);state.visibleTaskIds=rows.filter(canSelectRobotTask).map(task=>String(task.id));list.replaceChildren();
+        for(const task of rows){const id=String(task.id),row=el('label',`robot-task-row ${isActive(task)?'is-running':''}`),checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.dataset.taskId=id;checkbox.checked=state.queueIds.includes(id);checkbox.disabled=!canSelectRobotTask(task)||!!state.status?.running;checkbox.addEventListener('click',event=>event.stopPropagation());checkbox.addEventListener('change',()=>{if(checkbox.checked){if(!state.queueIds.includes(id))state.queueIds.push(id);}else state.queueIds=state.queueIds.filter(value=>value!==id);renderRobotTasks(allTasks);persistQueueSoon();});
+          const main=el('span','robot-task-main'),name=el('span','robot-task-name',task.source_name||'未命名门店'),sub=el('span','robot-task-sub',`${String(task.source_path||'').split('/').pop()||'二维码'}`),status=badgeFor(task),detail=el('button','task-open','详情');detail.type='button';detail.setAttribute('aria-label',`查看${task.source_name||'门店'}详情`);detail.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();openTaskDrawer(task);});main.append(name,sub);row.append(checkbox,main,status,el('span','task-time',timeLabel(task.updated_at)),detail);row.addEventListener('click',event=>{if(event.target===row||event.target===main||event.target===name||event.target===sub)openTaskDrawer(task);});list.append(row);}
+        $('tasks-empty').hidden=rows.length>0;select.replaceChildren(el('option','','选择一间门店'));select.firstChild.value='';for(const task of available){const option=el('option','',task.source_name||'未命名门店');option.value=String(task.id);select.append(option);}const attachedId=fromProfile?robotProfile?.selected_task_id:state.attachedId;if(attachedId&&available.some(task=>String(task.id)===String(attachedId)))select.value=String(attachedId);state.attachedId=select.value;
+        list.scrollTop=scrollTop;if(allTasks.length)robotTasksInitialized=true;renderQueue(allTasks);updateRobotTaskSelection();syncRobotTaskMode();
+      }
+      function renderQueue(tasks){const list=$('run-queue-list'),scrollTop=list.scrollTop;list.replaceChildren();const byId=new Map((tasks||[]).map(task=>[String(task.id),task]));$('queue-total').textContent=String(state.queueIds.length);if(!state.queueIds.length){list.append(el('li','queue-empty','队列为空'));return;}state.queueIds.forEach((id,index)=>{const task=byId.get(String(id));if(!task)return;const li=el('li','queue-item'),number=el('span','queue-number',String(index+1)),name=el('span','queue-name',task.source_name||'未命名门店'),actions=el('span','queue-actions');for(const [label,delta,disabled] of [['上移',-1,index===0],['下移',1,index===state.queueIds.length-1]]){const button=el('button','queue-move',label);button.type='button';button.disabled=disabled||!!state.status?.running;button.title=label;button.addEventListener('click',()=>{const target=index+delta;[state.queueIds[index],state.queueIds[target]]=[state.queueIds[target],state.queueIds[index]];renderRobotTasks(state.status?.tasks||[]);persistQueueSoon();});actions.append(button);}const remove=el('button','queue-remove','移除');remove.type='button';remove.disabled=!!state.status?.running;remove.addEventListener('click',()=>{state.queueIds=state.queueIds.filter(value=>value!==id);renderRobotTasks(state.status?.tasks||[]);persistQueueSoon();});actions.append(remove);li.append(number,name,badgeFor(task),actions);list.append(li);});list.scrollTop=scrollTop;}
+      function updateRobotTaskSelection(){const eligible=state.visibleTaskIds.map(id=>state.status?.tasks?.find(task=>String(task.id)===String(id))).filter(Boolean),checked=eligible.filter(task=>state.queueIds.includes(String(task.id)));$('robot-task-count').textContent=`执行队列 ${state.queueIds.length} 家`;$('robot-task-select-all').checked=eligible.length>0&&checked.length===eligible.length;$('robot-task-select-all').indeterminate=checked.length>0&&checked.length<eligible.length;$('robot-task-select-all').disabled=!!state.status?.running;syncStartButton();}
+      function syncRobotTaskMode(){const automatic=$('robot-mode').value==='automatic';$('robot-task').style.display=automatic?'none':'';document.querySelector('.queue-panel').classList.toggle('attached-mode',!automatic);$('robot-task-hint').textContent=automatic?'按右侧队列逐店上传二维码、进入菜单并截图。':'请先打开该门店的小程序，再选择一间门店接管。';const id=$('robot-task').value,preview=$('source-preview');preview.hidden=automatic||!id;if(!automatic&&id)preview.src=`/api/source/${encodeURIComponent(id)}`;else preview.removeAttribute('src');syncStartButton();}
+      function persistQueueSoon(){if(!robotProfileLoaded||state.status?.running)return;clearTimeout(state.queueSaveTimer);state.queueSaveTimer=setTimeout(()=>persistRobotProfile().catch(error=>toast(error.message)),250);}
+      $('robot-task-select-all').addEventListener('change',event=>{const selected=new Set(state.queueIds);if(event.target.checked){for(const id of state.visibleTaskIds){if(!selected.has(id))selected.add(id);}state.queueIds=[...selected];}else{const visible=new Set(state.visibleTaskIds);state.queueIds=state.queueIds.filter(id=>!visible.has(id));}renderRobotTasks(state.status?.tasks||[]);persistQueueSoon();});
+      for(const id of ['task-search','task-filter','task-sort'])$(id).addEventListener(id==='task-search'?'input':'change',()=>renderRobotTasks(state.status?.tasks||[]));
+      $('robot-mode').addEventListener('change',()=>{syncRobotTaskMode();persistQueueSoon();});
+      function canMarkTask(task){return ['needs_review','error','blocked','captured'].includes(task.status);}
+      function renderTaskRejection(task){const host=$('drawer-rejection');host.replaceChildren();host.hidden=!task.reject_reason;if(!task.reject_reason)return;const reason=el('strong','',rejectionLabels[task.reject_reason]||'未记录原因'),detail=el('span','',task.reject_detail||'未填写备注'),undo=el('button','btn','撤销不合格');undo.type='button';undo.disabled=!!state.status?.running;undo.addEventListener('click',()=>undoTaskRejection(task.id,undo));host.append(reason,detail,undo);}
+      function resetDebugRunExport(){const select=$('drawer-debug-run-select');select.replaceChildren();$('drawer-debug-run-export').href='#';$('drawer-debug-runs').hidden=true;}
+      function addDebugRunExport(runId,startedAt){const select=$('drawer-debug-run-select'),id=String(runId);if(!Array.from(select.options).some(option=>option.value===id)){const option=document.createElement('option');option.value=id;option.textContent=(startedAt||'').slice(11,19)+' · '+id.slice(0,8);select.append(option);}if(!select.value)select.value=id;$('drawer-debug-runs').hidden=false;$('drawer-debug-run-export').href='/api/debug/runs/'+encodeURIComponent(select.value)+'/export';}
+      $('drawer-debug-run-select').addEventListener('change',()=>{$('drawer-debug-run-export').href='/api/debug/runs/'+encodeURIComponent($('drawer-debug-run-select').value)+'/export';});
+      function openTaskDrawer(task){state.drawerReturnFocus=document.activeElement;state.drawerTaskId=String(task.id);$('drawer-timeline').open=false;$('drawer-actions').replaceChildren();resetDebugRunExport();$('drawer-title').textContent=task.source_name||'未命名门店';$('drawer-status').replaceChildren(badgeFor(task));$('drawer-message').textContent=(task.error_code?`[${({retryable:'可重试',store_unavailable:'门店不可采'})[task.group]||'需人工'}·${task.label||task.error_code}] `:'')+(task.message||'尚无运行消息');$('drawer-source').textContent=task.source_path||'—';$('drawer-output').textContent=task.output_dir||'尚未生成';renderTaskRejection(task);$('drawer-images').replaceChildren();$('task-drawer').hidden=false;document.querySelector('.drawer-body').scrollTop=0;$('task-drawer').querySelector('button[data-drawer-close]').focus();document.body.classList.add('drawer-open');$('drawer-reject').hidden=!!task.reject_reason||!canMarkTask(task);$('drawer-reject').disabled=!!state.status?.running;$('drawer-retry').hidden=!(isFail(task)||task.status==='captured');$('drawer-retry').textContent=task.reject_reason?'重新处理':'重新采集此店';$('drawer-retry').disabled=!!state.status?.running;api('/api/artifacts/'+encodeURIComponent(task.id)).then(result=>{const images=(result.files||[]).filter(file=>/^page-\d+\.png$/i.test(file.split('/').pop()));if(!images.length){$('drawer-images').append(el('div','drawer-empty','尚无已发布截图'));return;}for(const file of images){const figure=document.createElement('figure'),image=document.createElement('img'),caption=el('figcaption','',file.split('/').pop());image.loading='lazy';image.alt=(task.source_name||'门店')+' '+caption.textContent;image.src='/api/artifact/'+encodeURIComponent(task.id)+'/'+file.split('/').map(encodeURIComponent).join('/');figure.append(image,caption);$('drawer-images').append(figure);}}).catch(error=>$('drawer-images').append(el('div','drawer-empty',error.message)));}
+      function appendDebugBlock(host,label,value){if(value===undefined||value===null||value===''||(Array.isArray(value)&&!value.length))return;const text=typeof value==='string'?value:JSON.stringify(value,null,2);if(!text||text==='{}'||text==='[]')return;const block=document.createElement('details'),content=document.createElement('pre');block.className='debug-block';block.append(el('summary','',label));content.className='debug-json';content.textContent=text;block.append(content);host.append(block);}
+      async function loadTaskActions(before){
+        const id=state.drawerTaskId, host=$('drawer-actions');
+        if(!id)return;
+        try{
+          const {actions}=await api('/api/tasks/'+encodeURIComponent(id)+'/actions'+(before?'?before='+before:''));
+          if(state.drawerTaskId!==id)return;
+          if(!before){host.replaceChildren();resetDebugRunExport();}
+          else host.querySelector('[data-more-actions]')?.remove();
+          if(!actions.length&&!before)host.append(el('p','drawer-message','暂无动作记录'));
+          const labels={ocr:'本地文字识别',model:'视觉模型判断',page_check:'检查页面变化',wechat_marker_check:'匹配本轮采集标记',click:'点击',double_click:'双击',right_click:'右击',noop:'等待',screenshot:'截图',scroll_capture:'滚动截图',resize:'调整窗口',discover:'查找窗口',task_result:'任务结果'};
+          for(const row of actions){
+            const d=row.details||{}, item=document.createElement('details');
+            const result={ok:'成功',error:'失败',unknown:'结果未知',running:'尚无结果'}[row.result]||row.result;
+            item.append(el('summary','drawer-message',[row.started_at.slice(11,19),row.step?'第 '+row.step+' 步':'',labels[row.action]||row.action,d.target,result,row.elapsed_ms==null?'':row.elapsed_ms+' ms'].filter(Boolean).join(' · ')));
+            item.append(el('p','drawer-message',[row.stage,'运行 '+row.run_id.slice(0,8),'尝试 '+row.attempt_id,d.source,d.x==null?'':'窗口坐标 '+Math.round(d.x)+', '+Math.round(d.y),{changed:'画面有变化',unchanged:'画面无变化'}[d.page_result],d.expected_marker?'本轮标记 '+d.expected_marker:'',d.match===true?'标记已识别':d.match===false?'未识别到标记':'',d.marker_bottom==null?'':'标记位置 y='+Math.round(d.marker_bottom),d.status,d.message,d.error_type].filter(Boolean).join(' · ')));
+            if(Array.isArray(d.matched_ocr)&&d.matched_ocr.length)item.append(el('p','drawer-message','OCR 匹配文本：'+d.matched_ocr.map(value=>typeof value==='string'?value:value.text).filter(Boolean).join(' / ')));
+            if(d.ocr_chat_rows){const diagnostic=document.createElement('details'),summary=el('summary','','查看微信 OCR 结果'),content=document.createElement('pre');content.className='drawer-message';content.textContent=JSON.stringify(d.ocr_chat_rows,null,2);diagnostic.append(summary,content);item.append(diagnostic);}
+            if(d.debug_expired||d.debug_state==='expired'){item.append(el('div','debug-expired','调试详情已清理'));}
+            else if(d.debug_state==='pending'){item.append(el('div','debug-expired','调试记录写入中'));}
+            else if(d.debug_state==='dropped'){item.append(el('div','debug-expired','日志队列曾丢弃部分低优先级记录'));}
+            else{
+              appendDebugBlock(item,'OCR 识别文本、文字框与置信度',d.ocr_rows||d.ocr_chat_rows);
+              if(d.ocr_image_size||d.ocr_scaled_size)appendDebugBlock(item,'OCR 图像尺寸 / 识别图尺寸',{image:d.ocr_image_size,scaled:d.ocr_scaled_size});
+              appendDebugBlock(item,'目标定位结果',d.target_resolution);
+              appendDebugBlock(item,'坐标换算（截图坐标 → 窗口坐标）',d.coordinates||d.coordinate_resolution);
+              appendDebugBlock(item,'页面变化与停止判断',d.image_difference===undefined?null:{difference:d.image_difference,threshold:d.change_threshold??d.threshold,result:d.page_result,stop_reason:d.stop_reason,no_change_count:d.consecutive_unchanged,region:d.comparison_region});
+              appendDebugBlock(item,'UiPath 命令与回复',{command_id:d.command_id,parameters:d.command_parameters,reply:d.reply_summary});
+              appendDebugBlock(item,'异常详情',d.error_message);
+              appendDebugBlock(item,'异常调用栈',d.error_stack);
+              appendDebugBlock(item,'完整动作详情',d);
+            }
+            if(row.run_id)addDebugRunExport(row.run_id,row.started_at);
+            for(const [key,label] of [['before','点击前'],['after','点击后'],['screenshot_evidence','失败时微信截图'],['frame_evidence','关联截图']]){
+              if(!d[key])continue;
+              const link=el('a','btn',label);
+              link.href='/api/action-evidence/'+encodeURIComponent(d[key]);
+              link.target='_blank';link.rel='noopener';
+              item.append(link);
+            }
+            host.append(item);
+          }
+          if(actions.length===100){
+            const more=el('button','btn','查看更早的动作');
+            more.dataset.moreActions='true';
+            more.addEventListener('click',()=>loadTaskActions(actions.at(-1).id));
+            host.append(more);
+          }
+        }catch(error){if(state.drawerTaskId===id)host.append(el('p','drawer-message',error.message));}
+      }
+      $('drawer-timeline').addEventListener('toggle',()=>{if($('drawer-timeline').open)loadTaskActions();});
+      $('drawer-load-actions').addEventListener('click',()=>loadTaskActions());
+      function closeTaskDrawer(){$('task-drawer').hidden=true;document.body.classList.remove('drawer-open');state.drawerTaskId=null;state.drawerReturnFocus?.focus();}
+      document.querySelectorAll('[data-drawer-close]').forEach(button=>button.addEventListener('click',closeTaskDrawer));document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('task-rejection-dialog').open&&!$('task-drawer').hidden)closeTaskDrawer();});
+      async function retryCaptureTask(id,button,returnToWorkbench=false){if(!id||state.status?.running)return;button.disabled=true;try{await api('/api/tasks/'+encodeURIComponent(id)+'/retry',{method:'POST',body:'{}'});if(!state.queueIds.includes(String(id)))state.queueIds.push(String(id));try{await persistRobotProfile();}catch(error){toast('任务已重置，队列设置暂未保存：'+error.message);}await poll();await loadRejections();if(returnToWorkbench)setPage('overview');toast(returnToWorkbench?'任务已加入队列，请在工作台开始采集':'任务已恢复到待处理并加入队列');}catch(error){toast(error.message);}finally{button.disabled=false;}}
+      $('drawer-retry').addEventListener('click',event=>retryCaptureTask(state.drawerTaskId,event.currentTarget));
+      function updateTaskLocally(task){if(!state.status?.tasks)return;const index=state.status.tasks.findIndex(item=>String(item.id)===String(task.id));if(index>=0)state.status.tasks[index]=task;}
+      async function undoTaskRejection(id,button){if(!id||state.status?.running)return;button.disabled=true;try{const result=await api('/api/tasks/'+encodeURIComponent(id)+'/rejection/undo',{method:'POST',body:'{}'});updateTaskLocally(result.task);if(state.drawerTaskId===String(id)){ $('drawer-status').replaceChildren(badgeFor(result.task));renderTaskRejection(result.task);$('drawer-reject').hidden=!canMarkTask(result.task);$('drawer-reject').disabled=false;}await poll();await loadRejections();toast('已撤销不合格标记，任务保留原状态');}catch(error){toast(error.message);}finally{button.disabled=false;}}
+      $('drawer-reject').addEventListener('click',()=>{const task=state.status?.tasks?.find(item=>String(item.id)===String(state.drawerTaskId));if(!task||!canMarkTask(task)||state.status?.running)return;$('task-rejection-store').textContent=task.source_name||'未命名门店';$('task-rejection-reason').value='blur';$('task-rejection-detail').value='';$('task-rejection-error').hidden=true;$('task-rejection-error').textContent='';$('task-rejection-dialog').showModal();});
+      $('task-rejection-cancel').addEventListener('click',()=>$('task-rejection-dialog').close());
+      $('task-rejection-dialog').addEventListener('cancel',event=>{if(state.status?.running)event.preventDefault();});
+      $('task-rejection-form').addEventListener('submit',async event=>{event.preventDefault();const id=state.drawerTaskId,reason=$('task-rejection-reason').value,detail=$('task-rejection-detail').value.trim(),submit=$('task-rejection-submit');if(!id)return;submit.disabled=true;$('task-rejection-error').hidden=true;try{const result=await api('/api/tasks/'+encodeURIComponent(id)+'/reject',{method:'POST',body:JSON.stringify({reason,detail})});updateTaskLocally(result.task);state.queueIds=state.queueIds.filter(value=>String(value)!==String(id));renderRobotTasks(state.status?.tasks||[]);try{await persistRobotProfile();}catch(error){toast('不合格已记录，队列设置暂未保存：'+error.message);}await poll();$('task-rejection-dialog').close();const current=state.status?.tasks?.find(item=>String(item.id)===String(id))||result.task;$('drawer-status').replaceChildren(badgeFor(current));renderTaskRejection(current);$('drawer-reject').hidden=true;$('drawer-retry').textContent='重新处理';await loadRejections();toast('已记录不合格原因');}catch(error){$('task-rejection-error').textContent=error.message;$('task-rejection-error').hidden=false;}finally{submit.disabled=false;}});
+      async function loadRejections(quiet=false){
+        const list=$('quality-list');if(!list)return;
+        quiet=quiet===true;
+        if(quiet&&qualityRefreshBusy)return;
+        const requestId=++qualityRequestSeq;
+        if(quiet)qualityRefreshBusy=true;
+        else list.replaceChildren(el('div','empty','正在读取不合格记录…'));
+        const params=new URLSearchParams({batch_id:$('quality-batch').value,source:$('quality-source').value,reason:$('quality-reason').value,q:$('quality-search').value.trim()});
+        try{
+          const data=await api('/api/rejections?'+params.toString());
+          if(requestId!==qualityRequestSeq)return;
+          const batchSelect=$('quality-batch'),selectedBatch=batchSelect.value,batches=Array.isArray(data.batches)?data.batches:[];
+          batchSelect.replaceChildren(new Option('全部批次','all'));
+          for(const batch of batches)batchSelect.add(new Option(batch.name||batch.id,batch.id));
+          batchSelect.value=selectedBatch==='all'||batches.some(batch=>batch.id===selectedBatch)?selectedBatch:'all';
+          const records=Array.isArray(data.records)?data.records:[],summary=data.summary||{};
+          $('quality-store-count').textContent=String(summary.stores||0);$('quality-material-count').textContent=String(summary.materials||0);$('quality-capture-count').textContent=String(summary.capture||0);$('quality-record-count').textContent=records.length+' 条记录';
+          list.replaceChildren();
+          if(!records.length){list.append(el('div','empty','没有符合条件的不合格记录。'));return;}
+          for(const record of records){
+            const row=el('article','quality-row'),head=el('div','quality-row-head'),title=el('strong','quality-title',record.store_name||'未命名门店'),source=el('span','quality-source '+(record.source_type==='capture'?'capture':'materials'),record.source_label||'来源未知');head.append(title,source);
+            const meta=el('div','quality-row-meta');const metaParts=[record.batch_name||'未关联素材批次',record.source_type==='capture'?('采集阶段：'+(record.stage||'未知')):'',record.source_folder,record.source_item,record.marked_at?timeLabel(record.marked_at):''];meta.append(el('span','',metaParts.filter(Boolean).join(' · ')));
+            const reason=el('div','quality-reason');reason.append(el('strong','',record.reason_label||'未记录原因'));if(record.detail)reason.append(el('span','',record.detail));
+            const actions=el('div','quality-row-actions');
+            if(record.source_type==='materials'){
+              const review=el('button','btn btn-primary','继续处理');review.type='button';review.addEventListener('click',()=>reopenMaterialForReview(record,review));
+              const undo=el('button','btn','撤销不合格');undo.type='button';undo.addEventListener('click',()=>undoMaterialRejection(record,undo));actions.append(review,undo);
+            }else{
+              const undo=el('button','btn','撤销不合格');undo.type='button';undo.disabled=!!state.status?.running;undo.addEventListener('click',()=>undoTaskRejection(record.task_id,undo));
+              const retryable=['needs_review','needs_retry','error','blocked','captured'].includes(record.status);const retry=el('button','btn btn-primary',retryable?'重新采集':'处理中');retry.type='button';retry.disabled=!!state.status?.running||!retryable;retry.addEventListener('click',()=>retryCaptureTask(record.task_id,retry,true));actions.append(undo,retry);
+            }
+            row.append(head,meta,reason,actions);list.append(row);
+          }
+        }catch(error){
+          if(requestId===qualityRequestSeq&&!quiet)list.replaceChildren(el('div','empty','读取失败：'+error.message));
+        }finally{if(quiet)qualityRefreshBusy=false;}
+      }
+      async function reopenMaterialForReview(record,button){button.disabled=true;try{setPage('materials');window.dispatchEvent(new CustomEvent('materials-open-review',{detail:{batch_id:record.batch_id,store_id:record.store_id}}));toast('已打开门店修复页；不合格记录会保留到确认修复');}catch(error){toast(error.message);}finally{button.disabled=false;}}
+      async function undoMaterialRejection(record,button){button.disabled=true;try{await api('/api/rejections/materials/'+encodeURIComponent(record.batch_id)+'/'+encodeURIComponent(record.store_id)+'/undo',{method:'POST',body:'{}'});await loadRejections();toast('已撤销不合格标记');}catch(error){toast(error.message);}finally{button.disabled=false;}}
+      $('quality-refresh').addEventListener('click',loadRejections);
+      $('quality-batch').addEventListener('change',loadRejections);$('quality-source').addEventListener('change',loadRejections);$('quality-reason').addEventListener('change',loadRejections);
+      let qualitySearchTimer=null;$('quality-search').addEventListener('input',()=>{clearTimeout(qualitySearchTimer);qualitySearchTimer=setTimeout(loadRejections,220);});
+      $('quality-export').addEventListener('click',async event=>{const button=event.currentTarget;if(button.disabled)return;button.disabled=true;const params=new URLSearchParams({batch_id:$('quality-batch').value,source:$('quality-source').value,reason:$('quality-reason').value,q:$('quality-search').value.trim()});try{const response=await fetch('/api/rejections/export.xlsx?'+params.toString(),{cache:'no-store'});if(!response.ok){let data={};try{data=await response.json();}catch{}throw new Error(data.detail||'导出失败');}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='不合格门店清单.xlsx';document.body.append(link);link.click();link.remove();URL.revokeObjectURL(url);toast('已导出当前筛选的不合格门店');}catch(error){toast(error.message);}finally{button.disabled=false;}});
+      async function refreshConfig(){try{const c=await api('/api/config');fillConfig(c);}catch(err){$('connection-label').textContent='配置读取失败';$('connection-dot').className='status-dot';toast(err.message);}}
+      const ENV_STATUS_LABELS={checking:'检测中',ready:'正常',warning:'需处理',error:'异常',unknown:'未知'};
+      const CONNECTION_STATUS_LABELS={checking:'连接中',ready:'已就绪',warning:'需要操作',error:'异常',unknown:'未知'};
+      const MODULE_NAMES={wechat:'微信',engine:'自动化引擎',model:'AI 模型'};
+      function timeLabel(value){return value?environmentTime(value):"—";}
+      function environmentTime(value){if(!value)return '尚无检测记录';const date=new Date(value);return Number.isNaN(date.getTime())?String(value):date.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+      function renderOverviewConnections(data){
+        const list=$('preflight-list');list.replaceChildren();
+        for(const id of ['wechat','engine','model']){const module=(data?.modules||[]).find(item=>item.id===id),moduleStatus=module?.status||'unknown',row=el('div',`check ${moduleStatus==='ready'?'ok':moduleStatus==='warning'||moduleStatus==='error'?'warn':''}`),icon=el('i','check-mark',moduleStatus==='ready'?'✓':moduleStatus==='checking'?'…':moduleStatus==='warning'||moduleStatus==='error'?'!':'?'),label=moduleStatus==='unknown'?'未检查':CONNECTION_STATUS_LABELS[moduleStatus]||'未知',detail=['warning','error'].includes(moduleStatus)&&module?.summary?`：${module.summary}`:'';row.title=module?.summary||'';row.append(icon,el('span','',`${MODULE_NAMES[id]} ${label}${detail}`));list.append(row);}
+      }
+      function appendConnectionActions(host,actions,owner){
+        if(!['warning','error'].includes(owner.status))return;
+        for(const action of actions||[]){if(!['reconnect','open_settings','settings'].includes(action.kind))continue;const button=el('button','btn',action.label||(action.kind==='reconnect'?'重新连接':'打开系统设置'));button.type='button';button.disabled=state.connectionsLoading||state.connectionActionRunning;button.addEventListener('click',()=>runConnectionAction(owner,action,button));host.append(button);}
+      }
+      function renderDiagnosticChecks(checks){
+        const host=$('connection-checks');host.replaceChildren();
+        if(!checks.length){host.append(el('div','env-empty','当前没有底层检查项。'));return;}
+        for(const check of checks){
+          const row=el('article','env-row'),top=el('div','env-row-top'),heading=el('div'),name=el('div','env-row-title',check.name||check.id||'未命名检查'),time=el('div','env-row-time',`检测时间：${environmentTime(check.checked_at)}`),raw=ENV_STATUS_LABELS[check.status]?check.status:'unknown',badge=el('span',`env-status ${raw}`,ENV_STATUS_LABELS[raw]);
+          heading.append(name,time);top.append(heading,badge);row.append(top);if(check.summary)row.append(el('p','env-row-summary',check.summary));
+          if(check.detail!==undefined&&check.detail!==null&&check.detail!==''){const details=document.createElement('details'),summary=el('summary','','查看详情'),detail=el('p','env-detail',typeof check.detail==='string'?check.detail:JSON.stringify(check.detail,null,2));details.append(summary,detail);row.append(details);}
+          const actions=el('div','env-actions');for(const action of check.actions||[]){if(!['test','open_settings','settings'].includes(action.kind))continue;const button=el('button','btn',action.label||(action.kind==='test'?'测试连接':'打开系统设置'));button.type='button';button.addEventListener('click',()=>runDiagnosticAction(check,action,button));actions.append(button);}if(actions.childElementCount)row.append(actions);
+          if(state.connectionErrors[check.id])row.append(el('div','env-inline-error',state.connectionErrors[check.id]));host.append(row);
+        }
+      }
+      function renderConnections(data){
+        state.connections=data||{};const snapshot=state.connections,status=snapshot.status||'unknown',modules=Array.isArray(snapshot.modules)?snapshot.modules:[];
+        const badge=$('environment-preflight-status');badge.className=`env-status ${status==='warning'?'warning':status}`;badge.textContent=CONNECTION_STATUS_LABELS[status]||'未知';
+        $('environment-preflight-title').textContent=snapshot.summary||`连接总体状态：${CONNECTION_STATUS_LABELS[status]||'未知'}`;$('environment-checked-at').textContent=`最近检查：${environmentTime(snapshot.checked_at)}`;
+        const blockers=Array.isArray(snapshot.preflight?.blockers)?snapshot.preflight.blockers:[],blockerList=$('environment-blockers');blockerList.replaceChildren();blockerList.hidden=true;for(const blocker of blockers)blockerList.append(el('li','',blocker));
+        renderOverviewConnections(snapshot);
+        const host=$('connection-modules'),refresh=$('environment-refresh');host.replaceChildren();refresh.hidden=false;refresh.textContent=snapshot.busy?'继续等待本轮检测':snapshot.checked_at?'重新检测':'检查连接';refresh.disabled=state.connectionActionRunning||!!state.status?.running;
+        for(const id of ['wechat','engine','model']){
+          const module=modules.find(item=>item.id===id)||{id,name:MODULE_NAMES[id],status:'unknown',summary:'尚未收到连接状态',actions:[]},moduleStatus=CONNECTION_STATUS_LABELS[module.status]?module.status:'unknown';
+          const row=el('article','env-row'),top=el('div','env-row-top'),heading=el('div'),name=el('div','env-row-title',MODULE_NAMES[id]),time=el('div','env-row-time',`检测时间：${environmentTime(module.checked_at)}`),statusBadge=el('span',`env-status ${moduleStatus==='warning'?'warning':moduleStatus}`,CONNECTION_STATUS_LABELS[moduleStatus]);
+          heading.append(name,time);top.append(heading,statusBadge);row.append(top,el('p','env-row-summary',module.summary||'尚无状态说明'));
+          if(module.detail!==undefined&&module.detail!==null&&module.detail!==''){const details=document.createElement('details'),summary=el('summary','','查看详情'),detail=el('p','env-detail',typeof module.detail==='string'?module.detail:JSON.stringify(module.detail,null,2));details.append(summary,detail);row.append(details);}
+          const actions=el('div','env-actions');appendConnectionActions(actions,module.actions,module);if(actions.childElementCount)row.append(actions);
+          if(state.connectionErrors[module.id])row.append(el('div','env-inline-error',state.connectionErrors[module.id]));host.append(row);
+        }
+        $('connection-diagnostic-stage').textContent=snapshot.diagnostics?.stage?`当前连接阶段：${snapshot.diagnostics.stage}`:'';
+        const events=$('connection-events');events.replaceChildren();const diagnosticEvents=Array.isArray(snapshot.diagnostics?.events)?snapshot.diagnostics.events:[];
+        if(!diagnosticEvents.length)events.append(el('div','log-empty','暂无连接事件'));else for(const event of diagnosticEvents.slice(-100).reverse()){const line=el('div','log-row'),time=el('span','log-time',environmentTime(event.time)),level=el('span',`log-level ${/error/i.test(event.status||'')?'error':/warn/i.test(event.status||'')?'warning':''}`,event.stage||event.status||'info'),message=el('span','log-message',event.message||'');line.append(time,level,message);events.append(line);}
+        renderDiagnosticChecks(Array.isArray(snapshot.diagnostics?.checks)?snapshot.diagnostics.checks:[]);
+      }
+      function renderUncheckedConnections(){
+        const modules=['wechat','engine','model'].map(id=>({id,name:MODULE_NAMES[id],status:'unknown',summary:'尚未手动检测',detail:'点击“检查连接”后执行一次实际检测。',actions:[]}));
+        renderConnections({status:'unknown',summary:'尚未手动检查连接状态',checked_at:null,busy:false,modules,preflight:{ready:false,blockers:['尚未手动检查连接状态']},diagnostics:{stage:'等待手动检查',events:[],checks:[]}});
+      }
+      function renderServiceDisconnected(){
+        state.serviceDisconnected=true;$('environment-preflight-status').className='env-status error';$('environment-preflight-status').textContent='异常';$('environment-preflight-title').textContent='连接状态暂不可用';$('environment-checked-at').textContent=state.connectionRecoveryRunning?'正在读取本机服务':'需要时可手动重试';$('environment-refresh').hidden=true;
+        renderOverviewConnections({status:'error',summary:'本机服务中断',modules:[]});
+        const host=$('connection-modules');host.replaceChildren();const row=el('article','env-row connection-disconnected'),copy=el('div'),title=el('strong','', '本机服务中断'),hint=el('span','', '连接状态暂时无法读取；点击按钮手动重试一次。'),button=el('button','btn btn-primary','重试读取');button.type='button';button.disabled=state.connectionRecoveryRunning;button.addEventListener('click',retryLocalService);copy.append(title,hint);row.append(copy,button);host.append(row);
+      }
+      async function retryLocalService(){
+        if(state.connectionRecoveryRunning)return;
+        state.connectionRecoveryRunning=true;renderServiceDisconnected();
+        try{
+          const data=await api('/api/connections');state.connections=data;state.serviceDisconnected=false;state.connectionErrors={};renderConnections(data);
+        }catch{state.serviceDisconnected=true;}
+        finally{state.connectionRecoveryRunning=false;if(state.serviceDisconnected)renderServiceDisconnected();else $('environment-refresh').disabled=false;}
+      }
+      function markServiceDisconnected(){renderServiceDisconnected();}
+      async function refreshConnections(){
+        if(state.connectionsLoading)return state.connections;
+        state.connectionsLoading=true;const refresh=$('environment-refresh');if(refresh)refresh.disabled=true;let data=null;
+        try{data=await api('/api/connections');state.connectionErrors={};state.serviceDisconnected=false;renderConnections(data);}
+        catch(err){markServiceDisconnected();}
+        finally{state.connectionsLoading=false;if(refresh)refresh.disabled=state.connectionActionRunning||state.connectionRecoveryRunning;document.querySelectorAll('.env-actions button').forEach(button=>button.disabled=state.connectionActionRunning);}
+        return data;
+      }
+      async function connectConnections(force=true){
+        if(state.connectionActionRunning)return state.connections;
+        state.connectionActionRunning=true;const refresh=$('environment-refresh');if(refresh){refresh.disabled=true;refresh.textContent='检测中…';}
+        try{const data=await api('/api/connections/connect',{method:'POST',body:JSON.stringify({force:!!force})});state.connectionErrors={};state.serviceDisconnected=false;renderConnections(data);return data;}
+        catch{markServiceDisconnected();return null;}
+        finally{state.connectionActionRunning=false;if(refresh&&!state.serviceDisconnected){refresh.textContent=state.connections?.busy?'继续等待本轮检测':state.connections?.checked_at?'重新检测':'检查连接';refresh.disabled=!!state.status?.running;}document.querySelectorAll('.env-actions button').forEach(button=>button.disabled=state.connectionsLoading);}
+      }
+      function normalizedActionTarget(action){
+        const valueOf=value=>typeof value==='string'?value: value&&typeof value==='object'?(value.target||value.id||value.pane||value.page||value.name||''):'';
+        const context=action?.context,contextTarget=valueOf(context?.target)||valueOf(context?.settings_target)||valueOf(context?.settings?.target)||valueOf(context?.settings)||valueOf(context?.action?.target)||valueOf(context);
+        const target=valueOf(action?.target)||valueOf(action?.pane)||valueOf(action?.id);
+        const knownTargets=['model','model_config','ai_model','accessibility','screen_recording','automation','full_disk_access','environment','settings'];
+        return contextTarget&&(!target||['settings','environment','context'].includes(target)||!knownTargets.includes(target))?contextTarget:target||contextTarget;
+      }
+      async function runConnectionAction(owner,action,button){
+        if(action.kind==='reconnect'){button.disabled=true;await connectConnections(true);return;}
+        const pane=normalizedActionTarget(action);
+        if(action.kind==='settings'&&['model','model_config','ai_model'].includes(pane)){
+          setPage('settings');window.requestAnimationFrame(()=>$('base-url').focus({preventScroll:true}));return;
+        }
+        if(!['accessibility','screen_recording','automation','full_disk_access'].includes(pane)){toast('系统设置目标无效');return;}
+        state.connectionActionRunning=true;button.disabled=true;document.querySelectorAll('.env-actions button').forEach(item=>item.disabled=true);
+        try{const result=await api('/api/environment/settings',{method:'POST',body:JSON.stringify({pane})});if(result.message)toast(`${result.message}；授权后请手动重新检测`);}
+        catch(err){state.connectionErrors[owner.id||owner.module_id||'settings']=err.message;toast(err.message);}
+        finally{state.connectionActionRunning=false;document.querySelectorAll('.env-actions button').forEach(item=>item.disabled=false);}
+      }
+      async function runDiagnosticAction(check,action,button){
+        if(action.kind==='test'){
+          const id=action.target||check.id;if(!['model_service','uipath_desktop','wechat'].includes(id)){toast('该检查项暂不支持连接测试');return;}
+          button.disabled=true;try{await api('/api/environment/test',{method:'POST',body:JSON.stringify({id})});await refreshConnections();}catch(err){state.connectionErrors[check.id]=err.message;toast(err.message);}finally{button.disabled=false;}return;
+        }
+        await runConnectionAction(check,action,button);
+      }
+      async function poll(){if(state.polling)return;state.polling=true;try{renderStatus(await api('/api/status'));}catch(err){$('connection-dot').className='status-dot';$('connection-label').textContent='连接中断';$('sidebar-connection-label').textContent='本地服务已断开';$('poll-clock').textContent=err.message;}finally{state.polling=false;clearTimeout(state.statusPollTimer);state.statusPollTimer=state.status?.running?setTimeout(poll,3000):null;}}
+      async function scan(){const button=$('scan-btn');button.disabled=true;try{const r=await api('/api/scan',{method:'POST',body:'{}'});toast(`${r.material_release?.version||'当前输入目录'}扫描完成 · 新增 ${r.added??0} 项 · 当前共 ${r.current_total??0} 项`);await poll();}catch(err){toast(err.message);}finally{button.disabled=!!state.status?.running;}}
+      async function start(){if(!hasRobotSelection()){promptRobotTaskSelection();return;}const button=$('start-btn');button.disabled=true;$('preflight-error').classList.remove('visible');try{await persistRobotProfile();await poll();const result=await api('/api/start',{method:'POST',body:'{}'});renderStatus(result);void poll();toast(result.launch_mode==='cli'?'自动化引擎已启动，正在连接':'任务已准备，请按运行目录提示在 Studio 中启动');}catch(err){$('preflight-error').textContent=err.message;$('preflight-error').classList.add('visible');toast(err.message);}finally{syncStartButton();}}
+      async function changeRun(action){
+        if(state.runAction)return;
+        if(action==='terminate'){
+          const single=state.status?.run?.mode==='attached';
+          if(!window.confirm(single?'终止本店采集？本次尚未发布的截图可能不会保存。':'终止本轮采集？已保存的门店结果会保留，当前尚未发布的截图可能不会保存，剩余门店可以重新采集。'))return;
+        }
+        state.runAction=action;
+        renderStatus(state.status);
+        $('preflight-error').classList.remove('visible');
+        try{
+          renderStatus(await api('/api/'+action,{method:'POST',body:'{}'}));
+        }catch(err){
+          $('preflight-error').textContent=err.message;
+          $('preflight-error').classList.add('visible');
+        }finally{
+          state.runAction=null;
+          renderStatus(state.status);
+          await poll();
+        }
+      }
+      function resume(){return changeRun('resume');}
+      function stop(){return changeRun('stop');}
+      function terminate(){return changeRun('terminate');}
+      async function retryTask(id,button){button.disabled=true;try{await api(`/api/tasks/${encodeURIComponent(id)}/retry`,{method:'POST',body:'{}'});toast('已提交重试');await poll();}catch(err){toast(err.message);}finally{button.disabled=false;}}
+      window.addEventListener('materials-published',()=>void poll());
+      $('scan-btn').addEventListener('click',scan);$('start-btn').addEventListener('click',start);$('resume-btn').addEventListener('click',resume);$('stop-btn').addEventListener('click',stop);$('terminate-btn').addEventListener('click',terminate);
+      $('test-model-btn').addEventListener('click',async()=>{const btn=$('test-model-btn'),res=$('test-result');btn.disabled=true;res.className='test-result';res.textContent='正在连接…';res.classList.add('visible');try{const result=await api('/api/test-model',{method:'POST',body:'{}'});res.className=`test-result visible ${result.ok?'ok':'bad'}`;res.textContent=result.message|| (result.ok?'连接成功':'连接失败');$('model-status-title').textContent=result.ok?'连接测试成功':'连接测试未通过';$('model-status-subtitle').textContent=result.message||'';await refreshConnections();}catch(err){res.className='test-result visible bad';res.textContent=err.message;$('model-status-title').textContent='连接测试失败';$('model-status-subtitle').textContent=err.message;await refreshConnections();}finally{btn.disabled=false;}});
+      for(const id of ['reveal-input','reveal-output'])$(id).addEventListener('click',async()=>{try{await api('/api/reveal',{method:'POST',body:JSON.stringify({path:id==='reveal-input'?'input':'output'})});}catch(err){toast(err.message);}});
+      let robotProfile=null,robotProfileLoaded=false,robotTasksInitialized=false;
+      function canSelectRobotTask(task){return (!task.reject_reason||task.status==='pending')&&['pending','needs_review','needs_retry','error','blocked','captured'].includes(task.status);}
+      function fillRobot(p){robotProfile=p;robotProfileLoaded=true;for(const [id,key] of [['robot-launch-mode','launch_mode'],['robot-mode','mode'],['robot-miniapp','miniapp_selector'],['robot-wechat','wechat_selector'],['robot-preview','preview_selector'],['robot-paste','paste_shortcut'],['robot-send','send_key'],['robot-close','close_key'],['robot-input-x','wechat_input_x_ratio'],['robot-input-y','wechat_input_y_ratio'],['robot-scroll','scroll_units']])$(id).value=p[key]??'';$('robot-verified').checked=!!p.coordinates_verified;renderRobotTasks(state.status?.tasks||[],true);}
+      $('robot-task').addEventListener('change',()=>{state.attachedId=$('robot-task').value;syncRobotTaskMode();persistQueueSoon();});
+      function buildRobotProfile(){const mode=$('robot-mode').value,selectedTaskIds=state.queueIds.map(String),selectedTaskId=$('robot-task').value;if(!robotProfileLoaded)throw new Error('自动化执行配置尚未读取完成，请稍后重试');return {launch_mode:$('robot-launch-mode').value,mode,selected_task_id:selectedTaskId,selected_task_ids:selectedTaskIds,miniapp_selector:$('robot-miniapp').value.trim(),wechat_selector:$('robot-wechat').value.trim(),preview_selector:$('robot-preview').value.trim(),paste_shortcut:$('robot-paste').value.trim(),send_key:$('robot-send').value.trim(),close_key:$('robot-close').value.trim(),wechat_input_x_ratio:Number($('robot-input-x').value),wechat_input_y_ratio:Number($('robot-input-y').value),scroll_units:Number($('robot-scroll').value),max_tasks:mode==='attached'?1:Math.max(1,Math.min(10,selectedTaskIds.length)),coordinates_verified:$('robot-verified').checked};}
+      async function persistRobotProfile(){const previous=robotProfile,payload=buildRobotProfile(),saved=await api('/api/robot/profile',{method:'POST',body:JSON.stringify(payload)});const changed=previous&&['mode','wechat_selector','miniapp_selector','preview_selector'].some(key=>previous[key]!==saved[key]);robotProfile=saved;if(changed){state.connections=null;renderUncheckedConnections();}$('robot-save-message').textContent=' 已保存';return saved;}
+      $('robot-form').addEventListener('submit',async event=>{event.preventDefault();try{await persistRobotProfile();await poll();}catch(err){$('robot-save-message').textContent=err.message;}});
+      $('environment-refresh').addEventListener('click',()=>state.serviceDisconnected?retryLocalService():connectConnections(true));
+      renderUncheckedConnections();refreshConfig();api('/api/robot/profile').then(fillRobot).catch(err=>toast(err.message));poll();
+      window.__materialsInit=(initialize)=>initialize({api,token:TOKEN});
+    })();
+  </script>
+  <script src="/assets/materials.js"></script>
+  <script src="/assets/model-usage.js"></script>
+  <script src="/assets/annotation.js"></script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "task_id": "9069140e6aaad0c23540",
+  "run_id": "f9efa923008443208673f3b1ebd0093c",
+  "source_name": "E00887＿龙师傅卤炒＿长沙市＿龙师傅卤炒（旺龙路店）",
+  "model": "gui-plus-2026-02-26",
+  "navigation": {
+    "outcome": "needs_review",
+    "reason": "模型动作无效或超出允许范围",
+    "source": "runtime",
+    "frame": "evidence/ui-tars-008.png"
+  },
+  "capture": {
+    "status": "not_started",
+    "pages": []
+  },
+  "timing_ms": {
+    "startup": 49048,
+    "navigation": 78495,
+    "total": 149236
+  },
+  "material": {
+    "material_version_id": "aea0462ceb7f407091044eedf061ee0f",
+    "material_batch_id": "a87220341e0447ed865c9c6f32994228",
+    "material_version": "v1.0.0",
+    "material_snapshot": "3097a387b722c7feb0a8ba1a2ba3025f595d76e95d0335286ba7a43567209642"
+  },
+  "initial_frame": "evidence/ui-tars-001.png",
+  "wechat_return": {
+    "status": "ready"
+  }
+}

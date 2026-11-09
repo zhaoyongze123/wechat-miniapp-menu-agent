@@ -1,0 +1,1731 @@
+2026-11-04 17:06:35,879 INFO uvicorn.error Started server process [28097]
+2026-11-04 17:06:35,879 INFO uvicorn.error Waiting for application startup.
+2026-11-04 17:06:35,879 INFO uvicorn.error Application startup complete.
+2026-11-04 17:06:35,880 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-04 17:09:17,410 INFO uvicorn.error Shutting down
+2026-11-04 17:09:17,513 INFO uvicorn.error Waiting for application shutdown.
+2026-11-04 17:09:17,514 INFO uvicorn.error Application shutdown complete.
+2026-11-04 17:09:17,514 INFO uvicorn.error Finished server process [28097]
+2026-11-04 17:10:26,281 INFO uvicorn.error Started server process [28494]
+2026-11-04 17:10:26,281 INFO uvicorn.error Waiting for application startup.
+2026-11-04 17:10:26,281 INFO uvicorn.error Application startup complete.
+2026-11-04 17:10:26,282 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-04 17:12:28,585 INFO uvicorn.error Shutting down
+2026-11-04 17:12:28,687 INFO uvicorn.error Waiting for application shutdown.
+2026-11-04 17:12:28,687 INFO uvicorn.error Application shutdown complete.
+2026-11-04 17:12:28,687 INFO uvicorn.error Finished server process [28494]
+2026-11-04 17:12:29,040 INFO uvicorn.error Started server process [28700]
+2026-11-04 17:12:29,040 INFO uvicorn.error Waiting for application startup.
+2026-11-04 17:12:29,041 INFO uvicorn.error Application startup complete.
+2026-11-04 17:12:29,041 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-04 17:13:05,243 INFO uvicorn.error Shutting down
+2026-11-04 17:13:05,344 INFO uvicorn.error Waiting for application shutdown.
+2026-11-04 17:13:05,345 INFO uvicorn.error Application shutdown complete.
+2026-11-04 17:13:05,345 INFO uvicorn.error Finished server process [28700]
+2026-11-04 17:13:05,792 INFO uvicorn.error Started server process [28766]
+2026-11-04 17:13:05,792 INFO uvicorn.error Waiting for application startup.
+2026-11-04 17:13:05,793 INFO uvicorn.error Application startup complete.
+2026-11-04 17:13:05,793 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-04 17:51:56,332 INFO uvicorn.error Shutting down
+2026-11-04 17:51:56,436 INFO uvicorn.error Waiting for application shutdown.
+2026-11-04 17:51:56,437 INFO uvicorn.error Application shutdown complete.
+2026-11-04 17:51:56,437 INFO uvicorn.error Finished server process [28766]
+2026-11-04 17:55:26,628 INFO uvicorn.error Started server process [33358]
+2026-11-04 17:55:26,628 INFO uvicorn.error Waiting for application startup.
+2026-11-04 17:55:26,628 INFO uvicorn.error Application startup complete.
+2026-11-04 17:55:26,628 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-04 17:58:00,463 INFO uvicorn.error Shutting down
+2026-11-04 17:58:00,593 INFO uvicorn.error Waiting for application shutdown.
+2026-11-04 17:58:00,594 INFO uvicorn.error Application shutdown complete.
+2026-11-04 17:58:00,594 INFO uvicorn.error Finished server process [33358]
+2026-11-04 17:58:01,060 INFO uvicorn.error Started server process [34221]
+2026-11-04 17:58:01,060 INFO uvicorn.error Waiting for application startup.
+2026-11-04 17:58:01,060 INFO uvicorn.error Application startup complete.
+2026-11-04 17:58:01,061 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-04 18:55:10,767 INFO uvicorn.error Shutting down
+2026-11-04 18:55:10,869 INFO uvicorn.error Waiting for application shutdown.
+2026-11-04 18:55:10,870 INFO uvicorn.error Application shutdown complete.
+2026-11-04 18:55:10,870 INFO uvicorn.error Finished server process [34221]
+2026-11-04 18:55:11,382 INFO uvicorn.error Started server process [39591]
+2026-11-04 18:55:11,383 INFO uvicorn.error Waiting for application startup.
+2026-11-04 18:55:11,383 INFO uvicorn.error Application startup complete.
+2026-11-04 18:55:11,383 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-04 19:13:13,807 INFO uvicorn.error Shutting down
+2026-11-04 19:13:13,914 INFO uvicorn.error Waiting for application shutdown.
+2026-11-04 19:13:13,915 INFO uvicorn.error Application shutdown complete.
+2026-11-04 19:13:13,916 INFO uvicorn.error Finished server process [39591]
+2026-11-04 19:13:14,441 INFO uvicorn.error Started server process [41755]
+2026-11-04 19:13:14,441 INFO uvicorn.error Waiting for application startup.
+2026-11-04 19:13:14,442 INFO uvicorn.error Application startup complete.
+2026-11-04 19:13:14,442 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-05 10:26:08,980 INFO uvicorn.error Shutting down
+2026-11-05 10:26:09,084 INFO uvicorn.error Waiting for application shutdown.
+2026-11-05 10:26:09,086 INFO uvicorn.error Application shutdown complete.
+2026-11-05 10:26:09,086 INFO uvicorn.error Finished server process [41755]
+2026-11-05 10:26:09,538 INFO uvicorn.error Started server process [3487]
+2026-11-05 10:26:09,538 INFO uvicorn.error Waiting for application startup.
+2026-11-05 10:26:09,539 INFO uvicorn.error Application startup complete.
+2026-11-05 10:26:09,539 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-05 11:00:26,005 INFO uvicorn.error Shutting down
+2026-11-05 11:00:26,106 INFO uvicorn.error Waiting for application shutdown.
+2026-11-05 11:00:26,107 INFO uvicorn.error Application shutdown complete.
+2026-11-05 11:00:26,107 INFO uvicorn.error Finished server process [3487]
+2026-11-05 11:00:26,643 INFO uvicorn.error Started server process [7644]
+2026-11-05 11:00:26,643 INFO uvicorn.error Waiting for application startup.
+2026-11-05 11:00:26,644 INFO uvicorn.error Application startup complete.
+2026-11-05 11:00:26,644 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-05 11:10:34,008 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 11:10:44,993 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 11:11:51,975 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 11:34:27,361 INFO uvicorn.error Shutting down
+2026-11-05 11:34:27,464 INFO uvicorn.error Waiting for application shutdown.
+2026-11-05 11:34:27,465 INFO uvicorn.error Application shutdown complete.
+2026-11-05 11:34:27,465 INFO uvicorn.error Finished server process [7644]
+2026-11-05 11:34:28,024 INFO uvicorn.error Started server process [12221]
+2026-11-05 11:34:28,024 INFO uvicorn.error Waiting for application startup.
+2026-11-05 11:34:28,025 INFO uvicorn.error Application startup complete.
+2026-11-05 11:34:28,025 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-05 11:40:08,115 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 11:40:22,906 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 11:42:12,025 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 11:42:23,365 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 11:42:34,281 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 11:42:48,932 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 12:39:17,315 INFO uvicorn.error Shutting down
+2026-11-05 12:39:17,419 INFO uvicorn.error Waiting for application shutdown.
+2026-11-05 12:39:17,420 INFO uvicorn.error Application shutdown complete.
+2026-11-05 12:39:17,422 INFO uvicorn.error Finished server process [12221]
+2026-11-05 12:40:38,274 INFO uvicorn.error Started server process [18259]
+2026-11-05 12:40:38,274 INFO uvicorn.error Waiting for application startup.
+2026-11-05 12:40:38,275 INFO uvicorn.error Application startup complete.
+2026-11-05 12:40:38,275 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-05 15:36:52,302 INFO uvicorn.error Shutting down
+2026-11-05 15:36:52,405 INFO uvicorn.error Waiting for application shutdown.
+2026-11-05 15:36:52,406 INFO uvicorn.error Application shutdown complete.
+2026-11-05 15:36:52,406 INFO uvicorn.error Finished server process [18259]
+2026-11-05 15:36:52,971 INFO uvicorn.error Started server process [35196]
+2026-11-05 15:36:52,972 INFO uvicorn.error Waiting for application startup.
+2026-11-05 15:36:52,972 INFO uvicorn.error Application startup complete.
+2026-11-05 15:36:52,972 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-05 15:49:23,124 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 18:01:31,106 INFO uvicorn.error Shutting down
+2026-11-05 18:01:31,208 INFO uvicorn.error Waiting for application shutdown.
+2026-11-05 18:01:31,209 INFO uvicorn.error Application shutdown complete.
+2026-11-05 18:01:31,209 INFO uvicorn.error Finished server process [35196]
+2026-11-05 18:01:31,898 INFO uvicorn.error Started server process [49547]
+2026-11-05 18:01:31,898 INFO uvicorn.error Waiting for application startup.
+2026-11-05 18:01:31,898 INFO uvicorn.error Application startup complete.
+2026-11-05 18:01:31,899 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-05 18:07:14,773 INFO uvicorn.error Shutting down
+2026-11-05 18:07:14,875 INFO uvicorn.error Waiting for application shutdown.
+2026-11-05 18:07:14,875 INFO uvicorn.error Application shutdown complete.
+2026-11-05 18:07:14,875 INFO uvicorn.error Finished server process [49547]
+2026-11-05 18:07:15,288 INFO uvicorn.error Started server process [50769]
+2026-11-05 18:07:15,288 INFO uvicorn.error Waiting for application startup.
+2026-11-05 18:07:15,289 INFO uvicorn.error Application startup complete.
+2026-11-05 18:07:15,289 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-05 18:29:52,323 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 18:56:22,690 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 18:56:34,804 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 18:57:28,737 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 18:58:38,653 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 18:58:50,971 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 18:59:05,969 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 19:00:02,944 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 19:00:18,280 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 19:01:24,680 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 19:01:34,693 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 19:01:47,110 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 19:04:22,620 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 19:06:05,907 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 19:07:25,214 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 19:08:26,863 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 19:09:29,816 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 21:35:41,257 INFO uvicorn.error Shutting down
+2026-11-05 21:35:41,362 INFO uvicorn.error Waiting for application shutdown.
+2026-11-05 21:35:41,363 INFO uvicorn.error Application shutdown complete.
+2026-11-05 21:35:41,364 INFO uvicorn.error Finished server process [50769]
+2026-11-05 21:35:41,876 INFO uvicorn.error Started server process [72340]
+2026-11-05 21:35:41,876 INFO uvicorn.error Waiting for application startup.
+2026-11-05 21:35:41,876 INFO uvicorn.error Application startup complete.
+2026-11-05 21:35:41,877 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-05 21:54:45,638 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 21:54:57,213 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 21:55:12,963 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 21:55:32,433 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 21:56:31,525 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 22:17:20,637 INFO uvicorn.error Shutting down
+2026-11-05 22:17:20,740 INFO uvicorn.error Waiting for application shutdown.
+2026-11-05 22:17:20,741 INFO uvicorn.error Application shutdown complete.
+2026-11-05 22:17:20,741 INFO uvicorn.error Finished server process [72340]
+2026-11-05 22:17:21,227 INFO uvicorn.error Started server process [75976]
+2026-11-05 22:17:21,227 INFO uvicorn.error Waiting for application startup.
+2026-11-05 22:17:21,227 INFO uvicorn.error Application startup complete.
+2026-11-05 22:17:21,227 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-05 22:22:48,545 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 22:23:01,587 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 22:23:13,945 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 22:23:26,141 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 22:24:27,304 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 22:26:15,046 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 22:49:30,171 INFO uvicorn.error Shutting down
+2026-11-05 22:49:30,275 INFO uvicorn.error Waiting for application shutdown.
+2026-11-05 22:49:30,276 INFO uvicorn.error Application shutdown complete.
+2026-11-05 22:49:30,276 INFO uvicorn.error Finished server process [75976]
+2026-11-05 22:49:30,769 INFO uvicorn.error Started server process [79521]
+2026-11-05 22:49:30,769 INFO uvicorn.error Waiting for application startup.
+2026-11-05 22:49:30,769 INFO uvicorn.error Application startup complete.
+2026-11-05 22:49:30,770 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-05 22:59:50,176 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-05 23:00:11,906 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:06:29,538 INFO uvicorn.error Shutting down
+2026-11-06 00:06:29,640 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 00:06:29,642 INFO uvicorn.error Application shutdown complete.
+2026-11-06 00:06:29,642 INFO uvicorn.error Finished server process [79521]
+2026-11-06 00:06:30,152 INFO uvicorn.error Started server process [85965]
+2026-11-06 00:06:30,152 INFO uvicorn.error Waiting for application startup.
+2026-11-06 00:06:30,153 INFO uvicorn.error Application startup complete.
+2026-11-06 00:06:30,153 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 00:44:15,597 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:45:32,514 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:45:46,244 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:45:57,202 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:47:25,294 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:47:38,883 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:47:54,069 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:48:09,812 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:48:24,682 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:48:39,916 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:48:55,107 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:49:10,353 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:49:25,172 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:49:40,453 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:49:58,037 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:50:13,233 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:50:29,536 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:50:44,669 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:50:59,935 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:51:15,086 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:51:30,869 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:53:01,389 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:55:51,775 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:57:12,353 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:57:28,083 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:57:42,061 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:57:56,396 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 00:58:16,056 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:00:00,197 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:00:13,877 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:00:25,594 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:00:37,080 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:02:04,335 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:02:24,350 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:05:00,235 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:05:19,672 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:08:01,603 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:08:18,137 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:08:32,088 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:10:00,778 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:10:20,505 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:11:46,513 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:12:01,245 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:12:14,975 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:12:28,989 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:14:17,547 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:15:40,955 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:18:11,095 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:18:29,615 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:21:08,387 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:21:23,236 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:21:37,774 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:21:51,974 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:23:18,378 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:23:33,581 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:23:48,452 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:24:05,276 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:24:20,911 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:25:39,998 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:25:54,976 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:26:09,491 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:27:36,132 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:27:50,815 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:28:05,952 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:28:20,707 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:29:38,794 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:29:56,800 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:31:58,774 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:32:12,594 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:32:24,172 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:32:35,575 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:34:05,205 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:34:20,550 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:34:35,275 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:34:49,883 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:35:04,195 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:35:19,273 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:35:33,958 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:36:59,406 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:37:17,013 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:37:35,048 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:39:41,690 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:39:57,752 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:40:14,015 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:40:28,757 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:41:46,250 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 01:42:04,169 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:50:53,670 INFO uvicorn.error Shutting down
+2026-11-06 07:50:53,773 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 07:50:53,774 INFO uvicorn.error Application shutdown complete.
+2026-11-06 07:50:53,774 INFO uvicorn.error Finished server process [85965]
+2026-11-06 07:50:54,431 INFO uvicorn.error Started server process [10749]
+2026-11-06 07:50:54,431 INFO uvicorn.error Waiting for application startup.
+2026-11-06 07:50:54,431 INFO uvicorn.error Application startup complete.
+2026-11-06 07:50:54,432 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 07:53:15,090 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:53:29,659 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:53:44,408 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:53:59,247 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:54:14,511 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:54:28,136 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:54:43,389 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:54:58,494 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:55:14,314 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:55:30,641 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:56:55,442 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:57:06,935 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:57:17,998 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:58:35,011 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:58:49,350 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:59:03,723 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:59:17,720 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 07:59:32,688 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:01:02,086 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:01:20,587 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:03:06,483 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:03:21,749 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:03:36,565 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:03:50,690 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:05:18,039 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:05:32,799 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:05:52,973 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:09:14,148 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:11:15,904 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:11:29,767 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:39:23,979 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:39:37,472 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:40:55,264 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:41:11,234 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:42:33,360 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:44:43,929 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:46:12,722 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:46:17,474 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:46:32,886 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:46:47,112 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:48:04,316 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:48:20,124 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:48:34,812 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:49:52,145 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:50:07,103 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:50:21,222 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:51:40,585 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:51:55,208 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:52:10,734 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:52:26,221 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:52:40,643 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:52:54,983 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:53:10,717 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:53:26,538 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:53:43,009 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:53:58,737 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:54:16,054 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:54:34,022 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:56:00,170 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:56:14,922 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:56:29,399 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:56:43,351 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:58:01,007 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:58:16,329 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:58:31,665 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:58:47,970 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:59:04,714 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:59:19,157 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:59:34,085 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 08:59:48,831 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:00:03,624 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:00:18,345 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:00:33,137 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:00:48,248 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:01:03,386 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:01:19,518 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:01:34,331 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:01:49,416 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:02:04,279 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:03:28,604 INFO uvicorn.error Shutting down
+2026-11-06 09:03:28,707 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 09:03:28,709 INFO uvicorn.error Application shutdown complete.
+2026-11-06 09:03:28,710 INFO uvicorn.error Finished server process [10749]
+2026-11-06 09:03:29,370 INFO uvicorn.error Started server process [15333]
+2026-11-06 09:03:29,370 INFO uvicorn.error Waiting for application startup.
+2026-11-06 09:03:29,370 INFO uvicorn.error Application startup complete.
+2026-11-06 09:03:29,370 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 09:04:52,748 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:04:57,576 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:06:15,694 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:06:29,755 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:06:44,057 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:06:58,363 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:07:12,496 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:07:26,940 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:08:44,280 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:08:58,101 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:09:12,174 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:10:28,089 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:10:42,959 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:10:57,294 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:11:12,003 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:12:38,776 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:12:53,119 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:13:07,555 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:13:27,719 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:16:50,167 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:17:11,965 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:18:56,427 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:19:10,761 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:19:25,146 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:19:39,846 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:19:54,653 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:20:09,072 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:20:23,549 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:20:34,561 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:20:46,569 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:22:13,508 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:22:27,890 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:22:44,156 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:22:59,199 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:23:17,755 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:25:33,231 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:25:48,193 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:26:00,367 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:26:13,917 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:27:42,153 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:28:02,124 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:31:33,404 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:31:48,499 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:32:03,420 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:32:17,897 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:32:36,197 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:34:43,140 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:34:58,080 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 09:35:15,300 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 10:18:42,449 INFO uvicorn.error Shutting down
+2026-11-06 10:18:42,553 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 10:18:42,554 INFO uvicorn.error Application shutdown complete.
+2026-11-06 10:18:42,554 INFO uvicorn.error Finished server process [15333]
+2026-11-06 10:18:43,331 INFO uvicorn.error Started server process [18898]
+2026-11-06 10:18:43,331 INFO uvicorn.error Waiting for application startup.
+2026-11-06 10:18:43,331 INFO uvicorn.error Application startup complete.
+2026-11-06 10:18:43,331 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 10:27:25,660 INFO uvicorn.error Shutting down
+2026-11-06 10:27:25,763 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 10:27:25,764 INFO uvicorn.error Application shutdown complete.
+2026-11-06 10:27:25,764 INFO uvicorn.error Finished server process [18898]
+2026-11-06 10:27:26,503 INFO uvicorn.error Started server process [19388]
+2026-11-06 10:27:26,503 INFO uvicorn.error Waiting for application startup.
+2026-11-06 10:27:26,504 INFO uvicorn.error Application startup complete.
+2026-11-06 10:27:26,504 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 10:29:13,546 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 10:29:27,659 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 10:32:23,979 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 10:32:43,193 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 10:32:58,612 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 10:33:19,058 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 10:36:48,414 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 10:37:10,333 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 10:37:25,455 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 10:37:43,304 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 10:39:14,555 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 11:06:32,548 INFO uvicorn.error Shutting down
+2026-11-06 11:06:32,652 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 11:06:32,656 INFO uvicorn.error Application shutdown complete.
+2026-11-06 11:06:32,656 INFO uvicorn.error Finished server process [19388]
+2026-11-06 11:06:33,346 INFO uvicorn.error Started server process [21452]
+2026-11-06 11:06:33,346 INFO uvicorn.error Waiting for application startup.
+2026-11-06 11:06:33,347 INFO uvicorn.error Application startup complete.
+2026-11-06 11:06:33,347 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 11:10:06,406 INFO uvicorn.error Shutting down
+2026-11-06 11:10:06,509 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 11:10:06,510 INFO uvicorn.error Application shutdown complete.
+2026-11-06 11:10:06,510 INFO uvicorn.error Finished server process [21452]
+2026-11-06 11:10:07,254 INFO uvicorn.error Started server process [22496]
+2026-11-06 11:10:07,254 INFO uvicorn.error Waiting for application startup.
+2026-11-06 11:10:07,254 INFO uvicorn.error Application startup complete.
+2026-11-06 11:10:07,254 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 11:23:22,986 INFO uvicorn.error Shutting down
+2026-11-06 11:23:23,089 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 11:23:23,090 INFO uvicorn.error Application shutdown complete.
+2026-11-06 11:23:23,090 INFO uvicorn.error Finished server process [22496]
+2026-11-06 11:23:23,858 INFO uvicorn.error Started server process [23925]
+2026-11-06 11:23:23,859 INFO uvicorn.error Waiting for application startup.
+2026-11-06 11:23:23,859 INFO uvicorn.error Application startup complete.
+2026-11-06 11:23:23,859 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 11:30:57,844 INFO uvicorn.error Shutting down
+2026-11-06 11:30:57,945 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 11:30:57,946 INFO uvicorn.error Application shutdown complete.
+2026-11-06 11:30:57,946 INFO uvicorn.error Finished server process [23925]
+2026-11-06 11:30:58,613 INFO uvicorn.error Started server process [24390]
+2026-11-06 11:30:58,613 INFO uvicorn.error Waiting for application startup.
+2026-11-06 11:30:58,614 INFO uvicorn.error Application startup complete.
+2026-11-06 11:30:58,614 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 11:43:22,152 INFO uvicorn.error Shutting down
+2026-11-06 11:43:22,258 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 11:43:22,259 INFO uvicorn.error Application shutdown complete.
+2026-11-06 11:43:22,261 INFO uvicorn.error Finished server process [24390]
+2026-11-06 11:43:23,193 INFO uvicorn.error Started server process [25107]
+2026-11-06 11:43:23,193 INFO uvicorn.error Waiting for application startup.
+2026-11-06 11:43:23,194 INFO uvicorn.error Application startup complete.
+2026-11-06 11:43:23,194 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 11:49:31,372 INFO uvicorn.error Shutting down
+2026-11-06 11:49:31,474 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 11:49:31,475 INFO uvicorn.error Application shutdown complete.
+2026-11-06 11:49:31,475 INFO uvicorn.error Finished server process [25107]
+2026-11-06 11:49:32,102 INFO uvicorn.error Started server process [25531]
+2026-11-06 11:49:32,102 INFO uvicorn.error Waiting for application startup.
+2026-11-06 11:49:32,103 INFO uvicorn.error Application startup complete.
+2026-11-06 11:49:32,103 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 12:18:11,168 INFO uvicorn.error Shutting down
+2026-11-06 12:18:11,271 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 12:18:11,289 INFO uvicorn.error Application shutdown complete.
+2026-11-06 12:18:11,290 INFO uvicorn.error Finished server process [25531]
+2026-11-06 12:18:11,999 INFO uvicorn.error Started server process [27934]
+2026-11-06 12:18:11,999 INFO uvicorn.error Waiting for application startup.
+2026-11-06 12:18:12,000 INFO uvicorn.error Application startup complete.
+2026-11-06 12:18:12,000 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 12:44:25,484 INFO uvicorn.error Shutting down
+2026-11-06 12:44:25,587 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 12:44:25,590 INFO uvicorn.error Application shutdown complete.
+2026-11-06 12:44:25,590 INFO uvicorn.error Finished server process [27934]
+2026-11-06 12:44:26,456 INFO uvicorn.error Started server process [29421]
+2026-11-06 12:44:26,456 INFO uvicorn.error Waiting for application startup.
+2026-11-06 12:44:26,456 INFO uvicorn.error Application startup complete.
+2026-11-06 12:44:26,457 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 12:52:16,139 INFO uvicorn.error Shutting down
+2026-11-06 12:52:16,242 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 12:52:16,242 INFO uvicorn.error Application shutdown complete.
+2026-11-06 12:52:16,242 INFO uvicorn.error Finished server process [29421]
+2026-11-06 12:52:16,805 INFO uvicorn.error Started server process [29919]
+2026-11-06 12:52:16,805 INFO uvicorn.error Waiting for application startup.
+2026-11-06 12:52:16,805 INFO uvicorn.error Application startup complete.
+2026-11-06 12:52:16,805 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 12:56:04,112 INFO uvicorn.error Shutting down
+2026-11-06 12:56:04,214 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 12:56:04,214 INFO uvicorn.error Application shutdown complete.
+2026-11-06 12:56:04,214 INFO uvicorn.error Finished server process [29919]
+2026-11-06 12:56:04,787 INFO uvicorn.error Started server process [30159]
+2026-11-06 12:56:04,787 INFO uvicorn.error Waiting for application startup.
+2026-11-06 12:56:04,788 INFO uvicorn.error Application startup complete.
+2026-11-06 12:56:04,788 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 13:52:27,921 INFO uvicorn.error Shutting down
+2026-11-06 13:52:28,025 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 13:52:28,026 INFO uvicorn.error Application shutdown complete.
+2026-11-06 13:52:28,026 INFO uvicorn.error Finished server process [30159]
+2026-11-06 13:52:28,622 INFO uvicorn.error Started server process [34458]
+2026-11-06 13:52:28,622 INFO uvicorn.error Waiting for application startup.
+2026-11-06 13:52:28,623 INFO uvicorn.error Application startup complete.
+2026-11-06 13:52:28,623 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 15:09:10,422 INFO uvicorn.error Shutting down
+2026-11-06 15:09:10,524 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 15:09:10,526 INFO uvicorn.error Application shutdown complete.
+2026-11-06 15:09:10,526 INFO uvicorn.error Finished server process [34458]
+2026-11-06 15:09:11,342 INFO uvicorn.error Started server process [40497]
+2026-11-06 15:09:11,342 INFO uvicorn.error Waiting for application startup.
+2026-11-06 15:09:11,343 INFO uvicorn.error Application startup complete.
+2026-11-06 15:09:11,343 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 15:37:01,520 INFO uvicorn.error Shutting down
+2026-11-06 15:37:01,623 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 15:37:01,628 INFO uvicorn.error Application shutdown complete.
+2026-11-06 15:37:01,629 INFO uvicorn.error Finished server process [40497]
+2026-11-06 15:37:02,490 INFO uvicorn.error Started server process [42065]
+2026-11-06 15:37:02,490 INFO uvicorn.error Waiting for application startup.
+2026-11-06 15:37:02,491 INFO uvicorn.error Application startup complete.
+2026-11-06 15:37:02,491 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 15:45:38,273 INFO uvicorn.error Shutting down
+2026-11-06 15:45:38,377 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 15:45:38,398 INFO uvicorn.error Application shutdown complete.
+2026-11-06 15:45:38,398 INFO uvicorn.error Finished server process [42065]
+2026-11-06 15:45:39,100 INFO uvicorn.error Started server process [42850]
+2026-11-06 15:45:39,100 INFO uvicorn.error Waiting for application startup.
+2026-11-06 15:45:39,100 INFO uvicorn.error Application startup complete.
+2026-11-06 15:45:39,101 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 15:50:10,815 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 15:50:16,037 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 15:53:32,661 INFO uvicorn.error Shutting down
+2026-11-06 15:53:32,763 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 15:53:32,780 INFO uvicorn.error Application shutdown complete.
+2026-11-06 15:53:32,780 INFO uvicorn.error Finished server process [42850]
+2026-11-06 15:53:33,517 INFO uvicorn.error Started server process [43333]
+2026-11-06 15:53:33,517 INFO uvicorn.error Waiting for application startup.
+2026-11-06 15:53:33,518 INFO uvicorn.error Application startup complete.
+2026-11-06 15:53:33,518 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 15:57:36,901 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 15:57:44,867 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 15:58:32,493 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 15:58:40,817 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 16:01:10,621 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 16:01:17,534 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 16:07:00,332 INFO uvicorn.error Shutting down
+2026-11-06 16:07:00,436 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 16:07:00,447 INFO uvicorn.error Application shutdown complete.
+2026-11-06 16:07:00,448 INFO uvicorn.error Finished server process [43333]
+2026-11-06 16:07:01,352 INFO uvicorn.error Started server process [44961]
+2026-11-06 16:07:01,352 INFO uvicorn.error Waiting for application startup.
+2026-11-06 16:07:01,353 INFO uvicorn.error Application startup complete.
+2026-11-06 16:07:01,353 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 16:21:42,607 INFO uvicorn.error Shutting down
+2026-11-06 16:21:42,711 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 16:21:42,712 INFO uvicorn.error Application shutdown complete.
+2026-11-06 16:21:42,713 INFO uvicorn.error Finished server process [44961]
+2026-11-06 16:21:43,541 INFO uvicorn.error Started server process [46059]
+2026-11-06 16:21:43,542 INFO uvicorn.error Waiting for application startup.
+2026-11-06 16:21:43,542 INFO uvicorn.error Application startup complete.
+2026-11-06 16:21:43,542 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 16:35:11,151 INFO uvicorn.error Shutting down
+2026-11-06 16:35:11,254 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 16:35:11,256 INFO uvicorn.error Application shutdown complete.
+2026-11-06 16:35:11,256 INFO uvicorn.error Finished server process [46059]
+2026-11-06 16:35:11,957 INFO uvicorn.error Started server process [46730]
+2026-11-06 16:35:11,957 INFO uvicorn.error Waiting for application startup.
+2026-11-06 16:35:11,958 INFO uvicorn.error Application startup complete.
+2026-11-06 16:35:11,958 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 16:37:59,286 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 16:38:39,051 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 16:43:24,782 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 16:44:09,015 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 16:45:34,937 INFO uvicorn.error Shutting down
+2026-11-06 16:45:35,041 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 16:45:35,058 INFO uvicorn.error Application shutdown complete.
+2026-11-06 16:45:35,059 INFO uvicorn.error Finished server process [46730]
+2026-11-06 16:45:35,891 INFO uvicorn.error Started server process [47462]
+2026-11-06 16:45:35,891 INFO uvicorn.error Waiting for application startup.
+2026-11-06 16:45:35,892 INFO uvicorn.error Application startup complete.
+2026-11-06 16:45:35,892 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 16:50:53,697 INFO uvicorn.error Shutting down
+2026-11-06 16:50:53,799 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 16:50:53,799 INFO uvicorn.error Application shutdown complete.
+2026-11-06 16:50:53,800 INFO uvicorn.error Finished server process [47462]
+2026-11-06 16:50:54,405 INFO uvicorn.error Started server process [47763]
+2026-11-06 16:50:54,405 INFO uvicorn.error Waiting for application startup.
+2026-11-06 16:50:54,406 INFO uvicorn.error Application startup complete.
+2026-11-06 16:50:54,406 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 16:58:06,343 INFO uvicorn.error Shutting down
+2026-11-06 16:58:06,446 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 16:58:06,446 INFO uvicorn.error Application shutdown complete.
+2026-11-06 16:58:06,446 INFO uvicorn.error Finished server process [47763]
+2026-11-06 16:58:07,290 INFO uvicorn.error Started server process [48205]
+2026-11-06 16:58:07,290 INFO uvicorn.error Waiting for application startup.
+2026-11-06 16:58:07,290 INFO uvicorn.error Application startup complete.
+2026-11-06 16:58:07,290 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 17:06:54,214 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 17:15:12,847 INFO uvicorn.error Shutting down
+2026-11-06 17:15:12,950 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 17:15:12,955 INFO uvicorn.error Application shutdown complete.
+2026-11-06 17:15:12,955 INFO uvicorn.error Finished server process [48205]
+2026-11-06 17:15:13,639 INFO uvicorn.error Started server process [50010]
+2026-11-06 17:15:13,639 INFO uvicorn.error Waiting for application startup.
+2026-11-06 17:15:13,640 INFO uvicorn.error Application startup complete.
+2026-11-06 17:15:13,640 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 17:44:51,462 INFO uvicorn.error Shutting down
+2026-11-06 17:44:51,565 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 17:44:51,566 INFO uvicorn.error Application shutdown complete.
+2026-11-06 17:44:51,566 INFO uvicorn.error Finished server process [50010]
+2026-11-06 17:44:52,523 INFO uvicorn.error Started server process [54386]
+2026-11-06 17:44:52,523 INFO uvicorn.error Waiting for application startup.
+2026-11-06 17:44:52,524 INFO uvicorn.error Application startup complete.
+2026-11-06 17:44:52,524 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 18:07:47,247 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:09:52,005 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:26:02,773 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:28:41,881 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:30:28,294 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:39:51,951 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:40:21,266 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:41:36,881 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:42:18,247 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:43:49,406 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:46:44,851 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:47:05,116 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:47:30,880 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:49:55,925 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 18:57:12,011 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 19:02:59,114 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 19:04:24,019 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 19:05:21,388 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-06 19:15:13,786 INFO uvicorn.error Shutting down
+2026-11-06 19:15:13,888 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 19:15:13,897 INFO uvicorn.error Application shutdown complete.
+2026-11-06 19:15:13,898 INFO uvicorn.error Finished server process [54386]
+2026-11-06 19:15:14,726 INFO uvicorn.error Started server process [60805]
+2026-11-06 19:15:14,726 INFO uvicorn.error Waiting for application startup.
+2026-11-06 19:15:14,727 INFO uvicorn.error Application startup complete.
+2026-11-06 19:15:14,727 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 19:15:51,960 INFO uvicorn.error Shutting down
+2026-11-06 19:15:52,062 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 19:15:52,064 INFO uvicorn.error Application shutdown complete.
+2026-11-06 19:15:52,064 INFO uvicorn.error Finished server process [60805]
+2026-11-06 19:15:52,823 INFO uvicorn.error Started server process [60871]
+2026-11-06 19:15:52,824 INFO uvicorn.error Waiting for application startup.
+2026-11-06 19:15:52,824 INFO uvicorn.error Application startup complete.
+2026-11-06 19:15:52,824 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 19:20:51,318 INFO uvicorn.error Shutting down
+2026-11-06 19:20:51,420 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 19:20:51,421 INFO uvicorn.error Application shutdown complete.
+2026-11-06 19:20:51,421 INFO uvicorn.error Finished server process [60871]
+2026-11-06 19:20:52,219 INFO uvicorn.error Started server process [61167]
+2026-11-06 19:20:52,219 INFO uvicorn.error Waiting for application startup.
+2026-11-06 19:20:52,220 INFO uvicorn.error Application startup complete.
+2026-11-06 19:20:52,220 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 19:24:39,960 INFO uvicorn.error Shutting down
+2026-11-06 19:24:40,061 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 19:24:40,062 INFO uvicorn.error Application shutdown complete.
+2026-11-06 19:24:40,062 INFO uvicorn.error Finished server process [61167]
+2026-11-06 19:24:40,913 INFO uvicorn.error Started server process [61356]
+2026-11-06 19:24:40,913 INFO uvicorn.error Waiting for application startup.
+2026-11-06 19:24:40,913 INFO uvicorn.error Application startup complete.
+2026-11-06 19:24:40,913 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 19:29:23,993 INFO uvicorn.error Shutting down
+2026-11-06 19:29:24,095 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 19:29:24,095 INFO uvicorn.error Application shutdown complete.
+2026-11-06 19:29:24,095 INFO uvicorn.error Finished server process [61356]
+2026-11-06 19:29:24,721 INFO uvicorn.error Started server process [61609]
+2026-11-06 19:29:24,721 INFO uvicorn.error Waiting for application startup.
+2026-11-06 19:29:24,722 INFO uvicorn.error Application startup complete.
+2026-11-06 19:29:24,722 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-06 23:11:47,694 INFO uvicorn.error Shutting down
+2026-11-06 23:11:47,797 INFO uvicorn.error Waiting for application shutdown.
+2026-11-06 23:11:47,798 INFO uvicorn.error Application shutdown complete.
+2026-11-06 23:11:47,798 INFO uvicorn.error Finished server process [61609]
+2026-11-06 23:11:48,580 INFO uvicorn.error Started server process [62813]
+2026-11-06 23:11:48,580 INFO uvicorn.error Waiting for application startup.
+2026-11-06 23:11:48,581 INFO uvicorn.error Application startup complete.
+2026-11-06 23:11:48,581 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 00:03:52,248 INFO uvicorn.error Shutting down
+2026-11-07 00:03:52,351 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 00:03:52,352 INFO uvicorn.error Application shutdown complete.
+2026-11-07 00:03:52,352 INFO uvicorn.error Finished server process [62813]
+2026-11-07 00:03:53,282 INFO uvicorn.error Started server process [68263]
+2026-11-07 00:03:53,282 INFO uvicorn.error Waiting for application startup.
+2026-11-07 00:03:53,283 INFO uvicorn.error Application startup complete.
+2026-11-07 00:03:53,283 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 00:04:08,283 INFO uvicorn.error Shutting down
+2026-11-07 00:04:08,386 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 00:04:08,386 INFO uvicorn.error Application shutdown complete.
+2026-11-07 00:04:08,387 INFO uvicorn.error Finished server process [68263]
+2026-11-07 00:04:09,007 INFO uvicorn.error Started server process [68303]
+2026-11-07 00:04:09,007 INFO uvicorn.error Waiting for application startup.
+2026-11-07 00:04:09,008 INFO uvicorn.error Application startup complete.
+2026-11-07 00:04:09,008 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 00:05:37,664 INFO uvicorn.error Shutting down
+2026-11-07 00:05:37,769 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 00:05:37,770 INFO uvicorn.error Application shutdown complete.
+2026-11-07 00:05:37,770 INFO uvicorn.error Finished server process [68303]
+2026-11-07 00:05:38,549 INFO uvicorn.error Started server process [68387]
+2026-11-07 00:05:38,549 INFO uvicorn.error Waiting for application startup.
+2026-11-07 00:05:38,550 INFO uvicorn.error Application startup complete.
+2026-11-07 00:05:38,550 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 14:11:26,471 INFO uvicorn.error Shutting down
+2026-11-07 14:11:26,575 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 14:11:26,577 INFO uvicorn.error Application shutdown complete.
+2026-11-07 14:11:26,578 INFO uvicorn.error Finished server process [68387]
+2026-11-07 14:13:41,471 INFO uvicorn.error Started server process [2230]
+2026-11-07 14:13:41,471 INFO uvicorn.error Waiting for application startup.
+2026-11-07 14:13:41,472 INFO uvicorn.error Application startup complete.
+2026-11-07 14:13:41,472 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 14:21:32,486 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:21:46,608 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:23:10,961 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:34:00,072 INFO uvicorn.error Shutting down
+2026-11-07 14:34:00,173 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 14:34:00,174 INFO uvicorn.error Application shutdown complete.
+2026-11-07 14:34:00,174 INFO uvicorn.error Finished server process [2230]
+2026-11-07 14:34:01,006 INFO uvicorn.error Started server process [5174]
+2026-11-07 14:34:01,006 INFO uvicorn.error Waiting for application startup.
+2026-11-07 14:34:01,007 INFO uvicorn.error Application startup complete.
+2026-11-07 14:34:01,007 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 14:36:31,990 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:36:45,660 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:36:59,363 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:44:27,585 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:44:41,273 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:44:55,325 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:45:08,961 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:45:22,555 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:45:35,750 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:45:49,099 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:46:02,872 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:46:59,710 INFO uvicorn.error Shutting down
+2026-11-07 14:46:59,811 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 14:46:59,812 INFO uvicorn.error Application shutdown complete.
+2026-11-07 14:46:59,812 INFO uvicorn.error Finished server process [5174]
+2026-11-07 14:47:00,764 INFO uvicorn.error Started server process [5986]
+2026-11-07 14:47:00,764 INFO uvicorn.error Waiting for application startup.
+2026-11-07 14:47:00,765 INFO uvicorn.error Application startup complete.
+2026-11-07 14:47:00,765 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 14:48:23,787 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:48:36,970 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:48:54,912 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:52:51,153 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:53:04,915 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:53:18,223 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:53:29,938 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:55:24,793 INFO uvicorn.error Shutting down
+2026-11-07 14:55:24,894 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 14:55:24,896 INFO uvicorn.error Application shutdown complete.
+2026-11-07 14:55:24,896 INFO uvicorn.error Finished server process [5986]
+2026-11-07 14:55:25,595 INFO uvicorn.error Started server process [6498]
+2026-11-07 14:55:25,595 INFO uvicorn.error Waiting for application startup.
+2026-11-07 14:55:25,595 INFO uvicorn.error Application startup complete.
+2026-11-07 14:55:25,596 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 14:56:30,567 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:56:51,264 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:57:04,553 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 14:57:24,137 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:00:25,329 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:03:56,478 INFO uvicorn.error Shutting down
+2026-11-07 15:03:56,580 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 15:03:56,580 INFO uvicorn.error Application shutdown complete.
+2026-11-07 15:03:56,581 INFO uvicorn.error Finished server process [6498]
+2026-11-07 15:03:57,235 INFO uvicorn.error Started server process [6997]
+2026-11-07 15:03:57,235 INFO uvicorn.error Waiting for application startup.
+2026-11-07 15:03:57,235 INFO uvicorn.error Application startup complete.
+2026-11-07 15:03:57,236 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 15:05:08,544 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:09:28,588 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:09:44,135 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:13:04,379 INFO uvicorn.error Shutting down
+2026-11-07 15:13:04,480 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 15:13:04,481 INFO uvicorn.error Application shutdown complete.
+2026-11-07 15:13:04,482 INFO uvicorn.error Finished server process [6997]
+2026-11-07 15:13:05,312 INFO uvicorn.error Started server process [7759]
+2026-11-07 15:13:05,312 INFO uvicorn.error Waiting for application startup.
+2026-11-07 15:13:05,313 INFO uvicorn.error Application startup complete.
+2026-11-07 15:13:05,313 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 15:14:09,401 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:18:32,393 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:18:51,197 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:23:11,431 INFO uvicorn.error Shutting down
+2026-11-07 15:23:11,532 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 15:23:11,533 INFO uvicorn.error Application shutdown complete.
+2026-11-07 15:23:11,534 INFO uvicorn.error Finished server process [7759]
+2026-11-07 15:23:12,187 INFO uvicorn.error Started server process [8999]
+2026-11-07 15:23:12,187 INFO uvicorn.error Waiting for application startup.
+2026-11-07 15:23:12,188 INFO uvicorn.error Application startup complete.
+2026-11-07 15:23:12,188 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 15:24:19,030 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:24:41,439 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:31:33,739 INFO uvicorn.error Shutting down
+2026-11-07 15:31:33,841 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 15:31:33,842 INFO uvicorn.error Application shutdown complete.
+2026-11-07 15:31:33,842 INFO uvicorn.error Finished server process [8999]
+2026-11-07 15:31:34,659 INFO uvicorn.error Started server process [9479]
+2026-11-07 15:31:34,659 INFO uvicorn.error Waiting for application startup.
+2026-11-07 15:31:34,659 INFO uvicorn.error Application startup complete.
+2026-11-07 15:31:34,660 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 15:37:34,692 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:39:04,361 INFO uvicorn.error Shutting down
+2026-11-07 15:39:04,463 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 15:39:04,463 INFO uvicorn.error Application shutdown complete.
+2026-11-07 15:39:04,464 INFO uvicorn.error Finished server process [9479]
+2026-11-07 15:39:05,397 INFO uvicorn.error Started server process [9928]
+2026-11-07 15:39:05,398 INFO uvicorn.error Waiting for application startup.
+2026-11-07 15:39:05,398 INFO uvicorn.error Application startup complete.
+2026-11-07 15:39:05,398 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 15:40:18,744 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:43:15,444 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:43:43,181 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:48:56,332 INFO uvicorn.error Shutting down
+2026-11-07 15:48:56,435 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 15:48:56,437 INFO uvicorn.error Application shutdown complete.
+2026-11-07 15:48:56,437 INFO uvicorn.error Finished server process [9928]
+2026-11-07 15:48:57,132 INFO uvicorn.error Started server process [10512]
+2026-11-07 15:48:57,132 INFO uvicorn.error Waiting for application startup.
+2026-11-07 15:48:57,133 INFO uvicorn.error Application startup complete.
+2026-11-07 15:48:57,133 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 15:54:56,247 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:55:08,657 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:56:22,931 INFO uvicorn.error Shutting down
+2026-11-07 15:56:23,033 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 15:56:23,034 INFO uvicorn.error Application shutdown complete.
+2026-11-07 15:56:23,034 INFO uvicorn.error Finished server process [10512]
+2026-11-07 15:56:23,930 INFO uvicorn.error Started server process [10962]
+2026-11-07 15:56:23,930 INFO uvicorn.error Waiting for application startup.
+2026-11-07 15:56:23,931 INFO uvicorn.error Application startup complete.
+2026-11-07 15:56:23,931 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 15:57:29,530 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:57:43,330 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:57:58,544 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:58:11,763 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 15:58:33,423 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:02:34,763 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:04:01,383 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:06:16,889 INFO uvicorn.error Shutting down
+2026-11-07 16:06:16,990 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 16:06:16,991 INFO uvicorn.error Application shutdown complete.
+2026-11-07 16:06:16,992 INFO uvicorn.error Finished server process [10962]
+2026-11-07 16:06:17,816 INFO uvicorn.error Started server process [11559]
+2026-11-07 16:06:17,816 INFO uvicorn.error Waiting for application startup.
+2026-11-07 16:06:17,817 INFO uvicorn.error Application startup complete.
+2026-11-07 16:06:17,817 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 16:07:25,884 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:11:27,719 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:11:42,836 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:17:55,853 INFO uvicorn.error Shutting down
+2026-11-07 16:17:55,957 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 16:17:55,958 INFO uvicorn.error Application shutdown complete.
+2026-11-07 16:17:55,959 INFO uvicorn.error Finished server process [11559]
+2026-11-07 16:17:56,893 INFO uvicorn.error Started server process [13094]
+2026-11-07 16:17:56,893 INFO uvicorn.error Waiting for application startup.
+2026-11-07 16:17:56,894 INFO uvicorn.error Application startup complete.
+2026-11-07 16:17:56,894 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 16:19:19,562 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:19:40,034 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:19:52,892 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:20:05,709 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:20:34,280 INFO uvicorn.error Shutting down
+2026-11-07 16:20:34,381 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 16:20:34,383 INFO uvicorn.error Application shutdown complete.
+2026-11-07 16:20:34,383 INFO uvicorn.error Finished server process [13094]
+2026-11-07 16:20:35,205 INFO uvicorn.error Started server process [13245]
+2026-11-07 16:20:35,205 INFO uvicorn.error Waiting for application startup.
+2026-11-07 16:20:35,206 INFO uvicorn.error Application startup complete.
+2026-11-07 16:20:35,206 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 16:21:49,329 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:22:11,196 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:22:29,543 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:24:55,628 INFO uvicorn.error Shutting down
+2026-11-07 16:24:55,729 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 16:24:55,730 INFO uvicorn.error Application shutdown complete.
+2026-11-07 16:24:55,730 INFO uvicorn.error Finished server process [13245]
+2026-11-07 16:24:56,531 INFO uvicorn.error Started server process [13489]
+2026-11-07 16:24:56,531 INFO uvicorn.error Waiting for application startup.
+2026-11-07 16:24:56,531 INFO uvicorn.error Application startup complete.
+2026-11-07 16:24:56,531 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 16:26:05,525 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:30:01,445 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:30:20,364 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:30:42,734 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:36:30,767 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:36:43,423 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:38:53,432 INFO uvicorn.error Shutting down
+2026-11-07 16:38:53,534 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 16:38:53,535 INFO uvicorn.error Application shutdown complete.
+2026-11-07 16:38:53,535 INFO uvicorn.error Finished server process [13489]
+2026-11-07 16:38:54,392 INFO uvicorn.error Started server process [15535]
+2026-11-07 16:38:54,392 INFO uvicorn.error Waiting for application startup.
+2026-11-07 16:38:54,393 INFO uvicorn.error Application startup complete.
+2026-11-07 16:38:54,393 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 16:43:08,401 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:43:22,660 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:43:36,707 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:43:50,743 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:44:05,270 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:44:20,748 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:44:41,092 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:51:04,702 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:54:10,597 INFO uvicorn.error Shutting down
+2026-11-07 16:54:10,698 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 16:54:10,699 INFO uvicorn.error Application shutdown complete.
+2026-11-07 16:54:10,700 INFO uvicorn.error Finished server process [15535]
+2026-11-07 16:54:11,388 INFO uvicorn.error Started server process [16951]
+2026-11-07 16:54:11,388 INFO uvicorn.error Waiting for application startup.
+2026-11-07 16:54:11,388 INFO uvicorn.error Application startup complete.
+2026-11-07 16:54:11,389 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 16:55:17,144 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:55:31,246 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:55:52,408 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:58:39,011 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:59:02,331 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 16:59:18,062 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 17:01:29,332 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 17:03:16,543 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 17:03:29,647 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 17:03:42,016 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 17:03:54,713 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 17:04:07,886 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 17:12:41,621 INFO uvicorn.error Shutting down
+2026-11-07 17:12:41,723 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 17:12:41,726 INFO uvicorn.error Application shutdown complete.
+2026-11-07 17:12:41,726 INFO uvicorn.error Finished server process [16951]
+2026-11-07 17:12:42,519 INFO uvicorn.error Started server process [18112]
+2026-11-07 17:12:42,519 INFO uvicorn.error Waiting for application startup.
+2026-11-07 17:12:42,520 INFO uvicorn.error Application startup complete.
+2026-11-07 17:12:42,520 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 17:16:51,493 INFO uvicorn.error Shutting down
+2026-11-07 17:16:51,596 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 17:16:51,597 INFO uvicorn.error Application shutdown complete.
+2026-11-07 17:16:51,597 INFO uvicorn.error Finished server process [18112]
+2026-11-07 17:16:52,510 INFO uvicorn.error Started server process [19227]
+2026-11-07 17:16:52,510 INFO uvicorn.error Waiting for application startup.
+2026-11-07 17:16:52,511 INFO uvicorn.error Application startup complete.
+2026-11-07 17:16:52,511 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 17:25:59,772 INFO uvicorn.error Shutting down
+2026-11-07 17:25:59,874 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 17:25:59,875 INFO uvicorn.error Application shutdown complete.
+2026-11-07 17:25:59,875 INFO uvicorn.error Finished server process [19227]
+2026-11-07 17:26:00,664 INFO uvicorn.error Started server process [19789]
+2026-11-07 17:26:00,664 INFO uvicorn.error Waiting for application startup.
+2026-11-07 17:26:00,665 INFO uvicorn.error Application startup complete.
+2026-11-07 17:26:00,665 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 17:29:05,910 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 17:29:26,521 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 17:33:34,943 INFO uvicorn.error Shutting down
+2026-11-07 17:33:35,051 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 17:33:35,053 INFO uvicorn.error Application shutdown complete.
+2026-11-07 17:33:35,054 INFO uvicorn.error Finished server process [19789]
+2026-11-07 17:33:35,879 INFO uvicorn.error Started server process [20279]
+2026-11-07 17:33:35,879 INFO uvicorn.error Waiting for application startup.
+2026-11-07 17:33:35,880 INFO uvicorn.error Application startup complete.
+2026-11-07 17:33:35,880 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 17:38:22,227 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 17:43:59,989 INFO uvicorn.error Shutting down
+2026-11-07 17:44:00,092 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 17:44:00,094 INFO uvicorn.error Application shutdown complete.
+2026-11-07 17:44:00,094 INFO uvicorn.error Finished server process [20279]
+2026-11-07 17:44:00,938 INFO uvicorn.error Started server process [20856]
+2026-11-07 17:44:00,938 INFO uvicorn.error Waiting for application startup.
+2026-11-07 17:44:00,939 INFO uvicorn.error Application startup complete.
+2026-11-07 17:44:00,939 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 17:45:18,850 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 17:47:13,949 INFO uvicorn.error Shutting down
+2026-11-07 17:47:14,060 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 17:47:14,064 INFO uvicorn.error Application shutdown complete.
+2026-11-07 17:47:14,065 INFO uvicorn.error Finished server process [20856]
+2026-11-07 17:47:14,891 INFO uvicorn.error Started server process [21080]
+2026-11-07 17:47:14,891 INFO uvicorn.error Waiting for application startup.
+2026-11-07 17:47:14,891 INFO uvicorn.error Application startup complete.
+2026-11-07 17:47:14,892 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 17:59:50,325 INFO uvicorn.error Shutting down
+2026-11-07 17:59:50,431 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 17:59:50,433 INFO uvicorn.error Application shutdown complete.
+2026-11-07 17:59:50,433 INFO uvicorn.error Finished server process [21080]
+2026-11-07 17:59:51,589 INFO uvicorn.error Started server process [21759]
+2026-11-07 17:59:51,589 INFO uvicorn.error Waiting for application startup.
+2026-11-07 17:59:51,590 INFO uvicorn.error Application startup complete.
+2026-11-07 17:59:51,590 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 18:01:28,749 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 18:08:20,891 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 18:08:48,923 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 18:12:03,619 INFO uvicorn.error Shutting down
+2026-11-07 18:12:03,722 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 18:12:03,724 INFO uvicorn.error Application shutdown complete.
+2026-11-07 18:12:03,724 INFO uvicorn.error Finished server process [21759]
+2026-11-07 18:12:04,576 INFO uvicorn.error Started server process [22481]
+2026-11-07 18:12:04,576 INFO uvicorn.error Waiting for application startup.
+2026-11-07 18:12:04,576 INFO uvicorn.error Application startup complete.
+2026-11-07 18:12:04,576 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 18:16:21,780 INFO uvicorn.error Shutting down
+2026-11-07 18:16:21,884 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 18:16:21,887 INFO uvicorn.error Application shutdown complete.
+2026-11-07 18:16:21,887 INFO uvicorn.error Finished server process [22481]
+2026-11-07 18:16:22,829 INFO uvicorn.error Started server process [23593]
+2026-11-07 18:16:22,830 INFO uvicorn.error Waiting for application startup.
+2026-11-07 18:16:22,830 INFO uvicorn.error Application startup complete.
+2026-11-07 18:16:22,830 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 18:18:03,164 INFO uvicorn.error Shutting down
+2026-11-07 18:18:03,265 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 18:18:03,267 INFO uvicorn.error Application shutdown complete.
+2026-11-07 18:18:03,267 INFO uvicorn.error Finished server process [23593]
+2026-11-07 18:18:04,053 INFO uvicorn.error Started server process [23685]
+2026-11-07 18:18:04,053 INFO uvicorn.error Waiting for application startup.
+2026-11-07 18:18:04,054 INFO uvicorn.error Application startup complete.
+2026-11-07 18:18:04,054 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 18:19:32,026 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 18:19:51,893 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 18:22:47,320 INFO uvicorn.error Shutting down
+2026-11-07 18:22:47,422 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 18:22:47,424 INFO uvicorn.error Application shutdown complete.
+2026-11-07 18:22:47,424 INFO uvicorn.error Finished server process [23685]
+2026-11-07 18:22:48,149 INFO uvicorn.error Started server process [23969]
+2026-11-07 18:22:48,149 INFO uvicorn.error Waiting for application startup.
+2026-11-07 18:22:48,149 INFO uvicorn.error Application startup complete.
+2026-11-07 18:22:48,150 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 18:23:59,214 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 18:24:18,252 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 18:28:33,068 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 18:36:25,687 INFO uvicorn.error Shutting down
+2026-11-07 18:36:25,790 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 18:36:25,792 INFO uvicorn.error Application shutdown complete.
+2026-11-07 18:36:25,792 INFO uvicorn.error Finished server process [23969]
+2026-11-07 18:36:26,599 INFO uvicorn.error Started server process [24801]
+2026-11-07 18:36:26,600 INFO uvicorn.error Waiting for application startup.
+2026-11-07 18:36:26,600 INFO uvicorn.error Application startup complete.
+2026-11-07 18:36:26,600 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 19:06:53,606 INFO uvicorn.error Shutting down
+2026-11-07 19:06:53,711 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 19:06:53,711 INFO uvicorn.error Application shutdown complete.
+2026-11-07 19:06:53,712 INFO uvicorn.error Finished server process [24801]
+2026-11-07 19:06:54,546 INFO uvicorn.error Started server process [26147]
+2026-11-07 19:06:54,547 INFO uvicorn.error Waiting for application startup.
+2026-11-07 19:06:54,547 INFO uvicorn.error Application startup complete.
+2026-11-07 19:06:54,547 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 19:09:41,890 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:09:54,696 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:10:09,365 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:10:22,890 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:10:36,954 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:10:50,015 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:11:04,171 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:11:16,890 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:11:31,148 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:12:35,770 INFO uvicorn.error Shutting down
+2026-11-07 19:12:35,873 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 19:12:35,874 INFO uvicorn.error Application shutdown complete.
+2026-11-07 19:12:35,875 INFO uvicorn.error Finished server process [26147]
+2026-11-07 19:12:36,854 INFO uvicorn.error Started server process [26557]
+2026-11-07 19:12:36,854 INFO uvicorn.error Waiting for application startup.
+2026-11-07 19:12:36,854 INFO uvicorn.error Application startup complete.
+2026-11-07 19:12:36,855 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 19:14:15,393 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:14:27,772 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:14:41,355 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:14:54,869 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:15:08,096 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:16:45,018 INFO uvicorn.error Shutting down
+2026-11-07 19:16:45,121 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 19:16:45,123 INFO uvicorn.error Application shutdown complete.
+2026-11-07 19:16:45,124 INFO uvicorn.error Finished server process [26557]
+2026-11-07 19:16:46,101 INFO uvicorn.error Started server process [27635]
+2026-11-07 19:16:46,101 INFO uvicorn.error Waiting for application startup.
+2026-11-07 19:16:46,102 INFO uvicorn.error Application startup complete.
+2026-11-07 19:16:46,102 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 19:17:56,385 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:18:09,375 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:18:23,748 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:18:36,753 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:18:50,933 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:19:01,745 INFO uvicorn.error Shutting down
+2026-11-07 19:19:01,848 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 19:19:01,850 INFO uvicorn.error Application shutdown complete.
+2026-11-07 19:19:01,850 INFO uvicorn.error Finished server process [27635]
+2026-11-07 19:19:02,577 INFO uvicorn.error Started server process [27791]
+2026-11-07 19:19:02,577 INFO uvicorn.error Waiting for application startup.
+2026-11-07 19:19:02,577 INFO uvicorn.error Application startup complete.
+2026-11-07 19:19:02,578 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 19:20:47,051 INFO uvicorn.error Shutting down
+2026-11-07 19:20:47,154 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 19:20:47,155 INFO uvicorn.error Application shutdown complete.
+2026-11-07 19:20:47,155 INFO uvicorn.error Finished server process [27791]
+2026-11-07 19:20:47,900 INFO uvicorn.error Started server process [27906]
+2026-11-07 19:20:47,900 INFO uvicorn.error Waiting for application startup.
+2026-11-07 19:20:47,900 INFO uvicorn.error Application startup complete.
+2026-11-07 19:20:47,901 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 19:22:16,534 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:22:30,047 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:22:43,312 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:22:56,645 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:23:09,925 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:23:23,953 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:23:39,964 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:23:53,928 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:24:07,559 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:24:09,929 INFO uvicorn.error Shutting down
+2026-11-07 19:24:10,032 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 19:24:10,033 INFO uvicorn.error Application shutdown complete.
+2026-11-07 19:24:10,033 INFO uvicorn.error Finished server process [27906]
+2026-11-07 19:24:10,989 INFO uvicorn.error Started server process [28109]
+2026-11-07 19:24:10,989 INFO uvicorn.error Waiting for application startup.
+2026-11-07 19:24:10,990 INFO uvicorn.error Application startup complete.
+2026-11-07 19:24:10,990 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 19:25:59,244 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:26:12,699 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:26:25,678 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:26:39,165 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:26:52,556 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:27:05,903 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:27:21,915 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:27:34,929 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:27:48,402 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:27:56,585 INFO uvicorn.error Shutting down
+2026-11-07 19:27:56,687 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 19:27:56,689 INFO uvicorn.error Application shutdown complete.
+2026-11-07 19:27:56,690 INFO uvicorn.error Finished server process [28109]
+2026-11-07 19:27:57,616 INFO uvicorn.error Started server process [28341]
+2026-11-07 19:27:57,616 INFO uvicorn.error Waiting for application startup.
+2026-11-07 19:27:57,617 INFO uvicorn.error Application startup complete.
+2026-11-07 19:27:57,617 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 19:29:42,334 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:31:26,662 INFO uvicorn.error Shutting down
+2026-11-07 19:31:26,764 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 19:31:26,766 INFO uvicorn.error Application shutdown complete.
+2026-11-07 19:31:26,766 INFO uvicorn.error Finished server process [28341]
+2026-11-07 19:31:27,513 INFO uvicorn.error Started server process [28529]
+2026-11-07 19:31:27,513 INFO uvicorn.error Waiting for application startup.
+2026-11-07 19:31:27,513 INFO uvicorn.error Application startup complete.
+2026-11-07 19:31:27,514 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 19:32:41,004 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:32:54,448 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:33:07,789 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:33:21,473 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:33:34,838 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:33:47,934 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:34:01,030 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:34:13,933 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:34:27,319 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:34:40,590 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:34:53,716 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:35:06,906 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:35:14,641 INFO uvicorn.error Shutting down
+2026-11-07 19:35:14,743 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 19:35:14,745 INFO uvicorn.error Application shutdown complete.
+2026-11-07 19:35:14,745 INFO uvicorn.error Finished server process [28529]
+2026-11-07 19:35:15,625 INFO uvicorn.error Started server process [28957]
+2026-11-07 19:35:15,625 INFO uvicorn.error Waiting for application startup.
+2026-11-07 19:35:15,626 INFO uvicorn.error Application startup complete.
+2026-11-07 19:35:15,626 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 19:37:22,427 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:37:34,407 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:37:47,833 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:38:01,311 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:42:30,076 INFO uvicorn.error Shutting down
+2026-11-07 19:42:30,178 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 19:42:30,181 INFO uvicorn.error Application shutdown complete.
+2026-11-07 19:42:30,181 INFO uvicorn.error Finished server process [28957]
+2026-11-07 19:42:31,061 INFO uvicorn.error Started server process [29836]
+2026-11-07 19:42:31,061 INFO uvicorn.error Waiting for application startup.
+2026-11-07 19:42:31,061 INFO uvicorn.error Application startup complete.
+2026-11-07 19:42:31,062 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 19:44:02,361 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:44:23,000 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:44:43,280 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:46:54,191 INFO uvicorn.error Shutting down
+2026-11-07 19:46:54,295 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 19:46:54,297 INFO uvicorn.error Application shutdown complete.
+2026-11-07 19:46:54,297 INFO uvicorn.error Finished server process [29836]
+2026-11-07 19:46:55,295 INFO uvicorn.error Started server process [30161]
+2026-11-07 19:46:55,295 INFO uvicorn.error Waiting for application startup.
+2026-11-07 19:46:55,296 INFO uvicorn.error Application startup complete.
+2026-11-07 19:46:55,296 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 19:48:41,593 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:50:56,233 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:51:16,482 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:51:55,265 INFO uvicorn.error Shutting down
+2026-11-07 19:51:55,368 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 19:51:55,369 INFO uvicorn.error Application shutdown complete.
+2026-11-07 19:51:55,370 INFO uvicorn.error Finished server process [30161]
+2026-11-07 19:51:56,246 INFO uvicorn.error Started server process [30454]
+2026-11-07 19:51:56,246 INFO uvicorn.error Waiting for application startup.
+2026-11-07 19:51:56,247 INFO uvicorn.error Application startup complete.
+2026-11-07 19:51:56,247 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 19:58:28,110 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:58:42,857 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:59:12,019 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:59:23,175 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 19:59:34,796 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:04:08,910 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:04:22,107 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:04:39,634 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:21:31,069 INFO uvicorn.error Shutting down
+2026-11-07 20:21:31,172 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 20:21:31,174 INFO uvicorn.error Application shutdown complete.
+2026-11-07 20:21:31,175 INFO uvicorn.error Finished server process [30454]
+2026-11-07 20:21:32,120 INFO uvicorn.error Started server process [32843]
+2026-11-07 20:21:32,121 INFO uvicorn.error Waiting for application startup.
+2026-11-07 20:21:32,121 INFO uvicorn.error Application startup complete.
+2026-11-07 20:21:32,121 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 20:24:20,952 INFO uvicorn.error Shutting down
+2026-11-07 20:24:21,058 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 20:24:21,059 INFO uvicorn.error Application shutdown complete.
+2026-11-07 20:24:21,059 INFO uvicorn.error Finished server process [32843]
+2026-11-07 20:24:21,944 INFO uvicorn.error Started server process [33017]
+2026-11-07 20:24:21,944 INFO uvicorn.error Waiting for application startup.
+2026-11-07 20:24:21,945 INFO uvicorn.error Application startup complete.
+2026-11-07 20:24:21,945 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 20:26:09,362 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:26:20,423 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:26:32,072 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:26:43,244 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:27:02,472 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:27:15,050 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:27:19,377 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:27:38,691 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:31:10,849 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:32:05,688 INFO uvicorn.error Shutting down
+2026-11-07 20:32:05,790 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 20:32:05,791 INFO uvicorn.error Application shutdown complete.
+2026-11-07 20:32:05,791 INFO uvicorn.error Finished server process [33017]
+2026-11-07 20:32:06,623 INFO uvicorn.error Started server process [33407]
+2026-11-07 20:32:06,623 INFO uvicorn.error Waiting for application startup.
+2026-11-07 20:32:06,624 INFO uvicorn.error Application startup complete.
+2026-11-07 20:32:06,624 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 20:36:42,979 INFO uvicorn.error Shutting down
+2026-11-07 20:36:43,083 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 20:36:43,085 INFO uvicorn.error Application shutdown complete.
+2026-11-07 20:36:43,085 INFO uvicorn.error Finished server process [33407]
+2026-11-07 20:36:44,011 INFO uvicorn.error Started server process [33621]
+2026-11-07 20:36:44,011 INFO uvicorn.error Waiting for application startup.
+2026-11-07 20:36:44,012 INFO uvicorn.error Application startup complete.
+2026-11-07 20:36:44,012 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 20:38:37,250 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:41:51,301 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:42:02,943 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:42:13,972 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 20:49:48,390 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 21:11:42,161 INFO uvicorn.error Shutting down
+2026-11-07 21:11:42,267 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 21:11:42,269 INFO uvicorn.error Application shutdown complete.
+2026-11-07 21:11:42,269 INFO uvicorn.error Finished server process [33621]
+2026-11-07 21:11:43,542 INFO uvicorn.error Started server process [35253]
+2026-11-07 21:11:43,542 INFO uvicorn.error Waiting for application startup.
+2026-11-07 21:11:43,543 INFO uvicorn.error Application startup complete.
+2026-11-07 21:11:43,543 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 21:13:47,834 INFO uvicorn.error Shutting down
+2026-11-07 21:13:47,943 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 21:13:47,944 INFO uvicorn.error Application shutdown complete.
+2026-11-07 21:13:47,944 INFO uvicorn.error Finished server process [35253]
+2026-11-07 21:13:48,794 INFO uvicorn.error Started server process [36236]
+2026-11-07 21:13:48,794 INFO uvicorn.error Waiting for application startup.
+2026-11-07 21:13:48,794 INFO uvicorn.error Application startup complete.
+2026-11-07 21:13:48,795 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 23:35:21,772 INFO uvicorn.error Shutting down
+2026-11-07 23:35:21,880 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 23:35:21,883 INFO uvicorn.error Application shutdown complete.
+2026-11-07 23:35:21,883 INFO uvicorn.error Finished server process [36236]
+2026-11-07 23:35:23,217 INFO uvicorn.error Started server process [43782]
+2026-11-07 23:35:23,217 INFO uvicorn.error Waiting for application startup.
+2026-11-07 23:35:23,217 INFO uvicorn.error Application startup complete.
+2026-11-07 23:35:23,218 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 23:43:47,308 INFO uvicorn.error Shutting down
+2026-11-07 23:43:47,410 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 23:43:47,411 INFO uvicorn.error Application shutdown complete.
+2026-11-07 23:43:47,411 INFO uvicorn.error Finished server process [43782]
+2026-11-07 23:43:49,174 INFO uvicorn.error Started server process [44314]
+2026-11-07 23:43:49,174 INFO uvicorn.error Waiting for application startup.
+2026-11-07 23:43:49,174 INFO uvicorn.error Application startup complete.
+2026-11-07 23:43:49,175 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 23:46:52,185 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 23:47:12,252 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 23:47:26,253 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 23:47:45,438 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 23:51:22,955 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 23:53:57,941 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 23:54:10,530 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 23:54:22,934 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 23:54:47,015 INFO uvicorn.error Shutting down
+2026-11-07 23:54:47,117 INFO uvicorn.error Waiting for application shutdown.
+2026-11-07 23:54:47,118 INFO uvicorn.error Application shutdown complete.
+2026-11-07 23:54:47,118 INFO uvicorn.error Finished server process [44314]
+2026-11-07 23:54:48,197 INFO uvicorn.error Started server process [44997]
+2026-11-07 23:54:48,197 INFO uvicorn.error Waiting for application startup.
+2026-11-07 23:54:48,198 INFO uvicorn.error Application startup complete.
+2026-11-07 23:54:48,198 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-07 23:56:11,567 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 23:56:25,847 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-07 23:56:45,921 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 00:00:17,439 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 00:00:31,851 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 00:00:46,282 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 00:02:36,585 INFO uvicorn.error Shutting down
+2026-11-08 00:02:36,688 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 00:02:36,689 INFO uvicorn.error Application shutdown complete.
+2026-11-08 00:02:36,689 INFO uvicorn.error Finished server process [44997]
+2026-11-08 00:02:37,613 INFO uvicorn.error Started server process [45416]
+2026-11-08 00:02:37,613 INFO uvicorn.error Waiting for application startup.
+2026-11-08 00:02:37,613 INFO uvicorn.error Application startup complete.
+2026-11-08 00:02:37,614 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 00:04:19,182 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 00:06:02,221 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 00:06:22,327 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:28:24,297 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:28:44,727 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:28:50,517 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:29:09,222 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:31:30,636 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:31:50,879 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:32:08,623 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:35:44,101 INFO uvicorn.error Shutting down
+2026-11-08 14:35:44,205 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 14:35:44,206 INFO uvicorn.error Application shutdown complete.
+2026-11-08 14:35:44,206 INFO uvicorn.error Finished server process [45416]
+2026-11-08 14:35:45,179 INFO uvicorn.error Started server process [49955]
+2026-11-08 14:35:45,179 INFO uvicorn.error Waiting for application startup.
+2026-11-08 14:35:45,180 INFO uvicorn.error Application startup complete.
+2026-11-08 14:35:45,180 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 14:36:57,109 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:37:18,088 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:37:36,788 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:37:56,873 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:38:23,159 INFO uvicorn.error Shutting down
+2026-11-08 14:38:23,261 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 14:38:23,262 INFO uvicorn.error Application shutdown complete.
+2026-11-08 14:38:23,262 INFO uvicorn.error Finished server process [49955]
+2026-11-08 14:38:24,217 INFO uvicorn.error Started server process [50323]
+2026-11-08 14:38:24,217 INFO uvicorn.error Waiting for application startup.
+2026-11-08 14:38:24,218 INFO uvicorn.error Application startup complete.
+2026-11-08 14:38:24,218 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 14:41:47,136 INFO uvicorn.error Shutting down
+2026-11-08 14:41:47,237 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 14:41:47,239 INFO uvicorn.error Application shutdown complete.
+2026-11-08 14:41:47,239 INFO uvicorn.error Finished server process [50323]
+2026-11-08 14:41:48,055 INFO uvicorn.error Started server process [51124]
+2026-11-08 14:41:48,055 INFO uvicorn.error Waiting for application startup.
+2026-11-08 14:41:48,055 INFO uvicorn.error Application startup complete.
+2026-11-08 14:41:48,055 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 14:43:28,186 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:43:48,219 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:46:48,430 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:47:17,429 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:47:31,579 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:47:49,671 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:51:34,361 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:51:53,194 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:52:05,285 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 14:54:16,567 INFO uvicorn.error Shutting down
+2026-11-08 14:54:16,669 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 14:54:16,670 INFO uvicorn.error Application shutdown complete.
+2026-11-08 14:54:16,670 INFO uvicorn.error Finished server process [51124]
+2026-11-08 14:54:17,537 INFO uvicorn.error Started server process [51872]
+2026-11-08 14:54:17,537 INFO uvicorn.error Waiting for application startup.
+2026-11-08 14:54:17,538 INFO uvicorn.error Application startup complete.
+2026-11-08 14:54:17,538 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 14:57:25,836 INFO uvicorn.error Shutting down
+2026-11-08 14:57:25,938 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 14:57:25,939 INFO uvicorn.error Application shutdown complete.
+2026-11-08 14:57:25,940 INFO uvicorn.error Finished server process [51872]
+2026-11-08 14:57:26,764 INFO uvicorn.error Started server process [52104]
+2026-11-08 14:57:26,765 INFO uvicorn.error Waiting for application startup.
+2026-11-08 14:57:26,765 INFO uvicorn.error Application startup complete.
+2026-11-08 14:57:26,765 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 14:59:18,790 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:02:35,601 INFO uvicorn.error Shutting down
+2026-11-08 15:02:35,706 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 15:02:35,707 INFO uvicorn.error Application shutdown complete.
+2026-11-08 15:02:35,707 INFO uvicorn.error Finished server process [52104]
+2026-11-08 15:02:36,600 INFO uvicorn.error Started server process [52369]
+2026-11-08 15:02:36,600 INFO uvicorn.error Waiting for application startup.
+2026-11-08 15:02:36,600 INFO uvicorn.error Application startup complete.
+2026-11-08 15:02:36,601 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 15:04:22,678 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:10:30,434 INFO uvicorn.error Shutting down
+2026-11-08 15:10:30,537 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 15:10:30,537 INFO uvicorn.error Application shutdown complete.
+2026-11-08 15:10:30,537 INFO uvicorn.error Finished server process [52369]
+2026-11-08 15:10:31,798 INFO uvicorn.error Started server process [52783]
+2026-11-08 15:10:31,798 INFO uvicorn.error Waiting for application startup.
+2026-11-08 15:10:31,799 INFO uvicorn.error Application startup complete.
+2026-11-08 15:10:31,799 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 15:14:52,757 INFO uvicorn.error Shutting down
+2026-11-08 15:14:52,860 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 15:14:52,861 INFO uvicorn.error Application shutdown complete.
+2026-11-08 15:14:52,861 INFO uvicorn.error Finished server process [52783]
+2026-11-08 15:14:54,001 INFO uvicorn.error Started server process [53024]
+2026-11-08 15:14:54,002 INFO uvicorn.error Waiting for application startup.
+2026-11-08 15:14:54,002 INFO uvicorn.error Application startup complete.
+2026-11-08 15:14:54,002 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 15:18:08,462 INFO uvicorn.error Shutting down
+2026-11-08 15:18:08,564 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 15:18:08,566 INFO uvicorn.error Application shutdown complete.
+2026-11-08 15:18:08,567 INFO uvicorn.error Finished server process [53024]
+2026-11-08 15:18:09,544 INFO uvicorn.error Started server process [53201]
+2026-11-08 15:18:09,544 INFO uvicorn.error Waiting for application startup.
+2026-11-08 15:18:09,545 INFO uvicorn.error Application startup complete.
+2026-11-08 15:18:09,545 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 15:21:09,102 INFO uvicorn.error Shutting down
+2026-11-08 15:21:09,205 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 15:21:09,208 INFO uvicorn.error Application shutdown complete.
+2026-11-08 15:21:09,208 INFO uvicorn.error Finished server process [53201]
+2026-11-08 15:21:10,083 INFO uvicorn.error Started server process [53405]
+2026-11-08 15:21:10,083 INFO uvicorn.error Waiting for application startup.
+2026-11-08 15:21:10,084 INFO uvicorn.error Application startup complete.
+2026-11-08 15:21:10,084 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 15:35:27,283 INFO uvicorn.error Shutting down
+2026-11-08 15:35:27,385 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 15:35:27,385 INFO uvicorn.error Application shutdown complete.
+2026-11-08 15:35:27,385 INFO uvicorn.error Finished server process [53405]
+2026-11-08 15:35:28,458 INFO uvicorn.error Started server process [54114]
+2026-11-08 15:35:28,458 INFO uvicorn.error Waiting for application startup.
+2026-11-08 15:35:28,459 INFO uvicorn.error Application startup complete.
+2026-11-08 15:35:28,459 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 15:38:13,452 INFO uvicorn.error Shutting down
+2026-11-08 15:38:13,554 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 15:38:13,555 INFO uvicorn.error Application shutdown complete.
+2026-11-08 15:38:13,555 INFO uvicorn.error Finished server process [54114]
+2026-11-08 15:38:14,571 INFO uvicorn.error Started server process [54299]
+2026-11-08 15:38:14,571 INFO uvicorn.error Waiting for application startup.
+2026-11-08 15:38:14,571 INFO uvicorn.error Application startup complete.
+2026-11-08 15:38:14,572 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 15:41:39,513 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:42:03,194 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:42:21,022 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:42:39,215 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:43:02,763 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:43:22,047 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:43:32,000 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:43:52,085 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:44:41,262 INFO uvicorn.error Shutting down
+2026-11-08 15:44:41,365 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 15:44:41,368 INFO uvicorn.error Application shutdown complete.
+2026-11-08 15:44:41,368 INFO uvicorn.error Finished server process [54299]
+2026-11-08 15:44:42,514 INFO uvicorn.error Started server process [55474]
+2026-11-08 15:44:42,514 INFO uvicorn.error Waiting for application startup.
+2026-11-08 15:44:42,514 INFO uvicorn.error Application startup complete.
+2026-11-08 15:44:42,514 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 15:48:05,838 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:48:17,131 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:49:20,797 INFO uvicorn.error Shutting down
+2026-11-08 15:49:20,899 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 15:49:20,901 INFO uvicorn.error Application shutdown complete.
+2026-11-08 15:49:20,901 INFO uvicorn.error Finished server process [55474]
+2026-11-08 15:49:21,857 INFO uvicorn.error Started server process [55695]
+2026-11-08 15:49:21,858 INFO uvicorn.error Waiting for application startup.
+2026-11-08 15:49:21,858 INFO uvicorn.error Application startup complete.
+2026-11-08 15:49:21,858 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 15:50:38,191 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:50:49,706 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:51:01,639 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 15:51:13,525 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 16:25:12,506 INFO uvicorn.error Shutting down
+2026-11-08 16:25:12,609 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 16:25:12,611 INFO uvicorn.error Application shutdown complete.
+2026-11-08 16:25:12,611 INFO uvicorn.error Finished server process [55695]
+2026-11-08 16:25:14,090 INFO uvicorn.error Started server process [57460]
+2026-11-08 16:25:14,090 INFO uvicorn.error Waiting for application startup.
+2026-11-08 16:25:14,090 INFO uvicorn.error Application startup complete.
+2026-11-08 16:25:14,091 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 16:46:57,620 INFO uvicorn.error Shutting down
+2026-11-08 16:46:57,723 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 16:46:57,725 INFO uvicorn.error Application shutdown complete.
+2026-11-08 16:46:57,725 INFO uvicorn.error Finished server process [57460]
+2026-11-08 16:46:59,254 INFO uvicorn.error Started server process [59286]
+2026-11-08 16:46:59,254 INFO uvicorn.error Waiting for application startup.
+2026-11-08 16:46:59,255 INFO uvicorn.error Application startup complete.
+2026-11-08 16:46:59,255 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 16:48:46,866 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 16:49:00,134 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 16:49:13,590 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 16:51:31,695 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 16:51:37,075 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 16:51:51,591 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 16:54:01,437 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 16:54:16,841 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 16:56:17,617 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 16:58:30,625 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 16:58:44,225 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 17:00:59,211 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 17:01:31,490 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 17:51:00,018 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 17:51:15,042 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 17:51:39,017 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 17:51:57,683 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 17:54:23,640 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 17:54:36,781 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 17:54:48,948 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 17:55:01,294 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 17:56:41,356 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 17:59:43,962 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:02:41,346 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:04:07,210 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:05:39,592 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:05:52,756 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:06:05,499 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:06:18,534 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:06:31,446 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:08:14,975 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:08:39,358 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:08:50,974 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:09:01,504 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:09:12,708 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:09:23,291 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:23:43,450 INFO uvicorn.error Shutting down
+2026-11-08 18:23:43,554 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 18:23:43,555 INFO uvicorn.error Application shutdown complete.
+2026-11-08 18:23:43,555 INFO uvicorn.error Finished server process [59286]
+2026-11-08 18:23:44,527 INFO uvicorn.error Started server process [70687]
+2026-11-08 18:23:44,527 INFO uvicorn.error Waiting for application startup.
+2026-11-08 18:23:44,528 INFO uvicorn.error Application startup complete.
+2026-11-08 18:23:44,528 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 18:25:42,096 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:25:57,271 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:26:20,309 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:26:33,539 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:26:51,302 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:33:35,458 INFO uvicorn.error Shutting down
+2026-11-08 18:33:35,578 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 18:33:35,579 INFO uvicorn.error Application shutdown complete.
+2026-11-08 18:33:35,579 INFO uvicorn.error Finished server process [70687]
+2026-11-08 18:33:36,476 INFO uvicorn.error Started server process [71355]
+2026-11-08 18:33:36,476 INFO uvicorn.error Waiting for application startup.
+2026-11-08 18:33:36,477 INFO uvicorn.error Application startup complete.
+2026-11-08 18:33:36,477 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 18:40:51,133 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:53:00,926 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 18:58:14,303 INFO uvicorn.error Shutting down
+2026-11-08 18:58:14,410 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 18:58:14,411 INFO uvicorn.error Application shutdown complete.
+2026-11-08 18:58:14,412 INFO uvicorn.error Finished server process [71355]
+2026-11-08 18:58:15,753 INFO uvicorn.error Started server process [73748]
+2026-11-08 18:58:15,753 INFO uvicorn.error Waiting for application startup.
+2026-11-08 18:58:15,754 INFO uvicorn.error Application startup complete.
+2026-11-08 18:58:15,754 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 19:00:08,141 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:00:19,623 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:00:31,098 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:00:42,595 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:00:54,107 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:01:05,631 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:03:54,076 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:10:33,899 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:19:15,100 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:22:16,744 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:22:31,381 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:31:29,532 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:34:19,589 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:34:33,009 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:34:45,983 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:34:58,170 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:35:23,231 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:39:42,149 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:46:32,620 INFO uvicorn.error Shutting down
+2026-11-08 19:46:32,723 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 19:46:32,725 INFO uvicorn.error Application shutdown complete.
+2026-11-08 19:46:32,725 INFO uvicorn.error Finished server process [73748]
+2026-11-08 19:46:34,030 INFO uvicorn.error Started server process [77048]
+2026-11-08 19:46:34,030 INFO uvicorn.error Waiting for application startup.
+2026-11-08 19:46:34,031 INFO uvicorn.error Application startup complete.
+2026-11-08 19:46:34,031 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 19:48:41,395 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:51:33,280 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 19:58:40,296 INFO uvicorn.error Shutting down
+2026-11-08 19:58:40,400 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 19:58:40,401 INFO uvicorn.error Application shutdown complete.
+2026-11-08 19:58:40,401 INFO uvicorn.error Finished server process [77048]
+2026-11-08 19:58:41,513 INFO uvicorn.error Started server process [77772]
+2026-11-08 19:58:41,513 INFO uvicorn.error Waiting for application startup.
+2026-11-08 19:58:41,513 INFO uvicorn.error Application startup complete.
+2026-11-08 19:58:41,513 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 20:05:44,360 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 20:11:58,031 INFO uvicorn.error Shutting down
+2026-11-08 20:11:58,136 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 20:11:58,138 INFO uvicorn.error Application shutdown complete.
+2026-11-08 20:11:58,139 INFO uvicorn.error Finished server process [77772]
+2026-11-08 20:11:59,688 INFO uvicorn.error Started server process [78573]
+2026-11-08 20:11:59,688 INFO uvicorn.error Waiting for application startup.
+2026-11-08 20:11:59,688 INFO uvicorn.error Application startup complete.
+2026-11-08 20:11:59,688 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 20:32:27,885 INFO uvicorn.error Shutting down
+2026-11-08 20:32:27,987 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 20:32:27,989 INFO uvicorn.error Application shutdown complete.
+2026-11-08 20:32:27,989 INFO uvicorn.error Finished server process [78573]
+2026-11-08 20:32:29,060 INFO uvicorn.error Started server process [81080]
+2026-11-08 20:32:29,061 INFO uvicorn.error Waiting for application startup.
+2026-11-08 20:32:29,061 INFO uvicorn.error Application startup complete.
+2026-11-08 20:32:29,061 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 20:40:18,160 INFO uvicorn.error Shutting down
+2026-11-08 20:40:18,262 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 20:40:18,262 INFO uvicorn.error Application shutdown complete.
+2026-11-08 20:40:18,262 INFO uvicorn.error Finished server process [81080]
+2026-11-08 20:40:19,675 INFO uvicorn.error Started server process [82272]
+2026-11-08 20:40:19,675 INFO uvicorn.error Waiting for application startup.
+2026-11-08 20:40:19,675 INFO uvicorn.error Application startup complete.
+2026-11-08 20:40:19,675 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 20:44:18,861 INFO uvicorn.error Shutting down
+2026-11-08 20:44:18,964 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 20:44:18,966 INFO uvicorn.error Application shutdown complete.
+2026-11-08 20:44:18,966 INFO uvicorn.error Finished server process [82272]
+2026-11-08 20:44:20,287 INFO uvicorn.error Started server process [82527]
+2026-11-08 20:44:20,287 INFO uvicorn.error Waiting for application startup.
+2026-11-08 20:44:20,288 INFO uvicorn.error Application startup complete.
+2026-11-08 20:44:20,288 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 20:45:04,590 INFO uvicorn.error Shutting down
+2026-11-08 20:45:04,693 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 20:45:04,703 INFO uvicorn.error Application shutdown complete.
+2026-11-08 20:45:04,703 INFO uvicorn.error Finished server process [82527]
+2026-11-08 20:45:05,680 INFO uvicorn.error Started server process [82593]
+2026-11-08 20:45:05,680 INFO uvicorn.error Waiting for application startup.
+2026-11-08 20:45:05,681 INFO uvicorn.error Application startup complete.
+2026-11-08 20:45:05,681 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 20:48:10,503 INFO uvicorn.error Shutting down
+2026-11-08 20:48:10,606 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 20:48:10,607 INFO uvicorn.error Application shutdown complete.
+2026-11-08 20:48:10,607 INFO uvicorn.error Finished server process [82593]
+2026-11-08 20:48:11,788 INFO uvicorn.error Started server process [82792]
+2026-11-08 20:48:11,788 INFO uvicorn.error Waiting for application startup.
+2026-11-08 20:48:11,788 INFO uvicorn.error Application startup complete.
+2026-11-08 20:48:11,789 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 20:49:37,836 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 20:49:51,238 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 20:50:03,704 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 20:50:16,513 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 20:50:41,017 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 20:53:50,533 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 20:54:09,297 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 20:57:39,823 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 21:44:00,202 INFO uvicorn.error Shutting down
+2026-11-08 21:44:00,304 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 21:44:00,305 INFO uvicorn.error Application shutdown complete.
+2026-11-08 21:44:00,305 INFO uvicorn.error Finished server process [82792]
+2026-11-08 21:44:01,571 INFO uvicorn.error Started server process [88657]
+2026-11-08 21:44:01,571 INFO uvicorn.error Waiting for application startup.
+2026-11-08 21:44:01,572 INFO uvicorn.error Application startup complete.
+2026-11-08 21:44:01,572 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 21:59:46,808 INFO uvicorn.error Shutting down
+2026-11-08 21:59:46,914 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 21:59:46,916 INFO uvicorn.error Application shutdown complete.
+2026-11-08 21:59:46,916 INFO uvicorn.error Finished server process [88657]
+2026-11-08 21:59:48,020 INFO uvicorn.error Started server process [89905]
+2026-11-08 21:59:48,020 INFO uvicorn.error Waiting for application startup.
+2026-11-08 21:59:48,021 INFO uvicorn.error Application startup complete.
+2026-11-08 21:59:48,021 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 22:06:36,438 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 22:08:55,618 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 22:12:12,233 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 22:19:33,927 INFO uvicorn.error Shutting down
+2026-11-08 22:19:34,029 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 22:19:34,029 INFO uvicorn.error Application shutdown complete.
+2026-11-08 22:19:34,029 INFO uvicorn.error Finished server process [89905]
+2026-11-08 22:19:35,284 INFO uvicorn.error Started server process [91065]
+2026-11-08 22:19:35,284 INFO uvicorn.error Waiting for application startup.
+2026-11-08 22:19:35,284 INFO uvicorn.error Application startup complete.
+2026-11-08 22:19:35,285 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 22:21:40,881 INFO uvicorn.error Shutting down
+2026-11-08 22:21:40,983 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 22:21:40,984 INFO uvicorn.error Application shutdown complete.
+2026-11-08 22:21:40,985 INFO uvicorn.error Finished server process [91065]
+2026-11-08 22:21:42,352 INFO uvicorn.error Started server process [91190]
+2026-11-08 22:21:42,352 INFO uvicorn.error Waiting for application startup.
+2026-11-08 22:21:42,353 INFO uvicorn.error Application startup complete.
+2026-11-08 22:21:42,353 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 22:21:50,490 INFO uvicorn.error Shutting down
+2026-11-08 22:21:50,592 INFO uvicorn.error Waiting for application shutdown.
+2026-11-08 22:21:50,592 INFO uvicorn.error Application shutdown complete.
+2026-11-08 22:21:50,593 INFO uvicorn.error Finished server process [91190]
+2026-11-08 22:21:52,564 INFO uvicorn.error Started server process [91230]
+2026-11-08 22:21:52,564 INFO uvicorn.error Waiting for application startup.
+2026-11-08 22:21:52,565 INFO uvicorn.error Application startup complete.
+2026-11-08 22:21:52,565 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-08 22:23:41,735 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 22:24:00,340 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 22:41:55,163 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-08 22:42:15,090 INFO httpx HTTP Request: POST https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-09 11:29:15,348 INFO uvicorn.error Shutting down
+2026-11-09 11:29:15,450 INFO uvicorn.error Waiting for application shutdown.
+2026-11-09 11:29:15,452 INFO uvicorn.error Application shutdown complete.
+2026-11-09 11:29:15,452 INFO uvicorn.error Finished server process [91230]
+2026-11-09 11:29:39,030 INFO uvicorn.error Started server process [40876]
+2026-11-09 11:29:39,030 INFO uvicorn.error Waiting for application startup.
+2026-11-09 11:29:39,030 INFO uvicorn.error Application startup complete.
+2026-11-09 11:29:39,031 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-09 11:35:23,224 INFO httpx HTTP Request: POST https://llm-qd3aybmwbduw913v.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions "HTTP/1.1 200 OK"
+2026-11-09 11:47:52,247 INFO uvicorn.error Shutting down
+2026-11-09 11:47:52,349 INFO uvicorn.error Waiting for application shutdown.
+2026-11-09 11:47:52,350 INFO uvicorn.error Application shutdown complete.
+2026-11-09 11:47:52,350 INFO uvicorn.error Finished server process [40876]
+2026-11-09 11:47:53,544 INFO uvicorn.error Started server process [43346]
+2026-11-09 11:47:53,545 INFO uvicorn.error Waiting for application startup.
+2026-11-09 11:47:53,545 INFO uvicorn.error Application startup complete.
+2026-11-09 11:47:53,546 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+2026-11-09 12:23:13,144 INFO uvicorn.error Shutting down
+2026-11-09 12:23:13,246 INFO uvicorn.error Waiting for application shutdown.
+2026-11-09 12:23:13,247 INFO uvicorn.error Application shutdown complete.
+2026-11-09 12:23:13,247 INFO uvicorn.error Finished server process [43346]
+2026-11-09 12:23:14,522 INFO uvicorn.error Started server process [47508]
+2026-11-09 12:23:14,522 INFO uvicorn.error Waiting for application startup.
+2026-11-09 12:23:14,523 INFO uvicorn.error Application startup complete.
+2026-11-09 12:23:14,523 INFO uvicorn.error Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)

@@ -1,0 +1,31 @@
+{
+  "task_id": "11952de2c99fc8770b31",
+  "run_id": "f9efa923008443208673f3b1ebd0093c",
+  "source_name": "ZA0071077＿温粥人＿温州市＿恒申餐饮单店",
+  "model": "gui-plus-2026-02-26",
+  "navigation": {
+    "outcome": "needs_review",
+    "reason": "自动化未到达有效业务终态",
+    "source": "runtime",
+    "frame": "evidence/ui-tars-018.png"
+  },
+  "capture": {
+    "status": "not_started",
+    "pages": []
+  },
+  "timing_ms": {
+    "startup": 45286,
+    "navigation": 152326,
+    "total": 219087
+  },
+  "material": {
+    "material_version_id": "8a490766a1ff45e19b059ad814d6c970",
+    "material_batch_id": "8ac2097d99a041c8aea9300bb0cf5e6b",
+    "material_version": "v1.0.2",
+    "material_snapshot": "8c7a0afefee00866776a5916415a60bdb6aeb0bfc3cff300224b1b36cdfeccfe"
+  },
+  "initial_frame": "evidence/ui-tars-001.png",
+  "wechat_return": {
+    "status": "ready"
+  }
+}

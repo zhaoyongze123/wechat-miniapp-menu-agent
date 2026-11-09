@@ -1,0 +1,89 @@
+<Activity mc:Ignorable="sap sap2010" x:Class="DiscoverWeChatWindows" VisualBasic.Settings="{x:Null}" sap2010:WorkflowViewState.IdRef="ActivityBuilder_1" xmlns="http://schemas.microsoft.com/netfx/2009/xaml/activities" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:sap="http://schemas.microsoft.com/netfx/2009/xaml/activities/presentation" xmlns:sap2010="http://schemas.microsoft.com/netfx/2010/xaml/activities/presentation" xmlns:scg="clr-namespace:System.Collections.Generic;assembly=System.Private.CoreLib" xmlns:sco="clr-namespace:System.Collections.ObjectModel;assembly=System.Private.CoreLib" xmlns:uix="http://schemas.uipath.com/workflow/activities/uix" xmlns:ui="http://schemas.uipath.com/workflow/activities" xmlns:sd="clr-namespace:System.Drawing;assembly=System.Drawing.Primitives" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <x:Members>
+    <x:Property Name="out_Windows" Type="OutArgument(x:String)" />
+  </x:Members>
+  <TextExpression.NamespacesForImplementation>
+    <sco:Collection x:TypeArguments="x:String">
+      <x:String>System</x:String>
+      <x:String>System.Collections.Generic</x:String>
+      <x:String>System.Linq</x:String>
+      <x:String>System.Drawing</x:String>
+      <x:String>System.Text.Json</x:String>
+      <x:String>UiPath.Core</x:String>
+      <x:String>UiPath.UIAutomationNext.Activities</x:String>
+      <x:String>UiPath.UIAutomationNext.Enums</x:String>
+    </sco:Collection>
+  </TextExpression.NamespacesForImplementation>
+  <TextExpression.ReferencesForImplementation>
+    <sco:Collection x:TypeArguments="AssemblyReference">
+      <AssemblyReference>System.Private.CoreLib</AssemblyReference>
+      <AssemblyReference>System.Linq</AssemblyReference>
+      <AssemblyReference>System.Drawing.Primitives</AssemblyReference>
+      <AssemblyReference>System.Text.Json</AssemblyReference>
+      <AssemblyReference>UiPath.UiAutomation.Activities</AssemblyReference>
+      <AssemblyReference>UiPath.UIAutomationNext.Activities</AssemblyReference>
+    </sco:Collection>
+  </TextExpression.ReferencesForImplementation>
+  <Sequence DisplayName="只读发现 WeChat 顶层窗口" sap:VirtualizedContainerService.HintSize="900,900" sap2010:WorkflowViewState.IdRef="Sequence_1">
+    <Sequence.Variables>
+      <Variable x:TypeArguments="scg:IEnumerable(ui:UiElement)" Name="foundWindows" />
+      <Variable x:TypeArguments="scg:List(scg:Dictionary(x:String, x:Object))" Name="windowRecords" />
+      <Variable x:TypeArguments="x:String" Name="windowTitle" />
+      <Variable x:TypeArguments="x:String" Name="windowApp" />
+      <Variable x:TypeArguments="x:String" Name="windowRole" />
+      <Variable x:TypeArguments="sd:Rectangle" Name="windowPosition" />
+    </Sequence.Variables>
+    <Assign sap:VirtualizedContainerService.HintSize="500,82" sap2010:WorkflowViewState.IdRef="Assign_Records">
+      <Assign.To>
+        <OutArgument x:TypeArguments="scg:List(scg:Dictionary(x:String, x:Object))">[windowRecords]</OutArgument>
+      </Assign.To>
+      <Assign.Value>
+        <InArgument x:TypeArguments="scg:List(scg:Dictionary(x:String, x:Object))">[New List(Of Dictionary(Of String, Object))()]</InArgument>
+      </Assign.Value>
+    </Assign>
+    <uix:NFindElements Children="[foundWindows]" DisplayName="枚举 WeChat 顶层窗口" HealingAgentBehavior="SameAsCard" Mode="FindTopLevels" Version="V5" sap:VirtualizedContainerService.HintSize="500,120" sap2010:WorkflowViewState.IdRef="NFindElements_WeChat">
+      <uix:NFindElements.FilterTarget>
+        <uix:TargetAnchorable FuzzySelectorArgument="&lt;wnd app='WeChat' role='AXWindow' /&gt;" SearchSteps="FuzzySelector" />
+      </uix:NFindElements.FilterTarget>
+    </uix:NFindElements>
+    <ForEach x:TypeArguments="ui:UiElement" Values="[foundWindows]" sap:VirtualizedContainerService.HintSize="800,500" sap2010:WorkflowViewState.IdRef="ForEach_Window">
+      <ForEach.Body>
+        <ActivityAction x:TypeArguments="ui:UiElement">
+          <ActivityAction.Argument>
+            <DelegateInArgument x:TypeArguments="ui:UiElement" Name="currentWindow" />
+          </ActivityAction.Argument>
+          <Sequence DisplayName="读取窗口属性" sap:VirtualizedContainerService.HintSize="760,450" sap2010:WorkflowViewState.IdRef="Sequence_ReadWindow">
+            <Assign sap:VirtualizedContainerService.HintSize="350,70" sap2010:WorkflowViewState.IdRef="Assign_TitleDefault">
+              <Assign.To><OutArgument x:TypeArguments="x:String">[windowTitle]</OutArgument></Assign.To>
+              <Assign.Value><InArgument x:TypeArguments="x:String">[String.Empty]</InArgument></Assign.Value>
+            </Assign>
+            <Assign sap:VirtualizedContainerService.HintSize="350,70" sap2010:WorkflowViewState.IdRef="Assign_AppDefault">
+              <Assign.To><OutArgument x:TypeArguments="x:String">[windowApp]</OutArgument></Assign.To>
+              <Assign.Value><InArgument x:TypeArguments="x:String">WeChat</InArgument></Assign.Value>
+            </Assign>
+            <Assign sap:VirtualizedContainerService.HintSize="350,70" sap2010:WorkflowViewState.IdRef="Assign_RoleDefault">
+              <Assign.To><OutArgument x:TypeArguments="x:String">[windowRole]</OutArgument></Assign.To>
+              <Assign.Value><InArgument x:TypeArguments="x:String">AXWindow</InArgument></Assign.Value>
+            </Assign>
+            <Assign sap:VirtualizedContainerService.HintSize="350,70" sap2010:WorkflowViewState.IdRef="Assign_PositionDefault">
+              <Assign.To><OutArgument x:TypeArguments="sd:Rectangle">[windowPosition]</OutArgument></Assign.To>
+              <Assign.Value><InArgument x:TypeArguments="sd:Rectangle">[New System.Drawing.Rectangle()]</InArgument></Assign.Value>
+            </Assign>
+            <uix:NGetAttributeGeneric x:TypeArguments="x:String" Attribute="title" ContinueOnError="True" DisplayName="读取标题" InUiElement="[currentWindow]" Result="[windowTitle]" Version="V5" />
+            <uix:NGetAttributeGeneric x:TypeArguments="sd:Rectangle" Attribute="position" ContinueOnError="True" DisplayName="读取窗口矩形" InUiElement="[currentWindow]" Result="[windowPosition]" Version="V5" />
+            <Assign sap:VirtualizedContainerService.HintSize="700,100" sap2010:WorkflowViewState.IdRef="Assign_AddRecord">
+              <Assign.To><OutArgument x:TypeArguments="scg:List(scg:Dictionary(x:String, x:Object))">[windowRecords]</OutArgument></Assign.To>
+              <Assign.Value>
+                <InArgument x:TypeArguments="scg:List(scg:Dictionary(x:String, x:Object))">[windowRecords.Concat(New Dictionary(Of String, Object)() {New Dictionary(Of String, Object) From {{"title", windowTitle}, {"app", windowApp}, {"role", windowRole}, {"position", New Dictionary(Of String, Integer) From {{"x", windowPosition.X}, {"y", windowPosition.Y}, {"width", windowPosition.Width}, {"height", windowPosition.Height}}}}}).ToList()]</InArgument>
+              </Assign.Value>
+            </Assign>
+          </Sequence>
+        </ActivityAction>
+      </ForEach.Body>
+    </ForEach>
+    <Assign sap:VirtualizedContainerService.HintSize="500,80" sap2010:WorkflowViewState.IdRef="Assign_Output">
+      <Assign.To><OutArgument x:TypeArguments="x:String">[out_Windows]</OutArgument></Assign.To>
+      <Assign.Value><InArgument x:TypeArguments="x:String">[System.Text.Json.JsonSerializer.Serialize(windowRecords)]</InArgument></Assign.Value>
+    </Assign>
+  </Sequence>
+</Activity>

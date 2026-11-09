@@ -1,0 +1,31 @@
+{
+  "task_id": "cec633504e8589347d10",
+  "run_id": "f9efa923008443208673f3b1ebd0093c",
+  "source_name": "E01453＿唐宫海鲜舫＿北京市＿唐宫海鲜舫（总店）",
+  "model": "gui-plus-2026-02-26",
+  "navigation": {
+    "outcome": "needs_review",
+    "reason": "自动化未到达有效业务终态",
+    "source": "runtime",
+    "frame": "evidence/ui-tars-018.png"
+  },
+  "capture": {
+    "status": "not_started",
+    "pages": []
+  },
+  "timing_ms": {
+    "startup": 45120,
+    "navigation": 176113,
+    "total": 242327
+  },
+  "material": {
+    "material_version_id": "aea0462ceb7f407091044eedf061ee0f",
+    "material_batch_id": "a87220341e0447ed865c9c6f32994228",
+    "material_version": "v1.0.0",
+    "material_snapshot": "3097a387b722c7feb0a8ba1a2ba3025f595d76e95d0335286ba7a43567209642"
+  },
+  "initial_frame": "evidence/ui-tars-001.png",
+  "wechat_return": {
+    "status": "ready"
+  }
+}
