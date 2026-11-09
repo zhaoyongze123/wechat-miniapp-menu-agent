@@ -1290,25 +1290,7 @@ class UiPathRunner:
                 return last_frame
 
             def execute(command, frame_id):
-                action = command.get("action")
-                started = time.monotonic()
-                if action == "windows":
-                    candidates = self._miniapp_candidates(
-                        self._send({"action": "discover"}).get("windows"))
-                    result = {"windows": [{"title": item["title"]} for item in candidates]}
-                elif action == "switch_window":
-                    result = self._switch_trial_window(active, str(command.get("title") or ""))
-                else:
-                    self._trace_click = {"frame_id": frame_id, "source": "gui_agent"}
-                    try:
-                        self._send({**command, "selector": active["selector"]})
-                    finally:
-                        self._trace_click = {}
-                    result = {}
-                host_trace("tool", frame_id=frame_id, action=action,
-                           params={key: value for key, value in command.items() if key != "selector"},
-                           result=result, duration_ms=round((time.monotonic() - started) * 1000))
-                return result
+                return self._execute_trial_action(active, command, frame_id, host_trace)
 
             navigation_started = time.monotonic()
             timing["startup"] = round((navigation_started - started_at) * 1000)
@@ -1332,9 +1314,12 @@ class UiPathRunner:
                         if isinstance(value, str):
                             decision["diagnostic"][field] = value.replace(model.api_key, "[已隐藏]")
                 if decision["outcome"] == "success":
+                    # 先留存 Agent 自己的判断，交接校验抛异常时降级结果仍能复盘原始决策。
+                    raw_decision = {"outcome": decision["outcome"], "reason": decision["reason"]}
                     # 校验必须发生在写入 navigation 之前：窗口/截图/区域不一致时整条结果降级为待检查。
                     self._validate_trial_handoff(decision, frame, active["selector"])
-                raw_decision = {"outcome": decision["outcome"], "reason": decision["reason"]}
+                else:
+                    raw_decision = {"outcome": decision["outcome"], "reason": decision["reason"]}
                 report["navigation"] = decision
                 if frame:
                     report["navigation"]["frame"] = str(Path(frame["path"]).relative_to(output_dir))
@@ -1398,9 +1383,9 @@ class UiPathRunner:
                 recorded = self._record_agent_usage(trace_path, task, model)
                 if recorded:
                     report["usage"] = recorded
-            except Exception:
-                # 用量入库失败不能改写导航与采集结论。
-                pass
+            except Exception as exc:
+                # 用量入库失败不能改写导航与采集结论，但必须在报告里可见。
+                report["usage_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
             atomic_json(output_dir / "navigation-result.json", report)
         return report
 
@@ -2094,6 +2079,34 @@ class UiPathRunner:
         self._move_window_on_screen(active["selector"])
         return {"switched": True, "title": title, "titles": titles}
 
+    def _execute_trial_action(self, active: dict, command: dict, frame_id: str, host_trace) -> dict:
+        """执行 Agent 的一个动作；无论 UiPath 成功还是抛异常，宿主侧都要留一条记录。"""
+        action = command.get("action")
+        started = time.monotonic()
+        params = {key: value for key, value in command.items() if key != "selector"}
+        try:
+            if action == "windows":
+                candidates = self._miniapp_candidates(
+                    self._send({"action": "discover"}).get("windows"))
+                result = {"windows": [{"title": item["title"]} for item in candidates]}
+            elif action == "switch_window":
+                result = self._switch_trial_window(active, str(command.get("title") or ""))
+            else:
+                self._trace_click = {"frame_id": frame_id, "source": "gui_agent"}
+                try:
+                    self._send({**command, "selector": active["selector"]})
+                finally:
+                    self._trace_click = {}
+                result = {}
+        except Exception as exc:
+            host_trace("tool", frame_id=frame_id, action=action, params=params, ok=False,
+                       error=f"{type(exc).__name__}: {str(exc)[:300]}",
+                       duration_ms=round((time.monotonic() - started) * 1000))
+            raise
+        host_trace("tool", frame_id=frame_id, action=action, params=params, ok=True,
+                   result=result, duration_ms=round((time.monotonic() - started) * 1000))
+        return result
+
     def _prepare_trial_window(self, selector: str, evidence_dir: Path, host_trace=None) -> None:
         """Agent 启动前先归位窗口，再用一次实测截图校准截图像素与窗口坐标的比例。"""
         self._move_window_on_screen(selector)
@@ -2104,41 +2117,86 @@ class UiPathRunner:
         if not all(isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
                    for value in (width, height, window_width, window_height)):
             raise NeedsReview("窗口截图缺少有效尺寸，无法校准 GUI Agent 坐标")
-        scale = float(width) / float(window_width)
-        if not math.isfinite(scale) or scale <= 0:
-            raise NeedsReview("窗口截图与窗口坐标比例异常，无法校准 GUI Agent 坐标")
+        scale_x = float(width) / float(window_width)
+        scale_y = float(height) / float(window_height)
+        for value in (scale_x, scale_y):
+            if not math.isfinite(value) or value <= 0:
+                raise NeedsReview("窗口截图与窗口坐标比例异常，无法校准 GUI Agent 坐标")
+        # 截图是窗口的等比缩放；两个方向比例不一致说明截图与窗口尺寸不同源。
+        if abs(scale_x - scale_y) / max(scale_x, scale_y) > 0.02:
+            raise NeedsReview("窗口截图宽高比例与窗口坐标不一致，无法校准 GUI Agent 坐标")
         if host_trace:
             host_trace("window_prepare", selector=selector, frame=Path(frame["path"]).name,
                        width=int(width), height=int(height),
                        window_width=float(window_width), window_height=float(window_height),
-                       scale=round(scale, 4))
+                       scale_x=round(scale_x, 4), scale_y=round(scale_y, 4))
 
     def _record_agent_usage(self, trace_path: Path, task: dict, model: TrialModel) -> dict:
-        """把模型调用留痕里的 usage 逐请求写进现有用量账本；缺失就是缺失，不做估算。"""
+        """按 call_id 归并留痕：成功与失败的模型调用都入账，Token 缺失保持 missing，不估算。"""
         if self.usage_ledger is None or not trace_path.is_file():
             return {}
         context = {"source": "agent", "run_id": self.run_id, "task_id": task.get("id", ""),
                    "source_name": task.get("source_name", ""), "stage": "ui_tars_navigation"}
-        calls = with_usage = 0
+        requests: dict[str, dict] = {}
+        finals: dict[str, dict] = {}
         for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
                 record = json.loads(line)
             except ValueError:
                 continue
-            if record.get("type") != "response":
+            key = record.get("call_id")
+            if isinstance(key, bool) or not isinstance(key, int):
                 continue
-            response = {"id": record.get("request_id") or "", "model": record.get("returned_model") or "",
-                        "usage": record.get("usage")}
+            kind = record.get("type")
+            if kind == "request":
+                requests.setdefault(str(key), record)
+            elif kind in {"response", "error"}:
+                finals.setdefault(str(key), record)
+        summary = {"model_calls": 0, "with_usage": 0, "failed": 0, "skipped": 0}
+        for key in sorted(set(requests) | set(finals), key=int):
+            request = requests.get(key, {})
+            final = finals.get(key, {})
+            # 开始时间取请求发出时刻；响应时间是完成时刻，直接用会把耗时算晚。
+            started_at = request.get("at") if isinstance(request.get("at"), str) else final.get("at")
+            elapsed = final.get("duration_ms")
+            if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)):
+                elapsed = self._trace_elapsed_ms(started_at, final.get("at"))
+            stable = uuid.uuid5(uuid.NAMESPACE_URL, f"{trace_path.resolve()}|{self.run_id}|{key}").hex
             call_id = self.usage_ledger.start_call(
                 provider="openai_compatible", model=GUI_PLUS_MODEL, endpoint=model.base_url,
-                context=context, started_at=record.get("at"))
-            self.usage_ledger.finish_call(
-                call_id, status="success", elapsed_ms=record.get("duration_ms"), http_status=200,
-                response=response, request_id=record.get("request_id") or "")
-            calls += 1
-            if isinstance(record.get("usage"), dict):
-                with_usage += 1
-        return {"model_calls": calls, "with_usage": with_usage} if calls else {}
+                context=context, started_at=started_at, call_id=stable)
+            if not call_id:
+                summary["skipped"] += 1
+                continue
+            usage = final.get("usage") if final.get("type") == "response" else None
+            if final.get("type") == "response":
+                self.usage_ledger.finish_call(
+                    call_id, status="success", elapsed_ms=elapsed, http_status=200,
+                    response={"id": final.get("request_id") or "",
+                              "model": final.get("returned_model") or "", "usage": usage},
+                    request_id=final.get("request_id") or "")
+                summary["with_usage"] += 1 if isinstance(usage, dict) else 0
+            else:
+                # 只留下 request（网络中断、SDK 中止）也按失败入账，原因记为 interrupted。
+                code = final.get("code") if isinstance(final.get("code"), str) else ""
+                if not code:
+                    code = "interrupted"
+                self.usage_ledger.finish_call(
+                    call_id, status="error", elapsed_ms=elapsed, http_status=None,
+                    response={"id": "", "model": "", "usage": None},
+                    error_type=code if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", code) else "agent_error")
+                summary["failed"] += 1
+            summary["model_calls"] += 1
+        return summary if summary["model_calls"] or summary["skipped"] else {}
+
+    @staticmethod
+    def _trace_elapsed_ms(started_at, finished_at) -> int | None:
+        try:
+            start = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+            end = datetime.fromisoformat(str(finished_at).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return max(0, round((end - start).total_seconds() * 1000))
 
     def _validate_trial_handoff(self, decision: dict, frame: dict | None, selector: str) -> None:
         """交接前核对窗口、截图和菜品区域必须来自同一扇当前窗口。"""

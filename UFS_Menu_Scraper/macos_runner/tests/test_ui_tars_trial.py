@@ -24,7 +24,7 @@ from menu_capture.ui_tars_trial import (
     run_navigation,
     trial_model_from_env,
 )
-from menu_capture.uipath_runner import RobotCommandError, UiPathRunner
+from menu_capture.uipath_runner import NeedsReview, RobotCommandError, UiPathRunner
 
 
 _SDK = Path(__file__).resolve().parents[1] / "ui_tars/node_modules/@gui-agent/agent-sdk/package.json"
@@ -99,11 +99,17 @@ def model_server():
                 "authorization": self.headers.get("Authorization"),
                 "body": body,
             })
+            usage = None
             if not type(self).responses:
                 content = ""
             else:
                 response = type(self).responses.pop(0)
-                content = response(body) if callable(response) else response
+                if isinstance(response, dict):
+                    # 支持显式 usage，用来验证流末尾用量块的解析与入账。
+                    content = response.get("content", "")
+                    usage = response.get("usage")
+                else:
+                    content = response(body) if callable(response) else response
             if type(self).delay_seconds:
                 time.sleep(type(self).delay_seconds)
             chunks = [content[index:index + 31] for index in range(0, len(content), 31)] or [""]
@@ -124,6 +130,14 @@ def model_server():
                         }],
                     }
                     self.wfile.write(b"data: " + json.dumps(payload, ensure_ascii=False).encode() + b"\n\n")
+                    self.wfile.flush()
+                if usage is not None:
+                    # 真实服务把 usage 放在 choices 为空的尾块里。
+                    tail = {
+                        "id": "chatcmpl-local-test", "object": "chat.completion.chunk", "created": 1,
+                        "model": body.get("model", GUI_PLUS_MODEL), "choices": [], "usage": usage,
+                    }
+                    self.wfile.write(b"data: " + json.dumps(tail, ensure_ascii=False).encode() + b"\n\n")
                     self.wfile.flush()
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
@@ -638,12 +652,13 @@ def test_agent_usage_is_written_to_existing_ledger(tmp_path):
     runner.run_id = "run-agent"
     trace_path = tmp_path / "agent-calls.jsonl"
     trace_path.write_text("\n".join([
-        json.dumps({"type": "request", "at": "2026-11-09T02:00:00.000Z"}),
+        json.dumps({"type": "request", "at": "2026-11-09T02:00:00.000Z", "call_id": 1}),
         json.dumps({"type": "response", "at": "2026-11-09T02:00:03.000Z", "duration_ms": 3000,
-                    "request_id": "chatcmpl-1", "returned_model": GUI_PLUS_MODEL,
+                    "call_id": 1, "request_id": "chatcmpl-1", "returned_model": GUI_PLUS_MODEL,
                     "usage": {"prompt_tokens": 1200, "completion_tokens": 34, "total_tokens": 1234}}),
+        json.dumps({"type": "request", "at": "2026-11-09T02:00:04.000Z", "call_id": 2}),
         json.dumps({"type": "response", "at": "2026-11-09T02:00:06.000Z", "duration_ms": 2100,
-                    "request_id": "chatcmpl-2", "returned_model": GUI_PLUS_MODEL, "usage": None}),
+                    "call_id": 2, "request_id": "chatcmpl-2", "returned_model": GUI_PLUS_MODEL, "usage": None}),
     ]) + "\n", encoding="utf-8")
 
     recorded = runner._record_agent_usage(
@@ -651,15 +666,120 @@ def test_agent_usage_is_written_to_existing_ledger(tmp_path):
         TrialModel("/usr/bin/node", "http://127.0.0.1:9/v1", "secret-key"),
     )
 
-    assert recorded == {"model_calls": 2, "with_usage": 1}
+    assert recorded == {"model_calls": 2, "with_usage": 1, "failed": 0, "skipped": 0}
     with store.connect() as db:
         rows = [dict(row) for row in db.execute(
-            "SELECT source,run_id,task_id,source_name,status,usage_state,input_tokens,output_tokens "
+            "SELECT source,run_id,task_id,source_name,status,usage_state,input_tokens,output_tokens,started_at "
             "FROM model_calls ORDER BY started_at")]
     assert [row["usage_state"] for row in rows] == ["complete", "missing"]
     assert all(row["source"] == "agent" and row["run_id"] == "run-agent"
                and row["task_id"] == "task-1" and row["source_name"] == "测试门店" for row in rows)
     assert rows[0]["input_tokens"] == 1200 and rows[0]["output_tokens"] == 34
+    # 开始时间取请求发出时刻，而不是响应完成时刻。
+    assert rows[0]["started_at"] == "2026-11-09T02:00:00.000+00:00"
+
+
+def test_agent_usage_records_failed_calls_and_skips_reimport(tmp_path):
+    from menu_capture.model_usage import UsageLedger
+    from menu_capture.uipath_runner import UiPathRunner
+
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    runner = object.__new__(UiPathRunner)
+    runner.usage_ledger = UsageLedger(store)
+    runner.run_id = "run-agent"
+    trace_path = tmp_path / "agent-calls.jsonl"
+    trace_path.write_text("\n".join([
+        json.dumps({"type": "request", "at": "2026-11-09T02:00:00.000Z", "call_id": 1}),
+        json.dumps({"type": "response", "at": "2026-11-09T02:00:08.000Z", "duration_ms": 8000,
+                    "call_id": 1, "request_id": "chatcmpl-1", "returned_model": GUI_PLUS_MODEL,
+                    "usage": {"prompt_tokens": 900, "completion_tokens": 20, "total_tokens": 920}}),
+        json.dumps({"type": "request", "at": "2026-11-09T02:01:00.000Z", "call_id": 2}),
+        json.dumps({"type": "error", "at": "2026-11-09T02:01:02.500Z", "call_id": 2, "code": "runtime"}),
+        json.dumps({"type": "request", "at": "2026-11-09T02:02:00.000Z", "call_id": 3}),
+    ]) + "\n", encoding="utf-8")
+    model = TrialModel("/usr/bin/node", "http://127.0.0.1:9/v1", "secret-key")
+
+    first = runner._record_agent_usage(trace_path, {"id": "task-1"}, model)
+    second = runner._record_agent_usage(trace_path, {"id": "task-1"}, model)
+
+    assert first == {"model_calls": 3, "with_usage": 1, "failed": 2, "skipped": 0}
+    assert second == {"model_calls": 0, "with_usage": 0, "failed": 0, "skipped": 3}
+    with store.connect() as db:
+        rows = [dict(row) for row in db.execute(
+            "SELECT status,error_type,elapsed_ms,usage_state,input_tokens FROM model_calls ORDER BY started_at")]
+    assert [row["status"] for row in rows] == ["success", "error", "error"]
+    assert rows[0]["elapsed_ms"] == 8000 and rows[0]["input_tokens"] == 900
+    assert rows[1]["error_type"] == "runtime" and rows[1]["elapsed_ms"] == 2500
+    # 只有 request 没有收尾记录，说明调用在响应前中断。
+    assert rows[2]["error_type"] == "interrupted" and rows[2]["usage_state"] == "missing"
+
+
+def test_host_trace_keeps_failed_tool_attempt():
+    runner = object.__new__(UiPathRunner)
+    runner._trace_click = {}
+
+    def fail(_command):
+        raise RobotCommandError("foreground=false")
+
+    runner._send = fail
+    records: list[dict] = []
+    with pytest.raises(RobotCommandError):
+        runner._execute_trial_action({"selector": "window:one", "title": ""},
+                                     {"action": "click", "x": 10, "y": 20}, "1",
+                                     lambda kind, **fields: records.append({"kind": kind, **fields}))
+
+    assert len(records) == 1
+    assert records[0]["kind"] == "tool" and records[0]["ok"] is False
+    assert "RobotCommandError" in records[0]["error"]
+    assert records[0]["params"] == {"action": "click", "x": 10, "y": 20}
+
+
+def test_trial_window_calibration_checks_both_axes(tmp_path):
+    runner = object.__new__(UiPathRunner)
+    runner._move_window_on_screen = lambda _selector: None
+
+    def frame(width, height, window_width, window_height):
+        return {"action": "screenshot", "selector": "window:one",
+                "path": str(tmp_path / "window-prepare.png"),
+                "width": width, "height": height,
+                "window_width": window_width, "window_height": window_height}
+
+    runner._send = lambda _command: frame(320, 200, 240, 150)
+    records: list[dict] = []
+    runner._prepare_trial_window("window:one", tmp_path,
+                                lambda kind, **fields: records.append({"kind": kind, **fields}))
+    assert records[0]["scale_x"] == pytest.approx(320 / 240, abs=1e-4)
+    assert records[0]["scale_y"] == pytest.approx(200 / 150, abs=1e-4)
+
+    # 纵向比例与横向不一致，说明截图和窗口尺寸不同源，必须降级而不是带错坐标启动。
+    runner._send = lambda _command: frame(320, 200, 240, 600)
+    with pytest.raises(NeedsReview):
+        runner._prepare_trial_window("window:one", tmp_path, lambda *args, **kwargs: None)
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_stream_usage_tail_chunk_reaches_trace_with_exact_tokens(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        {"content": _tool_call({"action": "left_click", "coordinate": [375, 450]}),
+         "usage": {"prompt_tokens": 1200, "completion_tokens": 20, "total_tokens": 1220}},
+        {"content": _terminal("success", menu_box=[100, 100, 900, 900]),
+         "usage": {"prompt_tokens": 1531, "completion_tokens": 47, "total_tokens": 1578}},
+    ]
+    observe, _frames = _frame_factory(tmp_path)
+    trace_path = tmp_path / "agent-calls.jsonl"
+
+    result, _terminal_frame = run_navigation(
+        _model(server), "测试门店", 2, 4,
+        observe=observe, execute=lambda command, frame_id: None, check_stop=lambda: None,
+        trace_path=trace_path,
+    )
+
+    assert result["outcome"] == "success"
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    responses = [row for row in rows if row["type"] == "response"]
+    assert [row["usage"]["total_tokens"] for row in responses] == [1220, 1578]
+    assert [row["usage"]["prompt_tokens"] for row in responses] == [1200, 1531]
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")

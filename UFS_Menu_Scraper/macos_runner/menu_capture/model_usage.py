@@ -148,8 +148,9 @@ class UsageLedger:
             if "returned_model" not in columns: db.execute("ALTER TABLE model_calls ADD COLUMN returned_model TEXT NOT NULL DEFAULT ''")
             db.execute("UPDATE model_calls SET status='interrupted' WHERE status='running'")
 
-    def start_call(self, *, provider, model, endpoint="", context=None, started_at=None):
-        call_id = uuid.uuid4().hex
+    def start_call(self, *, provider, model, endpoint="", context=None, started_at=None, call_id=""):
+        # 外部可按来源给稳定 call_id；重复导入同一轨迹时不再产生第二条账单。
+        call_id = call_id if isinstance(call_id, str) and re.fullmatch(r"[0-9a-f]{32}", call_id) else uuid.uuid4().hex
         local_now = datetime.now().astimezone()
         if isinstance(started_at, str) and started_at.strip():
             try:
@@ -180,9 +181,11 @@ class UsageLedger:
             values["step"] = None
         cols = ["call_id", "started_at", "local_day", "provider", "model", "endpoint", "status", "source", *_FIELDS]
         with self.store.connect() as db:
-            db.execute(f"INSERT INTO model_calls ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
-                       [call_id, stamp, local_day, str(provider), str(model), _safe_endpoint(endpoint), "running", source,
-                        *[values[k] for k in _FIELDS]])
+            cursor = db.execute(f"INSERT OR IGNORE INTO model_calls ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
+                                [call_id, stamp, local_day, str(provider), str(model), _safe_endpoint(endpoint), "running", source,
+                                 *[values[k] for k in _FIELDS]])
+            if not cursor.rowcount:
+                return ""
         return call_id
 
     def finish_call(self, call_id, *, status, elapsed_ms, http_status=None, response=None, request_id="", error_type="") -> None:

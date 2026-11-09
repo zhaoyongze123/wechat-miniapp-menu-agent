@@ -53,6 +53,12 @@ function sha256(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
 }
 
+function rawRecord(value, limit = 262144) {
+  // 留痕要能复盘协议问题：原文完整保留，超出上限才截断并显式标注。
+  const raw = typeof value === 'string' ? value : '';
+  return { raw: raw.slice(0, limit), raw_bytes: Buffer.byteLength(raw), raw_truncated: raw.length > limit };
+}
+
 function imageRef(url) {
   let bytes = Buffer.alloc(0);
   try {
@@ -221,7 +227,7 @@ function parseModelAction(args) {
 function reject(code, rawContent) {
   failure = { code, raw: text(rawContent, 1200) };
   trace({ type: 'rejected', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
-          code, raw: text(rawContent, 8000) });
+          code, ...rawRecord(rawContent) });
   // Python 侧把 stderr 落到本店 adapter.log；这里保留原始输出，便于逐条区分是格式还是参数问题。
   try {
     process.stderr.write(`${JSON.stringify({ code, raw: failure.raw })}\n`);
@@ -239,14 +245,14 @@ function makeCustomActionParser() {
       if (!currentFrame || !screenWidth || !screenHeight) throw new Error('no_observation');
       const parsed = parseModelAction(extractAction(rawContent));
       trace({ type: 'action', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
-              ok: true, action: parsed, raw: text(rawContent, 8000) });
+              ok: true, action: parsed, ...rawRecord(rawContent) });
       return { rawContent, reasoningContent: '', actions: [parsed] };
     } catch (error) {
       const code = ['invalid_action', 'invalid_terminal', 'disallowed_action', 'no_observation'].includes(error?.message)
         ? error.message
         : 'invalid_action';
       trace({ type: 'action', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
-              ok: false, error: code, raw: text(rawContent, 8000) });
+              ok: false, error: code, ...rawRecord(rawContent) });
       return reject(code, rawContent);
     }
   };
@@ -473,8 +479,8 @@ async function main() {
     emitResult(terminal.outcome, terminal.reason, extra);
   } catch (error) {
     const detail = text(error?.message, 200);
-    trace({ type: 'error', at: now(), code: failure?.code || 'runtime', detail,
-            raw: failure?.raw || '', actions: actionCount, call_id: currentCall?.id ?? null });
+    trace({ type: 'error', at: now(), call_id: currentCall?.id ?? null, code: failure?.code || 'runtime', detail,
+            actions: actionCount, ...rawRecord(lastRawContent) });
     if (failure) {
       return emitRuntimeReview(`模型输出被拒绝（${failure.code}）`,
         { code: failure.code, raw: failure.raw || '', detail });

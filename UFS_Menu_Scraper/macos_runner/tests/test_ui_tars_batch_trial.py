@@ -236,3 +236,72 @@ def test_batch_trial_reuses_one_robot_startup_and_writes_per_store_reports(tmp_p
     assert [store.get(task_id) for task_id in task_ids] == task_snapshot
     assert store.latest_run() is None
     assert not any(output_dir.glob("**/page-*.png"))
+
+
+def test_trial_handoff_failure_keeps_agent_decision(tmp_path, monkeypatch):
+    input_dir = tmp_path / "configured-input"
+    input_dir.mkdir()
+    output_dir = tmp_path / "official-output"
+    configs = ConfigStore(tmp_path / "settings")
+    configs.save({
+        "input_dir": str(input_dir), "output_dir": str(output_dir),
+        "model": {"provider": "openai_compatible", "base_url": "https://example.invalid/v1",
+                  "model": "unused", "api_key": "unused"},
+    })
+    store = TaskStore(tmp_path / "data/tasks.sqlite3")
+    store.scan(_published_task(tmp_path / "data", "9" * 64, "交接失败店"))
+    tasks = store.tasks()
+    task_ids = [task["id"] for task in tasks]
+    profile_path = tmp_path / "uipath.profile.json"
+    profile = {"mode": "automatic", "launch_mode": "cli", "max_tasks": 10}
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+
+    class FakeRobot:
+        def __init__(self, *_args):
+            pass
+
+        def request_stop(self):
+            pass
+
+    class FakeModel:
+        api_key = "test-key"
+
+    runner = UiPathRunner(configs, store, profile_path, transport_factory=FakeRobot)
+    source_by_task = {task["id"]: str(Path(task["source_path"]).parent.parent) for task in tasks}
+    runner._registered_trial_source = lambda task_id: source_by_task[task_id]
+    store.material_binding = lambda _source: {}
+    runner.readiness = lambda **_kwargs: {
+        "ready": True, "issues": [], "profile": profile, "selected_task_ids": task_ids,
+    }
+    runner._launch_cli = lambda *_args, **_kwargs: None
+    runner._await_cli_startup = lambda: None
+
+    def open_source(task, selected_profile, *_args):
+        selected_profile["miniapp_selector"] = f"window:{task['id']}"
+        return {"ok": True}
+
+    runner._open_source_automatic = open_source
+    runner._prepare_trial_window = lambda *_args, **_kwargs: None
+    runner._set_stage = lambda *_args, **_kwargs: None
+    runner._ensure_file_assistant = lambda *_args, **_kwargs: None
+    runner._close_miniapp_windows = lambda *_args, **_kwargs: None
+    monkeypatch.setattr(uipath_runner_module, "trial_model_from_env", lambda *_args: FakeModel())
+    # Agent 判定可交接，但没有可用证据图：交接校验失败，原始判断必须保留在报告里。
+    monkeypatch.setattr(uipath_runner_module, "run_navigation", lambda *_args, **_kwargs: (
+        {"outcome": "success", "reason": "菜品与价格清晰可见", "source": "agent",
+         "menu_region": {"x": 0, "y": 0, "width": 10, "height": 10}}, None
+    ))
+
+    started = runner.start(ui_tars_trial=True, trial_task_ids=task_ids)
+    deadline = time.monotonic() + 5
+    while runner.running and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    summary_path = Path(started["result_file"])
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    report = json.loads((summary_path.parent / summary["results"][0]["result_file"])
+                        .read_text(encoding="utf-8"))
+    assert report["navigation"]["outcome"] == "needs_review"
+    assert report["navigation"]["agent_outcome"] == "success"
+    assert report["navigation"]["agent_reason"] == "菜品与价格清晰可见"
+    assert not any(output_dir.glob("**/page-*.png"))
