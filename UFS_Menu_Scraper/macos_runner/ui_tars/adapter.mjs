@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { parseActionPayload } from './action-repair.mjs';
 
 // SDK 日志可能包含提示词、模型返回值或请求信息。协议输出使用启动时保存的原始写口，SDK 日志静默丢弃。
 const protocolWrite = process.stdout.write.bind(process.stdout);
@@ -152,20 +153,7 @@ function text(value, max = 1000) {
 function extractAction(raw) {
   const tags = [...raw.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/gi)];
   if (tags.length !== 1) throw new Error('invalid_action');
-  const payload = tags[0][1];
-  let parsed;
-  try {
-    parsed = JSON.parse(payload);
-  } catch (error) {
-    // 百炼实测偶发漏掉点击坐标的左方括号。只接受结构完整、恰好包含两个整数的已知变体。
-    const click = payload.match(/^\s*\{\s*"name"\s*:\s*"computer_use"\s*,\s*"arguments"\s*:\s*\{\s*"action"\s*:\s*"left_click"\s*,\s*"coordinate"\s*:\s*(0|[1-9]\d{0,2})\s*,\s*(0|[1-9]\d{0,2})\s*\]\s*\}\s*\}\s*$/);
-    if (!click) throw error;
-    return { action: 'left_click', coordinate: [Number(click[1]), Number(click[2])] };
-  }
-  if (!parsed || parsed.name !== 'computer_use' || !parsed.arguments || typeof parsed.arguments !== 'object' || Array.isArray(parsed.arguments)) {
-    throw new Error('invalid_action');
-  }
-  return parsed.arguments;
+  return parseActionPayload(tags[0][1]);
 }
 
 function stopAgent() {

@@ -669,7 +669,11 @@ def test_capture_continues_until_two_adjacent_frames_match(tmp_path: Path) -> No
     assert len(pages) == 8
     ups = [command for command in actor.commands if command.get("action") == "scroll" and command.get("direction") == "Up"]
     assert not ups
-    assert len([c for c in actor.commands if c.get("action") == "scroll_capture" and c.get("direction") == "Down"]) == 8
+    downs = [c for c in actor.commands if c.get("action") == "scroll_capture" and c.get("direction") == "Down"]
+    assert len(downs) == 8
+    # 滚动落点在菜单区域上部约 30% 高度。
+    assert all(c["y"] == pytest.approx((20 + 120 * 0.30) * 120 / 240) for c in downs)
+    assert all(c["x"] == pytest.approx((20 + 180 * 0.65) * 120 / 240) for c in downs)
 
 def test_automatic_two_task_batch_reuses_one_actor_and_closes_between_stores(tmp_path: Path, monkeypatch) -> None:
     runner, store, first, second, profile_path, output_root = _setup(tmp_path, mode="automatic")

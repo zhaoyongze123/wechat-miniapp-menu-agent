@@ -4766,6 +4766,19 @@ class UiPathRunner:
         previous = None
         pages: list[str] = []
         sample_text = ""
+        # 滚动落点放在菜品列表上半部，让滚轮更容易作用在真实菜品区域。
+        scroll_y_ratio = 0.30
+
+        def scroll_once(target: dict) -> dict:
+            return self._send({
+                "action": "scroll_capture", "path": str((output_dir / "evidence" / f"page-{index + 1:04d}.png").resolve()),
+                "selector": selector,
+                "x": (region.x + region.width * 0.65) * target["window_width"] / target["width"],
+                "y": (region.y + region.height * scroll_y_ratio) * target["window_height"] / target["height"],
+                "direction": "Down",
+                "units": int(profile.get("scroll_units", 4)),
+            })
+
         # 截图、滚动、再截图；相邻两帧近似一致即视为到底。
         for index in range(settings.capture.max_pages + 1):
             self._guard()
@@ -4796,16 +4809,7 @@ class UiPathRunner:
                     return pages
                 sample_text = current_text
             self._guard()
-            units = int(profile.get("scroll_units", 4))
-            path = (output_dir / "evidence" / f"page-{index + 1:04d}.png").resolve()
-            frame = self._send({
-                "action": "scroll_capture", "path": str(path),
-                "selector": selector,
-                "x": (region.x + region.width * 0.65) * frame["window_width"] / frame["width"],
-                "y": (region.y + region.height * 0.55) * frame["window_height"] / frame["height"],
-                "direction": "Down",
-                "units": units,
-            })
+            frame = scroll_once(frame)
         raise NeedsReview(f"达到 max_pages={settings.capture.max_pages}，已保留部分截图但未确认菜单到底")
 
     @staticmethod
