@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "scope": "只定义动作名称、字段白名单与基础类型；菜单区域几何、终态条件和窄容错仍由 adapter.mjs 的专用函数实现，不在此文件内。",
   "coordinate_space": 1000,
   "actions": {
     "left_click": {

@@ -54,9 +54,7 @@ def _output_contract() -> str:
         f"3. 坐标统一使用当前截图的 {size}x{size} 归一化空间，左上角为 (0,0)，取值 0..{size - 1}。\n"
         "动作表：\n"
         f"{actions}\n"
-        "仅在两种情况下会容忍并纠正：遗漏 action 但 outcome 与 reason 完整（按 terminate 处理）；"
-        "非 success 带空数组 menu_box（视同未提供）。\n"
-        "除这两种以外，任何字段缺失、类型错误、越界或多余字段都视为格式违规。"
+        "任何字段缺失、类型错误、越界或多余字段都视为格式违规。"
     )
 
 

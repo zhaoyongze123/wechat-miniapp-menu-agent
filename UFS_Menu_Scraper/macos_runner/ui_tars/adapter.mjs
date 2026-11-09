@@ -379,11 +379,15 @@ function makeCustomActionParser() {
         : 'invalid_action';
       trace({ type: 'action', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
               ok: false, error: code, ...rawRecord(rawContent) });
-      if ((code === 'invalid_action' || code === 'invalid_terminal')
-          && parseFailures < CONSECUTIVE_PARSE_FAILURE_LIMIT && parseFailuresTotal < TOTAL_PARSE_FAILURE_LIMIT) {
-        // 错误只解释格式，不替 Agent 判断页面；连续和总计各有上限，避免无限重试。
+      const formatError = code === 'invalid_action' || code === 'invalid_terminal';
+      if (formatError) {
+        // 先记发生次数：即使这次超出修正上限直接终止，也会计入 format_failures。
         parseFailures += 1;
         parseFailuresTotal += 1;
+      }
+      if (formatError && parseFailures <= CONSECUTIVE_PARSE_FAILURE_LIMIT
+          && parseFailuresTotal <= TOTAL_PARSE_FAILURE_LIMIT) {
+        // 错误只解释格式，不替 Agent 判断页面；连续和总计各有上限，避免无限重试。
         formatRetries += 1;
         const detail = error instanceof ShapeError
           ? (error.reason === 'missing' ? `缺少必填字段 ${error.field}`

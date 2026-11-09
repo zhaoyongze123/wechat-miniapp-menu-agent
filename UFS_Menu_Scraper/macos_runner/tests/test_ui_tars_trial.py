@@ -303,6 +303,9 @@ def test_success_menu_box_far_outside_tolerance_is_rejected(model_server, tmp_pa
     assert result.get("source") == "runtime"
     assert actions == []
     assert len(handler.requests) == 3
+    # 三次都是格式错误，其中两次获得修正机会；最后一次终止也必须计入失败次数。
+    assert result["metrics"]["format_failures"] == 3
+    assert result["metrics"]["format_retries"] == 2
 
 
 def test_scroll_pixels_map_to_direction_and_bounded_units():
@@ -361,6 +364,8 @@ def test_missing_required_field_feedback_allows_correction(model_server, tmp_pat
     assert len(handler.requests) == 2
     feedback = _all_text(handler.requests[1]["body"]["messages"])
     assert "不符合工具协议" in feedback and "time" in feedback
+    assert result["metrics"]["format_failures"] == 1
+    assert result["metrics"]["format_retries"] == 1
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
@@ -386,6 +391,8 @@ def test_parse_failures_reset_after_valid_action(model_server, tmp_path):
     assert result.get("source") != "runtime"
     assert len(actions) == 2
     assert len(handler.requests) == 5
+    assert result["metrics"]["format_failures"] == 2
+    assert result["metrics"]["format_retries"] == 2
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
