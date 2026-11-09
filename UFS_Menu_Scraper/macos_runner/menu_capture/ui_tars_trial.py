@@ -21,6 +21,7 @@ from .model import Region
 
 
 _ENTRY = Path(__file__).resolve().parent.parent / "ui_tars" / "adapter.mjs"
+_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "ui_tars" / "action-schema.json"
 _SKILLS_DIR = Path(__file__).resolve().parent.parent / "ui_tars" / "skills"
 GUI_PLUS_MODEL = "gui-plus-2026-02-26"
 _GUI_PLUS_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -28,28 +29,39 @@ _MAX_MODEL_IMAGE_PIXELS = 1_003_520
 _REFERENCE_MAX_PIXELS = 640_000
 _TERMINAL_OUTCOMES = ("success", "needs_review", "unqualified")
 _SKILL_MAX_CHARS = 6000
+# UiPath 的滚动量是滚轮格数，不是屏幕像素；按 1000 归一化空间换算，并限制单次上限。
+_SCROLL_UNITS_PER_SCREEN = 6
+_SCROLL_UNITS_MAX = 6
+# Adapter 上报的执行计数；辅助调用与导航分开，便于评估预算占用。
+_METRIC_FIELDS = ("model_calls", "screenshots", "navigation_actions", "skill_reads",
+                  "format_retries", "tool_rejections", "format_failures")
 # Skill 只提供可参考的业务经验，由 Agent 自行决定是否加载。
 _SKILLS = {
     "menu-navigation": "点餐小程序导航经验：三终态判定、弹窗与前置步骤、常见误判反例。",
 }
 
+
+def _output_contract() -> str:
+    """动作表由 action-schema.json 生成，保证模型看到的字段与解析器校验的是同一份定义。"""
+    schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    size = int(schema.get("coordinate_space") or 1000)
+    actions = "\n".join(f"- {spec['doc']}" for spec in schema["actions"].values())
+    return (
+        "输出契约（固定协议，必须完全遵守；不合规会被拒绝并要求重写）\n"
+        '1. 每轮只输出一个 tool_call：<tool_call>{"name":"computer_use","arguments":{...}}</tool_call>。\n'
+        "   不要输出多个 tool_call，不要用自然语言描述动作，不要把 action 写成函数调用形式。\n"
+        "2. arguments 只能包含动作表为该动作列出的字段。禁止添加未列出的字段，禁止编造页面信息或坐标。\n"
+        f"3. 坐标统一使用当前截图的 {size}x{size} 归一化空间，左上角为 (0,0)，取值 0..{size - 1}。\n"
+        "动作表：\n"
+        f"{actions}\n"
+        "仅在两种情况下会容忍并纠正：遗漏 action 但 outcome 与 reason 完整（按 terminate 处理）；"
+        "非 success 带空数组 menu_box（视同未提供）。\n"
+        "除这两种以外，任何字段缺失、类型错误、越界或多余字段都视为格式违规。"
+    )
+
+
 # 输出契约是固定协议：字段、类型、取值范围都写死，不允许模型自创字段。
-_OUTPUT_CONTRACT = """输出契约（固定协议，必须完全遵守；不合规会被拒绝并要求重写）
-1. 每轮只输出一个 tool_call：<tool_call>{"name":"computer_use","arguments":{...}}</tool_call>。
-   不要输出多个 tool_call，不要用自然语言描述动作，不要把 action 写成函数调用形式。
-2. arguments 只能包含动作表为该动作列出的字段。禁止添加未列出的字段，禁止编造页面信息或坐标。
-3. 坐标统一使用当前截图的 1000x1000 归一化空间，左上角为 (0,0)，取值 0..999。
-动作表：
-- left_click：必填 coordinate=[x,y]；不得有其他字段。
-- scroll：必填 pixels（非零数字，正数向上、负数向下）；选填 coordinate=[x,y]。
-- wait：必填 time（秒，0 < time <= 5）；不得有其他字段。
-- list_windows：只有 action，不得有其他字段。
-- switch_window：必填 title（窗口标题原文，非空字符串）；不得有其他字段。
-- read_skill：必填 name（只能是已提供 Skill 索引中的名称）。
-- terminate：必填 outcome（success / unqualified / needs_review）和 reason（中文，说明实际观察到的结果，不超过 300 字）；
-  menu_box 只在 success 时必填，为 4 个 0..1000 的数字 [x1,y1,x2,y2]，且 x1<x2、y1<y2；非 success 不得提供 menu_box。
-仅在两种情况下会容忍并纠正：遗漏 action 但 outcome 与 reason 完整（按 terminate 处理）；非 success 带空数组 menu_box（视同未提供）。
-除这两种以外，任何字段缺失、类型错误、越界或多余字段都视为格式违规。"""
+_OUTPUT_CONTRACT = _output_contract()
 
 
 class TrialProtocolError(RuntimeError):
@@ -315,9 +327,13 @@ def _action_command(method, params, frame, image_size):
     result = {"action": method, "x": x * frame["window_width"] / width,
               "y": y * frame["window_height"] / height}
     if method == "scroll":
-        if params.get("direction") not in ("Up", "Down"):
-            raise TrialActionRejected("滚动方向无效，只允许 Up 或 Down")
-        result.update(direction=params["direction"], units=4)
+        pixels = params.get("pixels")
+        if not _finite(pixels) or pixels == 0:
+            raise TrialActionRejected("滚动需要非零的 pixels：正数向上、负数向下")
+        # 模型给的是有符号屏幕幅度；UiPath 只接受滚轮格数，因此换算后限制在 1..6 格。
+        units = round(abs(pixels) / 1000 * _SCROLL_UNITS_PER_SCREEN)
+        result.update(direction="Up" if pixels > 0 else "Down",
+                      units=max(1, min(_SCROLL_UNITS_MAX, units)))
     return result
 
 
@@ -326,6 +342,11 @@ def _result(event, frame, frame_id, image_size, action_sent):
     if outcome not in _TERMINAL_OUTCOMES or not isinstance(reason, str) or not reason.strip():
         raise TrialProtocolError("GUI Agent 终态缺少有效状态或理由")
     data = {"outcome": outcome, "reason": reason.strip()[:500]}
+    metrics = event.get("metrics")
+    if isinstance(metrics, dict):
+        data["metrics"] = {key: int(metrics[key]) for key in _METRIC_FIELDS
+                           if isinstance(metrics.get(key), int) and not isinstance(metrics.get(key), bool)
+                           and metrics[key] >= 0}
     diagnostic = event.get("diagnostic")
     if isinstance(diagnostic, dict):
         # 只保留可诊断的短字段；原始模型输出由 adapter.log 留存。

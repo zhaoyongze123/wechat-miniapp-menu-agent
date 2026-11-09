@@ -304,4 +304,11 @@ def test_trial_handoff_failure_keeps_agent_decision(tmp_path, monkeypatch):
     assert report["navigation"]["outcome"] == "needs_review"
     assert report["navigation"]["agent_outcome"] == "success"
     assert report["navigation"]["agent_reason"] == "菜品与价格清晰可见"
+    # 顶层字段把 Agent 的业务判断与技术失败分开：success 仍保留，只是截图交接失败。
+    assert report["agent_outcome"] == "success"
+    assert report["agent_reason"] == "菜品与价格清晰可见"
+    assert report["runtime_status"] == "failed"
+    assert report["runtime_code"] == "runtime"
+    assert report["runtime_error"]
+    assert report["capture_status"] == "not_started"
     assert not any(output_dir.glob("**/page-*.png"))

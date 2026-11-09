@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 // SDK 日志可能包含提示词、模型返回值或请求信息。协议输出使用启动时保存的原始写口，SDK 日志静默丢弃。
@@ -16,7 +16,12 @@ let screenHeight = 0;
 let actionUsedOnFrame = false;
 let terminal = null;
 let faulted = false;
+// 连续格式错误与整个任务的格式错误分开计数：连续合法输出后允许重新获得修正机会。
+const CONSECUTIVE_PARSE_FAILURE_LIMIT = 2;
+const TOTAL_PARSE_FAILURE_LIMIT = 4;
+const REASON_MAX_CHARS = 500;
 let parseFailures = 0;
+let parseFailuresTotal = 0;
 let resultEmitted = false;
 let failure = null;
 let lastRawContent = '';
@@ -25,7 +30,13 @@ let tracePath = '';
 let callSeq = 0;
 let currentCall = null;
 let actionCount = 0;
+let skillReads = 0;
+let formatRetries = 0;
+let toolRejections = 0;
+let screenshotCount = 0;
 const frameHashes = new Map();
+// 动作名称、必填/选填字段与基础类型只有这一份定义，Python 侧从同一文件生成输出契约。
+const actionSchema = JSON.parse(readFileSync(new URL('./action-schema.json', import.meta.url), 'utf8'));
 const terminalMarker = 'UFS_UI_TARS_TERMINAL_COMPLETE';
 let activeAgent = null;
 const { GUIAgent } = await import('@gui-agent/agent-sdk');
@@ -161,33 +172,93 @@ function stopAgent() {
   try { activeAgent?.abort(); } catch { /* fail closed; host owns process deadlines */ }
 }
 
-function exactKeys(args, keys) {
-  return Object.keys(args).every((key) => keys.includes(key));
+const NORMALIZED_SCREEN_SIZE = Number(actionSchema.coordinate_space) || 1000;
+
+function matchesRule(rule, value) {
+  switch (rule?.type) {
+    case 'point':
+      return Array.isArray(value) && value.length === 2 && value.every((n) => Number.isFinite(n));
+    case 'box':
+      return Array.isArray(value)
+        && ((value.length === 4 && value.every((n) => Number.isFinite(n)))
+          || (rule.allow_empty === true && value.length === 0));
+    case 'number':
+      if (!Number.isFinite(value)) return false;
+      if (rule.non_zero && value === 0) return false;
+      if (Number.isFinite(rule.min) && value < rule.min) return false;
+      if (Number.isFinite(rule.exclusive_min) && value <= rule.exclusive_min) return false;
+      if (Number.isFinite(rule.max) && value > rule.max) return false;
+      return true;
+    case 'string':
+      return typeof value === 'string' && value.trim().length > 0;
+    case 'enum':
+      return Array.isArray(rule.values) && rule.values.includes(value);
+    default:
+      return false;
+  }
 }
 
-const NORMALIZED_SCREEN_SIZE = 1000;
+// 带字段名的格式错误：反馈里明确指出缺哪个字段，但不替 Agent 判断页面。
+class ShapeError extends Error {
+  constructor(code, field, reason) {
+    super(code);
+    this.field = field;
+    this.reason = reason;
+  }
+}
+
+// 只校验字段白名单、必填项和基础类型；菜单矩形等几何关系仍由专用函数判断。
+function checkShape(name, args, code = 'invalid_action') {
+  const spec = actionSchema.actions?.[name];
+  if (!spec) throw new ShapeError(code, 'action', 'value');
+  const required = spec.required || {};
+  const optional = spec.optional || {};
+  const allowed = new Set(['action', ...Object.keys(required), ...Object.keys(optional)]);
+  for (const key of Object.keys(args)) {
+    if (!allowed.has(key)) throw new ShapeError(code, key, 'unexpected');
+  }
+  for (const [field, rule] of Object.entries(required)) {
+    if (args[field] === undefined) throw new ShapeError(code, field, 'missing');
+    if (!matchesRule(rule, args[field])) throw new ShapeError(code, field, 'value');
+  }
+  for (const [field, rule] of Object.entries(optional)) {
+    if (args[field] !== undefined && !matchesRule(rule, args[field])) throw new ShapeError(code, field, 'value');
+  }
+}
 
 function normalizedPoint(value) {
-  if (!Array.isArray(value) || value.length !== 2 || value.some((n) => !Number.isFinite(n))) throw new Error('invalid_action');
+  if (!Array.isArray(value) || value.length !== 2 || value.some((n) => !Number.isFinite(n))) throw new ShapeError('invalid_action', 'coordinate', 'value');
   const [x, y] = value;
-  if (x < 0 || y < 0 || x >= NORMALIZED_SCREEN_SIZE || y >= NORMALIZED_SCREEN_SIZE) throw new Error('invalid_action');
+  if (x < 0 || y < 0 || x >= NORMALIZED_SCREEN_SIZE || y >= NORMALIZED_SCREEN_SIZE) throw new ShapeError('invalid_action', 'coordinate', 'value');
   return { x: x * screenWidth / NORMALIZED_SCREEN_SIZE, y: y * screenHeight / NORMALIZED_SCREEN_SIZE };
 }
 
+// 模型偶尔把截图像素当归一化坐标，允许真实 ±5% 越界（-50..1050）后钳制到 0..1000；
+// 超出这个范围说明语义已不可确认，交给 Agent 重新输出。原始值只留在 trace 里复盘。
+const MENU_BOX_TOLERANCE = 0.05;
+
 function menuRegion(value) {
   if (!Array.isArray(value) || value.length !== 4 || value.some((n) => !Number.isFinite(n))) throw new Error('invalid_terminal');
-  // 模型偶尔把截图像素高（如 1017）当成归一化坐标；5% 内的越界按边界钳制，超出仍判非法。
-  const limit = NORMALIZED_SCREEN_SIZE * 1.05;
-  const [x1, y1, x2, y2] = value.map((n) => {
-    if (n < -limit || n > limit) throw new Error('invalid_terminal');
+  const lower = -NORMALIZED_SCREEN_SIZE * MENU_BOX_TOLERANCE;
+  const upper = NORMALIZED_SCREEN_SIZE * (1 + MENU_BOX_TOLERANCE);
+  const normalized = value.map((n) => {
+    if (n < lower || n > upper) throw new Error('invalid_terminal');
     return Math.round(Math.min(NORMALIZED_SCREEN_SIZE, Math.max(0, n)));
   });
+  const [x1, y1, x2, y2] = normalized;
   if (x2 <= x1 || y2 <= y1) throw new Error('invalid_terminal');
   const left = x1 * screenWidth / NORMALIZED_SCREEN_SIZE;
   const top = y1 * screenHeight / NORMALIZED_SCREEN_SIZE;
   const right = x2 * screenWidth / NORMALIZED_SCREEN_SIZE;
   const bottom = y2 * screenHeight / NORMALIZED_SCREEN_SIZE;
-  return { x: left, y: top, width: right - left, height: bottom - top };
+  return {
+    region: { x: left, y: top, width: right - left, height: bottom - top },
+    meta: {
+      original_menu_box: value.slice(),
+      normalized_menu_box: normalized,
+      clamped: value.some((n) => n < 0 || n > NORMALIZED_SCREEN_SIZE),
+    },
+  };
 }
 
 function normalizedArguments(value) {
@@ -208,43 +279,44 @@ function parseModelAction(rawArgs) {
   if (!args || typeof args !== 'object' || Array.isArray(args) || typeof args.action !== 'string') throw new Error('invalid_action');
   switch (args.action) {
     case 'left_click': {
-      if (!exactKeys(args, ['action', 'coordinate'])) throw new Error('invalid_action');
+      checkShape('left_click', args);
       const point = normalizedPoint(args.coordinate);
       return { type: 'click', inputs: { point: { raw: point, referenceSystem: 'screen' } } };
     }
     case 'scroll': {
-      if (!exactKeys(args, ['action', 'pixels', 'coordinate']) || !Number.isFinite(args.pixels) || args.pixels === 0) throw new Error('invalid_action');
+      checkShape('scroll', args);
       const point = args.coordinate === undefined
         ? { x: Math.floor(screenWidth / 2), y: Math.floor(screenHeight / 2) }
         : normalizedPoint(args.coordinate);
-      return { type: 'scroll', inputs: { point: { raw: point, referenceSystem: 'screen' }, direction: args.pixels > 0 ? 'up' : 'down' } };
+      // 同时保留方向和有符号幅度：幅度由 Python 换算成有界滚轮格数，避免 -100 与 -800 执行结果相同。
+      return { type: 'scroll', inputs: { point: { raw: point, referenceSystem: 'screen' }, direction: args.pixels > 0 ? 'up' : 'down', pixels: args.pixels } };
     }
     case 'wait': {
-      if (!exactKeys(args, ['action', 'time']) || !Number.isFinite(args.time) || args.time <= 0 || args.time > 5) throw new Error('invalid_action');
+      checkShape('wait', args);
       return { type: 'wait', inputs: { time: args.time } };
     }
     case 'list_windows': {
-      if (!exactKeys(args, ['action'])) throw new Error('invalid_action');
+      checkShape('list_windows', args);
       return { type: 'windows', inputs: {} };
     }
     case 'switch_window': {
-      if (!exactKeys(args, ['action', 'title']) || !text(args.title)) throw new Error('invalid_action');
+      checkShape('switch_window', args);
       return { type: 'switch_window', inputs: { title: text(args.title) } };
     }
     case 'read_skill': {
       // Skill 是 Agent 按需加载的参考经验，不改变页面。
-      if (!exactKeys(args, ['action', 'name']) || !text(args.name)) throw new Error('invalid_action');
+      checkShape('read_skill', args);
       return { type: 'skill', inputs: { name: text(args.name, 80) } };
     }
     case 'terminate': {
       // 业务只收一个状态、一条理由；success 额外要求菜品区域。字段白名单之外一律视为格式违规。
-      if (!exactKeys(args, ['action', 'outcome', 'reason', 'menu_box']) ||
-          !['success', 'unqualified', 'needs_review'].includes(args.outcome) || !text(args.reason)) {
-        throw new Error('invalid_terminal');
-      }
-      const next = { kind: 'terminate', outcome: args.outcome, reason: text(args.reason) };
+      checkShape('terminate', args, 'invalid_terminal');
+      const next = { kind: 'terminate', outcome: args.outcome, reason: text(args.reason, REASON_MAX_CHARS) };
       if (args.outcome === 'success') {
-        next.menu_region = menuRegion(args.menu_box);
+        const menu = menuRegion(args.menu_box);
+        next.menu_region = menu.region;
+        // 只进 trace，不作为模型字段，也不改变终态 payload。
+        next.menu_meta = menu.meta;
       } else if (args.menu_box !== undefined && !(Array.isArray(args.menu_box) && args.menu_box.length === 0)) {
         // 非 success 带空数组是模板残留，视同未提供；带真实区域仍判非法。
         throw new Error('invalid_terminal');
@@ -270,13 +342,34 @@ function reject(code, rawContent) {
   throw new Error(code);
 }
 
+function describeFormatError(code, args) {
+  if (code === 'invalid_terminal') {
+    if (args?.outcome === 'success' && args?.menu_box === undefined) {
+      return 'success 缺少 menu_box，需要 4 个 0..1000 的数字 [x1,y1,x2,y2]，且 x1<x2、y1<y2';
+    }
+    if (args?.outcome && args.outcome !== 'success' && args?.menu_box !== undefined) {
+      return '非 success 终态不要提供 menu_box';
+    }
+    return '终态字段不完整，或 menu_box 越界/无法形成有效矩形';
+  }
+  if (code === 'disallowed_action') {
+    return args?.action ? `不支持的动作「${text(args.action, 40)}」` : '不支持的动作';
+  }
+  if (code === 'no_observation') return '当前没有可用截图';
+  return '这不是一个合法的 computer_use JSON，或字段缺失、有多余字段、类型不对';
+}
+
 function makeCustomActionParser() {
   return (rawContent) => {
     lastRawContent = typeof rawContent === 'string' ? rawContent : '';
     if (faulted) throw new Error(failure?.code || 'invalid_action');
+    let args = null;
     try {
       if (!currentFrame || !screenWidth || !screenHeight) throw new Error('no_observation');
-      const parsed = parseModelAction(extractAction(rawContent));
+      args = extractAction(rawContent);
+      const parsed = parseModelAction(args);
+      // 合法输出后重置连续错误计数，让 Agent 在任务后段仍有修正机会；总上限仍保留。
+      parseFailures = 0;
       trace({ type: 'action', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
               ok: true, action: parsed, ...rawRecord(rawContent) });
       return { rawContent, reasoningContent: '', actions: [parsed] };
@@ -286,11 +379,21 @@ function makeCustomActionParser() {
         : 'invalid_action';
       trace({ type: 'action', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
               ok: false, error: code, ...rawRecord(rawContent) });
-      if ((code === 'invalid_action' || code === 'invalid_terminal') && parseFailures < 2) {
-        // 可修正的格式错误给两次反馈机会，让 Agent 按协议改正，而不是整轮终止。
+      if ((code === 'invalid_action' || code === 'invalid_terminal')
+          && parseFailures < CONSECUTIVE_PARSE_FAILURE_LIMIT && parseFailuresTotal < TOTAL_PARSE_FAILURE_LIMIT) {
+        // 错误只解释格式，不替 Agent 判断页面；连续和总计各有上限，避免无限重试。
         parseFailures += 1;
-        pendingNotice = `上一次输出不符合工具协议（${code}），本次未执行。请只输出一个 computer_use tool_call，`
-          + '字段名、类型和取值范围必须完全符合约定，不要添加任何未列出的字段。';
+        parseFailuresTotal += 1;
+        formatRetries += 1;
+        const detail = error instanceof ShapeError
+          ? (error.reason === 'missing' ? `缺少必填字段 ${error.field}`
+            : error.reason === 'unexpected' ? `出现了协议未定义的字段 ${error.field}`
+              : `字段 ${error.field} 的类型或取值范围不对`)
+          : describeFormatError(code, args);
+        pendingNotice = `上一次输出不符合工具协议（${code}）：${detail}。`
+          + '本次未执行。请只输出一个 computer_use tool_call，字段名、类型和取值范围必须完全符合约定，'
+          + '不要添加任何未列出的字段。';
+        pendingNotice = pendingNotice.slice(0, 300);
         return { rawContent, reasoningContent: '', actions: [{ type: 'notice', inputs: { message: pendingNotice } }] };
       }
       return reject(code, rawContent);
@@ -316,6 +419,7 @@ class HostOperator extends Operator {
     ({ width: screenWidth, height: screenHeight } = info);
     currentFrame = result.frame_id;
     actionUsedOnFrame = false;
+    screenshotCount += 1;
     const hash = sha256(info.bytes);
     frameHashes.set(hash, currentFrame);
     if (frameHashes.size > 64) frameHashes.delete(frameHashes.keys().next().value);
@@ -333,10 +437,10 @@ class HostOperator extends Operator {
       const action = actions[0];
       if (!action || !action.inputs || typeof action.type !== 'string') throw new Error('invalid_action');
       method = action.type;
-      actionCount += 1;
       let reply = {};
       if (action.type === 'skill') {
         // 读取 Skill 不改变页面，也不消耗当前帧；Agent 下一轮可继续在同一画面操作。
+        skillReads += 1;
         const name = text(action.inputs.name);
         if (!name) throw new Error('invalid_action');
         const result = await callHost('skill', { frame_id: currentFrame, name });
@@ -349,12 +453,14 @@ class HostOperator extends Operator {
       }
       actionUsedOnFrame = true;
       if (action.type === 'notice') {
+        // 格式修正不是导航动作；次数已在解析阶段计入 format_retries。
         pendingNotice = text(action.inputs.message, 300) || pendingNotice;
         trace({ type: 'tool', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
                 method: 'notice', inputs: sanitized(inputs), ok: false, error: 'invalid_output',
                 feedback: pendingNotice });
         return { status: 'success' };
       }
+      actionCount += 1;
       if (action.type === 'click') {
         const point = action.inputs.point?.raw;
         if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error('invalid_action');
@@ -362,7 +468,13 @@ class HostOperator extends Operator {
       } else if (action.type === 'scroll') {
         const point = action.inputs.point?.raw;
         if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || !['up', 'down'].includes(action.inputs.direction)) throw new Error('invalid_action');
-        await callHost('scroll', { frame_id: currentFrame, x: point.x, y: point.y, direction: action.inputs.direction === 'up' ? 'Up' : 'Down' });
+        if (!Number.isFinite(action.inputs.pixels) || action.inputs.pixels === 0) throw new Error('invalid_action');
+        // pixels 保持模型给出的符号与绝对值，由宿主换算成有界滚轮格数。
+        await callHost('scroll', {
+          frame_id: currentFrame, x: point.x, y: point.y,
+          direction: action.inputs.direction === 'up' ? 'Up' : 'Down',
+          pixels: action.inputs.pixels,
+        });
       } else if (action.type === 'wait') {
         const seconds = action.inputs.time;
         if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 5) throw new Error('invalid_action');
@@ -393,6 +505,7 @@ class HostOperator extends Operator {
       return { status: 'success' };
     } catch (error) {
       if (error instanceof HostRejected) {
+        toolRejections += 1;
         pendingNotice = `上一步操作未执行：${error.message}。请重新观察截图，换一个位置或动作。`;
         trace({ type: 'tool', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame, method,
                 inputs: sanitized(inputs), ok: false, duration_ms: Date.now() - started,
@@ -416,12 +529,26 @@ class HostOperator extends Operator {
   }
 }
 
+// 辅助调用与导航动作分开计数，便于判断 read_skill / 格式修正是否挤占导航预算。
+function metrics() {
+  return {
+    model_calls: callSeq,
+    screenshots: screenshotCount,
+    navigation_actions: actionCount,
+    skill_reads: skillReads,
+    format_retries: formatRetries,
+    tool_rejections: toolRejections,
+    format_failures: parseFailuresTotal,
+  };
+}
+
 function emitResult(outcome, reason, extra = {}) {
   if (resultEmitted) return;
   resultEmitted = true;
-  trace({ type: 'result', at: now(), outcome, reason: text(reason, 600), extra: sanitized(extra),
+  const payload = { metrics: metrics(), ...extra };
+  trace({ type: 'result', at: now(), outcome, reason: text(reason, 600), extra: sanitized(payload),
           actions: actionCount });
-  send({ type: 'result', outcome, reason, frame_id: currentFrame, ...extra });
+  send({ type: 'result', outcome, reason, frame_id: currentFrame, ...payload });
 }
 
 function emitRuntimeReview(reason, diagnostic = {}) {
@@ -452,7 +579,7 @@ async function main() {
     const systemPrompt = [
       '每一轮只做一次观察和一个动作。',
       '只输出一个 tool_call：<tool_call>{"name":"computer_use","arguments":{...}}</tool_call>。坐标与 menu_box 使用当前截图的 1000x1000 归一化空间，左上角为原点。',
-      '终态示例：<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"success","reason":"...","menu_box":[x1,y1,x2,y2]}}</tool_call>；<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"needs_review","reason":"..."}}</tool_call>。',
+      '终态示例：<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"success","reason":"已进入菜单","menu_box":[50,150,950,950]}}</tool_call>；<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"needs_review","reason":"..."}}</tool_call>。',
       '安全边界：不要下单、支付、加购物车、领券、登录或切换门店；不要编造坐标，也不要声称截图里没有出现的内容。',
       config.output_contract,
     ].join('\n');

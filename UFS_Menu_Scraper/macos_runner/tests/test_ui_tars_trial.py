@@ -287,6 +287,136 @@ def test_success_menu_box_with_small_pixel_overflow_is_clamped(model_server, tmp
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_success_menu_box_far_outside_tolerance_is_rejected(model_server, tmp_path):
+    server, handler = model_server
+    # 只容忍真实 ±5%（-50..1050）；-800 已无法确认语义，必须拒绝并让 Agent 重新输出。
+    handler.responses = [_terminal("success", menu_box=[-800, 100, 900, 900])] * 3
+    observe, _frames = _frame_factory(tmp_path)
+    actions = []
+
+    result, _frame = run_navigation(
+        _model(server), "测试门店", 2, 4,
+        observe=observe, execute=lambda *args: actions.append(args), check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "needs_review"
+    assert result.get("source") == "runtime"
+    assert actions == []
+    assert len(handler.requests) == 3
+
+
+def test_scroll_pixels_map_to_direction_and_bounded_units():
+    from menu_capture.ui_tars_trial import _action_command
+
+    frame = {"window_width": 100, "window_height": 200}
+    cases = [(-100, "Down", 1), (-800, "Down", 5), (1000, "Up", 6), (9000, "Up", 6)]
+    for pixels, direction, units in cases:
+        command = _action_command("scroll", {"x": 50, "y": 50, "pixels": pixels}, frame, (200, 400))
+        assert command["action"] == "scroll"
+        assert command["direction"] == direction
+        assert command["units"] == units
+
+    with pytest.raises(Exception, match="pixels"):
+        _action_command("scroll", {"x": 50, "y": 50, "pixels": 0}, frame, (200, 400))
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+@pytest.mark.parametrize("pixels,units", [(-100, 1), (-800, 5)])
+def test_scroll_magnitude_reaches_host_operator(model_server, tmp_path, pixels, units):
+    server, handler = model_server
+    handler.responses = [
+        _tool_call({"action": "scroll", "pixels": pixels}),
+        _terminal("needs_review", reason="滚动后重新核对页面"),
+    ]
+    observe, _frames = _frame_factory(tmp_path)
+    actions = []
+
+    result, _frame = run_navigation(
+        _model(server), "测试门店", 1, 4,
+        observe=observe, execute=lambda command, frame_id: actions.append(command), check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "needs_review"
+    assert len(actions) == 1
+    assert actions[0]["action"] == "scroll"
+    assert actions[0]["direction"] == "Down"
+    assert actions[0]["units"] == units
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_missing_required_field_feedback_allows_correction(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        _tool_call({"action": "wait"}),
+        _terminal("needs_review", reason="按反馈补齐字段后核对完成"),
+    ]
+    observe, _frames = _frame_factory(tmp_path)
+
+    result, _frame = run_navigation(
+        _model(server), "测试门店", 1, 4,
+        observe=observe, execute=lambda *args: pytest.fail("格式错误不应执行动作"), check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "needs_review"
+    assert len(handler.requests) == 2
+    feedback = _all_text(handler.requests[1]["body"]["messages"])
+    assert "不符合工具协议" in feedback and "time" in feedback
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_parse_failures_reset_after_valid_action(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        _tool_call({"action": "wait"}),
+        _tool_call({"action": "left_click", "coordinate": [375, 450]}),
+        _tool_call({"action": "wait"}),
+        _tool_call({"action": "left_click", "coordinate": [375, 450]}),
+        _terminal("needs_review", reason="修正后完成核对"),
+    ]
+    observe, _frames = _frame_factory(tmp_path)
+    actions = []
+
+    result, _frame = run_navigation(
+        _model(server), "测试门店", 1, 6,
+        observe=observe, execute=lambda command, frame_id: actions.append(command), check_stop=lambda: None,
+    )
+
+    # 两次格式错误之间都有合法动作，连续计数已重置，不应被耗尽后终止。
+    assert result["outcome"] == "needs_review"
+    assert result.get("source") != "runtime"
+    assert len(actions) == 2
+    assert len(handler.requests) == 5
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_skill_read_does_not_consume_frame_before_click(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        _tool_call({"action": "read_skill", "name": "menu-navigation"}),
+        _tool_call({"action": "left_click", "coordinate": [375, 450]}),
+        _terminal("needs_review", reason="已参考经验并核对页面"),
+    ]
+    observe, frames = _frame_factory(tmp_path)
+    actions = []
+
+    result, _frame = run_navigation(
+        _model(server), "测试门店", 2, 4,
+        observe=observe, execute=lambda command, frame_id: actions.append((command, frame_id)),
+        check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "needs_review"
+    assert "三个终态" in _all_text(handler.requests[1]["body"]["messages"])
+    # Skill 不影响页面语义；点击必须使用读取 Skill 后最新观察到的有效截图，而不是旧帧。
+    assert len(actions) == 1 and actions[0][0]["action"] == "click"
+    assert len(frames) == 3
+    assert actions[0][1] == "2"
+    assert result["metrics"]["skill_reads"] == 1
+    assert result["metrics"]["navigation_actions"] == 1
+    assert result["metrics"]["screenshots"] == len(frames)
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 def test_needs_review_terminal_ignores_empty_menu_box(model_server, tmp_path):
     server, handler = model_server
     handler.responses = [_terminal("needs_review", reason="门店身份仍无法确认", menu_box=[])]
@@ -641,6 +771,11 @@ def test_runner_resizes_before_fresh_agent_frame_and_stages_capture(
         assert report["navigation"] == {
             "outcome": "needs_review", "reason": "mock resize failure", "source": "runtime",
         }
+        assert report["runtime_status"] == "failed"
+        assert report["runtime_code"] == "runtime"
+        assert report["runtime_error"] == "mock resize failure"
+        assert report["agent_outcome"] == ""
+        assert report["capture_status"] == "not_started"
         assert handler.requests == []
         assert not any(command["action"] in {"screenshot", "click"} for command in commands)
         return
@@ -668,6 +803,13 @@ def test_runner_resizes_before_fresh_agent_frame_and_stages_capture(
         assert 0 <= region["y"] and region["y"] + region["height"] <= terminal_frame.height
     assert report["capture"]["status"] == "staged"
     assert len(report["capture"]["pages"]) == 1
+    assert report["agent_outcome"] == "success"
+    assert report["agent_reason"] == "已核对页面"
+    assert report["runtime_status"] == "ok"
+    assert report["runtime_code"] == ""
+    assert report["capture_status"] == "staged"
+    assert report["metrics"]["navigation_actions"] == 1
+    assert report["metrics"]["skill_reads"] == 0
     assert (report_path.parent / report["capture"]["pages"][0]).is_file()
     assert report_path.parent.parent.parent.name == ".uipath-runs"
     assert not (output_dir / "Trial Shop").exists()

@@ -1223,12 +1223,18 @@ class UiPathRunner:
             "model": GUI_PLUS_MODEL,
             "navigation": {"outcome": "needs_review", "reason": "试验未完成", "source": "runtime"},
             "capture": {"status": "not_started", "pages": []},
+            # Agent 的业务终态与技术执行结果分开记录，避免把协议/窗口/截图故障当成门店判断。
+            "agent_outcome": "", "agent_reason": "",
+            "runtime_status": "pending", "runtime_code": "", "runtime_error": "",
+            "capture_status": "not_started",
+            "metrics": {},
         }
         started_at = time.monotonic()
         navigation_started = capture_started = None
         timing = report["timing_ms"] = {}
         last_frame = None
         raw_decision = None
+        agent_terminal = None
         trace_path = output_dir / "agent-calls.jsonl"
         host_log = output_dir / "agent-host.jsonl"
 
@@ -1319,10 +1325,23 @@ class UiPathRunner:
                             decision["diagnostic"][field] = value.replace(model.api_key, "[已隐藏]")
                 # 先留存 Agent 自己的判断：交接校验失败时仍能复盘原始决策，业务终态始终由 Agent 决定。
                 raw_decision = {"outcome": decision["outcome"], "reason": decision["reason"]}
+                # source=runtime 表示 Agent 没有作出有效业务终态；只有 Agent 自己给出的终态才写入顶层字段。
+                agent_terminal = raw_decision if decision.get("source") != "runtime" else None
+                if agent_terminal:
+                    report["agent_outcome"] = agent_terminal["outcome"]
+                    report["agent_reason"] = agent_terminal["reason"]
+                if isinstance(decision.get("metrics"), dict):
+                    report["metrics"] = decision["metrics"]
                 if decision["outcome"] == "success":
                     # 校验必须发生在写入 navigation 之前：窗口/截图/区域不一致时整条结果降级为待检查。
                     self._validate_trial_handoff(decision, frame, active["selector"])
                 report["navigation"] = decision
+                if decision.get("source") == "runtime":
+                    report["runtime_status"] = "failed"
+                    report["runtime_code"] = str((decision.get("diagnostic") or {}).get("code") or "runtime")
+                    report["runtime_error"] = decision["reason"]
+                else:
+                    report["runtime_status"] = "ok"
                 if frame:
                     report["navigation"]["frame"] = str(Path(frame["path"]).relative_to(output_dir))
                     trace["frame_evidence"] = self._debug_frame_ref(Path(frame["path"]))
@@ -1341,22 +1360,31 @@ class UiPathRunner:
         except (TrialProtocolError, NeedsReview, RunnerTerminated, RobotProtocolError,
                 RobotCommandError, RobotTimeout) as exc:
             reason = str(exc).replace(model.api_key, "[已隐藏]")[:500]
+            report["runtime_status"] = "failed"
+            report["runtime_error"] = reason
             if report["navigation"]["outcome"] == "success":
                 report["capture"] = {"status": "needs_review", "reason": reason,
                                      "pages": sorted(path.name for path in output_dir.glob("page-*.png"))}
+                report["runtime_code"] = "capture"
             else:
                 report["navigation"] = {"outcome": "needs_review", "reason": reason, "source": "runtime"}
-                if raw_decision:
+                if agent_terminal:
                     # 交接校验/运行异常造成的降级仍保留 Agent 自己的判断，便于复盘。
-                    report["navigation"].update(agent_outcome=raw_decision["outcome"],
-                                                agent_reason=raw_decision["reason"])
+                    report["navigation"].update(agent_outcome=agent_terminal["outcome"],
+                                                agent_reason=agent_terminal["reason"])
                 if last_frame:
                     report["navigation"]["frame"] = str(Path(last_frame["path"]).relative_to(output_dir))
+                report["runtime_code"] = report["runtime_code"] or "runtime"
         except Exception as exc:
             result = report["capture"] if report["navigation"]["outcome"] == "success" else report["navigation"]
             result.update(reason=f"试验运行失败（{type(exc).__name__}）")
             if result is report["capture"]:
                 result.update(status="needs_review", pages=sorted(path.name for path in output_dir.glob("page-*.png")))
+                report["runtime_code"] = "capture"
+            else:
+                report["runtime_code"] = report["runtime_code"] or "runtime"
+            report["runtime_status"] = "failed"
+            report["runtime_error"] = str(result.get("reason") or "")
         finally:
             end = time.monotonic()
             if navigation_started is not None:
@@ -1376,6 +1404,7 @@ class UiPathRunner:
                         "reason": f"未确认安全返回文件传输助手（{type(exc).__name__}）",
                     }
             self._deadline = 0
+            report["capture_status"] = str(report["capture"].get("status") or "not_started")
             timing["total"] = round((time.monotonic() - started_at) * 1000)
             trace_files = {name: path.name for name, path in
                            (("model_calls", trace_path), ("host_log", host_log)) if path.is_file()}

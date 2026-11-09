@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "coordinate_space": 1000,
+  "actions": {
+    "left_click": {
+      "doc": "left_click：必填 coordinate=[x,y]；不得有其他字段。",
+      "required": {
+        "coordinate": { "type": "point" }
+      },
+      "optional": {}
+    },
+    "scroll": {
+      "doc": "scroll：必填 pixels（非零数字，正数向上、负数向下，绝对值决定滚动幅度）；选填 coordinate=[x,y]。",
+      "required": {
+        "pixels": { "type": "number", "non_zero": true }
+      },
+      "optional": {
+        "coordinate": { "type": "point" }
+      }
+    },
+    "wait": {
+      "doc": "wait：必填 time（秒，0 < time <= 5）；不得有其他字段。",
+      "required": {
+        "time": { "type": "number", "exclusive_min": 0, "max": 5 }
+      },
+      "optional": {}
+    },
+    "list_windows": {
+      "doc": "list_windows：只有 action，不得有其他字段。",
+      "required": {},
+      "optional": {}
+    },
+    "switch_window": {
+      "doc": "switch_window：必填 title（窗口标题原文，非空字符串）；不得有其他字段。",
+      "required": {
+        "title": { "type": "string" }
+      },
+      "optional": {}
+    },
+    "read_skill": {
+      "doc": "read_skill：必填 name（只能是已提供 Skill 索引中的名称）。",
+      "required": {
+        "name": { "type": "string" }
+      },
+      "optional": {}
+    },
+    "terminate": {
+      "doc": "terminate：必填 outcome（success / unqualified / needs_review）和 reason（中文，说明实际观察到的结果，尽量简洁，建议不超过 300 字）；menu_box 只在 success 时必填，为 4 个 0..1000 的数字 [x1,y1,x2,y2]，且 x1<x2、y1<y2；非 success 不得提供非空 menu_box。",
+      "required": {
+        "outcome": { "type": "enum", "values": ["success", "unqualified", "needs_review"] },
+        "reason": { "type": "string" }
+      },
+      "optional": {
+        "menu_box": { "type": "box", "allow_empty": true }
+      }
+    }
+  }
+}
