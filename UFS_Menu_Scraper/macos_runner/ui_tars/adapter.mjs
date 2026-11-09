@@ -165,10 +165,13 @@ function normalizedPoint(value) {
 
 function menuRegion(value) {
   if (!Array.isArray(value) || value.length !== 4 || value.some((n) => !Number.isFinite(n))) throw new Error('invalid_terminal');
-  const [x1, y1, x2, y2] = value;
-  if (x1 < 0 || y1 < 0 || x2 > NORMALIZED_SCREEN_SIZE || y2 > NORMALIZED_SCREEN_SIZE || x2 <= x1 || y2 <= y1) {
-    throw new Error('invalid_terminal');
-  }
+  // 模型偶尔把截图像素高（如 1017）当成归一化坐标；5% 内的越界按边界钳制，超出仍判非法。
+  const limit = NORMALIZED_SCREEN_SIZE * 1.05;
+  const [x1, y1, x2, y2] = value.map((n) => {
+    if (n < -limit || n > limit) throw new Error('invalid_terminal');
+    return Math.round(Math.min(NORMALIZED_SCREEN_SIZE, Math.max(0, n)));
+  });
+  if (x2 <= x1 || y2 <= y1) throw new Error('invalid_terminal');
   const left = x1 * screenWidth / NORMALIZED_SCREEN_SIZE;
   const top = y1 * screenHeight / NORMALIZED_SCREEN_SIZE;
   const right = x2 * screenWidth / NORMALIZED_SCREEN_SIZE;
@@ -176,7 +179,21 @@ function menuRegion(value) {
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
-function parseModelAction(args) {
+function normalizedArguments(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const args = { ...value };
+  if (typeof args.action === 'string') {
+    // 实测模型会把动作写成函数调用形式（如 list_windows()），只去掉空括号后缀。
+    args.action = args.action.trim().replace(/\(\s*\)$/, '');
+  } else if (['success', 'unqualified', 'needs_review'].includes(args.outcome) && text(args.reason)) {
+    // 模型偶发漏掉 action，但终态字段完整；按 terminate 解析，其余字段仍走严格校验。
+    args.action = 'terminate';
+  }
+  return args;
+}
+
+function parseModelAction(rawArgs) {
+  const args = normalizedArguments(rawArgs);
   if (!args || typeof args !== 'object' || Array.isArray(args) || typeof args.action !== 'string') throw new Error('invalid_action');
   switch (args.action) {
     case 'left_click': {
@@ -213,7 +230,8 @@ function parseModelAction(args) {
       const next = { kind: 'terminate', outcome: args.outcome, reason: text(args.reason) };
       if (args.outcome === 'success') {
         next.menu_region = menuRegion(args.menu_box);
-      } else if (args.menu_box !== undefined) {
+      } else if (args.menu_box !== undefined && !(Array.isArray(args.menu_box) && args.menu_box.length === 0)) {
+        // 非 success 带空数组是模板残留，视同未提供；带真实区域仍判非法。
         throw new Error('invalid_terminal');
       }
       terminal = next;
@@ -377,8 +395,10 @@ async function main() {
     const systemPrompt = [
       'Control the GUI with one observation and one action per turn.',
       'Return exactly one <tool_call>{"name":"computer_use","arguments":{...}}</tool_call>. Coordinates and menu_box use a normalized 1000x1000 space, top-left origin, independent of PNG size.',
-      'Actions: left_click(coordinate=[x,y]); scroll(pixels: positive=up, negative=down, coordinate optional; magnitude only picks direction); wait(time<=5); list_windows(); switch_window(title="..."); terminate(outcome="success"|"needs_review"|"unqualified", reason, menu_box only for success).',
-      'Experience: (1) hand off the moment the target store and its dishes with prices are clearly visible; the host scrolls the menu after handoff. (2) Wrong or unknown store, human authorization, a loading page, or a tool failure is needs_review; if ordering opened another mini-program window, use list_windows() and switch_window() and re-check the fresh screenshot. (3) Use unqualified only when the screen explicitly proves this store has no browsable menu now. Do not attach menu_box for needs_review or unqualified.',
+      'Every arguments object MUST contain "action" with one exact string: "left_click" (coordinate=[x,y]); "scroll" (pixels: positive=up, negative=down, coordinate optional); "wait" (time<=5); "list_windows"; "switch_window" (title); "terminate" (outcome="success"|"needs_review"|"unqualified", reason, menu_box only for success as 4 numbers [x1,y1,x2,y2]). Never use call syntax like list_windows() and never omit "action".',
+      'Terminal examples: <tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"success","reason":"...","menu_box":[x1,y1,x2,y2]}}</tool_call>; <tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"needs_review","reason":"..."}}</tool_call>.',
+      'Terminal meaning: success = a browsable menu with real dishes and prices is visible; one or two dishes is enough, the store name need not be visible, and a closed store with a visible menu still counts. unqualified = clear evidence this QR code or mini-program cannot provide a menu now (scan-order service explicitly closed with no menu entry, must scan in store, QR expired, menu not configured). needs_review = reasonable attempts made but the result is still unknown. Temporary loading, a login wall, a failed click, an unclear store, or few dishes are NOT unqualified.',
+      'Obstacles are normal steps: dismiss popups by any reasonable choice (allow, decline, agree, close); location/notification/privacy popups are not failures. Wait two or three times on loading. If another mini-program window opens, use list_windows then switch_window and re-check the fresh screenshot; retrying the same position is allowed. Do not attach menu_box for needs_review or unqualified.',
       'Read-only: never order, pay, add to cart, claim coupons, log in, or switch stores. Never invent coordinates or claim unseen evidence.',
     ].join('\n');
     const agent = new class extends GUIAgent {

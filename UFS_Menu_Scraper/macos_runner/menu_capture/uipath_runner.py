@@ -141,6 +141,22 @@ _PAGE_STATE_MESSAGES = {
     "phone_only": "页面要求在手机上打开或长按识别；桌面小程序无法继续采集",
     "customer_service": "页面跳转到了客服入口；桌面小程序无法继续采集",
 }
+# 只有“二维码/小程序本身无法提供菜单”才算明确不可采证据。
+# 打烊、登录、加载、工具失败都只是访问障碍，不能据此判不合格。
+_TRIAL_HARD_PAGE_STATES = {
+    "qr_expired", "miniapp_unavailable", "scan_order_unsupported",
+    "pickup_unavailable", "menu_not_configured", "qr_external_web",
+}
+
+
+def _trial_page_state_reason(code: str | None, has_price: bool = False) -> str:
+    """仅在 Agent 无法确定、而页面文字给出明确不可采证据时，提供不合格理由。
+
+    页面已经出现价格锚点时一律不覆盖：打烊或页脚文案不能推翻可见菜单。
+    """
+    if not code or code not in _TRIAL_HARD_PAGE_STATES or has_price:
+        return ""
+    return _PAGE_STATE_MESSAGES.get(code, "页面已证明当前二维码无法进入菜单")
 
 
 def _atomic_write_json(path: Path, value: dict) -> None:
@@ -1234,6 +1250,7 @@ class UiPathRunner:
         timing = report["timing_ms"] = {}
         last_frame = None
         raw_decision = None
+        page_state = {"code": None, "has_price": False}
         trace_path = output_dir / "agent-calls.jsonl"
         host_log = output_dir / "agent-host.jsonl"
 
@@ -1285,6 +1302,17 @@ class UiPathRunner:
                            window_width=last_frame.get("window_width"),
                            window_height=last_frame.get("window_height"),
                            selector=active["selector"])
+                # 页面文字是业务口径的兜底证据：二维码失效/门店不可点餐不能只依赖模型判断。
+                if self.ocr_reader is not None:
+                    try:
+                        rows = self.ocr_reader(Path(last_frame["path"]))
+                    except Exception:
+                        rows = []
+                    if rows:
+                        page_state["code"] = detect_page_state(rows)
+                        page_state["has_price"] = has_menu_evidence(rows)
+                    host_trace("page_state", sequence=sequence, code=page_state["code"] or "",
+                               has_price=page_state["has_price"], ocr_rows=len(rows))
                 if sequence == 1:
                     report["initial_frame"] = str(Path(last_frame["path"]).relative_to(output_dir))
                 return last_frame
@@ -1313,13 +1341,20 @@ class UiPathRunner:
                         value = decision["diagnostic"].get(field)
                         if isinstance(value, str):
                             decision["diagnostic"][field] = value.replace(model.api_key, "[已隐藏]")
-                if decision["outcome"] == "success":
-                    # 先留存 Agent 自己的判断，交接校验抛异常时降级结果仍能复盘原始决策。
-                    raw_decision = {"outcome": decision["outcome"], "reason": decision["reason"]}
+                # 先留存 Agent 自己的判断，交接校验或宿主覆盖抛异常时仍能复盘原始决策。
+                raw_decision = {"outcome": decision["outcome"], "reason": decision["reason"]}
+                page_reason = _trial_page_state_reason(page_state["code"], page_state["has_price"])
+                # 只在 Agent 自己无法确定时用页面证据纠正；success 由交接校验负责，unqualified 不动。
+                if page_reason and decision["outcome"] == "needs_review":
+                    decision = {"outcome": "unqualified", "reason": page_reason, "source": "page_state",
+                                "page_state": page_state["code"],
+                                "agent_outcome": raw_decision["outcome"],
+                                "agent_reason": raw_decision["reason"]}
+                    host_trace("page_state_override", code=page_state["code"],
+                               agent_outcome=raw_decision["outcome"])
+                elif decision["outcome"] == "success":
                     # 校验必须发生在写入 navigation 之前：窗口/截图/区域不一致时整条结果降级为待检查。
                     self._validate_trial_handoff(decision, frame, active["selector"])
-                else:
-                    raw_decision = {"outcome": decision["outcome"], "reason": decision["reason"]}
                 report["navigation"] = decision
                 if frame:
                     report["navigation"]["frame"] = str(Path(frame["path"]).relative_to(output_dir))

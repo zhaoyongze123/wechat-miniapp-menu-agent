@@ -24,7 +24,12 @@ from menu_capture.ui_tars_trial import (
     run_navigation,
     trial_model_from_env,
 )
-from menu_capture.uipath_runner import NeedsReview, RobotCommandError, UiPathRunner
+from menu_capture.uipath_runner import (
+    NeedsReview,
+    RobotCommandError,
+    UiPathRunner,
+    _trial_page_state_reason,
+)
 
 
 _SDK = Path(__file__).resolve().parents[1] / "ui_tars/node_modules/@gui-agent/agent-sdk/package.json"
@@ -269,6 +274,53 @@ def test_large_model_image_maps_normalized_click_back_to_original_window_points(
     assert result["menu_region"] == {"x": 0, "y": 0, "width": 1600, "height": 1200}
 
 
+def test_invalid_qr_page_state_forces_unqualified_and_price_wins():
+    # 两张实测页面：扫码点餐关闭/请到店再扫码，属于明确不可采证据。
+    assert "扫码点餐" in _trial_page_state_reason("scan_order_unsupported")
+    assert _trial_page_state_reason("qr_expired")
+    # 访问障碍不是不合格证据：登录限制、打烊、暂无菜品、加载失败都交回 Agent。
+    assert _trial_page_state_reason("phone_only") == ""
+    assert _trial_page_state_reason("store_closed") == ""
+    assert _trial_page_state_reason("menu_unavailable") == ""
+    assert _trial_page_state_reason("network_error") == ""
+    # 页面已经出现价格时，任何状态都不能推翻可见菜单。
+    assert _trial_page_state_reason("scan_order_unsupported", has_price=True) == ""
+    assert _trial_page_state_reason(None) == ""
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_success_menu_box_with_small_pixel_overflow_is_clamped(model_server, tmp_path):
+    server, handler = model_server
+    # 模型把截图像素高（200 缩放后的 1017）当作归一化坐标；5% 内的越界按边界钳制。
+    handler.responses = [_terminal("success", menu_box=[0, 0, 1000, 1017])]
+    observe, frames = _frame_factory(tmp_path)
+
+    result, terminal_frame = run_navigation(
+        _model(server), "测试门店", 2, 2,
+        observe=observe, execute=lambda *_: pytest.fail("终态不应执行动作"), check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "success"
+    assert result["menu_region"] == {"x": 0, "y": 0, "width": 320, "height": 200}
+    assert terminal_frame == frames[0]
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_needs_review_terminal_ignores_empty_menu_box(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [_terminal("needs_review", reason="门店身份仍无法确认", menu_box=[])]
+    observe, frames = _frame_factory(tmp_path)
+
+    result, terminal_frame = run_navigation(
+        _model(server), "身份待确认门店", 1, 2,
+        observe=observe, execute=lambda *_: pytest.fail("终态不应执行动作"), check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "needs_review"
+    assert "身份" in result["reason"]
+    assert terminal_frame == frames[0]
+
+
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 def test_needs_review_terminal_does_not_claim_menu_success(model_server, tmp_path):
     server, handler = model_server
@@ -303,6 +355,45 @@ def test_explicit_unqualified_terminal_keeps_reason_and_evidence_frame(model_ser
     assert result["reason"] == "页面明确提示暂停扫码点餐，且没有可浏览菜单"
     assert "code" not in result
     assert terminal_frame == frames[0]
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_terminal_without_action_field_is_accepted(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        '<tool_call>{"name":"computer_use","arguments":{"outcome":"needs_review","reason":"门店身份无法确认"}}</tool_call>',
+    ]
+    observe, frames = _frame_factory(tmp_path)
+
+    result, terminal_frame = run_navigation(
+        _model(server), "身份待确认门店", 1, 2,
+        observe=observe, execute=lambda *_: pytest.fail("终态不应执行动作"), check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "needs_review"
+    assert result["reason"] == "门店身份无法确认"
+    assert terminal_frame == frames[0]
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_action_name_with_empty_parentheses_is_normalized(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        '<tool_call>{"name":"computer_use","arguments":{"action":"list_windows()"}}</tool_call>',
+        _terminal("needs_review", reason="仅有一个小程序窗口，身份待确认"),
+    ]
+    observe, _frames = _frame_factory(tmp_path)
+    actions = []
+
+    result, _frame = run_navigation(
+        _model(server), "测试门店", 1, 4,
+        observe=observe, execute=lambda command, frame_id: actions.append((command, frame_id)),
+        check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "needs_review"
+    assert actions[0][0]["action"] == "windows"
+    assert len(handler.requests) == 2
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
