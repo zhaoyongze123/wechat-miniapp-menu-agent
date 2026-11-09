@@ -1127,7 +1127,8 @@ class UiPathRunner:
             raise RunnerPaused(str(exc)) from None
         except RobotCommandError as exc:
             # 其他窗口抢焦点时 UiPath 会拒绝截图/键盘输入；把微信唤回前台后重试一次。
-            if (not self._ui_tars_trial_active and "foreground=false" in str(exc)
+            # 试验期间 Agent 的动作同样需要这次恢复，否则一次失焦就会整店失败。
+            if ("foreground=false" in str(exc)
                     and not getattr(self, "_focus_retry_active", False)):
                 self._focus_retry_active = True
                 try:
@@ -1232,6 +1233,22 @@ class UiPathRunner:
         navigation_started = capture_started = None
         timing = report["timing_ms"] = {}
         last_frame = None
+        raw_decision = None
+        trace_path = output_dir / "agent-calls.jsonl"
+        host_log = output_dir / "agent-host.jsonl"
+
+        def host_trace(kind: str, **fields) -> None:
+            """记录宿主侧看到的截图、动作与窗口变化；写失败不影响导航。"""
+            try:
+                with host_log.open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps({
+                        "kind": kind,
+                        "at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                        **fields,
+                    }, ensure_ascii=False) + "\n")
+            except OSError:
+                pass
+
         try:
             binding = self.store.material_binding(settings.input_dir) or {}
             self._trace_material = {"material_version_id": binding.get("id", ""),
@@ -1249,12 +1266,12 @@ class UiPathRunner:
                 selector = profile["miniapp_selector"]
             else:
                 selector = self._select_miniapp_selector(self._send({"action": "discover"}).get("windows"))
-            # 试验路径也必须在首帧前统一窗口尺寸，避免 Agent 收到与后续坐标执行不一致的画面。
-            self._move_window_on_screen(selector)
+            # 窗口准备与导航分离：先归位并截图校准尺寸，再启动 Agent 决策。
             active = {"selector": selector, "title": ""}
             self.current_task["stage"] = "ui_tars_navigation"
             evidence_dir = output_dir / "evidence"
             evidence_dir.mkdir(mode=0o700, exist_ok=True)
+            self._prepare_trial_window(selector, evidence_dir, host_trace)
 
             def observe(sequence):
                 nonlocal last_frame
@@ -1262,24 +1279,36 @@ class UiPathRunner:
                 path = evidence_dir / f"ui-tars-{sequence:03}.png"
                 # 实验直接取同一 selector 的实测窗口截图，不执行旧流程的矩形截图与页面规则。
                 last_frame = self._send({"action": "screenshot", "selector": active["selector"], "path": str(path)})
+                host_trace("frame", sequence=sequence, frame_id=str(sequence),
+                           path=str(Path(last_frame["path"]).relative_to(output_dir)),
+                           width=last_frame.get("width"), height=last_frame.get("height"),
+                           window_width=last_frame.get("window_width"),
+                           window_height=last_frame.get("window_height"),
+                           selector=active["selector"])
                 if sequence == 1:
                     report["initial_frame"] = str(Path(last_frame["path"]).relative_to(output_dir))
                 return last_frame
 
             def execute(command, frame_id):
                 action = command.get("action")
+                started = time.monotonic()
                 if action == "windows":
                     candidates = self._miniapp_candidates(
                         self._send({"action": "discover"}).get("windows"))
-                    return {"windows": [{"title": item["title"]} for item in candidates]}
-                if action == "switch_window":
-                    return self._switch_trial_window(active, str(command.get("title") or ""))
-                self._trace_click = {"frame_id": frame_id, "source": "gui_agent"}
-                try:
-                    self._send({**command, "selector": active["selector"]})
-                finally:
-                    self._trace_click = {}
-                return {}
+                    result = {"windows": [{"title": item["title"]} for item in candidates]}
+                elif action == "switch_window":
+                    result = self._switch_trial_window(active, str(command.get("title") or ""))
+                else:
+                    self._trace_click = {"frame_id": frame_id, "source": "gui_agent"}
+                    try:
+                        self._send({**command, "selector": active["selector"]})
+                    finally:
+                        self._trace_click = {}
+                    result = {}
+                host_trace("tool", frame_id=frame_id, action=action,
+                           params={key: value for key, value in command.items() if key != "selector"},
+                           result=result, duration_ms=round((time.monotonic() - started) * 1000))
+                return result
 
             navigation_started = time.monotonic()
             timing["startup"] = round((navigation_started - started_at) * 1000)
@@ -1288,6 +1317,10 @@ class UiPathRunner:
                     model, task["source_name"], settings.people_count, settings.capture.max_agent_steps,
                     observe=observe, execute=execute, check_stop=self._guard,
                     log_path=output_dir / "adapter.log",
+                    trace_path=trace_path,
+                    trace_meta={"run_id": self.run_id, "task_id": task["id"],
+                                "store_name": task["source_name"],
+                                "batch": output_dir.parent.name if automatic else ""},
                 )
                 timing["navigation"] = round((time.monotonic() - navigation_started) * 1000)
                 for field in ("reason",):
@@ -1301,6 +1334,7 @@ class UiPathRunner:
                 if decision["outcome"] == "success":
                     # 校验必须发生在写入 navigation 之前：窗口/截图/区域不一致时整条结果降级为待检查。
                     self._validate_trial_handoff(decision, frame, active["selector"])
+                raw_decision = {"outcome": decision["outcome"], "reason": decision["reason"]}
                 report["navigation"] = decision
                 if frame:
                     report["navigation"]["frame"] = str(Path(frame["path"]).relative_to(output_dir))
@@ -1325,6 +1359,10 @@ class UiPathRunner:
                                      "pages": sorted(path.name for path in output_dir.glob("page-*.png"))}
             else:
                 report["navigation"] = {"outcome": "needs_review", "reason": reason, "source": "runtime"}
+                if raw_decision:
+                    # 交接校验/运行异常造成的降级仍保留 Agent 自己的判断，便于复盘。
+                    report["navigation"].update(agent_outcome=raw_decision["outcome"],
+                                                agent_reason=raw_decision["reason"])
                 if last_frame:
                     report["navigation"]["frame"] = str(Path(last_frame["path"]).relative_to(output_dir))
         except Exception as exc:
@@ -1352,6 +1390,17 @@ class UiPathRunner:
                     }
             self._deadline = 0
             timing["total"] = round((time.monotonic() - started_at) * 1000)
+            trace_files = {name: path.name for name, path in
+                           (("model_calls", trace_path), ("host_log", host_log)) if path.is_file()}
+            if trace_files:
+                report["trace"] = trace_files
+            try:
+                recorded = self._record_agent_usage(trace_path, task, model)
+                if recorded:
+                    report["usage"] = recorded
+            except Exception:
+                # 用量入库失败不能改写导航与采集结论。
+                pass
             atomic_json(output_dir / "navigation-result.json", report)
         return report
 
@@ -2044,6 +2093,52 @@ class UiPathRunner:
         # 新窗口可能停留在屏幕外；切过去先按采集布局归位，随后由 Agent 触发的新截图确认。
         self._move_window_on_screen(active["selector"])
         return {"switched": True, "title": title, "titles": titles}
+
+    def _prepare_trial_window(self, selector: str, evidence_dir: Path, host_trace=None) -> None:
+        """Agent 启动前先归位窗口，再用一次实测截图校准截图像素与窗口坐标的比例。"""
+        self._move_window_on_screen(selector)
+        frame = self._send({"action": "screenshot", "selector": selector,
+                            "path": str(evidence_dir / "window-prepare.png")})
+        width, height = frame.get("width"), frame.get("height")
+        window_width, window_height = frame.get("window_width"), frame.get("window_height")
+        if not all(isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+                   for value in (width, height, window_width, window_height)):
+            raise NeedsReview("窗口截图缺少有效尺寸，无法校准 GUI Agent 坐标")
+        scale = float(width) / float(window_width)
+        if not math.isfinite(scale) or scale <= 0:
+            raise NeedsReview("窗口截图与窗口坐标比例异常，无法校准 GUI Agent 坐标")
+        if host_trace:
+            host_trace("window_prepare", selector=selector, frame=Path(frame["path"]).name,
+                       width=int(width), height=int(height),
+                       window_width=float(window_width), window_height=float(window_height),
+                       scale=round(scale, 4))
+
+    def _record_agent_usage(self, trace_path: Path, task: dict, model: TrialModel) -> dict:
+        """把模型调用留痕里的 usage 逐请求写进现有用量账本；缺失就是缺失，不做估算。"""
+        if self.usage_ledger is None or not trace_path.is_file():
+            return {}
+        context = {"source": "agent", "run_id": self.run_id, "task_id": task.get("id", ""),
+                   "source_name": task.get("source_name", ""), "stage": "ui_tars_navigation"}
+        calls = with_usage = 0
+        for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if record.get("type") != "response":
+                continue
+            response = {"id": record.get("request_id") or "", "model": record.get("returned_model") or "",
+                        "usage": record.get("usage")}
+            call_id = self.usage_ledger.start_call(
+                provider="openai_compatible", model=GUI_PLUS_MODEL, endpoint=model.base_url,
+                context=context, started_at=record.get("at"))
+            self.usage_ledger.finish_call(
+                call_id, status="success", elapsed_ms=record.get("duration_ms"), http_status=200,
+                response=response, request_id=record.get("request_id") or "")
+            calls += 1
+            if isinstance(record.get("usage"), dict):
+                with_usage += 1
+        return {"model_calls": calls, "with_usage": with_usage} if calls else {}
 
     def _validate_trial_handoff(self, decision: dict, frame: dict | None, selector: str) -> None:
         """交接前核对窗口、截图和菜品区域必须来自同一扇当前窗口。"""

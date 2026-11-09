@@ -196,10 +196,10 @@ def test_batch_trial_reuses_one_robot_startup_and_writes_per_store_reports(tmp_p
     runner._open_source_automatic = open_source
     events = []
 
-    def resize_window(selector):
+    def resize_window(selector, *_args, **_kwargs):
         events.append(("resize", selector))
 
-    runner._move_window_on_screen = resize_window
+    runner._prepare_trial_window = resize_window
     runner._set_stage = lambda *_args, **_kwargs: None
     runner._ensure_file_assistant = lambda *_args, **_kwargs: None
     runner._close_miniapp_windows = lambda *_args, **_kwargs: None

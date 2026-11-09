@@ -2,7 +2,7 @@
   'use strict';
 
   const PAGE_SIZE = 30;
-  const SOURCES = [['all', '全部用途'], ['capture', '门店采集'], ['annotation', '人工标注'], ['connection_test', '连接测试'], ['material_analysis', '素材分析'], ['other', '其他']];
+  const SOURCES = [['all', '全部用途'], ['capture', '门店采集'], ['agent', 'GUI Agent 导航'], ['annotation', '人工标注'], ['connection_test', '连接测试'], ['material_analysis', '素材分析'], ['other', '其他']];
   const GROUPS = [['day', '按日期'], ['run', '按队列'], ['task', '按门店'], ['model', '按模型']];
   const $ = (selector, root = document) => root.querySelector(selector);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -11,7 +11,7 @@
   const compactId = value => value ? String(value).length > 18 ? `${String(value).slice(0, 8)}…${String(value).slice(-6)}` : String(value) : '—';
   const localDate = date => `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
   const timestamp = value => value ? new Date(value).toLocaleString('zh-CN', {hour12:false}) : '—';
-  const sourceLabel = source => ({capture:'门店采集', annotation:'人工标注', connection_test:'连接测试', material_analysis:'素材分析', other:'其他'})[source] || source || '—';
+  const sourceLabel = source => ({capture:'门店采集', agent:'GUI Agent 导航', annotation:'人工标注', connection_test:'连接测试', material_analysis:'素材分析', other:'其他'})[source] || source || '—';
   const statusLabel = status => ({success:'成功', error:'失败', running:'进行中', interrupted:'中断'})[status] || status || '—';
 
   function init() {

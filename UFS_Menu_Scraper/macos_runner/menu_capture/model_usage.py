@@ -12,7 +12,7 @@ _FIELDS = (
     "run_id", "task_id", "source_name", "attempt_id", "action_id", "stage",
     "step", "material_batch_id", "material_version",
 )
-_ALLOWED_SOURCES = {"capture", "annotation", "connection_test", "material_analysis", "other"}
+_ALLOWED_SOURCES = {"capture", "annotation", "connection_test", "material_analysis", "agent", "other"}
 _usage_fields = contextvars.ContextVar("model_usage_fields", default={})
 _TOKEN_FIELDS = ("input_tokens", "output_tokens", "total_tokens", "cached_tokens",
                  "cache_write_tokens", "reasoning_tokens", "image_tokens")
@@ -148,9 +148,16 @@ class UsageLedger:
             if "returned_model" not in columns: db.execute("ALTER TABLE model_calls ADD COLUMN returned_model TEXT NOT NULL DEFAULT ''")
             db.execute("UPDATE model_calls SET status='interrupted' WHERE status='running'")
 
-    def start_call(self, *, provider, model, endpoint="", context=None):
+    def start_call(self, *, provider, model, endpoint="", context=None, started_at=None):
         call_id = uuid.uuid4().hex
         local_now = datetime.now().astimezone()
+        if isinstance(started_at, str) and started_at.strip():
+            try:
+                parsed = datetime.fromisoformat(started_at.strip().replace("Z", "+00:00"))
+            except ValueError:
+                parsed = None
+            if parsed is not None:
+                local_now = (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone()
         stamp = local_now.astimezone(timezone.utc).isoformat(timespec="milliseconds")
         local_day = local_now.date().isoformat()
         fields = dict(_usage_fields.get())

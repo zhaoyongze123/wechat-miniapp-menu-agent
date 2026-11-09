@@ -1,4 +1,6 @@
 import { createInterface } from 'node:readline';
+import { appendFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 // SDK 日志可能包含提示词、模型返回值或请求信息。协议输出使用启动时保存的原始写口，SDK 日志静默丢弃。
 const protocolWrite = process.stdout.write.bind(process.stdout);
@@ -18,6 +20,11 @@ let resultEmitted = false;
 let failure = null;
 let lastRawContent = '';
 let pendingNotice = '';
+let tracePath = '';
+let callSeq = 0;
+let currentCall = null;
+let actionCount = 0;
+const frameHashes = new Map();
 const terminalMarker = 'UFS_UI_TARS_TERMINAL_COMPLETE';
 let activeAgent = null;
 const { GUIAgent } = await import('@gui-agent/agent-sdk');
@@ -25,6 +32,62 @@ const { Operator } = await import('@gui-agent/shared/base');
 
 function send(message) {
   protocolWrite(`${JSON.stringify(message)}\n`);
+}
+
+function now() {
+  return new Date().toISOString();
+}
+
+function trace(record) {
+  if (!tracePath) return;
+  try {
+    appendFileSync(tracePath, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 });
+  } catch { /* 留痕失败不能影响导航与交接协议 */ }
+}
+
+function redacted(value) {
+  return value.replace(/sk-[A-Za-z0-9._-]{12,}/g, '[REDACTED]');
+}
+
+function sha256(buffer) {
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
+function imageRef(url) {
+  let bytes = Buffer.alloc(0);
+  try {
+    bytes = Buffer.from(url.slice(url.indexOf(',') + 1), 'base64');
+  } catch { /* 非法图片数据只保留空引用 */ }
+  const hash = sha256(bytes);
+  return { type: 'image_ref', frame_id: frameHashes.get(hash) || '', bytes: bytes.length, sha256: hash };
+}
+
+function sanitized(value) {
+  if (Array.isArray(value)) return value.map(sanitized);
+  if (value && typeof value === 'object') {
+    if (value.type === 'image_url' && typeof value.image_url?.url === 'string'
+        && value.image_url.url.startsWith('data:image/')) {
+      return { type: 'image_ref', detail: value.image_url.detail || '', ...imageRef(value.image_url.url) };
+    }
+    const result = {};
+    for (const [key, nested] of Object.entries(value)) {
+      if (key === 'apiKey' || key === 'api_key') continue;
+      result[key] = sanitized(nested);
+    }
+    return result;
+  }
+  if (typeof value === 'string') return redacted(value);
+  return value;
+}
+
+function pngInfo(base64) {
+  const bytes = Buffer.from(base64, 'base64');
+  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  if (bytes.length < 24 || !bytes.subarray(0, 8).equals(signature)) throw new Error('protocol');
+  const width = bytes.readUInt32BE(16);
+  const height = bytes.readUInt32BE(20);
+  if (!width || !height) throw new Error('protocol');
+  return { bytes, width, height };
 }
 
 async function readObject() {
@@ -56,16 +119,6 @@ async function rpc(method, params) {
 
 function text(value, max = 1000) {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
-}
-
-function pngDimensions(base64) {
-  const bytes = Buffer.from(base64, 'base64');
-  const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-  if (bytes.length < 24 || !bytes.subarray(0, 8).equals(pngSignature)) throw new Error('protocol');
-  const width = bytes.readUInt32BE(16);
-  const height = bytes.readUInt32BE(20);
-  if (!width || !height) throw new Error('protocol');
-  return { width, height };
 }
 
 function extractAction(raw) {
@@ -167,6 +220,8 @@ function parseModelAction(args) {
 
 function reject(code, rawContent) {
   failure = { code, raw: text(rawContent, 1200) };
+  trace({ type: 'rejected', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
+          code, raw: text(rawContent, 8000) });
   // Python 侧把 stderr 落到本店 adapter.log；这里保留原始输出，便于逐条区分是格式还是参数问题。
   try {
     process.stderr.write(`${JSON.stringify({ code, raw: failure.raw })}\n`);
@@ -183,11 +238,15 @@ function makeCustomActionParser() {
     try {
       if (!currentFrame || !screenWidth || !screenHeight) throw new Error('no_observation');
       const parsed = parseModelAction(extractAction(rawContent));
+      trace({ type: 'action', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
+              ok: true, action: parsed, raw: text(rawContent, 8000) });
       return { rawContent, reasoningContent: '', actions: [parsed] };
     } catch (error) {
       const code = ['invalid_action', 'invalid_terminal', 'disallowed_action', 'no_observation'].includes(error?.message)
         ? error.message
         : 'invalid_action';
+      trace({ type: 'action', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
+              ok: false, error: code, raw: text(rawContent, 8000) });
       return reject(code, rawContent);
     }
   };
@@ -207,18 +266,30 @@ class HostOperator extends Operator {
   async screenshot() {
     const result = await rpc('screenshot', {});
     if (!result || typeof result.base64 !== 'string' || typeof result.frame_id !== 'string' || !result.frame_id) throw new Error('protocol');
-    ({ width: screenWidth, height: screenHeight } = pngDimensions(result.base64));
+    const info = pngInfo(result.base64);
+    ({ width: screenWidth, height: screenHeight } = info);
     currentFrame = result.frame_id;
     actionUsedOnFrame = false;
+    const hash = sha256(info.bytes);
+    frameHashes.set(hash, currentFrame);
+    if (frameHashes.size > 64) frameHashes.delete(frameHashes.keys().next().value);
+    trace({ type: 'screenshot', at: now(), frame_id: currentFrame, width: info.width, height: info.height,
+            bytes: info.bytes.length, sha256: hash });
     return { base64: result.base64, status: 'success' };
   }
 
   async execute({ actions }) {
+    const started = Date.now();
+    let method = '';
+    const inputs = actions?.[0]?.inputs ?? null;
     try {
       if (!Array.isArray(actions) || actions.length !== 1 || !currentFrame || faulted || actionUsedOnFrame) throw new Error('invalid_action');
       const action = actions[0];
       if (!action || !action.inputs || typeof action.type !== 'string') throw new Error('invalid_action');
+      method = action.type;
       actionUsedOnFrame = true;
+      actionCount += 1;
+      let reply = {};
       if (action.type === 'click') {
         const point = action.inputs.point?.raw;
         if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error('invalid_action');
@@ -236,6 +307,7 @@ class HostOperator extends Operator {
         const titles = Array.isArray(result?.windows)
           ? result.windows.map((item) => text(item?.title)).filter(Boolean)
           : [];
+        reply = { titles };
         pendingNotice = titles.length
           ? `可切换的小程序窗口：${titles.join('、')}。如需切换，请调用 switch_window(title="窗口名称")。`
           : '当前没有可切换的小程序窗口。';
@@ -243,14 +315,21 @@ class HostOperator extends Operator {
         const title = text(action.inputs.title);
         if (!title) throw new Error('invalid_action');
         const result = await rpc('switch_window', { frame_id: currentFrame, title });
+        reply = { switched: Boolean(result?.switched), error: text(result?.error), titles: result?.titles || [] };
         pendingNotice = result?.switched
           ? `已切换到窗口「${title}」；下一张截图来自该窗口，请重新核对门店。`
-          : `切换失败：${text(result?.error) || '目标窗口不存在'}。可用窗口：${(result?.titles || []).join('、') || '无'}。`;
+          : `切换失败：${text(result?.error) || '目标窗口不存在'}。可用窗口：${(reply.titles || []).join('、') || '无'}。`;
       } else {
         throw new Error('disallowed_action');
       }
+      trace({ type: 'tool', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame, method,
+              inputs: sanitized(inputs), ok: true, duration_ms: Date.now() - started, reply,
+              feedback: pendingNotice });
       return { status: 'success' };
     } catch (error) {
+      trace({ type: 'tool', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame, method,
+              inputs: sanitized(inputs), ok: false, duration_ms: Date.now() - started,
+              error: text(error?.message, 120) });
       if (!failure) {
         const code = text(error?.message, 120) || 'action_failed';
         failure = { code, raw: '' };
@@ -268,6 +347,8 @@ class HostOperator extends Operator {
 function emitResult(outcome, reason, extra = {}) {
   if (resultEmitted) return;
   resultEmitted = true;
+  trace({ type: 'result', at: now(), outcome, reason: text(reason, 600), extra: sanitized(extra),
+          actions: actionCount });
   send({ type: 'result', outcome, reason, frame_id: currentFrame, ...extra });
 }
 
@@ -284,16 +365,15 @@ async function main() {
         !Number.isInteger(config.max_steps) || config.max_steps < 1 || config.max_steps > 100) throw new Error('protocol');
 
     const operator = new HostOperator();
+    if (typeof config.trace_path === 'string' && config.trace_path.trim()) tracePath = config.trace_path.trim();
+    trace({ type: 'session', at: now(), node: process.version, model: model.model, max_steps: config.max_steps,
+            ...sanitized(typeof config.trace === 'object' && config.trace ? config.trace : {}) });
     const systemPrompt = [
-      'You control a graphical interface through one observation and one action at a time.',
-      'Coordinates in coordinate and menu_box use a normalized 1000x1000 coordinate system with top-left origin, independent of the attached PNG dimensions. Keep every point within [0,1000), and menu_box edges within [0,1000].',
-      'Return exactly one executable action per response using one <tool_call>{"name":"computer_use","arguments":{...}}</tool_call>. An Action: line may appear as non-executable narration; never rely on it to execute an action.',
-      'Allowed actions: left_click(coordinate=[x,y]); scroll(pixels=positive_number_for_up_or_negative_for_down, coordinate=[x,y] optional); each scroll call produces one bounded UiPath scroll increment, and the magnitude only chooses direction; wait(time=seconds, 0<time<=5); list_windows(); switch_window(title="window title"); terminate(outcome="success"|"needs_review"|"unqualified", reason="...", menu_box=[x1,y1,x2,y2] only for success).',
-      'Hand off as soon as the target store is confirmed and the real dishes and their prices are clearly visible and unobstructed. For handoff use terminate(outcome="success", reason="...", menu_box=[...]). Do NOT keep scrolling after the menu is visible; the host scrolls the menu to the end after handoff. Scrolling yourself is only for revealing the menu before handoff.',
-      'Use terminate(outcome="needs_review", reason="...") when the store identity is unknown or clearly wrong, human authorization is required, the page is still loading, or a tool fails. A visible menu for the wrong store is still needs_review.',
-      'Use terminate(outcome="unqualified", reason="...") only with explicit on-screen evidence that the target store cannot provide a browsable menu right now (for example ordering is suspended). A closed store with a browsable menu is still a success. Do not attach menu_box for needs_review or unqualified.',
-      'If ordering opened a different mini-program window, call list_windows(), then switch_window(title="...") to the correct one, and re-check the fresh screenshot before deciding.',
-      'Do not invent coordinates, claim unseen evidence, or use any other action.',
+      'Control the GUI with one observation and one action per turn.',
+      'Return exactly one <tool_call>{"name":"computer_use","arguments":{...}}</tool_call>. Coordinates and menu_box use a normalized 1000x1000 space, top-left origin, independent of PNG size.',
+      'Actions: left_click(coordinate=[x,y]); scroll(pixels: positive=up, negative=down, coordinate optional; magnitude only picks direction); wait(time<=5); list_windows(); switch_window(title="..."); terminate(outcome="success"|"needs_review"|"unqualified", reason, menu_box only for success).',
+      'Experience: (1) hand off the moment the target store and its dishes with prices are clearly visible; the host scrolls the menu after handoff. (2) Wrong or unknown store, human authorization, a loading page, or a tool failure is needs_review; if ordering opened another mini-program window, use list_windows() and switch_window() and re-check the fresh screenshot. (3) Use unqualified only when the screen explicitly proves this store has no browsable menu now. Do not attach menu_box for needs_review or unqualified.',
+      'Read-only: never order, pay, add to cart, claim coupons, log in, or switch stores. Never invent coordinates or claim unseen evidence.',
     ].join('\n');
     const agent = new class extends GUIAgent {
       async onLLMRequest(_id, payload) {
@@ -301,6 +381,7 @@ async function main() {
         if (!request || typeof request !== 'object') throw new Error('invalid_model_request');
         delete request.thinking;
         request.enable_thinking = false;
+        request.stream_options = { ...(request.stream_options || {}), include_usage: true };
         if (Array.isArray(request.messages)) {
           for (const message of request.messages) {
             if (message?.role === 'user' && typeof message.content === 'string') {
@@ -308,6 +389,27 @@ async function main() {
             }
           }
         }
+        const callId = ++callSeq;
+        currentCall = { id: callId, started: Date.now(), provider: payload?.provider || '', baseURL: payload?.baseURL || '' };
+        trace({ type: 'request', at: now(), call_id: callId, provider: payload?.provider || '',
+                base_url: payload?.baseURL || '', request: sanitized(request) });
+      }
+
+      async onLLMResponse(_id, payload) {
+        const call = currentCall || { id: ++callSeq, started: Date.now() };
+        const response = payload?.response || {};
+        const choice = response?.choices?.[0] || {};
+        const content = choice?.message?.content;
+        trace({ type: 'response', at: now(), call_id: call.id, duration_ms: Date.now() - call.started,
+                provider: payload?.provider || call.provider, request_id: text(response?.id, 120),
+                returned_model: text(response?.model, 120), finish_reason: text(choice?.finish_reason, 40),
+                content: typeof content === 'string' ? content : JSON.stringify(content ?? ''),
+                usage: response?.usage ?? null, error: null });
+      }
+
+      async onLLMStreamingResponse(_id, payload) {
+        const chunks = Array.isArray(payload?.chunks) ? payload.chunks : [];
+        trace({ type: 'stream', at: now(), call_id: currentCall?.id ?? null, chunks: chunks.length });
       }
 
       async onAfterToolCall(id, toolCall, result) {
@@ -362,8 +464,8 @@ async function main() {
       return emitRuntimeReview(`模型输出被拒绝（${code}）`, { code, raw: failure?.raw || '' });
     }
     if (!terminal || event?.type !== 'assistant_message' || event.content !== terminalMarker || event.finishReason !== 'stop') {
-      return emitRuntimeReview('自动化未到达有效业务终态（步数用尽或提前停止）',
-        { code: 'no_terminal', raw: lastRawContent.slice(0, 800) });
+      return emitRuntimeReview(`自动化未到达有效业务终态（已执行 ${actionCount} 个动作，步数上限 ${config.max_steps}）`,
+        { code: 'no_terminal', actions: actionCount, max_steps: config.max_steps, raw: lastRawContent.slice(0, 800) });
     }
     if (terminal.outcome === 'needs_review') return emitResult('needs_review', terminal.reason);
     const extra = {};
@@ -371,6 +473,8 @@ async function main() {
     emitResult(terminal.outcome, terminal.reason, extra);
   } catch (error) {
     const detail = text(error?.message, 200);
+    trace({ type: 'error', at: now(), code: failure?.code || 'runtime', detail,
+            raw: failure?.raw || '', actions: actionCount, call_id: currentCall?.id ?? null });
     if (failure) {
       return emitRuntimeReview(`模型输出被拒绝（${failure.code}）`,
         { code: failure.code, raw: failure.raw || '', detail });
@@ -384,4 +488,8 @@ async function main() {
   }
 }
 
-main().catch((error) => emitRuntimeReview('协议或自动化执行失败', { code: 'runtime', detail: text(error?.message, 200) }));
+main().catch((error) => {
+  const detail = text(error?.message, 200);
+  trace({ type: 'error', at: now(), code: 'runtime', detail, actions: actionCount });
+  emitRuntimeReview('协议或自动化执行失败', { code: 'runtime', detail });
+});

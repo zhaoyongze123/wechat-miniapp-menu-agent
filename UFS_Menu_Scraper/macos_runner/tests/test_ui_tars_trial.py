@@ -585,6 +585,83 @@ def _all_text(value: object) -> str:
     return ""
 
 
+def _image_refs(value: object) -> list[dict]:
+    if isinstance(value, dict):
+        if value.get("type") == "image_ref":
+            return [value]
+        return [item for nested in value.values() for item in _image_refs(nested)]
+    if isinstance(value, list):
+        return [item for nested in value for item in _image_refs(nested)]
+    return []
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_model_call_trace_keeps_raw_text_but_references_images(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        _tool_call({"action": "left_click", "coordinate": [375, 450]}),
+        _terminal("success", menu_box=[100, 100, 900, 900]),
+    ]
+    observe, _frames = _frame_factory(tmp_path)
+    trace_path = tmp_path / "agent-calls.jsonl"
+
+    result, _terminal_frame = run_navigation(
+        _model(server), "测试门店", 2, 4,
+        observe=observe, execute=lambda command, frame_id: None, check_stop=lambda: None,
+        trace_path=trace_path,
+        trace_meta={"run_id": "run-1", "task_id": "task-1", "store_name": "测试门店"},
+    )
+
+    assert result["outcome"] == "success"
+    text = trace_path.read_text(encoding="utf-8")
+    rows = [json.loads(line) for line in text.splitlines()]
+    kinds = {row["type"] for row in rows}
+    assert {"session", "request", "response", "action", "tool", "screenshot", "result"} <= kinds
+    session = next(row for row in rows if row["type"] == "session")
+    assert session["run_id"] == "run-1" and session["task_id"] == "task-1"
+    request = next(row for row in rows if row["type"] == "request")
+    assert request["request"]["stream_options"]["include_usage"] is True
+    refs = _image_refs(request["request"])
+    assert refs and all(item["sha256"] and item["bytes"] > 0 for item in refs)
+    assert "data:image" not in text
+    assert any(row["type"] == "response" and "usage" in row for row in rows)
+    assert any(row["type"] == "action" and row["ok"] and "raw" in row for row in rows)
+
+
+def test_agent_usage_is_written_to_existing_ledger(tmp_path):
+    from menu_capture.model_usage import UsageLedger
+    from menu_capture.uipath_runner import UiPathRunner
+
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    runner = object.__new__(UiPathRunner)
+    runner.usage_ledger = UsageLedger(store)
+    runner.run_id = "run-agent"
+    trace_path = tmp_path / "agent-calls.jsonl"
+    trace_path.write_text("\n".join([
+        json.dumps({"type": "request", "at": "2026-11-09T02:00:00.000Z"}),
+        json.dumps({"type": "response", "at": "2026-11-09T02:00:03.000Z", "duration_ms": 3000,
+                    "request_id": "chatcmpl-1", "returned_model": GUI_PLUS_MODEL,
+                    "usage": {"prompt_tokens": 1200, "completion_tokens": 34, "total_tokens": 1234}}),
+        json.dumps({"type": "response", "at": "2026-11-09T02:00:06.000Z", "duration_ms": 2100,
+                    "request_id": "chatcmpl-2", "returned_model": GUI_PLUS_MODEL, "usage": None}),
+    ]) + "\n", encoding="utf-8")
+
+    recorded = runner._record_agent_usage(
+        trace_path, {"id": "task-1", "source_name": "测试门店"},
+        TrialModel("/usr/bin/node", "http://127.0.0.1:9/v1", "secret-key"),
+    )
+
+    assert recorded == {"model_calls": 2, "with_usage": 1}
+    with store.connect() as db:
+        rows = [dict(row) for row in db.execute(
+            "SELECT source,run_id,task_id,source_name,status,usage_state,input_tokens,output_tokens "
+            "FROM model_calls ORDER BY started_at")]
+    assert [row["usage_state"] for row in rows] == ["complete", "missing"]
+    assert all(row["source"] == "agent" and row["run_id"] == "run-agent"
+               and row["task_id"] == "task-1" and row["source_name"] == "测试门店" for row in rows)
+    assert rows[0]["input_tokens"] == 1200 and rows[0]["output_tokens"] == 34
+
+
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 def test_window_tools_feed_titles_back_and_reobserve_after_switch(model_server, tmp_path):
     server, handler = model_server
