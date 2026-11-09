@@ -256,8 +256,12 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             by_id = {task["id"]: task for task in all_tasks}
             ids = run["task_ids"]
             processed = min(max(run["current_index"], 0), len(ids))
-            captured = sum(by_id.get(task_id, {}).get("status") == "captured" for task_id in ids[:processed])
-            run.update(processed=processed, captured=captured, review=processed-captured,
+            processed_tasks = [by_id.get(task_id, {}) for task_id in ids[:processed]]
+            captured = sum(task.get("status") == "captured" for task in processed_tasks)
+            unqualified = sum(task.get("status") != "captured" and bool(task.get("reject_reason"))
+                              for task in processed_tasks)
+            run.update(processed=processed, captured=captured, unqualified=unqualified,
+                       review=processed-captured-unqualified,
                        remaining=len(ids)-processed,
                        next_name=by_id.get(ids[processed], {}).get("source_name", "") if processed < len(ids) else "")
         launch_mode = ready.get("launch_mode", "manual")

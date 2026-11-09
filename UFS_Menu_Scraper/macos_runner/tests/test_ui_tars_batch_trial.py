@@ -203,6 +203,7 @@ def test_batch_trial_reuses_one_robot_startup_and_writes_per_store_reports(tmp_p
     runner._set_stage = lambda *_args, **_kwargs: None
     runner._ensure_file_assistant = lambda *_args, **_kwargs: None
     runner._close_miniapp_windows = lambda *_args, **_kwargs: None
+    runner._send = lambda command: {"windows": []} if command["action"] == "discover" else {}
     monkeypatch.setattr(uipath_runner_module, "trial_model_from_env", lambda *_args: FakeModel())
     def run_navigation(*_args, **_kwargs):
         events.append(("agent", None))

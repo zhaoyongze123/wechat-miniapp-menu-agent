@@ -371,14 +371,14 @@
               <div class="field"><label for="input-dir">输入目录</label><div class="field-inline"><input id="input-dir" name="input_dir" placeholder="尚未选择" autocomplete="off" readonly><button class="btn" id="select-input-dir" type="button">选择目录</button></div></div>
               <div class="field"><label for="output-dir">输出目录</label><div class="field-inline"><input id="output-dir" name="output_dir" placeholder="尚未选择" autocomplete="off" readonly><button class="btn" id="select-output-dir" type="button">选择目录</button></div></div>
             </div></div>
-            <div class="form-section"><div class="form-section-title">模型服务</div><div class="form-grid">
+            <div class="form-section"><div class="form-section-title">模型服务</div><p class="card-desc">正式菜单导航使用百炼北京地域 GUI-Plus（gui-plus-2026-02-26）。视觉模型参数也供人工标注、素材处理和连接诊断使用。</p><div class="form-grid">
               <div class="field"><label for="provider">供应商</label><select id="provider" name="provider"><option value="openai_compatible">OpenAI 兼容接口</option><option value="anthropic">Anthropic</option></select></div>
               <div class="field"><label for="model-name">模型名称</label><input id="model-name" name="model" placeholder="例如：模型部署名称"></div>
               <div class="field full"><label for="base-url">接口地址</label><input id="base-url" name="base_url" placeholder="https://…" autocomplete="url"></div>
               <div class="field full"><label for="api-key">API 密钥</label><input id="api-key" name="api_key" type="password" placeholder="留空表示保留已保存的密钥" autocomplete="new-password"><div class="secret-note" id="key-note">密钥状态加载中。服务端不会在读取配置时返回密钥。</div></div>
               <div class="field"><label for="enable-thinking">模型思考模式</label><select id="enable-thinking"><option value="auto">服务默认</option><option value="off">关闭（支持该参数的兼容接口）</option><option value="on">开启</option></select></div><div class="field"><label for="timeout-seconds">请求超时（秒）</label><input id="timeout-seconds" type="number" min="1" step="1"></div>
               <div class="field"><label for="people-count">就餐人数</label><input id="people-count" type="number" min="1" step="1"><div class="field-help">用于小程序要求选择人数时；采集始终逐个执行。</div></div>
-              <div class="field full"><label style="display:flex;align-items:center;gap:8px"><input id="auto-authorize" type="checkbox" style="width:auto">自动同意进入菜单所需的隐私协议和授权</label><div class="field-help">包括必要权限、手机号快捷授权和微信快捷登录；无法自动完成的验证码或登录会记录原因并尝试跳过该店。授权处理不代表菜单已完整采集。</div></div><div class="field full"><label for="prompt">系统提示词</label><textarea id="prompt" placeholder="输入模型分析菜单截图时使用的提示词"></textarea></div>
+              <div class="field full"><label style="display:flex;align-items:center;gap:8px"><input id="auto-authorize" type="checkbox" style="width:auto">人工标注时提供授权操作建议</label><div class="field-help">仅用于人工标注建议。正式采集的导航与终态由 GUI Agent 按业务经验决定。</div></div>
             </div></div>
             <div class="form-section"><div class="form-section-title">截图与循环参数</div><p class="card-desc">运行时自动调整窗口大小；实际滚动距离使用总览中的“滚动步数”。</p><div class="form-grid">
               <div class="field"><label for="window-width">目标窗口宽度（预留）</label><input disabled id="window-width" type="number" min="1"></div><div class="field"><label for="window-height">目标窗口高度（预留）</label><input disabled id="window-height" type="number" min="1"></div>
@@ -503,7 +503,7 @@
       function fillConfig(c){
         if(!c)return;state.config=c;state.configLoaded=true;
         $('input-dir').value=c.input_dir||'';$('output-dir').value=c.output_dir||'';
-        const m=c.model||{};$('provider').value=m.provider==='anthropic'?'anthropic':'openai_compatible';$('model-name').value=m.model||'';$('enable-thinking').value=m.enable_thinking===false?'off':m.enable_thinking===true?'on':'auto';$('base-url').value=m.base_url||'';$('api-key').value='';$('timeout-seconds').value=m.timeout_seconds??'';$('prompt').value=m.prompt||'';$('people-count').value=c.people_count??'';$('auto-authorize').checked=!!c.auto_authorize;
+        const m=c.model||{};$('provider').value=m.provider==='anthropic'?'anthropic':'openai_compatible';$('model-name').value=m.model||'';$('enable-thinking').value=m.enable_thinking===false?'off':m.enable_thinking===true?'on':'auto';$('base-url').value=m.base_url||'';$('api-key').value='';$('timeout-seconds').value=m.timeout_seconds??'';$('people-count').value=c.people_count??'';$('auto-authorize').checked=!!c.auto_authorize;
         const cap=c.capture||{};$('window-width').value=cap.window_width??'';$('window-height').value=cap.window_height??'';$('overlap-ratio').value=cap.overlap_ratio??'';$('max-pages').value=cap.max_pages??'';$('max-agent-steps').value=cap.max_agent_steps??'';$('max-task-seconds').value=cap.max_task_seconds??'';$('settle-seconds').value=cap.settle_seconds??'';$('debug-log-limit').value=(c.debug_logging||{}).max_storage_mb??512;
         $('key-note').textContent=m.api_key_configured?'已有密钥已保存。留空会保留原密钥；输入新值将替换。':'尚未配置密钥。请填写后保存，再进行模型连接测试。';
         $('model-status-title').textContent=m.api_key_configured?'密钥已配置':'尚未配置密钥';$('model-status-subtitle').textContent=`${m.provider==='anthropic'?'Anthropic':'OpenAI 兼容'} · ${m.model||'未填写模型名称'}`;
@@ -511,7 +511,7 @@
       }
       function readConfig(){
         const provider=$('provider').value;
-        const model={provider,base_url:$('base-url').value.trim(),model:$('model-name').value.trim(),api_key:$('api-key').value,timeout_seconds:asNumber($('timeout-seconds').value),enable_thinking:$('enable-thinking').value==='auto'?null:$('enable-thinking').value==='on',prompt:$('prompt').value};
+        const model={provider,base_url:$('base-url').value.trim(),model:$('model-name').value.trim(),api_key:$('api-key').value,timeout_seconds:asNumber($('timeout-seconds').value),enable_thinking:$('enable-thinking').value==='auto'?null:$('enable-thinking').value==='on'};
         if(!model.api_key && state.config?.model?.api_key_configured){} // 空密钥由服务端按契约解释为保留。
         return {input_dir:$('input-dir').value.trim(),output_dir:$('output-dir').value.trim(),model,capture:{window_width:asNumber($('window-width').value),window_height:asNumber($('window-height').value),overlap_ratio:asNumber($('overlap-ratio').value),max_pages:asNumber($('max-pages').value),max_agent_steps:asNumber($('max-agent-steps').value),max_task_seconds:asNumber($('max-task-seconds').value),settle_seconds:asNumber($('settle-seconds').value)},debug_logging:{max_storage_mb:asNumber($('debug-log-limit').value)},people_count:asNumber($('people-count').value),auto_authorize:$('auto-authorize').checked};
       }
@@ -537,7 +537,7 @@
         $('sidebar-connection-label').textContent='本地服务已连接';
         const resumable=!!run&&['paused','blocked','interrupted'].includes(run.status);$('run-state').textContent=running?(RUN_LABELS[run?.status]||'运行中'):run?(RUN_LABELS[run.status]||'等待运行'):hasRobotSelection()?'可开始':'等待选择门店';$('run-state').className=`run-state ${running?'running':run?.status==='completed'?'done':''}`;
         $('start-btn').textContent=s.launch_mode==='cli'?'开始采集':'准备采集任务';$('start-btn').title='按执行队列开始采集';$('run-instruction').textContent=running?'暂停会等当前门店处理结束，终止会在当前 UiPath 命令结束后生效。':'';
-        const trial=running&&s.current_task?.navigation==='gui_agent';
+        const trial=running&&s.current_task?.trial===true;
         const busy=!!state.runAction, phase=run?.status, single=(trial?s.current_task:run)?.mode==='attached';
         $('run-heading').textContent=trial?(single?'GUI Agent 单店试验':'GUI Agent 批量试验'):run?(single?'单店采集':'批量采集'):'采集运行';
         $('stop-btn').hidden=!running||single||trial;
@@ -570,15 +570,16 @@
           const byId=new Map(tasks.map(task=>[String(task.id),task]));
           const currentTask=run.current_task_id?byId.get(String(run.current_task_id)):null;
           // 百分比表示本轮已有结果的门店；需检查也算已处理，但不会被误读为成功采集。
-          const currentNeedsReview=!running&&cursor<total&&currentTask&&isFail(currentTask)?1:0;
-          const review=Math.min(total-saved,Math.max(0,Number(run.review)||0)+currentNeedsReview);
-          const processed=Math.min(total,saved+review);
+          const currentFailed=!running&&cursor<total&&currentTask&&isFail(currentTask);
+          const unqualified=Math.max(0,Number(run.unqualified)||0)+(currentFailed&&currentTask.reject_reason?1:0);
+          const review=Math.min(total-saved-unqualified,Math.max(0,Number(run.review)||0)+(currentFailed&&!currentTask.reject_reason?1:0));
+          const processed=Math.min(total,saved+unqualified+review);
           const runningCount=running&&cursor<total?1:0;
           const remaining=Math.max(0,total-processed-runningCount);
           const percent=total?Math.min(100,Math.round(processed/total*100)):0;
           $('run-strip-percent').textContent=`${percent}%`;
           $('run-strip-done').textContent=`${processed} / ${total} 家`;
-          $('run-strip-count').textContent=`已保存 ${saved} · 待检查 ${review} · 运行中 ${runningCount} · 待处理 ${remaining}`;
+          $('run-strip-count').textContent=`已保存 ${saved} · 不合格 ${unqualified} · 待检查 ${review} · 运行中 ${runningCount} · 待处理 ${remaining}`;
           const progress=$('run-strip').querySelector('.run-progress');
           progress.setAttribute('aria-valuenow',String(percent));
           progress.setAttribute('aria-valuetext',`${processed} / ${total} 家门店已有处理结果`);

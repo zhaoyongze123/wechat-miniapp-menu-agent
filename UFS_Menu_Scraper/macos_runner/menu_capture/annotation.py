@@ -768,7 +768,7 @@ class AnnotationSession:
             return self.state()
 
     def _decide_with_chain(self, runner, path: Path, task: dict, settings, ocr_result) -> dict:
-        """与批处理 _prepare_until_ready 相同的单帧判断链（只读，不执行动作）。"""
+        """人工标注的单帧建议（只读，不执行动作）。"""
         source_name = str(task.get("source_name", ""))
         result = {
             "decision": None, "source": "unavailable", "error": None,

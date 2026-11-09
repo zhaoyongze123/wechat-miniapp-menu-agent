@@ -63,6 +63,17 @@ def test_config_files_are_private_and_nested_input_output_paths_are_rejected(tmp
         store.save(settings_payload(tmp_path / "root" / "input", tmp_path / "root"))
 
 
+def test_saved_legacy_navigation_prompt_does_not_block_config_load(tmp_path: Path) -> None:
+    store = ConfigStore(tmp_path)
+    payload = settings_payload(tmp_path / "inbox", tmp_path / "output")
+    payload["model"].pop("api_key")
+    payload["model"]["prompt"] = "旧导航提示词"
+    store.path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert store.load().model.model == "vision-test"
+    assert "prompt" not in store.public()["model"]
+
+
 def write_image(path: Path, color: str = "red") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (24, 16), color).save(path)

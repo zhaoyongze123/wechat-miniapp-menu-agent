@@ -21,6 +21,7 @@ from menu_capture.ui_tars_trial import (
     TrialModel,
     TrialProtocolError,
     _run_agent,
+    load_skill,
     run_navigation,
     trial_model_from_env,
 )
@@ -421,6 +422,24 @@ def test_skill_read_does_not_consume_frame_before_click(model_server, tmp_path):
     assert result["metrics"]["skill_reads"] == 1
     assert result["metrics"]["navigation_actions"] == 1
     assert result["metrics"]["screenshots"] == len(frames)
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_navigation_starts_with_full_skill_and_can_return_terminal_without_read_skill(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [_terminal("needs_review", reason="页面状态需要人工核实")]
+    observe, _frames = _frame_factory(tmp_path)
+
+    result, _frame = run_navigation(
+        _model(server), "测试门店", 1, 2,
+        observe=observe, execute=lambda *_: pytest.fail("终态不应执行动作"), check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "needs_review"
+    assert result["metrics"]["skill_reads"] == 0
+    assert len(handler.requests) == 1
+    first_request = _all_text(handler.requests[0]["body"]["messages"])
+    assert load_skill("menu-navigation") in first_request
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")

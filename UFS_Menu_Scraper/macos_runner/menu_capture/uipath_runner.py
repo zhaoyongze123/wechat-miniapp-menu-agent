@@ -26,17 +26,15 @@ from PIL import Image, ImageChops, ImageStat
 from pydantic import ValidationError
 
 from .config import ConfigStore, atomic_json
-from .model import ModelError, Region, VisionModel
+from .model import Region
 from .model_usage import usage_context
 from .chat_anchor import find_store_name_matches
 from .chat_layout import find_sent_text_bubbles
 from .failures import classify as classify_failure
-from .page_state import (detect as detect_page_state, has_menu_evidence, is_article_page,
-                         REJECT_REASONS as PAGE_STATE_REJECT_REASONS)
 from .window_contract import validate_target_window
 from .close_icon_locator import refine_close_icon, locate_close_icon, refine_back_arrow
 from .checkbox_locator import refine_consent_checkbox
-from .scene_agent import SceneAgent, SceneDecision, SceneError
+from .scene_agent import SceneDecision
 from .target_candidates import build_text_candidates
 from .store import TaskStore
 from .preview_locator import PreviewIconNotFound, locate_preview_recognize
@@ -71,16 +69,8 @@ class NeedsReview(RuntimeError):
         self.code = code or type(self).code
 
 
-class AuthorizationUnavailable(NeedsReview):
-    """当前门店的登录无法通过已授权快捷流程完成，可安全退出并跳过。"""
-
-    code = "authorization_unavailable"
-
-
-class NeedsRetry(NeedsReview):
-    """换一张二维码或稍后重跑可解决的页面状态，不算门店不合格。"""
-
-    code = "needs_retry"
+class AgentUnqualified(NeedsReview):
+    """Agent 给出了带理由的明确不合格终态。"""
 
 
 class RunnerPaused(RuntimeError):
@@ -420,7 +410,6 @@ class UiPathRunner:
         profile_path: Path,
         *,
         project_dir: Path | None = None,
-        model_factory=VisionModel,
         transport_factory=FileRobotTransport,
         clipboard_preparer: Callable[[Path], None] | None = None,
         clipboard_text_preparer: Callable[[str], None] | None = None,
@@ -433,7 +422,7 @@ class UiPathRunner:
         self.configs, self.store = configs, store
         self.profile_path = Path(profile_path).expanduser().resolve()
         self.project_dir = Path(project_dir).expanduser().resolve() if project_dir else self.profile_path.parent
-        self.model_factory, self.transport_factory = model_factory, transport_factory
+        self.transport_factory = transport_factory
         self.clipboard_preparer = clipboard_preparer
         self.clipboard_text_preparer = clipboard_text_preparer
         self.ocr_reader, self.qr_detector = ocr_reader, qr_detector
@@ -471,7 +460,6 @@ class UiPathRunner:
         self._debug_frame_refs: dict[str, str] = {}
         self._last_ocr_meta: dict = {}
         self._last_target_resolution: dict | None = None
-        self._desktop_monitor: tuple[float, float, float, float] | None = None
         self._active_ocr_path: str | None = None
         self._active_ocr_result: tuple[tuple[int, int] | None, list[dict]] | None = None
         self.run_id: str | None = None
@@ -491,7 +479,7 @@ class UiPathRunner:
     def invalidate_readiness(self) -> None:
         self._last_readiness = None
 
-    def readiness(self, task_ids_override: list[str] | None = None, *, require_legacy_model: bool = True,
+    def readiness(self, task_ids_override: list[str] | None = None, *, trial: bool = False,
                   trial_task_id: str | None = None, trial_source: str = "",
                   trial_batch_sources: dict[str, str] | None = None) -> dict:
         issues: list[str] = []
@@ -560,13 +548,17 @@ class UiPathRunner:
 
         try:
             settings = self.configs.load()
-            if require_legacy_model and (not settings.model.base_url or not settings.model.model or not self.configs.key()):
-                issues.append("模型接口、模型名称或密钥尚未配置")
             if not settings.input_dir or not settings.output_dir:
                 issues.append("输入目录或输出目录尚未配置")
         except Exception:
             settings = None
             issues.append("配置服务设置无法读取")
+
+        if settings is not None:
+            try:
+                trial_model_from_env(self.configs)
+            except ValueError as exc:
+                issues.append(str(exc))
 
         if mode == "automatic":
             for key in ("paste_shortcut", "send_key", "close_key"):
@@ -619,7 +611,7 @@ class UiPathRunner:
             "task": {"id": task["id"], "source_name": task["source_name"]} if task else None,
             "experimental_batch": mode == "automatic" and len(task_ids) > 1,
         }
-        if require_legacy_model:
+        if not trial:
             self._last_readiness = result
         return result
 
@@ -657,18 +649,18 @@ class UiPathRunner:
                 if not all(trial_batch_sources.values()):
                     raise ValueError("全自动试验门店必须使用已登记且有效的发布素材")
                 task_ids_override = trial_task_ids
-            status = (self.readiness(task_ids_override=task_ids_override, require_legacy_model=False,
+            status = (self.readiness(task_ids_override=task_ids_override, trial=True,
                                      trial_task_id=trial_task_id, trial_source=trial_source,
                                      trial_batch_sources=trial_batch_sources) if ui_tars_trial
                       else self.readiness(task_ids_override=task_ids_override))
             if not status["ready"]:
                 raise ValueError("UiPath 尚未就绪：" + "；".join(status["issues"]))
             profile = status["profile"]
-            trial_model = None
-            if ui_tars_trial:
-                if not trial_batch_sources and (resume_run or profile["mode"] != "attached" or len(status["selected_task_ids"]) != 1):
-                    raise ValueError("GUI Agent 试验仅接管已打开小程序的单店任务")
-                trial_model = trial_model_from_env(self.configs)
+            if ui_tars_trial and not trial_batch_sources and (
+                resume_run or profile["mode"] != "attached" or len(status["selected_task_ids"]) != 1
+            ):
+                raise ValueError("GUI Agent 试验仅接管已打开小程序的单店任务")
+            model = trial_model_from_env(self.configs)
             self.stop_event.clear()
             self.pause_event.clear()
             task_ids = status["selected_task_ids"]
@@ -682,14 +674,14 @@ class UiPathRunner:
                 settings = settings.model_copy(update={"input_dir": trial_source})
             attempt = datetime.now().strftime("%Y%m%d-%H%M%S-%f") + "-" + uuid.uuid4().hex[:8]
             run_directory = Path(settings.output_dir).expanduser().resolve() / ".uipath-runs" / (attempt + "-" + uuid.uuid4().hex[:8])
-            output_dir = (run_directory / "ui-tars-trial" if trial_model
+            output_dir = (run_directory / "ui-tars-trial" if ui_tars_trial
                           else self._staging_dir(settings.output_dir, task, attempt))
-            if not trial_model:
+            if not ui_tars_trial:
                 output_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
                 output_dir.chmod(0o700)
             run_directory.mkdir(parents=True, mode=0o700, exist_ok=False)
             run_directory.chmod(0o700)
-            if trial_model:
+            if ui_tars_trial:
                 output_dir.mkdir(mode=0o700)
             entry = {
                 "in_RunDirectory": str(run_directory),
@@ -714,14 +706,15 @@ class UiPathRunner:
             self.run_id = resume_run["id"] if resume_run else uuid.uuid4().hex
             if profile.get("launch_mode", "manual") == "cli":
                 self._launch_cli(run_directory, settings, profile, task_count=len(task_ids))
-            if trial_model:
+            if ui_tars_trial:
                 self._deadline = 0
                 self._ui_tars_trial_active = True
                 self.current_task = {"id": task["id"], "source_name": task["source_name"],
-                                     "stage": "ui_tars_connecting", "mode": profile["mode"], "navigation": "gui_agent"}
+                                     "stage": "ui_tars_connecting", "mode": profile["mode"],
+                                     "navigation": "gui_agent", "trial": True}
                 self.thread = threading.Thread(
                     target=self._ui_tars_trial_worker,
-                    args=(task, settings, profile, output_dir, trial_model, trial_batch_sources),
+                    args=(task, settings, profile, output_dir, model, trial_batch_sources),
                     name="ui-tars-trial", daemon=True,
                 )
                 self.thread.start()
@@ -743,7 +736,7 @@ class UiPathRunner:
             self.store.update(task["id"], status="running", stage="waiting_uipath", message=start_message)
             self.store.event(start_message, task_id=task["id"])
             self.thread = threading.Thread(target=self._worker,
-                                           args=(task, settings, profile, output_dir, task_ids, start_index, bool(resume_run)),
+                                           args=(task, settings, profile, output_dir, model, task_ids, start_index, bool(resume_run)),
                                            name="uipath-menu-capture", daemon=True)
             self.thread.start()
             return {
@@ -1080,7 +1073,7 @@ class UiPathRunner:
         self._guard()
         try:
             command_timeout = timeout or 90
-            if self._ui_tars_trial_active and self._deadline:
+            if self._deadline:
                 command_timeout = max(.01, min(command_timeout, self._deadline - time.monotonic()))
             kwargs = {"timeout": command_timeout}
             if self._cli_process is not None and isinstance(self.transport, FileRobotTransport):
@@ -1214,14 +1207,27 @@ class UiPathRunner:
     def _run_ui_tars_trial_case(self, task: dict, settings, profile: dict, output_dir: Path,
                                 model: TrialModel, *, automatic: bool = False) -> dict:
         self._trace_attempt = self.run_directory.name
+        binding = self.store.material_binding(settings.input_dir) or {}
+        self._trace_material = {"material_version_id": binding.get("id", ""),
+                                "material_batch_id": binding.get("batch_id", ""),
+                                "material_version": binding.get("version", ""),
+                                "material_snapshot": binding.get("snapshot_id", "")}
+        self._set_stage(task, "ui_tars_connecting", "准备 GUI Agent 试验")
+        return self._run_gui_agent_case(task, settings, profile, output_dir, model,
+                                        automatic=automatic, capture_dir=output_dir, trial=True)
+
+    def _run_gui_agent_case(self, task: dict, settings, profile: dict, output_dir: Path,
+                            model: TrialModel, *, automatic: bool, capture_dir: Path, trial: bool = False) -> dict:
+        """正式任务与试验共用窗口准备、Agent 工具和菜单截图交接。"""
         self._trace_step = None
         self._trace_click = {}
         self._debug_frame_refs.clear()
-        self._set_stage(task, "ui_tars_connecting", "准备 GUI Agent 试验")
+        active = None
+        safe_to_reset = True
         report = {
             "task_id": task["id"], "run_id": self.run_id, "source_name": task["source_name"],
             "model": GUI_PLUS_MODEL,
-            "navigation": {"outcome": "needs_review", "reason": "试验未完成", "source": "runtime"},
+            "navigation": {"outcome": "needs_review", "reason": "导航未完成", "source": "runtime"},
             "capture": {"status": "not_started", "pages": []},
             # Agent 的业务终态与技术执行结果分开记录，避免把协议/窗口/截图故障当成门店判断。
             "agent_outcome": "", "agent_reason": "",
@@ -1251,14 +1257,10 @@ class UiPathRunner:
                 pass
 
         try:
-            binding = self.store.material_binding(settings.input_dir) or {}
-            self._trace_material = {"material_version_id": binding.get("id", ""),
-                                    "material_batch_id": binding.get("batch_id", ""),
-                                    "material_version": binding.get("version", ""),
-                                    "material_snapshot": binding.get("snapshot_id", "")}
             report["material"] = self._trace_material.copy()
+            self._guard()
             self._validate_source(task, settings.input_dir)
-            if not automatic:
+            if trial and not automatic:
                 with self._trace("uipath_startup"):
                     self._await_cli_startup()
             self._deadline = time.monotonic() + settings.capture.max_task_seconds
@@ -1276,7 +1278,7 @@ class UiPathRunner:
                            titles=[item["title"] for item in candidates], selected=candidates[0]["title"])
             # 窗口准备与导航分离：先归位并截图校准尺寸，再启动 Agent 决策。
             active = {"selector": selector, "title": ""}
-            self.current_task["stage"] = "ui_tars_navigation"
+            self._set_stage(task, "ui_tars_navigation", "GUI Agent 正在进入菜单")
             evidence_dir = output_dir / "evidence"
             evidence_dir.mkdir(mode=0o700, exist_ok=True)
             self._prepare_trial_window(selector, evidence_dir, host_trace)
@@ -1285,7 +1287,7 @@ class UiPathRunner:
                 nonlocal last_frame
                 self._trace_step = sequence
                 path = evidence_dir / f"ui-tars-{sequence:03}.png"
-                # 实验直接取同一 selector 的实测窗口截图，不执行旧流程的矩形截图与页面规则。
+                # 每次观察使用当前窗口实测截图，后续动作与这一帧绑定。
                 last_frame = self._send({"action": "screenshot", "selector": active["selector"], "path": str(path)})
                 host_trace("frame", sequence=sequence, frame_id=str(sequence),
                            path=str(Path(last_frame["path"]).relative_to(output_dir)),
@@ -1310,7 +1312,7 @@ class UiPathRunner:
                     trace_path=trace_path,
                     trace_meta={"run_id": self.run_id, "task_id": task["id"],
                                 "store_name": task["source_name"],
-                                "batch": output_dir.parent.name if automatic else ""},
+                                "batch": self._trace_material.get("material_batch_id", "")},
                     # 原始二维码照片提供品牌、桌号等背景，只作参考，不能当成可点击屏幕。
                     source_image=task.get("source_path"),
                 )
@@ -1352,19 +1354,21 @@ class UiPathRunner:
                     trace["diagnostic"] = decision["diagnostic"]
 
             if decision["outcome"] == "success":
-                self.current_task["stage"] = "ui_tars_capture_trial"
+                self._set_stage(task, "capturing", "正在滚动截图；完整覆盖率留待复核")
                 capture_started = time.monotonic()
+                (capture_dir / "evidence").mkdir(mode=0o700, exist_ok=True)
                 pages = self._capture_menu(active["selector"], frame, Region(**decision["menu_region"]),
-                                           settings, profile, output_dir, recover_overlay=False)
+                                           settings, profile, capture_dir)
                 report["capture"] = {"status": "staged", "pages": pages}
-        except (TrialProtocolError, NeedsReview, RunnerTerminated, RobotProtocolError,
+        except (TrialProtocolError, NeedsReview, RunnerTerminated, RunnerPaused, RobotProtocolError,
                 RobotCommandError, RobotTimeout) as exc:
+            safe_to_reset = not isinstance(exc, (RobotTimeout, RunnerTerminated, RunnerPaused))
             reason = str(exc).replace(model.api_key, "[已隐藏]")[:500]
             report["runtime_status"] = "failed"
             report["runtime_error"] = reason
             if report["navigation"]["outcome"] == "success":
                 report["capture"] = {"status": "needs_review", "reason": reason,
-                                     "pages": sorted(path.name for path in output_dir.glob("page-*.png"))}
+                                     "pages": sorted(path.name for path in capture_dir.glob("page-*.png"))}
                 report["runtime_code"] = "capture"
             else:
                 report["navigation"] = {"outcome": "needs_review", "reason": reason, "source": "runtime"}
@@ -1375,35 +1379,44 @@ class UiPathRunner:
                 if last_frame:
                     report["navigation"]["frame"] = str(Path(last_frame["path"]).relative_to(output_dir))
                 report["runtime_code"] = report["runtime_code"] or "runtime"
+            if not trial:
+                raise
         except Exception as exc:
             result = report["capture"] if report["navigation"]["outcome"] == "success" else report["navigation"]
-            result.update(reason=f"试验运行失败（{type(exc).__name__}）")
+            result.update(reason=f"运行失败（{type(exc).__name__}）")
             if result is report["capture"]:
-                result.update(status="needs_review", pages=sorted(path.name for path in output_dir.glob("page-*.png")))
+                result.update(status="needs_review", pages=sorted(path.name for path in capture_dir.glob("page-*.png")))
                 report["runtime_code"] = "capture"
             else:
                 report["runtime_code"] = report["runtime_code"] or "runtime"
             report["runtime_status"] = "failed"
             report["runtime_error"] = str(result.get("reason") or "")
+            if not trial:
+                raise
         finally:
             end = time.monotonic()
             if navigation_started is not None:
                 timing.setdefault("navigation", round((end - navigation_started) * 1000))
             if capture_started is not None:
                 timing["capture"] = round((end - capture_started) * 1000)
-            if automatic:
+            if automatic and active:
+                # Agent 切换过窗口时，批次收尾从最后接管的窗口退出。
+                profile["miniapp_selector"] = active["selector"]
+            if automatic and trial:
                 self._deadline = time.monotonic() + 60
                 try:
+                    if not safe_to_reset:
+                        raise NeedsReview("UiPath 操作未确认结束，未执行桌面清理")
                     self._guard()
-                    self._ensure_file_assistant(profile, output_dir, settings.capture.settle_seconds)
-                    self._close_miniapp_windows(profile, output_dir)
+                    self._return_to_wechat(profile, output_dir, settings.capture.settle_seconds)
                     report["wechat_return"] = {"status": "ready"}
                 except Exception as exc:
                     report["wechat_return"] = {
                         "status": "blocked",
                         "reason": f"未确认安全返回文件传输助手（{type(exc).__name__}）",
                     }
-            self._deadline = 0
+            if trial:
+                self._deadline = 0
             report["capture_status"] = str(report["capture"].get("status") or "not_started")
             timing["total"] = round((time.monotonic() - started_at) * 1000)
             trace_files = {name: path.name for name, path in
@@ -1416,13 +1429,18 @@ class UiPathRunner:
                     report["usage"] = recorded
             except Exception as exc:
                 # 用量入库失败不能改写导航与采集结论，但必须在报告里可见。
-                report["usage_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
-            atomic_json(output_dir / "navigation-result.json", report)
+                report["usage_error"] = f"{type(exc).__name__}: {str(exc)[:300]}".replace(model.api_key, "[已隐藏]")
+            try:
+                atomic_json(output_dir / "navigation-result.json", report)
+            except OSError:
+                if trial:
+                    raise
+                self.store.event("无法保存 GUI Agent 导航报告", "error", task["id"])
         return report
 
     def _worker(self, initial_task: dict, settings, profile: dict, initial_output: Path,
-                selected_task_ids: list[str] | None = None, start_index: int = 0, resumed: bool = False) -> None:
-        model = None
+                model: TrialModel, selected_task_ids: list[str] | None = None, start_index: int = 0,
+                resumed: bool = False) -> None:
         task, output_dir = initial_task, initial_output
         self._trace_attempt = initial_output.name
         self._trace_step = None
@@ -1437,21 +1455,6 @@ class UiPathRunner:
             self._set_stage(task, "connecting", "等待 UiPath Main 响应 IPC noop 命令")
             with self._trace("uipath_startup"):
                 self._await_cli_startup()
-            if profile["mode"] == "attached":
-                self._set_stage(task, "connecting", "正在识别已打开的小程序窗口")
-                discovery = self._send({"action": "discover"})
-                profile["miniapp_selector"] = self._select_miniapp_selector(discovery.get("windows"))
-            model = self.model_factory(settings.model, self.configs.key())
-            if isinstance(model, VisionModel):
-                model.usage_ledger = self.usage_ledger
-            auto_authorize = bool(getattr(settings, "auto_authorize", False))
-            agent = SceneAgent(
-                model, settings.model.prompt, settings.people_count, auto_authorize,
-                coordinate_resolver=lambda path, decision: self._resolve_click_coordinates(path, decision, settings.people_count),
-                region_resolver=lambda path, decision: self._resolve_ready_region(
-                    path, decision, (self.current_task or {}).get("source_name", ""), self._ocr_result_for(path)
-                ),
-            )
             task_ids = selected_task_ids if selected_task_ids is not None else [initial_task["id"]]
             if resumed and profile["mode"] == "automatic":
                 profile["miniapp_selector"] = ""
@@ -1495,23 +1498,21 @@ class UiPathRunner:
                 terminated = False
                 try:
                     with self._trace("task_execution"):
-                        self._run_task(task, settings, profile, output_dir, agent)
+                        self._run_task(task, settings, profile, output_dir, model)
                     if self.stop_event.is_set():
                         raise RunnerTerminated("用户已终止批次；当前门店结果不发布")
                     status, stage, message, failure_code = "captured", "captured", "已保存菜单截图；覆盖完整性待复核", ""
-                except AuthorizationUnavailable as exc:
-                    stage, message, failure_code = "authorization_unavailable", str(exc)[:500], exc.code
-                except NeedsRetry as exc:
-                    status, stage, message, failure_code = "needs_retry", "needs_retry", str(exc)[:500], exc.code
+                except AgentUnqualified as exc:
+                    stage, message, failure_code = "agent_unqualified", str(exc)[:500], "agent_unqualified"
                 except RunnerTerminated as exc:
                     stage, message, terminated, failure_code = "terminated", str(exc), True, "terminated"
                 except RunnerPaused as exc:
                     stage, message, failure_code = "paused", str(exc), "paused"
                 except RobotTimeout as exc:
                     stage, message, failure_code = "uipath_timeout", str(exc), "uipath_timeout"
-                except (NeedsReview, SceneError, RobotProtocolError, RobotCommandError, ModelError, ValidationError) as exc:
-                    stage, message = "needs_review", str(exc)[:500]
-                    failure_code = getattr(exc, "code", "") or ""
+                except (NeedsReview, TrialProtocolError, RobotProtocolError, RobotCommandError, ValidationError) as exc:
+                    stage, message = "needs_review", str(exc).replace(model.api_key, "[已隐藏]")[:500]
+                    failure_code = getattr(exc, "code", "") or ("agent_runtime" if isinstance(exc, TrialProtocolError) else "")
                 except Exception as exc:
                     stage, message = "needs_review", f"{type(exc).__name__}；结果待人工检查"
                     failure_code = ""
@@ -1535,11 +1536,11 @@ class UiPathRunner:
                         resume_safe = not terminated and stage not in {"paused", "uipath_timeout"}
                         try:
                             if resume_safe:
-                                self._ensure_file_assistant(profile, output_dir, settings.capture.settle_seconds)
-                            # 失败门店也要收起残留窗口；否则下一家识别二维码时旧窗口仍在，
-                            # “新窗口”差集为空，会被误判为识别失败。
-                            self._close_miniapp_windows(profile, output_dir)
-                            safe_to_continue = resume_safe
+                                self._return_to_wechat(profile, output_dir, settings.capture.settle_seconds)
+                                safe_to_continue = True
+                        except RunnerTerminated as exc:
+                            stage, message, terminated = "terminated", str(exc), True
+                            self._persist_task_result(task, output_dir, status, stage, message, "terminated")
                         except Exception as exc:
                             if resume_safe:
                                 stage = "blocked_not_safe"
@@ -1606,11 +1607,6 @@ class UiPathRunner:
                 except Exception:
                     pass
             self._reap_cli()
-            if model is not None:
-                try:
-                    model.close()
-                except Exception:
-                    pass
             self.current_task = None
             # 动作明细按容量滚动，SQLite 也只保留有限索引，避免长期双写和无限增长。
             try:
@@ -1632,6 +1628,8 @@ class UiPathRunner:
             subprocess.run(["open", "-a", "WeChat"], check=False, timeout=15)
             time.sleep(2.5)
             return has_main(self._send({"action": "discover"}).get("windows"))
+        except (RobotTimeout, RunnerPaused, RunnerTerminated):
+            raise
         except Exception:
             return False
 
@@ -1683,58 +1681,37 @@ class UiPathRunner:
                 self.debug_log.finish_cli_output(self.run_id)
             self._write_cli_metadata()
 
-    def _run_task(self, task: dict, settings, profile: dict, output_dir: Path, agent: SceneAgent) -> None:
+    def _run_task(self, task: dict, settings, profile: dict, output_dir: Path, model: TrialModel) -> None:
+        # 证据留在本次私有运行目录；发布事务只接收连续编号的菜单页。
+        evidence_dir = self.run_directory / "gui-agent" / output_dir.name
+        evidence_dir.mkdir(parents=True, mode=0o700)
+        automatic = profile["mode"] == "automatic"
+        report = self._run_gui_agent_case(task, settings, profile, evidence_dir, model,
+                                          automatic=automatic, capture_dir=output_dir)
         self._guard()
-        self._validate_source(task, settings.input_dir)
-        if profile["mode"] == "automatic":
-            frame = self._open_source_automatic(task, profile, output_dir, settings.capture.settle_seconds)
-        else:
-            frame = None
-        # 通过跨平台库取得主屏几何信息，窗口操作仍由 UiPath 执行。
-        from screeninfo import get_monitors
-        screens = get_monitors()
-        screen = next((item for item in screens if item.is_primary), screens[0])
-        self._desktop_monitor = ((float(screen.x), float(screen.y), float(screen.width), float(screen.height))
-                                 if len(screens) == 1 else None)
-        self._send({"action": "resize", "selector": profile["miniapp_selector"],
-                    **production_window_geometry(screen)})
-        frame = self._screenshot(output_dir, profile["miniapp_selector"], "attached-initial.png")
-        self._set_stage(task, "preparing", "已接管小程序，正在识别页面并进入菜单")
-        selector = profile["miniapp_selector"]
-        phase = "菜单处理前弹窗与只读页面确认" if profile["mode"] == "automatic" else "已打开菜单的场景确认与遮挡处理"
-        region, categories, first_frame, identity_evidence = self._prepare_until_ready(task, agent, frame, selector, phase, settings, output_dir, profile)
-        self._set_stage(task, "capturing", "截图当前菜单滚动列表；完整覆盖率留待复核")
-        pages = self._capture_menu(selector, first_frame, region, settings, profile, output_dir)
-        self._verify_captured_menu(task, pages, output_dir)
-        if profile["mode"] == "automatic":
-            self._close_to_file_assistant(profile, output_dir, settings.capture.settle_seconds)
-            # 关闭当前小程序后可能仍残留旧窗口，一并收起，避免下一家识别被旧窗口干扰。
-            self._close_miniapp_windows(profile, output_dir)
-        proof = {
-            "task_id": task["id"], "source_name": task["source_name"], "source_path": task["source_path"],
-            "source_hash": task["source_hash"], "mode": profile["mode"], "pages": pages,
-            "identity_verified": False,
-            "identity_evidence": identity_evidence,
-            "identity_scope_note": "采集时不核验门店名称；记录的可见文字仅供事后参考。",
-            "menu_region": region.model_dump(),
-            "menu_region_source": getattr(agent, "last_region_source", "model"),
-            "visible_categories": categories, "coverage_verified": False,
-            "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "note": "当前滚动列表截图已保存；分类联动、隐藏分类及完整性仍需人工复核。",
-        }
-        atomic_json(output_dir / "snapshotproof.json", proof)
+        if report["runtime_status"] != "ok":
+            raise NeedsReview(report["runtime_error"], "agent_runtime")
+        if report["agent_outcome"] == "unqualified":
+            raise AgentUnqualified(report["agent_reason"])
+        if report["agent_outcome"] == "needs_review":
+            raise NeedsReview(report["agent_reason"], "agent_needs_review")
+        if report["capture_status"] != "staged":
+            raise NeedsReview("GUI Agent 未交接可发布的菜单截图", "agent_runtime")
+        if automatic:
+            self._return_to_wechat(profile, output_dir, settings.capture.settle_seconds)
+
+    def _return_to_wechat(self, profile: dict, output_dir: Path, settle_seconds: float) -> None:
+        self._ensure_file_assistant(profile, output_dir, settle_seconds)
+        self._close_miniapp_windows(profile, output_dir)
+        if self._miniapp_candidates(self._send({"action": "discover"}).get("windows")):
+            raise NeedsReview("仍有小程序窗口未关闭，未确认安全返回微信", "wechat_context_lost")
 
     def _persist_task_result(self, task: dict, output_dir: Path, status: str, stage: str, message: str,
                              code: str = "") -> None:
         code = code or classify_failure(stage, message)
-        if code == "unknown" and status == "needs_review":
-            # 模型给出 blocked 时只带回页面原文；用同一套页面状态规则再兜底一次，
-            # 避免门店侧的确定事实（关店、二维码失效、未配置菜单）漏判成需人工。
-            code = detect_page_state([{"text": message}]) or code
-        # 门店关店、二维码失效、小程序到期/未绑定属于人工也无法解决的事实，
-        # 判定后直接记不合格，后续批次不再重复处理这一家。
+        # Agent 的原因是给人阅读的证据；只在收到明确业务终态时创建不合格记录。
         reject = {}
-        reject_reason = PAGE_STATE_REJECT_REASONS.get(code, "") if status == "needs_review" else ""
+        reject_reason = "other" if code == "agent_unqualified" else ""
         if reject_reason:
             reject = {
                 "reject_reason": reject_reason,
@@ -1747,18 +1724,6 @@ class UiPathRunner:
             atomic_json(output_dir / "result.json", {"task_id": task["id"], "status": status, "stage": stage,
                                                     "message": message, "error_code": code,
                                                     "reject_reason": reject_reason})
-            if status != "captured":
-                quarantine_path = output_dir / "quarantine.json"
-                try:
-                    quarantine = json.loads(quarantine_path.read_text(encoding="utf-8")) if quarantine_path.exists() else {}
-                except (OSError, ValueError):
-                    quarantine = {}
-                if not isinstance(quarantine, dict):
-                    quarantine = {}
-                quarantine.update({"task_id": task["id"], "status": status, "stage": stage, "message": message,
-                                   "error_code": code, "reject_reason": reject_reason,
-                                   "source_hash": task["source_hash"], "quarantined": True})
-                atomic_json(quarantine_path, quarantine)
             self.store.event(message, "warning" if status != "captured" else "info", task["id"])
         except Exception:
             self.store.event("无法持久化 UiPath 运行结果；请检查当前任务输出目录", "error", task["id"])
@@ -1767,13 +1732,14 @@ class UiPathRunner:
         if self._ui_tars_trial_active:
             mode = (self.current_task or {}).get("mode", "attached")
             self.current_task = {"id": task["id"], "source_name": task["source_name"], "stage": stage,
-                                 "mode": mode, "navigation": "gui_agent"}
+                                 "mode": mode, "navigation": "gui_agent", "trial": True}
             return
         if getattr(self, "_annotation_mode", False):
             # 人工标注只借用打开流程，不能把门店写成“自动采集中”。
             self.current_task = {"id": task["id"], "source_name": task["source_name"], "stage": stage, "mode": "annotation"}
             return
-        self.current_task = {"id": task["id"], "source_name": task["source_name"], "stage": stage}
+        self.current_task = {"id": task["id"], "source_name": task["source_name"], "stage": stage,
+                             "mode": (self.current_task or {}).get("mode", "attached"), "navigation": "gui_agent"}
         self.store.update(task["id"], status="running", stage=stage, message=message)
         self.store.event(message, task_id=task["id"])
 
@@ -1925,38 +1891,6 @@ class UiPathRunner:
         reply["capture_scope"] = "desktop" if desktop else "window"
         return reply
 
-    def _capture_after_action(self, output_dir: Path, selector: str, name: str, before_path: Path,
-                              *, desktop: bool = False, settle_seconds: float = 0.0,
-                              retry_seconds: float = 0.5) -> dict:
-        """动作后立即截图；画面尚未变化时再补一张，避免固定 settle 纯等待。
-
-        单次截图本身就要数秒，先拿到画面再判断比“先空等再截图”连贯得多。
-        窗口内动作优先用刚校验过的窗口矩形直接取图；任何不一致都退回 UiPath 截图。
-        """
-        if settle_seconds > 0:
-            self._send({"action": "noop", "seconds": settle_seconds})
-        frame = None if desktop else self._fast_window_capture(output_dir, selector, name)
-        fast_used = frame is not None
-        if frame is None:
-            frame = self._screenshot(output_dir, selector, name, desktop=desktop)
-        if self._frame_differs(before_path, frame["path"]):
-            return frame
-        self._send({"action": "noop", "seconds": retry_seconds})
-        retry_name = name.replace(".png", "-retry.png")
-        retried = None if desktop else self._fast_window_capture(output_dir, selector, retry_name)
-        if retried is None:
-            retried = self._screenshot(output_dir, selector, retry_name, desktop=desktop)
-        if self._frame_differs(before_path, retried["path"]):
-            return retried
-        if fast_used:
-            # 快速取图只覆盖窗口矩形；用一次完整窗口截图确认页面是否真的没推进。
-            confirmed = self._screenshot(output_dir, selector, name.replace(".png", "-confirm.png"),
-                                        desktop=desktop)
-            if self._frame_differs(before_path, confirmed["path"]):
-                return confirmed
-            return confirmed
-        return retried
-
     def _fast_window_capture(self, output_dir: Path, selector: str, name: str) -> dict | None:
         """按点击时刚校验过的窗口矩形直接截屏，省掉 UiPath 的窗口定位与重拍。
 
@@ -2011,43 +1945,6 @@ class UiPathRunner:
         return {"path": str(shot_path.resolve()), "width": shot_width, "height": shot_height,
                 "window_x": origin[0], "window_y": origin[1],
                 "window_width": width, "window_height": height, "capture_scope": "window"}
-
-    @staticmethod
-    def _frame_differs(left: Path, right: Path, threshold: float = 0.002) -> bool:
-        try:
-            with Image.open(left) as before_image, Image.open(right) as after_image:
-                if before_image.size != after_image.size:
-                    return True
-                return UiPathRunner._image_difference_images(
-                    before_image.convert("RGB"), after_image.convert("RGB")) >= threshold
-        except (OSError, ValueError):
-            return True
-
-    @staticmethod
-    def _should_capture_desktop(image_path: Path, ocr_result) -> tuple[bool, dict]:
-        """小程序窗口只剩均匀遮罩、OCR 几乎为空时，再补一次整屏观察。"""
-        _, rows = ocr_result if ocr_result else (None, [])
-        details = {"ocr_row_count": len(rows), "mean_rgb_stddev": None, "reason": "not_a_masked_view"}
-        if len(rows) > 2:
-            return False, details
-        try:
-            with Image.open(image_path) as image:
-                image = image.convert("RGB")
-                width, height = image.size
-                # 去掉截图边缘后再统计，避免黑色窗口外边框抬高变化值。
-                content = image.crop((round(width * .04), round(height * .03),
-                                      round(width * .96), round(height * .97)))
-                # 遮罩检测只需粗略判断画面信息量，缩小后统计，避免逐帧扫描整张高分辨率图。
-                content.thumbnail((128, 128))
-                deviation = sum(ImageStat.Stat(content).stddev) / 3
-        except (OSError, ValueError):
-            details["reason"] = "image_metrics_unavailable"
-            return False, details
-        details["mean_rgb_stddev"] = round(deviation, 2)
-        if len(rows) <= 2 and deviation <= 8:
-            details["reason"] = "low_information_masked_window"
-            return True, details
-        return False, details
 
     @classmethod
     def _miniapp_candidates(cls, windows: Any) -> list[dict]:
@@ -2514,6 +2411,8 @@ class UiPathRunner:
             try:
                 windows = self._window_list(self._send({"action": "discover"}).get("windows"))
                 candidates = self._miniapp_candidates(windows)
+            except (RobotTimeout, RunnerPaused, RunnerTerminated):
+                raise
             except Exception:
                 break
             if not candidates:
@@ -2525,32 +2424,6 @@ class UiPathRunner:
                     width = float(shot.get("window_width") or 0)
                     height = float(shot.get("window_height") or 0)
                     if width and height:
-                        # 地理位置/权限弹窗是微信的应用级模态，会拦截窗口关闭，
-                        # 残留下来还会让下一家“识别后是否有新窗口”误判，先点掉再收窗口。
-                        if self.ocr_reader is not None:
-                            try:
-                                rows = self.ocr_reader(Path(shot["path"]))
-                                texts = " ".join(str(row.get("text", "")) for row in rows or [])
-                                if "地理位置" in texts or "位置信息" in texts:
-                                    # ocr_reader 返回的是截图原始像素（非 3x 缩放），直接用框中心。
-                                    for label in ("拒绝", "不允许", "允许"):
-                                        hit = next((row for row in rows or []
-                                                    if self._normalize_ocr_text(str(row.get("text", ""))) == label), None)
-                                        if hit is None:
-                                            continue
-                                        try:
-                                            cx = float(hit["x"]) + float(hit["width"]) / 2
-                                            cy = float(hit["y"]) + float(hit["height"]) / 2
-                                        except (KeyError, TypeError, ValueError):
-                                            continue
-                                        if not (0 < cx < width and 0 < cy < height):
-                                            continue
-                                        self._send({"action": "click", "selector": candidate["selector"],
-                                                    "x": cx, "y": cy})
-                                        self._send({"action": "noop", "seconds": .4})
-                                        break
-                            except Exception:
-                                pass
                         # 小程序页面会吞掉 Cmd+W；右上角胶囊里的“关闭”才是可靠出口。
                         # 窗口可能被上一家拖到屏幕外，先挪回主屏再点，否则会报超出边界。
                         try:
@@ -2577,6 +2450,8 @@ class UiPathRunner:
                                 self._window_list(self._send({"action": "discover"}).get("windows")))
                         if not any(item["title"] == candidate["title"] for item in remaining):
                             closed += 1
+                except (RobotTimeout, RunnerPaused, RunnerTerminated):
+                    raise
                 except Exception:
                     continue
             self._send({"action": "noop", "seconds": settle_seconds})
@@ -2769,665 +2644,7 @@ class UiPathRunner:
         reader = self.ocr_reader
         return f"{getattr(reader, '__module__', type(reader).__module__)}.{getattr(reader, '__qualname__', type(reader).__qualname__)}"
 
-    def _prepare_until_ready(self, task, agent, first_frame, selector, phase, settings, output_dir, profile):
-        history: list[dict] = []
-        frame = first_frame
-        auto_authorize = bool(getattr(settings, "auto_authorize", False))
-        identity_evidence: list[str] = []
-        # 本地规则只负责首帧的一次高置信度决策。之后每个新画面由视觉模型复核，
-        # 防止一次点击虽改变了画面、却误进了背景入口或未完成前置选择。
-        local_rules_available = True
-        force_model_next = False
-        no_change = 0
-        last_target = None
-        model_wait_count = 0
-        wait_started_at: float | None = None
-        desktop_probe_done = False
-        desktop_authorization_clicked = False
-        low_information_observations = 0
-        low_information_started: float | None = None
-        loading_limit_seconds = 20.0
-        loading_grace_seconds = 2.5
-        system_notification_waits = 0
-        page_state_waits = 0
-        # 网络异常弹窗可能在隐私页之后反复出现，单独计数，连续三次仍进不去菜单就判不可采。
-        network_error_observations = 0
-        page_state: str | None = None
-        people_selected = False
-        consent_label_fallback_done = False
-        # 按文字统计“点了没反应”，坐标轻微抖动不应绕过熔断。值为 (次数, x, y)。
-        no_effect_labels: dict[str, tuple[int, float, float]] = {}
-        # 同名文案存在多个本地候选时，记录每个文案已尝试次数，避免逐个试穿所有候选。
-        local_label_attempts: dict[str, int] = {}
-        # 协议复选框只需勾一次；勾过之后再点“同意”才不会弹提示。
-        consent_checked = False
-        self._consumed_local_points = []
-        for step in range(settings.capture.max_agent_steps):
-            self._guard()
-            image_path = Path(frame["path"])
-            self._trace_step = step + 1
-            with self._trace(
-                "ocr", frame_evidence=self._debug_frame_ref(image_path),
-                image_size={"width": frame["width"], "height": frame["height"]},
-                step=step + 1,
-            ) as trace:
-                ocr_started = time.monotonic()
-                is_desktop_frame = frame.get("capture_scope") == "desktop"
-                # 整屏图只交给视觉模型观察，不在没有屏幕原点契约时运行本地 OCR 坐标定位。
-                ocr_result = ((None, []) if is_desktop_frame else
-                              self._read_scaled_ocr(image_path) if self.ocr_reader is not None else (None, []))
-                trace.update(
-                    ocr_rows=ocr_result[1], ocr_image_size=self._last_ocr_meta.get("image_size"),
-                    ocr_scaled_size=self._last_ocr_meta.get("scaled_size"),
-                    ocr_engine=self._last_ocr_meta.get("engine"),
-                    ocr_elapsed_ms=self._last_ocr_meta.get("elapsed_ms", round((time.monotonic() - ocr_started) * 1000)),
-                    ocr_error=("skipped_for_desktop_frame" if is_desktop_frame else self._last_ocr_meta.get("error")),
-                )
-            self._active_ocr_path = str(image_path.resolve())
-            self._active_ocr_result = ocr_result
-            candidates = [] if is_desktop_frame else self._annotate_candidates(
-                image_path, self._target_candidates(ocr_result), ocr_result)
-
-            # 低信息画面既可能是小程序加载，也可能是独立系统弹窗遮住了窗口。
-            # 先用同一窗口的有界加载观察处理，不立即切换到整屏坐标空间。
-            # 加载/遮罩判断依赖 OCR；没有本地 OCR 时不擅自切换整屏观察。
-            if not is_desktop_frame and self.ocr_reader is not None:
-                should_probe, probe_details = self._should_capture_desktop(image_path, ocr_result)
-                if should_probe:
-                    # 低信息画面里也可能直接写出门店侧终态（例如“无效的 URI: URI 方案无效”
-                    # “二维码已失效”）；这类事实等到超时也不会变化，直接按不合格收口。
-                    low_state = detect_page_state(ocr_result[1])
-                    if low_state in PAGE_STATE_REJECT_REASONS:
-                        raise NeedsReview(
-                            _PAGE_STATE_MESSAGES.get(low_state, "页面提示门店侧不可采状态"), low_state
-                        )
-                    now = time.monotonic()
-                    if low_information_started is None:
-                        low_information_started = now
-                    loading_seconds = now - low_information_started
-                    low_information_observations += 1
-                    if low_information_observations >= 3 and loading_seconds >= loading_limit_seconds:
-                        raise NeedsReview(
-                            f"小程序一直加载不出内容（超过 {loading_limit_seconds:g} 秒仍无可读页面）；该门店当前不可采",
-                            "loading_timeout"
-                        )
-                    if desktop_probe_done or loading_seconds < loading_grace_seconds:
-                        wait_seconds = .6 if low_information_observations < 3 else 1.2
-                        with self._trace("window_loading_observation",
-                                         observation=low_information_observations,
-                                         loading_seconds=round(loading_seconds, 2),
-                                         desktop_probe_done=desktop_probe_done,
-                                         frame_evidence=self._debug_frame_ref(image_path)) as trace:
-                            trace.update(probe_details)
-                        self._send({"action": "noop", "seconds": wait_seconds})
-                        frame = self._screenshot(
-                            output_dir, selector,
-                            f"prepare-{step + 1:02d}-loading-{low_information_observations}.png",
-                        )
-                        continue
-                    with self._trace("desktop_overlay_probe",
-                                     frame_evidence=self._debug_frame_ref(image_path)) as trace:
-                        trace.update(probe_details, capture_scope="desktop",
-                                     loading_seconds=round(loading_seconds, 2),
-                                     observation=low_information_observations)
-                    desktop_probe_done = True
-                    frame = self._screenshot(output_dir, selector, f"prepare-{step + 1:02d}-desktop.png", desktop=True)
-                    continue
-                else:
-                    low_information_observations = 0
-                    low_information_started = None
-                    # 画面恢复为有信息的窗口状态后，后续再遇到独立弹窗仍可重新观察一次。
-                    desktop_probe_done = False
-
-            force_model_current = force_model_next
-            force_model_next = False
-
-            # 已到明确的菜单页时，优先用本地可复核的门店、分类、菜名、价格和导航锚点识别。
-            # 每帧都可以先做一次严格本地就绪检查，避免菜单已经可见时还多调用一次模型。
-            decision = None
-            if not is_desktop_frame:
-                with self._trace("local_ready_check", frame_evidence=self._debug_frame_ref(image_path)) as trace:
-                    decision = self._local_ready_preflight(image_path, task["source_name"], ocr_result)
-                    trace.update(
-                        ready=decision is not None,
-                        expected_store=task["source_name"],
-                        observed_store=(decision.observed_store_text if decision is not None else []),
-                        categories=(decision.categories if decision is not None else []),
-                        menu_region=(decision.menu_region.model_dump() if decision is not None and decision.menu_region else None),
-                    )
-            local_prepare_decision = False
-            # 每帧重新判定页面状态，避免上一帧的结论带入本轮模型输入。
-            page_state = None
-            # 菜单已经明确可见时不受提示文案影响；只有尚未就绪的页面才做状态判死。
-            if decision is None and not is_desktop_frame and self.ocr_reader is not None:
-                page_state = detect_page_state(ocr_result[1])
-                if page_state == "network_error":
-                    network_error_observations += 1
-                    if network_error_observations >= 3:
-                        # 弹窗反复出现且始终进不去菜单，继续等待只会反复占用人工。
-                        with self._trace("page_state", state=page_state, terminal=True,
-                                         observations=network_error_observations,
-                                         frame_evidence=self._debug_frame_ref(image_path)) as trace:
-                            trace.update(ocr_rows=ocr_result[1][:30])
-                        raise NeedsReview(_PAGE_STATE_MESSAGES[page_state], page_state)
-                else:
-                    network_error_observations = 0
-                if page_state == "network_error" and _PENDING_CONSENT.search(
-                        " ".join(str(row.get("text", "")) for row in ocr_result[1] or [])):
-                    # 隐私/授权弹窗仍覆盖页面时，先按正常流程处理弹窗；点完再看网络提示是否还在。
-                    page_state = None
-                state_waits = page_state_waits
-                if page_state == "network_error" and state_waits < 2:
-                    page_state_waits = state_waits + 1
-                    with self._trace("page_state", state=page_state, attempt=page_state_waits,
-                                     retry=True, frame_evidence=self._debug_frame_ref(image_path)) as trace:
-                        trace.update(wait_seconds=1.2 if page_state_waits == 1 else 2.0)
-                    self._send({"action": "noop", "seconds": 1.2 if page_state_waits == 1 else 2.0})
-                    frame = self._screenshot(
-                        output_dir, selector, f"prepare-{step + 1:02d}-network-{page_state_waits}.png")
-                    continue
-                terminal_states = {"network_error", "store_closed", "menu_unavailable",
-                                   "phone_only", "customer_service", "qr_expired", "miniapp_unavailable",
-                                   "scan_order_unsupported"}
-                if page_state in terminal_states:
-                    if page_state == "store_closed" and has_menu_evidence(ocr_result[1]):
-                        # 打烊提示但菜单仍可滚动：不算异常，继续按正常流程采集。
-                        page_state_waits = 0
-                    else:
-                        with self._trace("page_state", state=page_state, terminal=True,
-                                         frame_evidence=self._debug_frame_ref(image_path)) as trace:
-                            trace.update(ocr_rows=ocr_result[1][:30])
-                        raise NeedsReview(_PAGE_STATE_MESSAGES[page_state], page_state)
-                else:
-                    page_state_waits = 0
-            if decision is None and not is_desktop_frame and local_rules_available:
-                with self._trace("local_target_resolution", frame_evidence=self._debug_frame_ref(image_path),
-                                 people_count=settings.people_count) as trace:
-                    decision = self._local_prepare_action(
-                        ocr_result, settings.people_count, auto_authorize, people_selected,
-                        image_path=image_path, consent_checked=consent_checked,
-                    )
-                    trace.update(
-                        matched=decision is not None,
-                        action=(decision.action if decision is not None else None),
-                        target=(decision.target_label if decision is not None else None),
-                        target_resolution=getattr(self, "_last_target_resolution", None),
-                    )
-                local_prepare_decision = decision is not None
-            if (decision is None and not is_desktop_frame and local_rules_available
-                    and self.ocr_reader is not None and ocr_result[0] is not None):
-                # 3x 单档可能漏掉极小字/低对比度文本；在即将调用模型前做一次
-                # 2x+4x 并集召回，仍然只走本地规则，不产生模型请求。
-                with self._trace("local_fused_ocr_retry",
-                                 frame_evidence=self._debug_frame_ref(image_path)) as trace:
-                    fused = self._read_fused_scaled_ocr(image_path, ocr_result)
-                    trace.update(fusion_meta=dict(self._last_ocr_meta or {}))
-                    base_row_count = len(ocr_result[1])
-                    if fused[0] is not None and len(fused[1]) > base_row_count:
-                        self._active_ocr_result = fused
-                        retry_ready = self._local_ready_preflight(image_path, task["source_name"], fused)
-                        if retry_ready is not None:
-                            decision = retry_ready
-                        else:
-                            decision = self._local_prepare_action(
-                                fused, settings.people_count, auto_authorize, people_selected,
-                                image_path=image_path, consent_checked=consent_checked,
-                            )
-                        if decision is not None:
-                            ocr_result = fused
-                            candidates = self._annotate_candidates(
-                                image_path, self._target_candidates(ocr_result), ocr_result)
-                            local_prepare_decision = decision.action != "ready"
-                            trace.update(matched=True, action=decision.action,
-                                         target=decision.target_label,
-                                         row_delta=len(fused[1]) - base_row_count,
-                                         target_resolution=getattr(self, "_last_target_resolution", None))
-                    if decision is None:
-                        trace.update(matched=False)
-            model_called = decision is None
-            if decision is None:
-                self._last_target_resolution = None
-                model_phase = "desktop_overlay_recovery" if is_desktop_frame else phase
-                with self._trace("model", previous_no_change=no_change, phase=model_phase,
-                                 frame_evidence=self._debug_frame_ref(image_path),
-                                 history_count=len(history), force_model=force_model_current,
-                                 candidate_count=len(candidates),
-                                 candidates=[{"id": item.get("id"), "text": item.get("text"),
-                                              "kind": item.get("kind"), "position": item.get("position")}
-                                             for item in candidates[:40]]) as trace:
-                    for attempt in range(2):
-                        try:
-                            agent.page_state = page_state
-                            # 页面已有价格证据时，允许把模型略超出画面的菜单区域裁到画面内。
-                            agent.allow_region_clip = has_menu_evidence(ocr_result[1])
-                            decision = agent.decide(image_path, model_phase, history, candidates)
-                            break
-                        except SceneError as exc:
-                            # 模型请求/解析失败尚未执行任何动作，允许一次安全重试；
-                            # 候选编号缺失时先补候选，再让模型在同一张图上判断一次。
-                            retryable = (str(exc).startswith("模型场景响应无效")
-                                         or "不存在的本地候选目标" in str(exc))
-                            if attempt == 0 and retryable:
-                                if ("不存在的本地候选目标" in str(exc)
-                                        and self.ocr_reader is not None):
-                                    fused = self._read_fused_scaled_ocr(image_path, ocr_result)
-                                    if fused[0] is not None and len(fused[1]) > len(ocr_result[1]):
-                                        ocr_result = fused
-                                        self._active_ocr_result = fused
-                                        candidates = self._annotate_candidates(
-                                            image_path, self._target_candidates(ocr_result), ocr_result)
-                                        trace.update(candidate_refresh_rows=len(candidates))
-                                trace.update(model_retry=1, model_error_type=type(exc).__name__)
-                                self._send({"action": "noop", "seconds": .3})
-                                continue
-                            raise
-                        finally:
-                            geometry = dict(getattr(agent, "last_geometry_diagnostics", {}) or {})
-                            if geometry.get("target_label"):
-                                geometry["target_label"] = self._sanitize_target_label(geometry["target_label"])
-                            trace.update(geometry=geometry,
-                                         target_resolution=self._last_target_resolution,
-                                         model_name=settings.model.model, provider=settings.model.provider)
-                    trace.update(
-                        action=decision.action, target=decision.target_label, reason=decision.reason,
-                        target_id=decision.target_id,
-                        candidate_resolution=getattr(agent, "last_candidate", None),
-                        model_coordinates=dict(zip(("x", "y"), getattr(agent, "last_model_coordinates", (decision.x, decision.y)))),
-                        model_name=settings.model.model, provider=settings.model.provider,
-                        decision=decision.model_dump(),
-                        coordinate_source=getattr(agent, "last_coordinate_source", "model"),
-                        target_resolution=self._last_target_resolution,
-                        ocr_cache_reused=self._last_ocr_meta.get("cache_reused", False),
-                        menu_region=(decision.menu_region.model_dump() if decision.menu_region else None),
-                        region_source=getattr(agent, "last_region_source", "model"),
-                        observed_store_text=decision.observed_store_text,
-                        selected_people_count=decision.selected_people_count,
-                        expects_transition=decision.expects_transition,
-                        overlay_visible=decision.overlay_visible,
-                        login_required=decision.login_required,
-                        phone_required=decision.phone_required,
-                        consent_required=decision.consent_required,
-                        transaction_visible=decision.transaction_visible,
-                    )
-            self._guard()  # 模型请求期间收到暂停时，不能继续执行返回的坐标动作。
-
-            # 整屏模型观察后的首个状态必须是明确的授权弹窗。点击一次后再看一张桌面图；
-            # 若弹窗仍在或观察不确定，就停止，绝不循环点“允许”。
-            if is_desktop_frame and desktop_authorization_clicked:
-                if decision.transaction_visible or decision.overlay_visible or decision.blocked:
-                    if decision.consent_required or decision.phone_required or decision.login_required:
-                        raise NeedsReview("桌面授权弹窗点击后仍可见；已停止重试，请人工检查")
-                    raise NeedsReview("桌面截图仍存在未确认遮挡；已停止自动操作")
-                with self._trace("desktop_overlay_verified", frame_evidence=self._debug_frame_ref(image_path)) as trace:
-                    trace.update(authorization_overlay="dismissed", verification="vision_model")
-                frame = self._screenshot(output_dir, selector, f"prepare-{step + 1:02d}-window.png")
-                desktop_authorization_clicked = False
-                low_information_observations = 0
-                low_information_started = None
-                desktop_probe_done = False
-                force_model_next = True
-                continue
-
-            # 整屏图用于发现独立弹窗，不能据此判定菜单 ready 或操作其他桌面内容。
-            if is_desktop_frame:
-                if decision.action == "click" and decision.consent_required:
-                    if not auto_authorize:
-                        raise NeedsReview("桌面上检测到系统授权弹窗；需用户手动处理或开启已授权的自动授权")
-                    if not self._is_safe_desktop_consent_target(decision.target_label):
-                        raise NeedsReview("视觉模型未能给出明确的正向授权按钮；未执行整屏坐标点击")
-                    desktop_authorization_clicked = True
-                else:
-                    if decision.action in {"blocked", "wait"} or decision.blocked or decision.overlay_visible:
-                        raise NeedsReview("整屏观察未能确认可安全处理的授权弹窗；请人工检查桌面截图")
-                    # 模型可能从桌面图看见底下的小程序内容；仍须重新截窗口图并复核。
-                    with self._trace("desktop_overlay_not_confirmed", frame_evidence=self._debug_frame_ref(image_path)) as trace:
-                        trace.update(action=decision.action, reason=decision.reason, verification="window_recapture_required")
-                    frame = self._screenshot(output_dir, selector, f"prepare-{step + 1:02d}-window.png")
-                    # 整屏没有发现弹窗时仍按同一轮加载计时，避免在“加载→整屏→窗口”
-                    # 之间反复切换；desktop_probe_done 保持为真，直到窗口重新出现内容。
-                    desktop_probe_done = True
-                    force_model_next = True
-                    continue
-
-            if decision.transaction_visible:
-                # 订单确认页不是菜单本身，但“继续加菜/返回菜单”是安全的回菜单导航；
-                # 允许这一步，避免把带历史订单的二维码直接判死。
-                back_to_menu = bool(re.search(
-                    r"加菜|继续加菜|返回菜单|回到菜单|继续点餐|再看看|返回点餐|去点餐|开始点餐|查看菜单",
-                    unicodedata.normalize("NFKC", str(decision.target_label or ""))))
-                # 菜单页底部常驻“购物车/结算”栏也会被模型判成交易页；
-                # 只等待、不点击不会产生订单，交给加载等待预算决定去留。
-                if decision.action != "wait" and not (decision.action == "click" and back_to_menu):
-                    if not has_menu_evidence(ocr_result[1]):
-                        # 桌面点餐码可能直接进入本桌已有订单/结账页，菜单根本不可见；
-                        # 换一张二维码或稍后重跑仍可能恢复，单独记为“需重试”，不算门店不合格。
-                        raise NeedsRetry(
-                            "二维码进入的是订单/结账界面且看不到菜单（可能为桌面点餐码已有进行中订单）",
-                            "active_order")
-                    target_text = unicodedata.normalize("NFKC", str(decision.target_label or ""))
-                    # 菜单已可见时，滚动/按键以及点菜名都不构成交易；只有点结算/支付类目标才拦截。
-                    # 页面上能看到菜单说明不是二维码无效，多为桌码已有进行中订单；换次会话重试即可。
-                    if decision.action == "click" and _TRANSACTION_TEXT.search(target_text):
-                        raise NeedsRetry(
-                            "当前页面是订单/结账界面；为避免误下单已停止，稍后重试可回到菜单",
-                            "checkout_page")
-            authorization_flags = decision.login_required or decision.phone_required or decision.consent_required
-            if decision.action == "blocked":
-                # 扫码进入公众号文章/图文页或与点餐无关的页面：二维码本身不是点餐码，
-                # 人工也变不出菜单，直接按门店侧不可采收口。
-                blocked_text = unicodedata.normalize("NFKC", str(decision.reason))
-                if not has_menu_evidence(ocr_result[1]) and (
-                        is_article_page(ocr_result[1]) or
-                        re.search(r"公众号|文章(?:列表|页|详情)?|图文(?:页|消息)?|"
-                                  r"非.{0,6}(?:点餐|菜单)|与(?:点餐|菜单)无关", blocked_text)):
-                    raise NeedsReview(
-                        "扫码打开的是公众号文章或与点餐无关的页面；该二维码不是点餐码", "qr_external_web")
-                captcha_or_login = bool(re.search(r"验证码|扫码登录|扫码登陆|登录凭据|缺少凭据|无法登录", decision.reason))
-                if auto_authorize and (authorization_flags or captcha_or_login):
-                    raise AuthorizationUnavailable("当前门店无法完成已授权的快捷登录步骤（可能需要验证码、扫码或其他凭据）；已标记待复核")
-                if authorization_flags:
-                    raise NeedsReview("页面需要登录、手机号或协议确认；自动授权未开启")
-                raise NeedsReview(f"当前场景需要人工检查：{decision.reason[:400]}")
-            if authorization_flags and not auto_authorize:
-                raise NeedsReview("页面需要登录、手机号或协议确认；自动授权未开启")
-            visible_identity = [str(value) for value in decision.observed_store_text if self._normalize_store(str(value))]
-            if visible_identity:
-                for value in visible_identity:
-                    if value not in identity_evidence:
-                        identity_evidence.append(value)
-            history.append({"action": decision.action, "reason": decision.reason,
-                            "target_label": decision.target_label, "target_id": decision.target_id,
-                            "x": decision.x, "y": decision.y,
-                            "expects_transition": decision.expects_transition})
-            if decision.action == "ready":
-                if is_desktop_frame:
-                    raise NeedsReview("整屏截图不能作为菜单就绪证据；需重新验证小程序窗口")
-                if not decision.ready_evidence_ok:
-                    raise NeedsReview("ready 缺少可见菜名/价格证据，或页面仍被遮挡")
-                ready_page_text = " ".join(str(row.get("text", "")) for row in ocr_result[1])
-                if re.search(r"订单明细|待支付|已下单|订单编号", ready_page_text):
-                    # 桌码已有进行中订单时会直接落到订单详情，换次会话重试即可。
-                    raise NeedsRetry(
-                        "扫码进入的是已有订单详情页而不是菜单；稍后重试可回到点餐页",
-                        "existing_order")
-                # 本地快路径不一定产出 observed_store_text；门店名必须直接从页面 OCR 取，
-                # 否则共用平台小程序沿用上一次门店时会一路被当成成功。
-                identity_values = list(decision.observed_store_text) + self._store_header_values(ocr_result[1])
-                mismatch = self._identity_mismatch(task["source_name"], identity_values)
-                if mismatch:
-                    # 页面门店与二维码标称门店不一致，说明这张二维码不是本店的码；
-                    # 换会话重试也不会变，转待检查并标明原因，由人工核对二维码素材。
-                    raise NeedsReview(
-                        f"二维码门店不一致：{mismatch}，与二维码标称门店不符；请核对二维码素材",
-                        "store_mismatch")
-                with self._trace("menu_ready", frame_evidence=self._debug_frame_ref(image_path)) as trace:
-                    trace.update(categories=decision.categories,
-                                 menu_region=decision.menu_region.model_dump() if decision.menu_region else None,
-                                 item_names_visible=decision.item_names_visible[:30],
-                                 prices_visible=decision.prices_visible[:30],
-                                 observed_store_text=decision.observed_store_text)
-                self._trace_step = None
-                return decision.menu_region, decision.categories, frame, identity_evidence
-
-            current_text = " ".join(self._normalize_ocr_text(str(row.get("text", ""))) for row in ocr_result[1])
-            people_prompt_visible = any(label in current_text for label in
-                                         ("几人用餐", "几人就餐", "用餐人数", "就餐人数", "选择人数"))
-            if decision.action == "click" and people_prompt_visible:
-                target_text = self._normalize_ocr_text(decision.target_label)
-                if (re.search(r"开始点餐|开始点单|开始选餐|开始点菜|去点餐|查看菜单|进入菜单", target_text) and
-                        decision.selected_people_count != settings.people_count and
-                        not (local_prepare_decision and people_selected)):
-                    raise NeedsReview("人数页尚未由当前画面确认已选中配置人数；未点击开始点餐")
-                if (re.fullmatch(r"\d{1,2}(?:人|位)?", target_text) and
-                        not self._is_people_count_choice(decision.target_label, decision.reason, settings.people_count)):
-                    raise NeedsReview("人数按钮与配置人数或场景说明不一致；未执行模型坐标")
-
-            if model_called and decision.action in {"click", "double_click", "right_click"}:
-                # 一页可能要依次选项、勾选、确认；整页不跳转不能作为单次失败依据。
-                # 只限制同一位置的同一目标连续无反馈，其他目标或修正后的坐标继续执行。
-                current_target = self._prepare_action_target(decision)
-                if no_change >= 2 and self._same_prepare_action_target(current_target, last_target):
-                    raise NeedsReview("同一目标连续两次操作后未观察到明确变化，模型仍建议原位置；请检查定位或页面状态")
-            if decision.action == "wait":
-                # 等待按时间预算而不是固定次数，避免慢加载页被两次 wait 判死。
-                model_wait_count += 1
-                if wait_started_at is None:
-                    wait_started_at = time.monotonic()
-                waited_seconds = time.monotonic() - wait_started_at
-                with self._trace("wait_observation", attempt=model_wait_count,
-                                 waited_seconds=round(waited_seconds, 2)) as trace:
-                    self._send({"action": "noop", "seconds": 1.0})
-                    waited_frame = self._screenshot(
-                        output_dir, selector, f"prepare-{step + 1:02d}-wait-{model_wait_count}.png"
-                    )
-                    with Image.open(image_path) as before_image, Image.open(waited_frame["path"]) as after_image:
-                        wait_changed = (
-                            before_image.size != after_image.size or
-                            self._image_difference_images(
-                                before_image.convert("RGB"), after_image.convert("RGB")) >= 0.01
-                        )
-                    trace.update(
-                        page_result="changed" if wait_changed else "unchanged",
-                        before=self._debug_frame_ref(image_path),
-                        after=self._debug_frame_ref(Path(waited_frame["path"])),
-                    )
-                frame = waited_frame
-                if wait_changed:
-                    model_wait_count = 0
-                    wait_started_at = None
-                    continue
-                if model_wait_count > 8 or waited_seconds >= 35:
-                    if re.search(r"加载|空白|未显示菜品|尚未显示|无内容", decision.reason):
-                        # 菜单区域一直空白、等待预算耗尽，重试也无法得到菜单。
-                        raise NeedsReview(
-                            "小程序一直加载不出内容（超过 35 秒菜单区域仍空白）；该门店当前不可采",
-                            "loading_timeout")
-                    raise NeedsReview("页面连续等待超过时间预算仍未形成可执行判断；已停止并保留复核", "page_stuck")
-                continue
-
-            if (decision.action == "click"
-                    and re.search(r"消息通知|通知弹窗|系统通知|系统弹窗", decision.reason)
-                    # 微信“添加到我的小程序”提示只是顶部浮层，不是系统通知，可以直接关掉。
-                    # 小程序内的“网络有点异常”是页面弹窗，点“确定”即可重试，不属于系统通知。
-                    and not re.search(r"权限|地理位置|位置信息|相机|麦克风|照片|相册|添加到我的小程序|"
-                                      r"网络有点异常|网络异常|网络错误|加载失败|请求失败",
-                                      decision.reason)
-                    and unicodedata.normalize("NFKC", decision.target_label).strip()
-                    not in set(_NOTIFICATION_DECLINE) | set(_NOTIFICATION_ALLOW)):
-                # 标签不是明确的关闭按钮时才等待；允许/拒绝都是有效关闭动作，直接放行。
-                system_notification_waits += 1
-                if system_notification_waits > 2:
-                    raise NeedsReview("检测到系统消息通知弹窗，等待两次仍未消失；未点击系统通知")
-                with self._trace("system_notification_wait",
-                                 frame_evidence=self._debug_frame_ref(image_path),
-                                 attempt=system_notification_waits) as trace:
-                    trace.update(action=decision.action, target=decision.target_label,
-                                 reason=decision.reason[:200])
-                history[-1].update(execution_result="skipped_system_notification",
-                                   page_result="unchanged", visual_feedback="no_visible_change")
-                self._send({"action": "noop", "seconds": 1.2})
-                frame = self._screenshot(output_dir, selector,
-                                         f"prepare-{step + 1:02d}-system-notification.png")
-                continue
-
-            self._last_action_coordinate_mapping = None
-            action_effect = self._apply_scene_action(
-                decision, frame, selector, profile, settings.people_count, auto_authorize,
-                people_selected=people_selected,
-                evidence_dir=output_dir / "evidence", decision_index=step + 1,
-                decision_coordinate_source=("local_ocr_prepare_rule" if local_prepare_decision else getattr(agent, "last_coordinate_source", "model")),
-                model_coordinates=((decision.x, decision.y) if local_prepare_decision else getattr(agent, "last_model_pixel_coordinates", (decision.x, decision.y))),
-                ocr_result=ocr_result,
-            )
-            mapping = getattr(self, "_last_action_coordinate_mapping", None) or {}
-            executed_point = mapping.get("executed_image_px") or {"x": decision.x, "y": decision.y}
-            if getattr(decision, "input_text", None):
-                # 城市搜索框等场景：先聚焦输入框，再输入关键词并回车。
-                self._send({"action": "type_text", "selector": selector, "text": str(decision.input_text)})
-                # UiPath 的 key 是快捷键序列（如 [d(hk)][k(enter)][u(hk)]），
-                # 直接传 "return" 会被判为无效序列；沿用已录制的回车键。
-                self._send({"action": "key", "selector": selector,
-                            "key": profile.get("send_key") or "[d(hk)][k(enter)][u(hk)]"})
-                self._send({"action": "noop", "seconds": .8})
-                with self._trace("local_text_input", target=decision.target_label,
-                                 text=str(decision.input_text)) as trace:
-                    trace.update(method=(self._last_target_resolution or {}).get("method"))
-            history[-1].update(execution_result="executed", x=executed_point.get("x"), y=executed_point.get("y"))
-            # 窗口内动作只需极短沉降：截图本身还要几秒，固定长等待会白白拉长每一步。
-            settle_after = (settings.capture.settle_seconds if is_desktop_frame
-                            else min(float(settings.capture.settle_seconds), 0.25))
-            after = self._capture_after_action(
-                output_dir, selector, f"prepare-{step + 1:02d}-after.png", image_path,
-                desktop=is_desktop_frame, settle_seconds=settle_after,
-            )
-            if decision.action in {"click", "double_click", "right_click", "scroll"}:
-                with self._trace("page_check", target=decision.target_label) as trace:
-                    with Image.open(image_path) as before_image, Image.open(after["path"]) as after_image:
-                        changed, change_detail = self._evaluate_page_change(
-                            before_image, after_image, decision, executed_point
-                        )
-                        difference = change_detail["global_difference"]
-                    target = self._prepare_action_target(decision, executed_point)
-                    no_change = 0 if changed else no_change + 1 if self._same_prepare_action_target(target, last_target) else 1
-                    last_target = target
-                    visual_feedback = ("major_change" if difference >= 0.05 else
-                                       "local_change" if changed else
-                                       "small_change" if difference > 0 else "no_visible_change")
-                    trace.update(
-                        page_result="changed" if changed else "unchanged", consecutive_unchanged=no_change,
-                        image_difference=difference, change_threshold=0.05,
-                        roi_change_ratio=change_detail["roi_ratio"],
-                        roi_threshold=change_detail["roi_threshold"],
-                        change_reason=change_detail["reason"],
-                        comparison_region=change_detail["roi"],
-                        before_size={"width": before_image.width, "height": before_image.height},
-                        after_size={"width": after["width"], "height": after["height"]},
-                        action_effect=action_effect, action=decision.action, target_label=decision.target_label,
-                        visual_feedback=visual_feedback, operation_outcome="requires_observation",
-                        expects_transition=decision.expects_transition,
-                        capture_scope=frame.get("capture_scope", "window"),
-                        before=self._debug_frame_ref(image_path), after=self._debug_frame_ref(Path(after["path"])),
-                        coordinate_resolution=getattr(self, "_last_action_coordinate_mapping", None),
-                    )
-                    # 把实际动作与观察传给下一轮模型，不把执行成功等同于业务步骤完成。
-                    history[-1].update(page_result=trace["page_result"], visual_feedback=visual_feedback,
-                                       image_difference=difference, consecutive_unchanged=no_change)
-                # 按文字熔断，不按坐标：复选框附近常有轻微位移，坐标抖动不应绕过保护。
-                # 同名的不同位置（如两个“选项”）仍视为不同目标，位置差超过 48px 重新计数。
-                label_key = self._normalize_ocr_text(decision.target_label)
-                if not changed:
-                    if label_key and not re.fullmatch(r"\d{1,2}(?:人|位)?", label_key):
-                        previous = no_effect_labels.get(label_key)
-                        same_place = bool(
-                            previous and math.hypot(
-                                target[2] - previous[1], target[3] - previous[2]) <= 48
-                        )
-                        count = previous[0] + 1 if previous and same_place else 1
-                        no_effect_labels[label_key] = (count, target[2], target[3])
-                        alternatives = (self._last_target_resolution or {}).get("alternatives") or []
-                        if local_prepare_decision and len(alternatives) > 1:
-                            # 本地候选仍有余量：记录已试位置，下一轮本地规则换下一个候选。
-                            self._consumed_local_points.append(
-                                (float(executed_point.get("x", decision.x or 0)),
-                                 float(executed_point.get("y", decision.y or 0)))
-                            )
-                            local_label_attempts[label_key] = local_label_attempts.get(label_key, 0) + 1
-                            if local_label_attempts[label_key] >= 3:
-                                raise NeedsReview(
-                                    "同一文字目标的本地候选已连续尝试 3 次无明显变化；转人工复核")
-                        elif count >= 2:
-                            raise NeedsReview(
-                                "同一文字目标连续两次点击无明显变化；可能选中了提示文字或被遮挡入口")
-                else:
-                    no_effect_labels.clear()
-                    local_label_attempts.clear()
-                if changed and re.search(r"我已了解|我已阅读|已阅读并同意|我已同意|勾选|允许我们", decision.target_label):
-                    # 协议复选框已勾选；后续直接点“同意”，不再重复勾选。
-                    consent_checked = True
-                if is_desktop_frame and not changed:
-                    raise NeedsReview("桌面授权点击后画面无变化；没有再次点击")
-                force_model_next = True
-            if (not changed and decision.target_box is not None
-                    and re.search(r"我已了解|已阅读|同意|隐私|协议|政策|用户须知|知悉|接受", decision.target_label)
-                    and not consent_label_fallback_done):
-                # 协议复选框点击后整图无变化：本地改点标签文字一次，仍无变化就停止，
-                # 不再让模型反复选择同一个协议目标。
-                consent_label_fallback_done = True
-                fallback = decision.model_copy(update={
-                    "x": decision.target_box.x + decision.target_box.width / 2,
-                    "y": decision.target_box.y + decision.target_box.height / 2,
-                    "reason": "复选框点击无变化；本地改点协议标签文字一次",
-                })
-                with self._trace("consent_label_fallback",
-                                 frame_evidence=self._debug_frame_ref(Path(after["path"]))) as trace:
-                    try:
-                        self._apply_scene_action(
-                            fallback, after, selector, profile, settings.people_count, auto_authorize,
-                            people_selected=people_selected,
-                            evidence_dir=output_dir / "evidence", decision_index=step + 1,
-                            decision_coordinate_source="local_consent_label_fallback",
-                            model_coordinates=(fallback.x, fallback.y), ocr_result=ocr_result,
-                        )
-                        self._send({"action": "noop", "seconds": settings.capture.settle_seconds})
-                        after_label = self._screenshot(
-                            output_dir, selector, f"prepare-{step + 1:02d}-consent-label.png"
-                        )
-                        with Image.open(after["path"]) as left, Image.open(after_label["path"]) as right:
-                            changed_label, detail_label = self._evaluate_page_change(
-                                left, right, fallback, {"x": fallback.x, "y": fallback.y}
-                            )
-                            difference_label = detail_label["global_difference"]
-                        trace.update(action="click", target=decision.target_label,
-                                     difference=difference_label,
-                                     roi_change_ratio=detail_label["roi_ratio"],
-                                     change_reason=detail_label["reason"])
-                    except Exception as exc:
-                        trace.update(error_type=type(exc).__name__)
-                        raise
-                if not changed_label:
-                    raise NeedsReview("协议复选框和文字标签点击后均无变化；停止重复点击", "no_page_change")
-                no_effect_labels.clear()
-                history[-1].update(execution_result="executed_label_fallback",
-                                   page_result="changed", image_difference=difference_label)
-                frame = after_label
-                force_model_next = True
-                continue
-            if action_effect == "people_selected":
-                # 人数已点，下一帧优先让本地规则点“开始点餐”，省一次模型调用。
-                people_selected = True
-                local_rules_available = True
-                force_model_next = False
-            elif local_prepare_decision:
-                method = (self._last_target_resolution or {}).get("method") or ""
-                # 微信引导浮层、底栏导航、拒绝旁支小程序都是确定性导航动作，
-                # 允许连续本地执行；其他本地判定只给一次机会，避免反复点同一处。
-                local_rules_available = method in {
-                    "local_wechat_tip_close", "local_home_tab", "local_preorder_entry",
-                    "local_decline_other_miniapp", "local_task_city", "local_task_store",
-                    "local_city_switch", "local_city_search",
-                    # 关闭通知弹窗后紧接着就是人数网格，二者都由当前画面唯一确认，
-                    # 允许连续本地处理，避免中间插一次模型把人数按钮猜错。
-                    "local_notification_button", "local_people_grid_ocr",
-                    "local_people_grid_geometry"}
-                if local_rules_available:
-                    # 导航动作允许连续判定，但同一点只点一次：命中却没变化时换下一条规则。
-                    self._consumed_local_points.append(
-                        (float(executed_point.get("x") or 0), float(executed_point.get("y") or 0)))
-            frame = after
-        raise NeedsReview("达到菜单准备动作上限；未确认稳定的只读菜单")
-
-    @classmethod
-    def _prepare_action_target(cls, decision: SceneDecision, point: dict | None = None) -> tuple:
-        point = point or {"x": decision.x, "y": decision.y}
-        return (decision.action, cls._normalize_ocr_text(decision.target_label),
-                float(point.get("x") or 0), float(point.get("y") or 0))
-
-    @staticmethod
-    def _same_prepare_action_target(current: tuple, previous: tuple | None) -> bool:
-        # 相同文案可能属于不同选项；同时比较位置，避免阻止同页的下一步操作。
-        return bool(previous is not None and current[:2] == previous[:2]
-                    and math.hypot(current[2] - previous[2], current[3] - previous[3]) <= 24)
-
+    # 以下定位与 OCR 辅助仍供人工标注建议使用，不参与正式采集导航。
     def _local_people_grid_target(self, ocr_result, people_count: int) -> SceneDecision | None:
         """当配置人数被 OCR 漏掉时，用可见数字网格的几何位置补出该格。"""
         image_size, rows = ocr_result
@@ -4234,173 +3451,6 @@ class UiPathRunner:
                 return None
         return resolved
 
-    def _apply_scene_action(
-        self,
-        decision: SceneDecision,
-        frame: dict,
-        selector: str,
-        profile: dict,
-        people_count: int = 1,
-        auto_authorize: bool = False,
-        people_selected: bool = False,
-        evidence_dir: Path | None = None,
-        decision_index: int | None = None,
-        decision_coordinate_source: str = "model",
-        model_coordinates: tuple[float | None, float | None] | None = None,
-        ocr_result=None,
-    ) -> str | None:
-        if decision.action in {"wait", "ready"}:
-            return None
-        if decision.transaction_visible or _TRANSACTION_TEXT.search(decision.target_label):
-            normalized_target = unicodedata.normalize("NFKC", str(decision.target_label or ""))
-            back_to_menu = bool(re.search(
-                r"加菜|继续加菜|返回菜单|回到菜单|继续点餐|再看看|返回点餐|去点餐|开始点餐|查看菜单",
-                normalized_target))
-            menu_visible = bool(ocr_result and has_menu_evidence(ocr_result[1]))
-            # 菜单已可见时滚动/按键不会产生交易；订单页上的“加菜/继续点餐”是回菜单入口。
-            if decision.action != "click" and menu_visible:
-                return None
-            if not (decision.action == "click" and back_to_menu):
-                raise NeedsReview("检测到交易或支付目标；不执行该点击")
-        # 常见按钮由本地规则处理，其余按模型给出的动作执行；支付和提交订单仍排除在采集范围外。
-        is_people = decision.action == "click" and self._is_people_count_choice(decision.target_label, decision.reason, people_count)
-        is_people_confirmation = people_selected and decision.target_label.strip() in {"确定", "确认", "确认人数", "开始点餐", "开始选餐"}
-        window_width, window_height = self.transport._window_bounds or (0, 0)
-        if getattr(self.transport, "_window_selector", selector) != selector:
-            raise NeedsReview("坐标动作前没有当前 selector 的新截图；拒绝复用其他窗口几何信息")
-        screenshot_width, screenshot_height = frame["width"], frame["height"]
-        executed_image_x, executed_image_y = float(decision.x), float(decision.y)
-        coordinate_source = "model"
-        outgoing_action = decision.action
-        is_desktop_frame = frame.get("capture_scope") == "desktop"
-        desktop_mapping = None
-        if is_desktop_frame:
-            notification_label = unicodedata.normalize("NFKC", decision.target_label).strip()
-            notification_close = (
-                bool(re.search(r"消息通知|通知弹窗|系统通知|系统弹窗", decision.reason))
-                and notification_label in set(_NOTIFICATION_DECLINE) | set(_NOTIFICATION_ALLOW))
-            if (decision.action != "click" or not auto_authorize or not decision.consent_required or
-                    not (self._is_safe_desktop_consent_target(decision.target_label)
-                         or notification_close)):
-                raise NeedsReview("整屏坐标只允许点击清晰可见的正向系统授权按钮")
-            monitor = self._desktop_monitor
-            window_origin = getattr(self.transport, "_window_origin", None)
-            window_pixels = getattr(self.transport, "_window_pixels", None)
-            if monitor is None or window_origin is None or window_pixels is None:
-                raise NeedsReview("无法确认单显示器和窗口屏幕坐标；未执行整屏坐标点击")
-            monitor_x, monitor_y, monitor_width, monitor_height = monitor
-            if min(monitor_width, monitor_height, screenshot_width, screenshot_height) <= 0:
-                raise NeedsReview("桌面或显示器尺寸无效；未执行授权点击")
-            scale_x, scale_y = screenshot_width / monitor_width, screenshot_height / monitor_height
-            window_scale_x = window_pixels[0] / window_width if window_width else 0
-            window_scale_y = window_pixels[1] / window_height if window_height else 0
-            if (window_scale_x <= 0 or window_scale_y <= 0 or
-                    abs(scale_x - window_scale_x) > max(.08, window_scale_x * .08) or
-                    abs(scale_y - window_scale_y) > max(.08, window_scale_y * .08)):
-                raise NeedsReview("桌面截图与小程序窗口缩放比例不一致；未执行整屏坐标点击")
-            # 先将桌面像素还原到显示器逻辑坐标，再减去 UiPath 窗口原点。
-            x = executed_image_x / scale_x + monitor_x - window_origin[0]
-            y = executed_image_y / scale_y + monitor_y - window_origin[1]
-            if not (0 <= x < window_width and 0 <= y < window_height):
-                raise NeedsReview("授权按钮位于小程序窗口之外，当前 UiPath 窗口坐标动作无法安全点击")
-            desktop_mapping = {
-                "monitor_origin_points": {"x": monitor_x, "y": monitor_y},
-                "monitor_size_points": {"width": monitor_width, "height": monitor_height},
-                "window_origin_points": {"x": window_origin[0], "y": window_origin[1]},
-                "desktop_pixels_per_point": {"x": scale_x, "y": scale_y},
-            }
-            outgoing_action = "click_desktop_overlay"
-            coordinate_source = "desktop_model_single_monitor_mapped_to_window"
-        if decision.action == "click" and is_people and self.ocr_reader is not None and decision_coordinate_source != "model_recovery":
-            try:
-                executed_image_x, executed_image_y = self._correct_people_choice_coordinates(frame, people_count, ocr_result)
-                coordinate_source = "local_ocr_exact_people_button"
-            except NeedsReview:
-                coordinate_source = decision_coordinate_source or "model"
-        elif not is_desktop_frame and decision.action == "click" and decision.x is not None and decision.y is not None:
-            coordinate_source = decision_coordinate_source or "model"
-        if (not is_desktop_frame and decision.action in {"click", "double_click", "right_click"}
-                and executed_image_y < screenshot_height * 0.045
-                and executed_image_x > screenshot_width * 0.55):
-            # 顶部右侧这几十像素是小程序窗口胶囊（… / ◎）所在区域，点中会退出小程序。
-            # 左上角的返回箭头（<）在导航栏同一高度但属于页面控件，必须允许点击。
-            raise NeedsReview("点击目标落在小程序窗口顶部胶囊区；为避免误关小程序，未执行该点击")
-        if not is_desktop_frame:
-            x = executed_image_x * window_width / screenshot_width
-            y = executed_image_y * window_height / screenshot_height
-        coordinate_mapping = {
-            "model_image_px": {"x": model_coordinates[0], "y": model_coordinates[1]} if model_coordinates else None,
-            "executed_image_px": {"x": executed_image_x, "y": executed_image_y},
-            "window_points": {"x": x, "y": y},
-            "screenshot_size_px": {"width": screenshot_width, "height": screenshot_height},
-            "window_size_points": {"width": window_width, "height": window_height},
-            "scale_image_px_to_window_points": {
-                "x": (1 / scale_x if is_desktop_frame else window_width / screenshot_width if screenshot_width else None),
-                "y": (1 / scale_y if is_desktop_frame else window_height / screenshot_height if screenshot_height else None),
-            },
-            "desktop_mapping": desktop_mapping,
-            "source": coordinate_source,
-            "capture_scope": frame.get("capture_scope", "window"),
-            "target_resolution": self._last_target_resolution,
-        }
-        self._last_action_coordinate_mapping = coordinate_mapping
-        if self.debug_log is None and evidence_dir is not None and decision_index is not None and decision.action in {"click", "scroll", "right_click", "double_click"}:
-            self._record_decision_summary(
-                evidence_dir, decision_index, decision, coordinate_source,
-                model_coordinates or (decision.x, decision.y),
-                (executed_image_x, executed_image_y), (x, y),
-            )
-        if decision.action == "scroll":
-            units = int(profile.get("scroll_units", 4))
-            self._trace_click = {"coordinates": coordinate_mapping,
-                                 "target": decision.target_label,
-                                 "scroll": {"direction": "Down" if decision.pixels > 0 else "Up", "units": units,
-                                            "model_pixels": decision.pixels}}
-            try:
-                self._send({"action": "scroll", "selector": selector, "x": x, "y": y, "direction": "Down" if decision.pixels > 0 else "Up", "units": units})
-            finally:
-                self._trace_click = {}
-        elif decision.action in {"click", "right_click", "double_click"}:
-            self._trace_click = {"coordinates": coordinate_mapping,
-                                 "source": coordinate_source, "target": decision.target_label}
-            try:
-                self._send({"action": outgoing_action, "selector": selector, "x": x, "y": y})
-            finally:
-                self._trace_click = {}
-            if is_people:
-                return "people_selected"
-            if is_people_confirmation:
-                return "people_confirmed"
-        return None
-
-    @staticmethod
-    def _is_people_confirmation_context(reason: str) -> bool:
-        return bool(re.search(r"人数|就餐|用餐|已选|已选择", reason))
-
-    @classmethod
-    def _is_people_confirmation(cls, decision: SceneDecision, people_selected: bool, people_count: int) -> bool:
-        return (
-            people_selected
-            and decision.target_label.strip() in {"确定", "确认", "确认人数"}
-            and cls._is_people_confirmation_context(decision.reason)
-            and decision.selected_people_count == people_count
-        )
-
-    def _correct_people_choice_coordinates(self, frame: dict, people_count: int, ocr_result=None) -> tuple[float, float]:
-        """用本地 3x OCR 锁定已配置人数按钮；模型坐标只用于建议，不作为执行坐标。"""
-        image_size, rows = ocr_result if ocr_result is not None else self._read_scaled_ocr(Path(frame["path"]))
-        if image_size is None:
-            raise NeedsReview("OCR 未能唯一确认人数网格中的配置人数；未执行点击")
-        resolution = self._find_ocr_target_detail(rows, image_size, str(people_count), people_count, require_people_grid=True)
-        self._last_target_resolution = resolution
-        match = resolution.get("center_image_px") if resolution.get("matched") else None
-        if match is None:
-            raise NeedsReview("OCR 未能唯一确认人数网格中的配置人数；未执行点击")
-        x, y = match["x"], match["y"]
-        if not (0 <= x < frame["width"] and 0 <= y < frame["height"]):
-            raise NeedsReview("OCR 人数按钮坐标超出当前截图；未执行点击")
-        return x, y
-
     @staticmethod
     def _expected_button_kind(label: str, reason: str) -> str:
         """按模型给的场景与目标描述推断这一步大概率要点的按钮类型。"""
@@ -4674,19 +3724,6 @@ class UiPathRunner:
         if image_size is None or not rows:
             return []
         return build_text_candidates(rows, image_size)
-
-    def _annotate_candidates(self, image_path: Path, candidates: list[dict], ocr_result) -> list[dict]:
-        """给按钮候选补充可用性，让模型输入里能看见哪些按钮是置灰不可点的。"""
-        if not candidates or self.ocr_reader is None or not ocr_result or ocr_result[0] is None:
-            return candidates
-        image_size, rows = ocr_result
-        baseline = self._button_visual_baseline(Path(image_path), rows, image_size)
-        for item in candidates:
-            if item.get("kind") != "button":
-                continue
-            state = self._button_visual_state(Path(image_path), item.get("box_image_px"), image_size, baseline)
-            item["available"] = bool(state.get("available", True))
-        return candidates
 
     def _ocr_result_for(self, image_path: Path):
         if self._active_ocr_path == str(Path(image_path).resolve()):
@@ -5698,74 +4735,6 @@ class UiPathRunner:
                 "screenshot_size_px": {"width": image_size[0], "height": image_size[1]}}
 
     @staticmethod
-    def _record_decision_summary(
-        evidence_dir: Path,
-        index: int,
-        decision: SceneDecision,
-        coordinate_source: str,
-        model_coordinates: tuple[float | None, float | None],
-        image_xy: tuple[float, float],
-        points_xy: tuple[float, float],
-    ) -> None:
-        # 正式运行时的逐动作明细已经由受限异步调试日志保存；避免把副本散落到采集结果目录。
-        # 兼容不注入 DebugLog 的旧测试/离线调用。
-        # 不保存 reason、OCR 原文或按键/输入文本；target 也对长数字串做脱敏。
-        safe_label = UiPathRunner._sanitize_target_label(decision.target_label)
-        atomic_json(evidence_dir / f"decision-{index:03d}.json", {
-            "action": decision.action,
-            "target_label": safe_label,
-            "coordinates": {
-                "model_image_x": model_coordinates[0],
-                "model_image_y": model_coordinates[1],
-                "executed_image_x": image_xy[0],
-                "executed_image_y": image_xy[1],
-                "executed_window_points_x": points_xy[0],
-                "executed_window_points_y": points_xy[1],
-                "source": coordinate_source,
-            },
-            "selected_people_count": decision.selected_people_count,
-            "flags": {
-                "overlay_visible": decision.overlay_visible,
-                "login_required": decision.login_required,
-                "phone_required": decision.phone_required,
-                "consent_required": decision.consent_required,
-                "transaction_visible": decision.transaction_visible,
-            },
-            "reason_saved": False,
-        })
-
-    @staticmethod
-    def _is_authorization_target(decision: SceneDecision) -> bool:
-        label = decision.target_label.strip()
-        if not label:
-            return False
-        # 先拦截否定语义，避免“不同意”因包含“同意”而通过后续正向匹配。
-        if re.search(r"不同意|不允许|拒绝|取消|禁止|暂不|稍后|不要", label, re.I):
-            return False
-        generic_positive = bool(re.fullmatch(r"允许|同意|同意并继续|同意并授权|确认|授权|确定|允许本次|始终允许", label, re.I))
-        if generic_positive:
-            return True
-        consent_target = bool(re.search(r"同意|接受|允许|授权|继续|确认|确定", label, re.I))
-        phone_target = bool(re.search(r"手机号.{0,6}(快捷|授权|登录|确认)|确认.{0,6}手机号|快捷授权|授权手机号", label, re.I))
-        login_target = bool(re.search(r"微信.{0,4}(快捷)?登录|快捷登录|一键登录|手机号.{0,6}(登录|快捷授权)|授权登录|授权手机号", label, re.I))
-        if decision.consent_required and not consent_target:
-            return False
-        if decision.phone_required and not phone_target:
-            return False
-        if decision.login_required and not login_target:
-            return False
-        return decision.consent_required or decision.phone_required or decision.login_required
-
-    @staticmethod
-    def _is_safe_desktop_consent_target(label: str) -> bool:
-        """整屏坐标只接受明确正向授权标签，不接受通用确认或正文词语。"""
-        normalized = unicodedata.normalize("NFKC", label).strip().casefold()
-        return bool(re.fullmatch(
-            r"允许|允许一次|始终允许|同意|同意并继续|同意并授权|allow|allow once|allow while using app",
-            normalized,
-        ))
-
-    @staticmethod
     def _is_people_count_choice(target_label: str, reason: str, people_count: int) -> bool:
         target_label = unicodedata.normalize("NFKC", target_label).strip()
         reason = unicodedata.normalize("NFKC", reason)
@@ -5777,43 +4746,6 @@ class UiPathRunner:
             return False
         numbers = re.findall(r"(?<!\d)(\d{1,2})(?!\d)", target_label)
         return len(numbers) == 1 and int(numbers[0]) == people_count
-
-    _CAPTURE_ORDER_TEXT = re.compile(r"订单明细|待支付|已下单|订单编号|下单成功|坐等开吃|订单已提交")
-    _CAPTURE_PRICE_TEXT = re.compile(r"[¥￥]\s*\d|\d+(?:\.\d+)?\s*元")
-    _CAPTURE_OVERLAY_TEXT = re.compile(
-        r"服务协议|隐私政策|立即领取|免费领取|开卡赠送|会员充值|充值活动|"
-        r"不同意.{0,6}仅浏览|同意并继续|小伙伴已在美团在线点菜|留在小程序|待支付的订单|"
-        r"同意此应用使用你的地理位置|当餐免单|会员卡办理|储值|暑期|美食节|海鲜节|狂欢节")
-
-    def _verify_captured_menu(self, task: dict, pages: list[str], output_dir: Path) -> None:
-        """发布前对截图内容再做一次核验，避免“滚完了但截到的是别的东西”。"""
-        if not pages:
-            raise NeedsReview("没有生成任何菜单截图")
-        try:
-            rows = self.ocr_reader(output_dir / pages[0]) or []
-        except Exception:
-            rows = []
-        text = " ".join(str(row.get("text", "")) for row in rows)
-        if self._CAPTURE_ORDER_TEXT.search(text):
-            raise NeedsRetry("截图内容是订单详情页而不是菜单；稍后重试可回到点餐页", "existing_order")
-        if len(pages) <= 3:
-            # 只截到 1-3 页时逐页核对：浮层/协议/待支付提示会吞掉滚动，
-            # 两帧一致被误判成“已到底”，这类结果不能当成功发布。
-            checked = [text]
-            for page in pages[1:3]:
-                try:
-                    extra = self.ocr_reader(output_dir / page) or []
-                except Exception:
-                    extra = []
-                checked.append(" ".join(str(row.get("text", "")) for row in extra))
-            if any(self._CAPTURE_OVERLAY_TEXT.search(item) for item in checked):
-                raise NeedsReview("页面被协议/优惠券/平台提示浮层遮挡，只截到首屏，菜单未完整展开；需要重新采集",
-                                  "overlay_blocked")
-        mismatch = self._identity_mismatch(task["source_name"], self._store_header_values(rows))
-        if mismatch:
-            raise NeedsReview(
-                f"二维码门店不一致：{mismatch}，与二维码标称门店不符；请核对二维码素材",
-                "store_mismatch")
 
     def _page_ocr_text(self, page_path: Path) -> str:
         try:
@@ -5828,108 +4760,12 @@ class UiPathRunner:
             return False
         return left == right or SequenceMatcher(None, left, right).ratio() >= 0.98
 
-    def _poster_close_point(self, path: Path) -> tuple[float, float] | None:
-        """在页面中部找一块大幅深色海报，返回其右上角附近的关闭键位置。
-
-        节日海报的关闭键是深底浅色小叉，locate_close_icon 依赖浅底圆盘，识别不到；
-        这里用“连续深色行段”定位海报主体，只在滚动已经卡住时兜底。
-        """
-        try:
-            with Image.open(path) as image:
-                width, height = image.size
-                small = image.convert("RGB").resize((max(1, width // 2), max(1, height // 2)))
-        except Exception:
-            return None
-        pixels = small.load()
-        width, height = small.size
-        top_limit, bottom_limit = int(height * 0.10), int(height * 0.90)
-        best: tuple[int, int] | None = None
-        start = None
-        for y in range(top_limit, bottom_limit + 1):
-            row = [pixels[x, y] for x in range(width)] if y < bottom_limit else []
-            dark = sum(1 for r, g, b in row if (r + g + b) / 3 < 110)
-            on = dark >= width * 0.55
-            if on and start is None:
-                start = y
-            elif not on and start is not None:
-                if best is None or (y - start) > (best[1] - best[0]):
-                    best = (start, y)
-                start = None
-        if best is None or best[1] - best[0] < height * 0.18:
-            return None
-        top, bottom = best
-        left, right = width, 0
-        for y in range(top, bottom):
-            for x in range(width):
-                r, g, b = pixels[x, y]
-                if (r + g + b) / 3 < 110:
-                    left, right = min(left, x), max(right, x)
-        if right - left < width * 0.40 or right - left > width * 0.90:
-            return None
-        return (right - width * 0.035, top + height * 0.012)
-
-    def _clear_scroll_overlay(self, frame: dict, selector: str, output_dir: Path,
-                              attempted: set[tuple[int, int]] | None = None) -> bool:
-        """滚动后画面不再变化时，尝试点掉盖在菜单上的浮层再继续滚。
-
-        海报/会员卡浮层会吞掉滚动手势，画面连续两帧一致；如果直接当成“已到底”，
-        就会把只截到首屏的结果发布成成功。这里只在无变化时触发，并限制在
-        画面中部、低饱和圆底的高分关闭键上，避免误点窗口按钮或底部导航。
-        """
-        path = Path(frame["path"])
-        located = None
-        try:
-            located = locate_close_icon(path, frame["width"] / 2, frame["height"] * 0.5)
-        except Exception:
-            located = None
-        center = (located or {}).get("center_image_px") or {}
-        source = "close_icon"
-        try:
-            width, height = float(frame["width"]), float(frame["height"])
-            window_width, window_height = float(frame["window_width"]), float(frame["window_height"])
-        except (TypeError, ValueError):
-            return False
-        if width <= 0 or height <= 0 or window_width <= 0 or window_height <= 0:
-            return False
-        point = None
-        try:
-            if float((located or {}).get("score") or 0) >= 0.8:
-                point = (float(center["x"]), float(center["y"]))
-        except (KeyError, TypeError, ValueError):
-            point = None
-        if point is None:
-            point = self._poster_close_point(path)
-            source = "poster"
-            if point is None:
-                return False
-        x, y = point
-        if not (width * 0.06 <= x <= width * 0.94 and height * 0.10 <= y <= height * 0.92):
-            return False
-        # 同一个位置只点一次：菜单里也有圆形图标会被误识别成关闭键，
-        # 反复点同一处既关不掉浮层，也会浪费整轮采集。
-        key = (round(x), round(y))
-        if attempted is not None:
-            if key in attempted:
-                return False
-            attempted.add(key)
-        with self._trace("clear_scroll_overlay", frame_evidence=self._debug_frame_ref(path),
-                         close_icon=located, source=source) as trace:
-            self._send({"action": "click", "selector": selector,
-                        "x": x * window_width / width,
-                        "y": y * window_height / height})
-            self._send({"action": "noop", "seconds": 1.2})
-            trace.update(clicked=True)
-        return True
-
-    def _capture_menu(self, selector, first_frame, region, settings, profile, output_dir,
-                      *, recover_overlay: bool = True) -> list[str]:
+    def _capture_menu(self, selector, first_frame, region, settings, profile, output_dir) -> list[str]:
         box = (round(region.x), round(region.y), round(region.x + region.width), round(region.y + region.height))
         frame = first_frame
         previous = None
         pages: list[str] = []
         sample_text = ""
-        overlay_clears = 0
-        overlay_attempts: set[tuple[int, int]] = set()
         # 截图、滚动、再截图；相邻两帧近似一致即视为到底。
         for index in range(settings.capture.max_pages + 1):
             self._guard()
@@ -5944,31 +4780,21 @@ class UiPathRunner:
                 trace.update(image_difference=difference,
                              stop_reason="similar_to_previous" if difference is not None and difference < 0.7 else "continue")
             if difference is not None and difference < 0.7:
-                if not recover_overlay:
+                return pages
+            if len(pages) >= settings.capture.max_pages:
+                raise NeedsReview(f"达到 max_pages={settings.capture.max_pages}，已保留部分截图但未确认菜单到底")
+            page_path = output_dir / f"page-{len(pages) + 1:04d}.png"
+            with Image.open(frame["path"]) as image_file:
+                image_file.save(page_path)
+            pages.append(str(page_path.relative_to(output_dir)))
+            previous = content
+            # 长菜单/信息流里页首轮播动画会让图像差异一直很大，只看图像会一路滚到页数上限。
+            # 20 页之后每 5 页 OCR 一次，文字完全重复就认定已经到底。
+            if len(pages) >= 20 and len(pages) % 5 == 0:
+                current_text = self._page_ocr_text(page_path)
+                if sample_text and self._same_page_text(sample_text, current_text):
                     return pages
-                if overlay_clears >= 6:
-                    if len(pages) <= 3:
-                        raise NeedsReview("滚动多次被浮层打断，菜单未确认到底", "overlay_blocked")
-                    return pages
-                if not self._clear_scroll_overlay(frame, selector, output_dir, overlay_attempts):
-                    return pages
-                overlay_clears += 1
-                # 浮层已关掉，继续滚一次；当前帧没有保存，不会产生重复页。
-            else:
-                if len(pages) >= settings.capture.max_pages:
-                    raise NeedsReview(f"达到 max_pages={settings.capture.max_pages}，已保留部分截图但未确认菜单到底")
-                page_path = output_dir / f"page-{len(pages) + 1:04d}.png"
-                with Image.open(frame["path"]) as image_file:
-                    image_file.save(page_path)
-                pages.append(str(page_path.relative_to(output_dir)))
-                previous = content
-                # 长菜单/信息流里页首轮播动画会让图像差异一直很大，只看图像会一路滚到页数上限。
-                # 20 页之后每 5 页 OCR 一次，文字完全重复就认定已经到底。
-                if len(pages) >= 20 and len(pages) % 5 == 0:
-                    current_text = self._page_ocr_text(page_path)
-                    if sample_text and self._same_page_text(sample_text, current_text):
-                        return pages
-                    sample_text = current_text
+                sample_text = current_text
             self._guard()
             units = int(profile.get("scroll_units", 4))
             path = (output_dir / "evidence" / f"page-{index + 1:04d}.png").resolve()
@@ -5983,149 +4809,10 @@ class UiPathRunner:
         raise NeedsReview(f"达到 max_pages={settings.capture.max_pages}，已保留部分截图但未确认菜单到底")
 
     @staticmethod
-    def _stable_images(left_path: Path, right_path: Path, region) -> bool:
-        box = (round(region.x), round(region.y), round(region.x + region.width), round(region.y + region.height))
-        try:
-            with Image.open(left_path) as left_file, Image.open(right_path) as right_file:
-                left = left_file.crop(box).convert("RGB").copy()
-                right = right_file.crop(box).convert("RGB").copy()
-                return UiPathRunner._image_difference_images(left, right) < 2.0
-        except Exception:
-            return False
-
-    # 复选框、开关、单选按钮只有十几像素，勾选后全图平均差常低于 5%；
-    # 必须单独看点击目标周围的局部差异，否则会把“点成功”误判成“没反应”。
-    ROI_CHANGE_RATIO_THRESHOLD = 0.02
-    ROI_MIN_SIZE = 48.0
-    ROI_PIXEL_DIFF_THRESHOLD = 12
-
-    def _evaluate_page_change(
-        self,
-        before: Image.Image,
-        after: Image.Image,
-        decision: SceneDecision,
-        point: dict | None = None,
-    ) -> tuple[bool, dict]:
-        """局部目标差异优先，全图差异用于页面整体跳转。"""
-        width, height = before.size
-        if before.size != after.size:
-            return True, {
-                "global_difference": 1.0, "roi_ratio": 1.0,
-                "roi_threshold": self.ROI_CHANGE_RATIO_THRESHOLD,
-                "roi": {"x": 0, "y": 0, "width": width, "height": height},
-                "reason": "size_changed",
-            }
-        # 用实例方法调用，便于测试替换全图差异实现。
-        global_difference = self._image_difference_images(before.convert("RGB"), after.convert("RGB"))
-        roi = self._change_roi(decision, point, before.size)
-        roi_ratio = self._roi_change_ratio(before, after, roi)
-        changed = global_difference >= 0.05 or roi_ratio >= self.ROI_CHANGE_RATIO_THRESHOLD
-        reason = ("global_change" if global_difference >= 0.05 else
-                  "local_target_change" if changed else "no_visible_change")
-        return changed, {
-            "global_difference": global_difference, "roi_ratio": roi_ratio,
-            "roi_threshold": self.ROI_CHANGE_RATIO_THRESHOLD, "roi": roi, "reason": reason,
-        }
-
-    @classmethod
-    def _change_roi(cls, decision: SceneDecision, point: dict | None, size: tuple[int, int]) -> dict:
-        """以实际点击位置为中心的局部窗口；目标高度用于决定窗口大小。"""
-        try:
-            center_x = float((point or {}).get("x") or decision.x or 0)
-            center_y = float((point or {}).get("y") or decision.y or 0)
-        except (TypeError, ValueError):
-            center_x = center_y = 0.0
-        box = decision.target_box
-        if box is not None and box.height >= 4:
-            # 复选框只有十几像素，窗口要跟着目标高度收缩，否则小变化会被稀释。
-            pad = max(24.0, min(40.0, float(box.height) * 2.0))
-        else:
-            pad = 28.0
-        left, top = center_x - pad, center_y - pad
-        right, bottom = center_x + pad, center_y + pad
-        left = max(0.0, left)
-        top = max(0.0, top)
-        right = min(float(size[0]), right)
-        bottom = min(float(size[1]), bottom)
-        # 过小的区域由抗锯齿噪声主导，统一补到最小尺寸。
-        if right - left < cls.ROI_MIN_SIZE:
-            center = (left + right) / 2
-            left = max(0.0, center - cls.ROI_MIN_SIZE / 2)
-            right = min(float(size[0]), center + cls.ROI_MIN_SIZE / 2)
-        if bottom - top < cls.ROI_MIN_SIZE:
-            center = (top + bottom) / 2
-            top = max(0.0, center - cls.ROI_MIN_SIZE / 2)
-            bottom = min(float(size[1]), center + cls.ROI_MIN_SIZE / 2)
-        return {"x": int(left), "y": int(top),
-                "width": max(1, int(right - left)), "height": max(1, int(bottom - top))}
-
-    @classmethod
-    def _roi_change_ratio(cls, before: Image.Image, after: Image.Image, roi: dict) -> float:
-        box = (roi["x"], roi["y"], roi["x"] + roi["width"], roi["y"] + roi["height"])
-        left = before.crop(box).convert("L")
-        right = after.crop(box).convert("L")
-        if left.size != right.size or left.width <= 0 or left.height <= 0:
-            return 1.0
-        difference = ImageChops.difference(left, right)
-        histogram = difference.histogram()
-        changed = sum(histogram[cls.ROI_PIXEL_DIFF_THRESHOLD:])
-        return changed / float(left.width * left.height)
-
-    @staticmethod
     def _image_difference_images(left: Image.Image, right: Image.Image) -> float:
         left = left.resize((256, 256))
         right = right.resize((256, 256))
         return sum(ImageStat.Stat(ImageChops.difference(left, right)).mean) / 3
-
-    @staticmethod
-    def _same_ready(left: SceneDecision, right: SceneDecision) -> bool:
-        if left.menu_region is None or right.menu_region is None:
-            return False
-        names_left = {UiPathRunner._normalize_menu_name(value) for value in left.item_names_visible}
-        names_right = {UiPathRunner._normalize_menu_name(value) for value in right.item_names_visible}
-        prices_left = {price for value in left.prices_visible for price in UiPathRunner._price_keys(value)}
-        prices_right = {price for value in right.prices_visible for price in UiPathRunner._price_keys(value)}
-        if not (names_left & names_right and prices_left & prices_right):
-            return False
-        a, b = left.menu_region, right.menu_region
-        intersection_width = max(0.0, min(a.x + a.width, b.x + b.width) - max(a.x, b.x))
-        intersection_height = max(0.0, min(a.y + a.height, b.y + b.height) - max(a.y, b.y))
-        intersection = intersection_width * intersection_height
-        union = a.width * a.height + b.width * b.height - intersection
-        return union > 0 and intersection / union >= 0.5
-
-    @staticmethod
-    def _store_header_values(rows) -> list[str]:
-        """从页面顶部 OCR 中提取“门店名”行（如“东来顺（双井店）〉”）。
-
-        只看像门店标题的短文本，避免把菜名、地址或页脚当成门店标识。
-        """
-        usable = []
-        max_bottom = 0.0
-        for row in rows or []:
-            text = unicodedata.normalize("NFKC", str(row.get("text", ""))).strip()
-            if not text or len(text) > 40:
-                continue
-            try:
-                y = float(row.get("y", 0) or 0)
-                height = float(row.get("height", 0) or 0)
-            except (TypeError, ValueError):
-                y = height = 0.0
-            usable.append((text, y, height, y + height))
-            max_bottom = max(max_bottom, y + height)
-        if not usable:
-            return []
-        # 门店标题总在页面顶部；页脚/推荐位里的“XX店”不能当作本店身份。
-        # 只在页面内容足够高（确属整页）时启用顶部带过滤，避免单行/小图把标题误过滤。
-        band = max_bottom * 0.22 if max_bottom >= 600 else None
-        values = []
-        for text, y, height, bottom in usable:
-            if band is not None and (y + height / 2) > band:
-                continue
-            if (re.search(r"[（(][^（）()]{1,12}店[）)]", text) or
-                    re.search(r"[^\s（()）]{1,12}店\s*[〉>]?$", text)):
-                values.append(text)
-        return values
 
     @staticmethod
     def _normalize_store(value: str) -> str:
@@ -6162,41 +4849,3 @@ class UiPathRunner:
                 if len(target) >= 3 and target[:3] in candidate:
                     return True
         return False
-
-    @classmethod
-    def _identity_mismatch(cls, expected: str, observed: list[str]) -> str | None:
-        """菜单页显示的门店与二维码标称门店不一致时返回差异说明。
-
-        共用点餐小程序会记住上一次进入的门店，二维码参数没生效时可能直接展示
-        别家菜单；这类结果图片必须拦住，不能当作采集成功。页面不显示店名时跳过。
-        """
-        values = [str(value) for value in observed if len(cls._normalize_store(str(value))) >= 2]
-        if not values:
-            return None
-        observed_branches = []
-        for value in values:
-            found = (re.search(r"[（(]([^（）()]{1,12}店)[）)]", value) or
-                     re.search(r"[-－—]\s*([^（()）]{1,12}店)\s*$", value))
-            if found:
-                observed_branches.append(found.group(1))
-        if not observed_branches:
-            # 只看到品牌名、没有门店后缀时不下结论，避免 OCR 截断造成误拦。
-            return None
-        if not cls._store_matches(expected, values):
-            return "页面显示 " + " / ".join(values)[:60]
-        branch = re.search(r"[（(]([^（）()]{1,12}店)[）)]", expected)
-        if branch:
-            for other in observed_branches:
-                if other != branch.group(1):
-                    return f"页面显示 {other}"
-        return None
-
-    @staticmethod
-    def _write_quarantine(output_dir: Path, task: dict, observed: list[str], reason: str) -> None:
-        atomic_json(output_dir / "quarantine.json", {
-            "task_id": task["id"],
-            "expected_store": task["source_name"],
-            "observed_store_text": observed,
-            "reason": reason,
-            "quarantined": True,
-        })

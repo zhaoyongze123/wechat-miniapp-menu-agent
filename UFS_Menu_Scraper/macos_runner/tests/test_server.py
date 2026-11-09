@@ -63,6 +63,27 @@ def test_current_material_root_excludes_original_photo_tasks(tmp_path: Path) -> 
     assert len(app.state.store.tasks()) == 2  # 历史仍保留在唯一状态库中。
 
 
+def test_batch_progress_separates_unqualified_from_needs_review(tmp_path: Path) -> None:
+    app = create_app(tmp_path)
+    for name in ("Menu", "Unqualified", "Review"):
+        source = tmp_path / "inbox" / name / "qr.png"
+        source.parent.mkdir(parents=True)
+        Image.new("RGB", (10, 10), "white").save(source)
+    app.state.configs.save(config_payload(tmp_path, "test-key"))
+    store = app.state.store
+    store.scan(tmp_path / "inbox")
+    ids = {task["source_name"]: task["id"] for task in store.tasks()}
+    store.create_run("example-run", "automatic", list(ids.values()))
+    store.update(ids["Menu"], status="captured")
+    store.update(ids["Unqualified"], status="needs_review", reject_reason="other", error_code="agent_unqualified")
+    store.update(ids["Review"], status="needs_review", error_code="agent_needs_review")
+    store.update_run("example-run", status="completed", current_index=3)
+
+    client = TestClient(app, base_url="http://127.0.0.1")
+    run = client.get("/api/status").json()["run"]
+    assert (run["captured"], run["unqualified"], run["review"], run["processed"]) == (1, 1, 1, 3)
+
+
 def test_config_endpoint_requires_token_and_never_returns_api_key(tmp_path: Path) -> None:
     app = create_app(tmp_path, desktop=FakeDesktop())
     client = TestClient(app, base_url="http://127.0.0.1")

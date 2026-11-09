@@ -1,6 +1,10 @@
-# GUI Agent 试验
+# GUI Agent 菜单导航
 
-试验使用字节 GUI Agent SDK 2.0（`@gui-agent/agent-sdk@0.3.1`）和百炼 `gui-plus-2026-02-26`。SDK 管理导航循环和上下文。适配器解析 GUI-Plus 的 `computer_use`，UiPath 负责观察已打开的微信小程序窗口、点击和滚动。导航结束后，Python 按结果交给现有采集器。
+正式任务与试验共同使用字节 GUI Agent SDK 2.0（`@gui-agent/agent-sdk@0.3.1`）和百炼 `gui-plus-2026-02-26`。SDK 管理导航循环和上下文。适配器解析 GUI-Plus 的 `computer_use`，UiPath 负责观察已打开的微信小程序窗口、点击和滚动。导航结束后，Python 按结果交给现有采集器。
+
+## 正式采集
+
+工作台的开始和继续采集沿用原有队列。小程序打开后由 GUI Agent 决定导航和业务终态。返回 `success` 并通过窗口与坐标校验后，UiPath 接手滚动截图。发布仍走原有批次目录与文件事务。导航报告、用量和交接证据保留在本轮私有 IPC 目录。
 
 ## 本地联调
 

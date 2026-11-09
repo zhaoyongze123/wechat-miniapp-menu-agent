@@ -35,7 +35,7 @@ _SCROLL_UNITS_MAX = 6
 # Adapter 上报的执行计数；辅助调用与导航分开，便于评估预算占用。
 _METRIC_FIELDS = ("model_calls", "screenshots", "navigation_actions", "skill_reads",
                   "format_retries", "tool_rejections", "format_failures")
-# Skill 只提供可参考的业务经验，由 Agent 自行决定是否加载。
+# 唯一业务 Skill 在导航开始时注入，保留固定索引供现有读取工具使用。
 _SKILLS = {
     "menu-navigation": "点餐小程序导航经验：三终态判定、弹窗与前置步骤、常见误判反例。",
 }
@@ -135,10 +135,10 @@ def trial_model_from_env(configs: ConfigStore | None = None) -> TrialModel:
     if not key and beijing:
         key = configs.key().strip() if use_saved else dashscope_key
     if not key:
-        raise ValueError("单店试验需要北京地域 GUI-Plus 配置，请在网页设置中保存对应模型和密钥，或设置环境变量")
+        raise ValueError("GUI Agent 需要北京地域 GUI-Plus 配置，请在网页设置中保存对应模型和密钥，或设置环境变量")
     node = shutil.which("node")
     if not node or not (_ENTRY.parent / "node_modules/@gui-agent/agent-sdk/package.json").is_file():
-        raise ValueError("单店试验需要 Node.js 和 ui_tars 目录下已安装的 GUI Agent SDK（npm ci）")
+        raise ValueError("GUI Agent 需要 Node.js 和 ui_tars 目录下已安装的 GUI Agent SDK（npm ci）")
     return TrialModel(node, base_url, key)
 
 
@@ -146,19 +146,14 @@ def run_navigation(model: TrialModel, store_name: str, people: int, max_steps: i
                    *, observe, execute, check_stop, log_path: Path | None = None,
                    trace_path: Path | None = None, trace_meta: dict | None = None,
                    source_image=None) -> tuple[dict, dict | None]:
+    skill = load_skill("menu-navigation")
     instruction = (
         f"目标门店：{store_name}，用餐人数 {people} 人。你正在操作已经打开的微信点餐小程序。"
-        "\n目标：尽可能进入可采集的菜单页（能看到真实菜品，通常带价格），然后交接；后续程序负责滚动截图。"
-        "\n执行原则：页面判断和下一步动作都由你负责，根据当前截图自主选择。欢迎页、人数选择、广告、加载、"
-        "授权弹窗都是中间状态，优先尝试继续；弹窗以消除阻碍为目标，允许、拒绝、同意、关闭都可以；"
-        "点击没反应就重新观察，可以重试同一位置；加载可 wait 两到三次；出现新小程序窗口先 list_windows 再 switch_window。"
-        "\n终态：success=已看到可正常浏览的菜品菜单；unqualified=有明确证据表明本轮无法采集；"
-        "needs_review=合理尝试后仍无法确定。暂时进不去菜单、不能下单、需要登录、点击失败、菜品少，都不等于 unqualified。"
-        "\n业务经验可按需加载："
-        + "；".join(f'read_skill(name="{name}")：{description}' for name, description in _SKILLS.items())
-        + "。需要时先加载再操作，不需要就直接按截图判断。"
+        "\n目标：进入目标门店可采集的菜品菜单。根据当前截图自主决定动作与终态，交接后由程序滚动截图。"
+        "\n下方业务经验已完整提供，可直接使用。"
         "\n如果请求里附带二维码原图，它只用于理解门店背景；所有点击坐标仍以当前屏幕截图为准。"
-        "\n输出必须严格符合系统提示中的固定输出契约。"
+        "\n输出必须严格符合系统提示中的固定输出契约。\n\n"
+        f"{skill}"
     )
     return _run_agent(model, instruction, max_steps, observe=observe, execute=execute,
                       check_stop=check_stop, log_path=log_path,
