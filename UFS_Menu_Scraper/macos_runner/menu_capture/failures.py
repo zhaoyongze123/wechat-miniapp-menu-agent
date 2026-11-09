@@ -22,6 +22,9 @@ FAILURE_CODES: dict[str, tuple[str, str]] = {
     "phone_only": (STORE_UNAVAILABLE, "需在手机上打开"),
     "customer_service": (STORE_UNAVAILABLE, "客服或长按识别页"),
     "authorization_unavailable": (MANUAL, "授权流程不可用"),
+    # 以下属于启动阶段的技术失败：只能说明本轮没能打开小程序，不能据此判定门店不合格。
+    "startup_preview_unavailable": (MANUAL, "启动阶段未找到识别入口"),
+    "startup_no_miniapp": (MANUAL, "启动阶段未观察到小程序窗口"),
     "login_required": (MANUAL, "需要登录或协议确认"),
     "payment_interface": (MANUAL, "交易或支付界面"),
     "wechat_context_lost": (MANUAL, "微信聊天上下文丢失"),

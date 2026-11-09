@@ -69,6 +69,33 @@ def test_missing_icon_never_clicks(tmp_path):
     assert not any(c["action"] == "click" for c in commands)
 
 
+def test_multiple_new_miniapp_windows_take_first_and_leave_choice_to_agent(tmp_path):
+    runner, _ = setup_flow(tmp_path, opens_at=1)
+    other = {**MINI, "title": "另一家门店"}
+    send = runner._send
+
+    def multiple(command, **kwargs):
+        reply = send(command, **kwargs)
+        return {"windows": [MAIN, MINI, other]} if command["action"] == "discover" else reply
+
+    runner._send = multiple
+    profile = {"preview_selector": "preview"}
+    result = runner._recognize_preview(profile, tmp_path / "out", [MAIN], .3)
+    expected = UiPathRunner._miniapp_candidates([MINI, other])[0]["selector"]
+    assert result["miniapp_selector"] == expected
+    assert profile["miniapp_selector"] == expected
+
+
+def test_missing_icon_records_external_prompt_without_business_verdict(tmp_path):
+    runner, commands = setup_flow(tmp_path, blank=True)
+    runner._preview_external_link = lambda *args, **kwargs: True
+    with pytest.raises(NeedsReview) as raised:
+        runner._recognize_preview({"preview_selector": "preview"}, tmp_path / "out", [MAIN], .3)
+    assert raised.value.code == "startup_preview_unavailable"
+    assert "非微信小程序" not in str(raised.value)
+    assert not any(c["action"] == "click" for c in commands)
+
+
 def test_recognition_does_not_repeat_click_when_no_miniapp_appears(tmp_path):
     runner, commands = setup_flow(tmp_path, opens_at=None)
     reads = []

@@ -16,6 +16,7 @@ let screenHeight = 0;
 let actionUsedOnFrame = false;
 let terminal = null;
 let faulted = false;
+let parseFailures = 0;
 let resultEmitted = false;
 let failure = null;
 let lastRawContent = '';
@@ -108,7 +109,9 @@ async function readObject() {
   }
 }
 
-async function rpc(method, params) {
+class HostRejected extends Error {}
+
+async function rpc(method, params, recoverable = false) {
   const id = String(nextId++);
   send({ type: 'request', id, method, params });
   const reply = await readObject();
@@ -117,10 +120,18 @@ async function rpc(method, params) {
     throw new Error('protocol');
   }
   if (!reply.ok) {
+    // 可修正的动作被宿主拒绝时，把错误交回 Agent 重新决策，而不是结束整轮会话。
+    if (recoverable) return { __rejected: true, error: text(reply.error, 300) || '宿主拒绝执行' };
     faulted = true;
     throw new Error('host_rejected');
   }
   return reply.result;
+}
+
+async function callHost(method, params) {
+  const result = await rpc(method, params, true);
+  if (result?.__rejected) throw new HostRejected(result.error);
+  return result;
 }
 
 function text(value, max = 1000) {
@@ -220,10 +231,14 @@ function parseModelAction(rawArgs) {
       if (!exactKeys(args, ['action', 'title']) || !text(args.title)) throw new Error('invalid_action');
       return { type: 'switch_window', inputs: { title: text(args.title) } };
     }
+    case 'read_skill': {
+      // Skill 是 Agent 按需加载的参考经验，不改变页面。
+      if (!exactKeys(args, ['action', 'name']) || !text(args.name)) throw new Error('invalid_action');
+      return { type: 'skill', inputs: { name: text(args.name, 80) } };
+    }
     case 'terminate': {
-      // 业务只收一个状态、一条理由、一张证据图；success 额外要求菜品区域。
-      // 旧版字段（status/evidence/code）允许出现但不参与判定，避免因多余键整轮被拒。
-      if (!exactKeys(args, ['action', 'outcome', 'reason', 'menu_box', 'status', 'evidence', 'code']) ||
+      // 业务只收一个状态、一条理由；success 额外要求菜品区域。字段白名单之外一律视为格式违规。
+      if (!exactKeys(args, ['action', 'outcome', 'reason', 'menu_box']) ||
           !['success', 'unqualified', 'needs_review'].includes(args.outcome) || !text(args.reason)) {
         throw new Error('invalid_terminal');
       }
@@ -271,6 +286,13 @@ function makeCustomActionParser() {
         : 'invalid_action';
       trace({ type: 'action', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
               ok: false, error: code, ...rawRecord(rawContent) });
+      if ((code === 'invalid_action' || code === 'invalid_terminal') && parseFailures < 2) {
+        // 可修正的格式错误给两次反馈机会，让 Agent 按协议改正，而不是整轮终止。
+        parseFailures += 1;
+        pendingNotice = `上一次输出不符合工具协议（${code}），本次未执行。请只输出一个 computer_use tool_call，`
+          + '字段名、类型和取值范围必须完全符合约定，不要添加任何未列出的字段。';
+        return { rawContent, reasoningContent: '', actions: [{ type: 'notice', inputs: { message: pendingNotice } }] };
+      }
       return reject(code, rawContent);
     }
   };
@@ -280,7 +302,7 @@ class HostOperator extends Operator {
   async initialize() {}
 
   supportedActions() {
-    return ['click', 'scroll', 'wait', 'windows', 'switch_window', 'finished'];
+    return ['click', 'scroll', 'wait', 'windows', 'switch_window', 'skill', 'finished', 'notice'];
   }
 
   screenContext() {
@@ -311,21 +333,40 @@ class HostOperator extends Operator {
       const action = actions[0];
       if (!action || !action.inputs || typeof action.type !== 'string') throw new Error('invalid_action');
       method = action.type;
-      actionUsedOnFrame = true;
       actionCount += 1;
       let reply = {};
+      if (action.type === 'skill') {
+        // 读取 Skill 不改变页面，也不消耗当前帧；Agent 下一轮可继续在同一画面操作。
+        const name = text(action.inputs.name);
+        if (!name) throw new Error('invalid_action');
+        const result = await callHost('skill', { frame_id: currentFrame, name });
+        reply = { name };
+        pendingNotice = text(result?.content, 6000) || '该 Skill 没有可读内容。';
+        trace({ type: 'tool', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
+                method: 'skill', inputs: sanitized(inputs), ok: true, reply,
+                bytes: pendingNotice.length });
+        return { status: 'success' };
+      }
+      actionUsedOnFrame = true;
+      if (action.type === 'notice') {
+        pendingNotice = text(action.inputs.message, 300) || pendingNotice;
+        trace({ type: 'tool', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
+                method: 'notice', inputs: sanitized(inputs), ok: false, error: 'invalid_output',
+                feedback: pendingNotice });
+        return { status: 'success' };
+      }
       if (action.type === 'click') {
         const point = action.inputs.point?.raw;
         if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error('invalid_action');
-        await rpc('click', { frame_id: currentFrame, x: point.x, y: point.y });
+        await callHost('click', { frame_id: currentFrame, x: point.x, y: point.y });
       } else if (action.type === 'scroll') {
         const point = action.inputs.point?.raw;
         if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || !['up', 'down'].includes(action.inputs.direction)) throw new Error('invalid_action');
-        await rpc('scroll', { frame_id: currentFrame, x: point.x, y: point.y, direction: action.inputs.direction === 'up' ? 'Up' : 'Down' });
+        await callHost('scroll', { frame_id: currentFrame, x: point.x, y: point.y, direction: action.inputs.direction === 'up' ? 'Up' : 'Down' });
       } else if (action.type === 'wait') {
         const seconds = action.inputs.time;
         if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 5) throw new Error('invalid_action');
-        await rpc('wait', { frame_id: currentFrame, seconds });
+        await callHost('wait', { frame_id: currentFrame, seconds });
       } else if (action.type === 'windows') {
         const result = await rpc('windows', { frame_id: currentFrame });
         const titles = Array.isArray(result?.windows)
@@ -338,7 +379,7 @@ class HostOperator extends Operator {
       } else if (action.type === 'switch_window') {
         const title = text(action.inputs.title);
         if (!title) throw new Error('invalid_action');
-        const result = await rpc('switch_window', { frame_id: currentFrame, title });
+        const result = await callHost('switch_window', { frame_id: currentFrame, title });
         reply = { switched: Boolean(result?.switched), error: text(result?.error), titles: result?.titles || [] };
         pendingNotice = result?.switched
           ? `已切换到窗口「${title}」；下一张截图来自该窗口，请重新核对门店。`
@@ -351,6 +392,13 @@ class HostOperator extends Operator {
               feedback: pendingNotice });
       return { status: 'success' };
     } catch (error) {
+      if (error instanceof HostRejected) {
+        pendingNotice = `上一步操作未执行：${error.message}。请重新观察截图，换一个位置或动作。`;
+        trace({ type: 'tool', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame, method,
+                inputs: sanitized(inputs), ok: false, duration_ms: Date.now() - started,
+                error: 'host_rejected', detail: text(error.message, 300), feedback: pendingNotice });
+        return { status: 'success' };
+      }
       trace({ type: 'tool', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame, method,
               inputs: sanitized(inputs), ok: false, duration_ms: Date.now() - started,
               error: text(error?.message, 120) });
@@ -386,20 +434,27 @@ async function main() {
     const model = config.model;
     if (!model || typeof model.baseURL !== 'string' || typeof model.apiKey !== 'string' || typeof model.model !== 'string' ||
         typeof config.instruction !== 'string' || !config.instruction.trim() ||
+        typeof config.output_contract !== 'string' || !config.output_contract.trim() ||
         !Number.isInteger(config.max_steps) || config.max_steps < 1 || config.max_steps > 100) throw new Error('protocol');
+    const reference = config.reference_image;
+    if (reference != null && (typeof reference !== 'object' || typeof reference.mime !== 'string' ||
+        !/^image\/(png|jpeg)$/.test(reference.mime) || typeof reference.base64 !== 'string' || !reference.base64)) {
+      throw new Error('protocol');
+    }
 
     const operator = new HostOperator();
     if (typeof config.trace_path === 'string' && config.trace_path.trim()) tracePath = config.trace_path.trim();
     trace({ type: 'session', at: now(), node: process.version, model: model.model, max_steps: config.max_steps,
+            reference: reference ? { mime: reference.mime, width: reference.width || null,
+                                     height: reference.height || null,
+                                     bytes: Buffer.byteLength(reference.base64, 'base64') } : null,
             ...sanitized(typeof config.trace === 'object' && config.trace ? config.trace : {}) });
     const systemPrompt = [
-      'Control the GUI with one observation and one action per turn.',
-      'Return exactly one <tool_call>{"name":"computer_use","arguments":{...}}</tool_call>. Coordinates and menu_box use a normalized 1000x1000 space, top-left origin, independent of PNG size.',
-      'Every arguments object MUST contain "action" with one exact string: "left_click" (coordinate=[x,y]); "scroll" (pixels: positive=up, negative=down, coordinate optional); "wait" (time<=5); "list_windows"; "switch_window" (title); "terminate" (outcome="success"|"needs_review"|"unqualified", reason, menu_box only for success as 4 numbers [x1,y1,x2,y2]). Never use call syntax like list_windows() and never omit "action".',
-      'Terminal examples: <tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"success","reason":"...","menu_box":[x1,y1,x2,y2]}}</tool_call>; <tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"needs_review","reason":"..."}}</tool_call>.',
-      'Terminal meaning: success = a browsable menu with real dishes and prices is visible; one or two dishes is enough, the store name need not be visible, and a closed store with a visible menu still counts. unqualified = clear evidence this QR code or mini-program cannot provide a menu now (scan-order service explicitly closed with no menu entry, must scan in store, QR expired, menu not configured). needs_review = reasonable attempts made but the result is still unknown. Temporary loading, a login wall, a failed click, an unclear store, or few dishes are NOT unqualified.',
-      'Obstacles are normal steps: dismiss popups by any reasonable choice (allow, decline, agree, close); location/notification/privacy popups are not failures. Wait two or three times on loading. If another mini-program window opens, use list_windows then switch_window and re-check the fresh screenshot; retrying the same position is allowed. Do not attach menu_box for needs_review or unqualified.',
-      'Read-only: never order, pay, add to cart, claim coupons, log in, or switch stores. Never invent coordinates or claim unseen evidence.',
+      '每一轮只做一次观察和一个动作。',
+      '只输出一个 tool_call：<tool_call>{"name":"computer_use","arguments":{...}}</tool_call>。坐标与 menu_box 使用当前截图的 1000x1000 归一化空间，左上角为原点。',
+      '终态示例：<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"success","reason":"...","menu_box":[x1,y1,x2,y2]}}</tool_call>；<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"needs_review","reason":"..."}}</tool_call>。',
+      '安全边界：不要下单、支付、加购物车、领券、登录或切换门店；不要编造坐标，也不要声称截图里没有出现的内容。',
+      config.output_contract,
     ].join('\n');
     const agent = new class extends GUIAgent {
       async onLLMRequest(_id, payload) {
@@ -476,10 +531,22 @@ async function main() {
     const first = await operator.doScreenshot();
     if (first.status !== 'success' || !first.base64) throw new Error('screenshot');
     const observationMeta = `First attached PNG dimensions: ${screenWidth}x${screenHeight} pixels. Coordinates use the normalized 1000x1000 screen space.`;
+    // 第一张图是当前屏幕，也是唯一可点击的坐标依据；参考图只用于理解任务来源。
+    const initialContent = [{ type: 'image_url', image_url: { url: `data:image/png;base64,${first.base64}` } }];
+    if (reference) {
+      initialContent.push({
+        type: 'text',
+        text: '下面附一张本轮二维码原图，仅用于理解品牌、桌号、扫码方式等任务背景；它不是当前屏幕，不能作为点击坐标依据，也不要求页面必须出现其中的文字。',
+      });
+      initialContent.push({
+        type: 'image_url',
+        image_url: { url: `data:${reference.mime};base64,${reference.base64}` },
+      });
+    }
     const event = await agent.run({
       input: `${observationMeta}\n\nTask: ${config.instruction}`,
       environmentInput: {
-        content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${first.base64}` } }],
+        content: initialContent,
         description: 'Initial desktop screenshot',
         metadata: { type: 'screenshot' },
       },

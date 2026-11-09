@@ -21,14 +21,77 @@ from .model import Region
 
 
 _ENTRY = Path(__file__).resolve().parent.parent / "ui_tars" / "adapter.mjs"
+_SKILLS_DIR = Path(__file__).resolve().parent.parent / "ui_tars" / "skills"
 GUI_PLUS_MODEL = "gui-plus-2026-02-26"
 _GUI_PLUS_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 _MAX_MODEL_IMAGE_PIXELS = 1_003_520
+_REFERENCE_MAX_PIXELS = 640_000
 _TERMINAL_OUTCOMES = ("success", "needs_review", "unqualified")
+_SKILL_MAX_CHARS = 6000
+# Skill 只提供可参考的业务经验，由 Agent 自行决定是否加载。
+_SKILLS = {
+    "menu-navigation": "点餐小程序导航经验：三终态判定、弹窗与前置步骤、常见误判反例。",
+}
+
+# 输出契约是固定协议：字段、类型、取值范围都写死，不允许模型自创字段。
+_OUTPUT_CONTRACT = """输出契约（固定协议，必须完全遵守；不合规会被拒绝并要求重写）
+1. 每轮只输出一个 tool_call：<tool_call>{"name":"computer_use","arguments":{...}}</tool_call>。
+   不要输出多个 tool_call，不要用自然语言描述动作，不要把 action 写成函数调用形式。
+2. arguments 只能包含动作表为该动作列出的字段。禁止添加未列出的字段，禁止编造页面信息或坐标。
+3. 坐标统一使用当前截图的 1000x1000 归一化空间，左上角为 (0,0)，取值 0..999。
+动作表：
+- left_click：必填 coordinate=[x,y]；不得有其他字段。
+- scroll：必填 pixels（非零数字，正数向上、负数向下）；选填 coordinate=[x,y]。
+- wait：必填 time（秒，0 < time <= 5）；不得有其他字段。
+- list_windows：只有 action，不得有其他字段。
+- switch_window：必填 title（窗口标题原文，非空字符串）；不得有其他字段。
+- read_skill：必填 name（只能是已提供 Skill 索引中的名称）。
+- terminate：必填 outcome（success / unqualified / needs_review）和 reason（中文，说明实际观察到的结果，不超过 300 字）；
+  menu_box 只在 success 时必填，为 4 个 0..1000 的数字 [x1,y1,x2,y2]，且 x1<x2、y1<y2；非 success 不得提供 menu_box。
+仅在两种情况下会容忍并纠正：遗漏 action 但 outcome 与 reason 完整（按 terminate 处理）；非 success 带空数组 menu_box（视同未提供）。
+除这两种以外，任何字段缺失、类型错误、越界或多余字段都视为格式违规。"""
 
 
 class TrialProtocolError(RuntimeError):
     pass
+
+
+class TrialActionRejected(RuntimeError):
+    """模型动作本身可修正：回传错误并保留会话，由 Agent 重新决策。"""
+
+
+def load_skill(name: str) -> str:
+    """按名称读取本地 Skill 文档；名称必须来自固定索引，避免任意路径读取。"""
+    if name not in _SKILLS:
+        raise TrialActionRejected("没有该 Skill；可用：" + "、".join(sorted(_SKILLS)))
+    try:
+        content = (_SKILLS_DIR / f"{name}.md").read_text(encoding="utf-8").strip()
+    except OSError:
+        raise TrialActionRejected("该 Skill 文档当前无法读取") from None
+    if not content:
+        raise TrialActionRejected("该 Skill 文档为空")
+    return content[:_SKILL_MAX_CHARS] + ("\n（内容已截断）" if len(content) > _SKILL_MAX_CHARS else "")
+
+
+def reference_image(path) -> dict | None:
+    """把本轮二维码原图压缩成参考图；读取失败只表示没有参考资料，不影响启动。"""
+    if not path:
+        return None
+    try:
+        with Image.open(path) as image:
+            image.load()
+            image = image.convert("RGB")
+            width, height = image.size
+            if width * height > _REFERENCE_MAX_PIXELS:
+                scale = math.sqrt(_REFERENCE_MAX_PIXELS / (width * height))
+                image = image.resize((max(1, int(width * scale)), max(1, int(height * scale))),
+                                     Image.Resampling.LANCZOS)
+            with io.BytesIO() as data:
+                image.save(data, format="JPEG", quality=85)
+                return {"mime": "image/jpeg", "base64": base64.b64encode(data.getvalue()).decode("ascii"),
+                        "width": image.width, "height": image.height}
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -71,42 +134,42 @@ def trial_model_from_env(configs: ConfigStore | None = None) -> TrialModel:
 
 def run_navigation(model: TrialModel, store_name: str, people: int, max_steps: int,
                    *, observe, execute, check_stop, log_path: Path | None = None,
-                   trace_path: Path | None = None, trace_meta: dict | None = None) -> tuple[dict, dict | None]:
+                   trace_path: Path | None = None, trace_meta: dict | None = None,
+                   source_image=None) -> tuple[dict, dict | None]:
     instruction = (
         f"目标门店：{store_name}，用餐人数 {people} 人。你正在操作已经打开的微信点餐小程序。"
         "\n目标：尽可能进入可采集的菜单页（能看到真实菜品，通常带价格），然后交接；后续程序负责滚动截图。"
-        "\n执行原则：根据当前截图自主选择动作。欢迎页、人数选择、广告、加载、授权弹窗都只是中间状态，优先尝试继续。"
-        "弹窗以消除阻碍为目标，允许、拒绝、同意、关闭都可以；点击没反应就重新观察再试，允许重试同一位置；"
-        "加载先 wait 两到三次；出现新小程序窗口先 list_windows 再 switch_window。"
-        "\n终态判断的核心：已经拿到可采集菜单、已经明确知道不能采集、还是仍然无法确定。判断依据是当前截图和操作反馈，不是关键词表。"
-        "\n- success：已进入可正常浏览的菜品菜单，有真实菜品和价格，菜单区域可框选。只有一两道菜也可以；"
-        "不要求店名出现在截图；门店打烊但菜单仍可浏览也算 success。"
-        "只看到“立即点餐”、欢迎页、广告、购物车、订单配置、支付页或只有分类入口时，继续探索，不要 success。"
-        "\n- unqualified：有清楚证据表明本轮无法采集。例如扫码点餐服务明确关闭且没有菜单入口；明确要求到店再扫码；"
-        "二维码明确失效；商家明确未配置菜单；小程序停止服务且无菜单。"
-        "反例：打烊但菜单可见 → success；提示暂时无法下单但有查看菜单入口 → 继续；白屏且没有明确原因 → 不是 unqualified；"
-        "点击失败、需要登录、页面归属不明 → 不是 unqualified。"
-        "\n- needs_review：合理尝试后仍无法确定或继续。例如强制手机号+验证码无法跳过；持续白屏或加载；"
-        "页面与本轮二维码关系不明；工具持续失败；弹窗无法消除。"
-        "记住：暂时进不去菜单 ≠ 不合格；不能下单 ≠ 不能采集菜单；菜品少或没显示完整店名 ≠ 不能成功。"
-        "\n输出：每轮一个 computer_use tool_call，arguments 必须含 action（left_click/scroll/wait/list_windows/switch_window/terminate），"
-        "不要写成自然语言函数调用；坐标和 menu_box 使用当前截图的 1000x1000 归一化；"
-        "terminate 时给出 outcome、reason（中文，说明实际观察到的结果），menu_box 仅在 success 时提供，为 4 个 0..1000 的整数。"
+        "\n执行原则：页面判断和下一步动作都由你负责，根据当前截图自主选择。欢迎页、人数选择、广告、加载、"
+        "授权弹窗都是中间状态，优先尝试继续；弹窗以消除阻碍为目标，允许、拒绝、同意、关闭都可以；"
+        "点击没反应就重新观察，可以重试同一位置；加载可 wait 两到三次；出现新小程序窗口先 list_windows 再 switch_window。"
+        "\n终态：success=已看到可正常浏览的菜品菜单；unqualified=有明确证据表明本轮无法采集；"
+        "needs_review=合理尝试后仍无法确定。暂时进不去菜单、不能下单、需要登录、点击失败、菜品少，都不等于 unqualified。"
+        "\n业务经验可按需加载："
+        + "；".join(f'read_skill(name="{name}")：{description}' for name, description in _SKILLS.items())
+        + "。需要时先加载再操作，不需要就直接按截图判断。"
+        "\n如果请求里附带二维码原图，它只用于理解门店背景；所有点击坐标仍以当前屏幕截图为准。"
+        "\n输出必须严格符合系统提示中的固定输出契约。"
     )
     return _run_agent(model, instruction, max_steps, observe=observe, execute=execute,
                       check_stop=check_stop, log_path=log_path,
-                      trace_path=trace_path, trace_meta=trace_meta)
+                      trace_path=trace_path, trace_meta=trace_meta, source_image=source_image)
 
 
 def _run_agent(model: TrialModel, instruction: str, max_steps: int,
                *, observe, execute, check_stop, log_path: Path | None = None,
-               trace_path: Path | None = None, trace_meta: dict | None = None) -> tuple[dict, dict | None]:
+               trace_path: Path | None = None, trace_meta: dict | None = None,
+               source_image=None) -> tuple[dict, dict | None]:
     config = {
         "model": {"baseURL": model.base_url, "apiKey": model.api_key, "model": GUI_PLUS_MODEL},
         "instruction": instruction, "max_steps": max_steps,
+        "output_contract": _OUTPUT_CONTRACT,
         "trace_path": str(trace_path) if trace_path else "",
         "trace": {str(key): str(value) for key, value in (trace_meta or {}).items() if value is not None},
     }
+    # 原始二维码照片只作为任务背景参考，不能当成可点击屏幕。
+    reference = reference_image(source_image)
+    if reference:
+        config["reference_image"] = reference
     child_env = os.environ.copy()
     for key in ("GUI_PLUS_API_KEY", "DASHSCOPE_API_KEY", "UI_TARS_API_KEY"):
         child_env.pop(key, None)
@@ -171,6 +234,19 @@ def _exchange(child, config, observe, execute, check_stop):
                 or not isinstance(request_id, (int, str)) or isinstance(request_id, bool)):
             raise TrialProtocolError("GUI Agent 返回未知请求")
         method = event.get("method")
+        if method == "skill":
+            # 读取 Skill 不改变页面，也不消耗当前帧；由 Agent 自主决定何时加载。
+            name = params.get("name")
+            if not isinstance(name, str) or not name.strip():
+                send({"id": request_id, "ok": False, "error": "read_skill 缺少 name"})
+                continue
+            try:
+                content = load_skill(name.strip())
+            except TrialActionRejected as exc:
+                send({"id": request_id, "ok": False, "error": str(exc)[:300]})
+                continue
+            send({"id": request_id, "ok": True, "result": {"name": name.strip(), "content": content}})
+            continue
         if method == "screenshot":
             sequence += 1
             frame = observe(sequence)
@@ -181,9 +257,14 @@ def _exchange(child, config, observe, execute, check_stop):
         else:
             if frame is None or params.get("frame_id") != frame_id or action_sent:
                 raise TrialProtocolError("GUI Agent 动作需要同轮新鲜截图")
-            command = _action_command(method, params, frame, image_size)
-            check_stop()
-            reply = execute(command, frame_id) or {}
+            try:
+                command = _action_command(method, params, frame, image_size)
+                check_stop()
+                reply = execute(command, frame_id) or {}
+            except TrialActionRejected as exc:
+                # 模型动作本身可修正：回传错误让 Agent 重新决策，不终止本轮。
+                send({"id": request_id, "ok": False, "error": str(exc)[:300]})
+                continue
             if method == "windows":
                 # 列窗口不改变页面，下一张截图仍属于同一帧。
                 result = {"windows": reply.get("windows", []) if isinstance(reply, dict) else []}
@@ -213,7 +294,7 @@ def _action_command(method, params, frame, image_size):
     if method == "wait":
         seconds = params.get("seconds")
         if not _finite(seconds) or not 0 <= seconds <= 5:
-            raise TrialProtocolError("GUI Agent 等待参数无效")
+            raise TrialActionRejected("等待时间必须在 0 到 5 秒之间")
         return {"action": "noop", "seconds": seconds}
     if method == "windows":
         return {"action": "windows"}
@@ -227,16 +308,15 @@ def _action_command(method, params, frame, image_size):
     x, y = params.get("x"), params.get("y")
     width, height = image_size
     if not _finite(x) or not _finite(y) or not (0 <= x < width and 0 <= y < height):
-        raise TrialProtocolError("GUI Agent 动作坐标超出送模窗口截图")
+        raise TrialActionRejected("坐标超出当前截图范围，请在 1000x1000 归一化坐标内选择")
     if method == "click" and x > width * .55 and y < height * .045:
-        # 右上角是小程序窗口胶囊（… / ◎），点中会退出小程序；降级为短暂等待，
-        # 让 Agent 从新截图重新选择目标，而不是整店失败。
-        return {"action": "noop", "seconds": 0.2}
+        # 右上角是小程序窗口胶囊（… / ◎），点中会退出小程序；本次不执行并明确告知 Agent。
+        raise TrialActionRejected("点击落在窗口右上角胶囊保护区，会退出小程序；本次操作未执行，请换一个位置")
     result = {"action": method, "x": x * frame["window_width"] / width,
               "y": y * frame["window_height"] / height}
     if method == "scroll":
         if params.get("direction") not in ("Up", "Down"):
-            raise TrialProtocolError("GUI Agent 滚动方向无效")
+            raise TrialActionRejected("滚动方向无效，只允许 Up 或 Down")
         result.update(direction=params["direction"], units=4)
     return result
 

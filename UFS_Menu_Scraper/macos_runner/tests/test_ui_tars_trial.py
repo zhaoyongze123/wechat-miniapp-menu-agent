@@ -24,12 +24,7 @@ from menu_capture.ui_tars_trial import (
     run_navigation,
     trial_model_from_env,
 )
-from menu_capture.uipath_runner import (
-    NeedsReview,
-    RobotCommandError,
-    UiPathRunner,
-    _trial_page_state_reason,
-)
+from menu_capture.uipath_runner import NeedsReview, RobotCommandError, UiPathRunner
 
 
 _SDK = Path(__file__).resolve().parents[1] / "ui_tars/node_modules/@gui-agent/agent-sdk/package.json"
@@ -274,20 +269,6 @@ def test_large_model_image_maps_normalized_click_back_to_original_window_points(
     assert result["menu_region"] == {"x": 0, "y": 0, "width": 1600, "height": 1200}
 
 
-def test_invalid_qr_page_state_forces_unqualified_and_price_wins():
-    # 两张实测页面：扫码点餐关闭/请到店再扫码，属于明确不可采证据。
-    assert "扫码点餐" in _trial_page_state_reason("scan_order_unsupported")
-    assert _trial_page_state_reason("qr_expired")
-    # 访问障碍不是不合格证据：登录限制、打烊、暂无菜品、加载失败都交回 Agent。
-    assert _trial_page_state_reason("phone_only") == ""
-    assert _trial_page_state_reason("store_closed") == ""
-    assert _trial_page_state_reason("menu_unavailable") == ""
-    assert _trial_page_state_reason("network_error") == ""
-    # 页面已经出现价格时，任何状态都不能推翻可见菜单。
-    assert _trial_page_state_reason("scan_order_unsupported", has_price=True) == ""
-    assert _trial_page_state_reason(None) == ""
-
-
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 def test_success_menu_box_with_small_pixel_overflow_is_clamped(model_server, tmp_path):
     server, handler = model_server
@@ -319,6 +300,27 @@ def test_needs_review_terminal_ignores_empty_menu_box(model_server, tmp_path):
     assert result["outcome"] == "needs_review"
     assert "身份" in result["reason"]
     assert terminal_frame == frames[0]
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_capsule_click_is_returned_to_agent_instead_of_ending_run(model_server, tmp_path):
+    server, handler = model_server
+    # 胶囊区点击应被拒绝并把错误反馈给 Agent，下一次输出仍可正常结束本轮。
+    handler.responses = [
+        _tool_call({"action": "left_click", "coordinate": [800, 10]}),
+        _terminal("needs_review", reason="胶囊区被拒绝，重新观察后仍无法确认"),
+    ]
+    observe, _frames = _frame_factory(tmp_path)
+    executed = []
+
+    result, _frame = run_navigation(
+        _model(server), "测试门店", 1, 4,
+        observe=observe, execute=lambda *args: executed.append(args), check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "needs_review"
+    assert executed == []
+    assert len(handler.requests) == 2
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
@@ -399,7 +401,8 @@ def test_action_name_with_empty_parentheses_is_normalized(model_server, tmp_path
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 def test_old_action_syntax_is_not_executed(model_server, tmp_path):
     server, handler = model_server
-    handler.responses = ["Action: click(start_box='[0.1,0.1,0.2,0.2]')"]
+    # 可修正的格式错误会给两次反馈机会，第三次仍不合法才终止。
+    handler.responses = ["Action: click(start_box='[0.1,0.1,0.2,0.2]')"] * 3
     observe, _frames = _frame_factory(tmp_path)
     actions = []
 
@@ -414,13 +417,13 @@ def test_old_action_syntax_is_not_executed(model_server, tmp_path):
     assert result["outcome"] == "needs_review"
     assert result.get("source") == "runtime"
     assert actions == []
-    assert len(handler.requests) == 1
+    assert len(handler.requests) == 3
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 def test_normalized_point_upper_bound_is_rejected_before_execution(model_server, tmp_path):
     server, handler = model_server
-    handler.responses = [_tool_call({"action": "left_click", "coordinate": [1000, 500]})]
+    handler.responses = [_tool_call({"action": "left_click", "coordinate": [1000, 500]})] * 3
     observe, _frames = _frame_factory(tmp_path)
     actions = []
 
@@ -432,7 +435,7 @@ def test_normalized_point_upper_bound_is_rejected_before_execution(model_server,
     assert result["outcome"] == "needs_review"
     assert result.get("source") == "runtime"
     assert actions == []
-    assert len(handler.requests) == 1
+    assert len(handler.requests) == 3
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
@@ -461,7 +464,7 @@ def test_gui_plus_missing_click_bracket_requires_exact_known_shape(model_server,
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 def test_missing_success_menu_box_fails_closed(model_server, tmp_path):
     server, handler = model_server
-    handler.responses = [_terminal("success")]
+    handler.responses = [_terminal("success")] * 3
     observe, _frames = _frame_factory(tmp_path)
 
     try:
@@ -475,7 +478,7 @@ def test_missing_success_menu_box_fails_closed(model_server, tmp_path):
     assert result["outcome"] == "needs_review"
     assert result.get("source") == "runtime"
     assert "菜单区域" in result["reason"] or result.get("diagnostic", {}).get("code")
-    assert len(handler.requests) == 1
+    assert len(handler.requests) == 3
 
 
 def test_stale_frame_action_is_rejected_before_transport_execution(tmp_path):
@@ -1028,3 +1031,118 @@ def test_live_gui_plus_pixel_contract_before_mouse(tmp_path, width, height, squa
     left, top, side = square
     assert left <= actions[0]["x"] <= left + side
     assert top <= actions[0]["y"] <= top + side
+
+
+def test_read_skill_returns_indexed_document_without_consuming_frame():
+    from menu_capture.ui_tars_trial import _exchange
+
+    read_fd, write_fd = os.pipe()
+    events = [
+        {"type": "request", "id": "1", "method": "skill", "params": {"name": "menu-navigation"}},
+        {"type": "result", "outcome": "needs_review", "reason": "已加载经验后继续观察"},
+    ]
+    os.write(write_fd, b"".join(json.dumps(item).encode() + b"\n" for item in events))
+
+    class Child:
+        stdin = io.BytesIO()
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    try:
+        result, _frame = _exchange(
+            Child(), {},
+            observe=lambda _seq: pytest.fail("读取 Skill 不应触发截图"),
+            execute=lambda *args: pytest.fail("读取 Skill 不应执行桌面动作"),
+            check_stop=lambda: None,
+        )
+        assert result["outcome"] == "needs_review"
+        replies = [json.loads(line) for line in Child.stdin.getvalue().decode().splitlines()]
+        assert replies[1]["ok"] is True
+        assert replies[1]["result"]["name"] == "menu-navigation"
+        assert "三个终态" in replies[1]["result"]["content"]
+    finally:
+        os.close(write_fd)
+
+
+def test_unknown_skill_is_fed_back_without_terminating():
+    from menu_capture.ui_tars_trial import _exchange
+
+    read_fd, write_fd = os.pipe()
+    events = [
+        {"type": "request", "id": "1", "method": "skill", "params": {"name": "not-exist"}},
+        {"type": "result", "outcome": "needs_review", "reason": "没有该经验文档，按截图判断"},
+    ]
+    os.write(write_fd, b"".join(json.dumps(item).encode() + b"\n" for item in events))
+
+    class Child:
+        stdin = io.BytesIO()
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    try:
+        result, _frame = _exchange(
+            Child(), {},
+            observe=lambda _seq: pytest.fail("无效 Skill 不应触发截图"),
+            execute=lambda *args: pytest.fail("无效 Skill 不应执行桌面动作"),
+            check_stop=lambda: None,
+        )
+        assert result["outcome"] == "needs_review"
+        replies = [json.loads(line) for line in Child.stdin.getvalue().decode().splitlines()]
+        assert replies[1]["ok"] is False
+        assert "没有该 Skill" in replies[1]["error"]
+    finally:
+        os.close(write_fd)
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_agent_can_load_skill_on_demand_before_deciding(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        _tool_call({"action": "read_skill", "name": "menu-navigation"}),
+        _terminal("needs_review", reason="已参考经验并核对页面"),
+    ]
+    observe, _frames = _frame_factory(tmp_path)
+    trace_path = tmp_path / "agent-calls.jsonl"
+
+    result, _terminal_frame = run_navigation(
+        _model(server), "测试门店", 2, 4,
+        observe=observe, execute=lambda command, frame_id: None, check_stop=lambda: None,
+        trace_path=trace_path,
+    )
+
+    assert result["outcome"] == "needs_review"
+    loaded = _all_text(handler.requests[1]["body"]["messages"])
+    assert "点餐小程序导航经验" in loaded and "三个终态" in loaded
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    assert any(row.get("method") == "skill" and row.get("ok") for row in rows)
+
+
+def test_reference_image_is_downscaled_and_missing_file_is_ignored(tmp_path):
+    from menu_capture.ui_tars_trial import reference_image
+
+    source = tmp_path / "qr-source.jpg"
+    Image.new("RGB", (1800, 1400), "white").save(source)
+    reference = reference_image(source)
+    assert reference["mime"] == "image/jpeg"
+    assert reference["width"] * reference["height"] <= 640_000
+    assert reference_image(tmp_path / "missing.jpg") is None
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_source_image_is_sent_as_reference_context(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [_terminal("needs_review", reason="已看到本轮二维码原图")]
+    observe, _frames = _frame_factory(tmp_path)
+    source = tmp_path / "qr-source.jpg"
+    Image.new("RGB", (1200, 900), "white").save(source)
+
+    result, _terminal_frame = run_navigation(
+        _model(server), "测试门店", 2, 2,
+        observe=observe, execute=lambda command, frame_id: None, check_stop=lambda: None,
+        source_image=source,
+    )
+
+    assert result["outcome"] == "needs_review"
+    content = [item for request in handler.requests[:1]
+               for message in request["body"]["messages"] if isinstance(message.get("content"), list)
+               for item in message["content"]]
+    assert len([item for item in content if item.get("type") == "image_url"]) == 2
+    assert any("二维码原图" in item.get("text", "") for item in content)

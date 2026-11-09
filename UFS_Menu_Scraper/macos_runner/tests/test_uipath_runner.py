@@ -429,6 +429,15 @@ def test_window_discovery_ignores_wechat_main_and_refuses_ambiguous():
         UiPathRunner._select_miniapp_selector([mini, {**mini, "title": "另一家"}])
 
 
+def test_automatic_readiness_allows_missing_ocr(tmp_path: Path) -> None:
+    runner, _, _, _, profile_path, _ = _setup(tmp_path, mode="automatic")
+    runner.clipboard_preparer = lambda _path: None
+    runner.clipboard_text_preparer = lambda _text: None
+    runner.ocr_reader = None
+    status = runner.readiness()
+    assert status["ready"] is True, status["issues"]
+
+
 def test_automatic_window_discovery_selects_only_window_added_after_qr(tmp_path: Path) -> None:
     runner, _, _, _, profile_path, _ = _setup(tmp_path, mode="automatic")
     profile = json.loads(profile_path.read_text(encoding="utf-8"))

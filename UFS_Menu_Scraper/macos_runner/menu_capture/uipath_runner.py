@@ -115,9 +115,8 @@ _NOTIFICATION_DECLINE = ("不允许", "拒绝", "以后再说", "暂不允许", 
 _NOTIFICATION_ALLOW = ("允许", "开启", "去开启", "同意")
 # 微信自动识别到二维码不是小程序时会提示改用浏览器打开。
 _EXTERNAL_LINK = re.compile(r"在浏览器打开|打开系统浏览器|打开此链接|想要打开.{0,12}(链接|网页)")
-# 识别后没有小程序窗口，且预览里是聚合收款/海报物料（多渠道支付图标并存）时，
-# 说明这张二维码不是小程序码，人工也无法进入菜单。
-_QR_CHANNEL_MARKERS = re.compile(r"微信支付|支付宝|云闪付|美团|大众点评|扫码点餐\s*不用等")
+# 识别后没有小程序窗口时只记录画面原文，是否还能进入菜单由 Agent 判断；
+# 不在宿主侧按渠道图标组合给出门店结论。
 # 隐私/授权弹窗还没处理时，页面上的“网络有点异常”往往只是初始化提示，不能据此判死。
 _PENDING_CONSENT = re.compile(r"同意并继续|同意并授权|同意继续|隐私保护指引.{0,20}同意|请点击.{0,6}同意")
 # 模型给出粗坐标后，本地在周围重识别时要按当前场景挑按钮，而不是随便点最近的文字。
@@ -141,24 +140,6 @@ _PAGE_STATE_MESSAGES = {
     "phone_only": "页面要求在手机上打开或长按识别；桌面小程序无法继续采集",
     "customer_service": "页面跳转到了客服入口；桌面小程序无法继续采集",
 }
-# 只有“二维码/小程序本身无法提供菜单”才算明确不可采证据。
-# 打烊、登录、加载、工具失败都只是访问障碍，不能据此判不合格。
-_TRIAL_HARD_PAGE_STATES = {
-    "qr_expired", "miniapp_unavailable", "scan_order_unsupported",
-    "pickup_unavailable", "menu_not_configured", "qr_external_web",
-}
-
-
-def _trial_page_state_reason(code: str | None, has_price: bool = False) -> str:
-    """仅在 Agent 无法确定、而页面文字给出明确不可采证据时，提供不合格理由。
-
-    页面已经出现价格锚点时一律不覆盖：打烊或页脚文案不能推翻可见菜单。
-    """
-    if not code or code not in _TRIAL_HARD_PAGE_STATES or has_price:
-        return ""
-    return _PAGE_STATE_MESSAGES.get(code, "页面已证明当前二维码无法进入菜单")
-
-
 def _atomic_write_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
@@ -599,8 +580,6 @@ class UiPathRunner:
                 issues.append("图片剪贴板准备接口尚未接入")
             if self.clipboard_text_preparer is None:
                 issues.append("门店名称剪贴板准备接口尚未接入")
-            if self.ocr_reader is None:
-                issues.append("本地 OCR 接口尚未接入，不能确认文件传输助手/门店名称")
 
         task = None
         selected_tasks = []
@@ -1250,7 +1229,6 @@ class UiPathRunner:
         timing = report["timing_ms"] = {}
         last_frame = None
         raw_decision = None
-        page_state = {"code": None, "has_price": False}
         trace_path = output_dir / "agent-calls.jsonl"
         host_log = output_dir / "agent-host.jsonl"
 
@@ -1282,7 +1260,14 @@ class UiPathRunner:
                 self._open_source_automatic(task, profile, output_dir, settings.capture.settle_seconds)
                 selector = profile["miniapp_selector"]
             else:
-                selector = self._select_miniapp_selector(self._send({"action": "discover"}).get("windows"))
+                # 宿主只负责发现窗口；多个候选时先接管一个，由 Agent 用
+                # list_windows / switch_window 自行判断该操作哪个页面。
+                candidates = self._miniapp_candidates(self._send({"action": "discover"}).get("windows"))
+                if not candidates:
+                    raise NeedsReview("未发现可操作的小程序窗口")
+                selector = candidates[0]["selector"]
+                host_trace("window_discovery", count=len(candidates),
+                           titles=[item["title"] for item in candidates], selected=candidates[0]["title"])
             # 窗口准备与导航分离：先归位并截图校准尺寸，再启动 Agent 决策。
             active = {"selector": selector, "title": ""}
             self.current_task["stage"] = "ui_tars_navigation"
@@ -1302,17 +1287,6 @@ class UiPathRunner:
                            window_width=last_frame.get("window_width"),
                            window_height=last_frame.get("window_height"),
                            selector=active["selector"])
-                # 页面文字是业务口径的兜底证据：二维码失效/门店不可点餐不能只依赖模型判断。
-                if self.ocr_reader is not None:
-                    try:
-                        rows = self.ocr_reader(Path(last_frame["path"]))
-                    except Exception:
-                        rows = []
-                    if rows:
-                        page_state["code"] = detect_page_state(rows)
-                        page_state["has_price"] = has_menu_evidence(rows)
-                    host_trace("page_state", sequence=sequence, code=page_state["code"] or "",
-                               has_price=page_state["has_price"], ocr_rows=len(rows))
                 if sequence == 1:
                     report["initial_frame"] = str(Path(last_frame["path"]).relative_to(output_dir))
                 return last_frame
@@ -1331,6 +1305,8 @@ class UiPathRunner:
                     trace_meta={"run_id": self.run_id, "task_id": task["id"],
                                 "store_name": task["source_name"],
                                 "batch": output_dir.parent.name if automatic else ""},
+                    # 原始二维码照片提供品牌、桌号等背景，只作参考，不能当成可点击屏幕。
+                    source_image=task.get("source_path"),
                 )
                 timing["navigation"] = round((time.monotonic() - navigation_started) * 1000)
                 for field in ("reason",):
@@ -1341,18 +1317,9 @@ class UiPathRunner:
                         value = decision["diagnostic"].get(field)
                         if isinstance(value, str):
                             decision["diagnostic"][field] = value.replace(model.api_key, "[已隐藏]")
-                # 先留存 Agent 自己的判断，交接校验或宿主覆盖抛异常时仍能复盘原始决策。
+                # 先留存 Agent 自己的判断：交接校验失败时仍能复盘原始决策，业务终态始终由 Agent 决定。
                 raw_decision = {"outcome": decision["outcome"], "reason": decision["reason"]}
-                page_reason = _trial_page_state_reason(page_state["code"], page_state["has_price"])
-                # 只在 Agent 自己无法确定时用页面证据纠正；success 由交接校验负责，unqualified 不动。
-                if page_reason and decision["outcome"] == "needs_review":
-                    decision = {"outcome": "unqualified", "reason": page_reason, "source": "page_state",
-                                "page_state": page_state["code"],
-                                "agent_outcome": raw_decision["outcome"],
-                                "agent_reason": raw_decision["reason"]}
-                    host_trace("page_state_override", code=page_state["code"],
-                               agent_outcome=raw_decision["outcome"])
-                elif decision["outcome"] == "success":
+                if decision["outcome"] == "success":
                     # 校验必须发生在写入 navigation 之前：窗口/截图/区域不一致时整条结果降级为待检查。
                     self._validate_trial_handoff(decision, frame, active["selector"])
                 report["navigation"] = decision
@@ -1647,9 +1614,14 @@ class UiPathRunner:
             self._close_to_file_assistant(profile, output_dir, settle_seconds)
             return
         frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-safe-start.png")
-        if self._read_assistant_context(frame, "resume_safe_start"):
+        confirmed = self._read_assistant_context(frame, "resume_safe_start")
+        if confirmed:
             return
         windows = self._window_list(self._send({"action": "discover"}).get("windows"))
+        if confirmed is None:
+            # OCR 不可用时不能核对聊天标题：先收起残留小程序窗口，再按微信主窗口继续。
+            self._close_miniapp_windows(profile, output_dir)
+            return
         profile["miniapp_selector"] = self._select_miniapp_selector(windows)
         self._close_to_file_assistant(profile, output_dir, settle_seconds)
 
@@ -2252,7 +2224,9 @@ class UiPathRunner:
             raise TrialProtocolError("交接菜品区域超出当前截图")
 
     def _open_source_automatic(self, task: dict, profile: dict, output_dir: Path, settle_seconds: float) -> dict:
-        if not all((self.clipboard_preparer, self.clipboard_text_preparer, self.ocr_reader)):
+        # OCR 只用于辅助确认聊天上下文；素材与窗口的正确性由发送后的本轮原图匹配保证，
+        # 因此 OCR 不可用时仍允许启动，不再把识别能力当成启动前置条件。
+        if not all((self.clipboard_preparer, self.clipboard_text_preparer)):
             raise NeedsReview("automatic 模式依赖尚未接入")
         # 微信主窗口被关掉时后续 selector 全部失效，先唤回主窗口再开始。
         self._ensure_wechat_window()
@@ -2261,18 +2235,23 @@ class UiPathRunner:
         with self._trace("close_stale_miniapp") as trace:
             trace["closed"] = self._close_miniapp_windows(profile, output_dir)
         profile["miniapp_selector"] = ""
-        self._set_stage(task, "verifying_wechat", "截图并通过本地 OCR 确认文件传输助手")
+        self._set_stage(task, "verifying_wechat", "截图确认文件传输助手；OCR 可用时同时核对标题")
         before_discovery = self._send({"action": "discover"})
         before_windows = self._window_list(before_discovery.get("windows"))
         wechat = self._screenshot(output_dir, profile["wechat_selector"], "wechat-before-send.png")
-        with self._trace("wechat_ocr", frame_evidence=self._debug_frame_ref(Path(wechat["path"])),
+        with self._trace("wechat_ocr", purpose="before_send",
+                         frame_evidence=self._debug_frame_ref(Path(wechat["path"])),
                          image_size={"width": wechat["width"], "height": wechat["height"]}) as trace:
-            ocr_started = time.monotonic()
-            texts = self.ocr_reader(Path(wechat["path"]))
-            trace.update(ocr_rows=texts, ocr_engine=self._ocr_engine_name(),
-                         ocr_elapsed_ms=round((time.monotonic() - ocr_started) * 1000))
-        if not self._assistant_active(texts, wechat["width"], wechat["height"]):
-            raise NeedsReview("微信右上方未确认文件传输助手；未输入或发送素材")
+            if self.ocr_reader is None:
+                # 不假设当前聊天对象；发送后若本轮原图匹配不到，会在点击前终止。
+                trace.update(skipped=True, reason="ocr_unavailable")
+            else:
+                ocr_started = time.monotonic()
+                texts = self.ocr_reader(Path(wechat["path"]))
+                trace.update(ocr_rows=texts, ocr_engine=self._ocr_engine_name(),
+                             ocr_elapsed_ms=round((time.monotonic() - ocr_started) * 1000))
+                if not self._assistant_active(texts, wechat["width"], wechat["height"]):
+                    raise NeedsReview("微信右上方未确认文件传输助手；未输入或发送素材")
         self._guard()
         x = float(profile["wechat_input_x_ratio"]) * float(wechat["window_width"])
         y = float(profile["wechat_input_y_ratio"]) * float(wechat["window_height"])
@@ -2341,36 +2320,26 @@ class UiPathRunner:
             basename = "wechat-after-send.png" if observation == 1 else f"wechat-after-send-{observation}.png"
             sent = self._screenshot(output_dir, profile["wechat_selector"], basename)
             frame_ref = self._debug_frame_ref(Path(sent["path"]))
-            with self._trace("wechat_ocr", frame_evidence=frame_ref, observation=observation,
-                             image_size={"width": sent["width"], "height": sent["height"]}) as trace:
-                started = time.monotonic()
-                ocr = self.ocr_reader(Path(sent["path"]))
-                trace.update(ocr_rows=ocr, ocr_engine=self._ocr_engine_name(),
-                             ocr_elapsed_ms=round((time.monotonic() - started) * 1000))
-            if not self._assistant_active(ocr, sent["width"], sent["height"]):
-                raise NeedsReview("发送后文件传输助手上下文丢失，停止处理")
-            message_boxes = find_sent_text_bubbles(Path(sent["path"]))
-            ocr = self._augment_chat_ocr_with_bubbles(Path(sent["path"]), ocr, message_boxes)
-            matches = self._store_name_matches(ocr, task["source_name"], sent["width"], sent["height"],
-                                               message_boxes=message_boxes)
-            latest = max(matches, key=lambda item: item["bottom"], default=None)
-            with self._trace("wechat_store_name_check", expected_source_name=task["source_name"],
-                             observation=observation, match=latest is not None,
-                             anchor_bottom=latest["bottom"] if latest else None,
-                             matched_ocr=matches, selected_anchor=latest,
-                             message_boxes=message_boxes,
-                             anchor_policy="last_visible_store_name",
-                             ocr_chat_rows=self._anchor_diagnostic_rows(ocr, sent["width"]),
-                             frame_evidence=frame_ref,
-                             image_size={"width": sent["width"], "height": sent["height"]}) as trace:
-                if latest is None:
-                    last_reason = "截图中未识别到本轮门店编码或名称；已保留实际 OCR 和截图"
-                    trace.update(observation_result="anchor_not_visible", retry=observation < 3)
-                    continue
-            with self._trace("wechat_image_match", source_name=task["source_name"], anchor_y=latest["bottom"],
-                             observation=observation, frame_evidence=frame_ref) as trace:
+            # OCR 只用于确认仍停留在文件传输助手；不可用时不再阻断启动。
+            if self.ocr_reader is not None:
+                with self._trace("wechat_ocr", frame_evidence=frame_ref, observation=observation,
+                                 image_size={"width": sent["width"], "height": sent["height"]}) as trace:
+                    started = time.monotonic()
+                    ocr = self.ocr_reader(Path(sent["path"]))
+                    trace.update(ocr_rows=ocr, ocr_engine=self._ocr_engine_name(),
+                                 ocr_elapsed_ms=round((time.monotonic() - started) * 1000))
+                if not self._assistant_active(ocr, sent["width"], sent["height"]):
+                    raise NeedsReview("发送后文件传输助手上下文丢失，停止处理")
+            # 用最后一条右侧文字气泡限定图片范围，再用本轮原图匹配确认身份；
+            # 不识别气泡文字，也不要求 OCR 认出店名/编码。
+            bubbles = find_sent_text_bubbles(Path(sent["path"]))
+            latest = max(bubbles, key=lambda item: item["bottom"], default=None)
+            anchor_bottom = latest["bottom"] if latest else 0
+            with self._trace("wechat_image_match", source_name=task["source_name"],
+                             observation=observation, anchor_bottom=anchor_bottom,
+                             bubble_count=len(bubbles), frame_evidence=frame_ref) as trace:
                 try:
-                    match = locate_sent_image(Path(sent["path"]), Path(task["source_path"]), latest["bottom"])
+                    match = locate_sent_image(Path(sent["path"]), Path(task["source_path"]), anchor_bottom)
                 except ChatImageNotFound as exc:
                     last_reason = str(exc)
                     trace.update(diagnostics=exc.diagnostics, observation_result="thumbnail_not_visible", retry=observation < 3)
@@ -2390,7 +2359,9 @@ class UiPathRunner:
         raise NeedsReview(last_reason + "；未打开历史二维码")
 
     def _preview_external_link(self, profile: dict, output_dir: Path, seconds: float = 6.0) -> bool:
-        """预览窗口自动识别二维码并弹出“在浏览器打开链接”时，说明二维码指向网页而非小程序。"""
+        """预览里是否出现“在浏览器打开”一类提示；仅作为启动阶段的诊断证据。"""
+        if self.ocr_reader is None:
+            return False
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             try:
@@ -2412,11 +2383,13 @@ class UiPathRunner:
                 match = locate_preview_recognize(Path(preview["path"]))
             except PreviewIconNotFound as exc:
                 trace.update(diagnostics=exc.diagnostics)
-                if self._preview_external_link(profile, output_dir):
-                    raise NeedsReview(
-                        "二维码指向外部网页（非微信小程序），微信提示在浏览器打开，无法进入小程序菜单",
-                        "qr_external_web") from exc
-                raise NeedsReview(str(exc), "preview_icon_missing") from exc
+                # 只记录预览里看到的现象，不在启动阶段替门店下“二维码不是小程序码”的业务结论。
+                external_prompt = self._preview_external_link(profile, output_dir)
+                trace["external_link_prompt"] = external_prompt
+                raise NeedsReview(
+                    ("预览中出现“在浏览器打开”提示；" if external_prompt else "")
+                    + "未找到识别二维码入口，未进入小程序",
+                    "startup_preview_unavailable") from exc
             trace.update(target_resolution=match)
         center = match["center_image_px"]
         x = center["x"] * preview["window_width"] / preview["width"]
@@ -2444,16 +2417,19 @@ class UiPathRunner:
                     self._send({"action": "noop", "seconds": wait_seconds})
                 after_windows = self._window_list(self._send({"action": "discover"}).get("windows"))
                 new_windows = self._new_windows(before_windows, after_windows)
-                trace.update(observation=attempt, new_windows=new_windows)
-                try:
-                    miniapp = self._select_miniapp_selector(new_windows)
-                except NeedsReview:
+                candidates = self._miniapp_candidates(new_windows)
+                trace.update(observation=attempt, new_windows=[item["title"] for item in candidates])
+                if not candidates:
                     continue
-                profile["miniapp_selector"] = miniapp
-                trace.update(result="miniapp_opened", selector=miniapp)
-                return {"miniapp_selector": miniapp}
-            trace["result"] = "no_unique_miniapp"
-            # 无新窗口时保留结果画面，用已有 OCR 区分显式识别失败与仍停留在预览。
+                # 多个新窗口不在启动阶段做业务取舍：先接管第一个，
+                # Agent 可用 list_windows / switch_window 自行判断该操作哪个页面。
+                if len(candidates) > 1:
+                    trace["candidate_count"] = len(candidates)
+                profile["miniapp_selector"] = candidates[0]["selector"]
+                trace.update(result="miniapp_opened", selector=candidates[0]["selector"])
+                return {"miniapp_selector": candidates[0]["selector"]}
+            trace["result"] = "no_miniapp_window"
+            # 无新窗口时保留结果画面作为证据；OCR 文字只留痕，不据此判定门店业务状态。
             try:
                 result_frame = self._screenshot(output_dir, selector, "preview-recognition-result.png")
             except RobotCommandError as exc:
@@ -2464,14 +2440,8 @@ class UiPathRunner:
                     rows = self.ocr_reader(Path(result_frame["path"]))
                     trace["ocr_rows"] = rows
                     trace["visible_failure"] = any(re.search(r"无法识别|未识别|识别失败|未发现.*二维码", str(row.get("text", ""))) for row in rows)
-                    channels = {marker.group(0) for row in rows for marker in _QR_CHANNEL_MARKERS.finditer(str(row.get("text", "")))}
-                    trace["qr_channel_markers"] = sorted(channels)
-                    if len(channels) >= 2:
-                        raise NeedsReview(
-                            "二维码识别后未出现小程序窗口，预览画面是聚合收款/外卖海报（"
-                            + "、".join(sorted(channels)) + " 等多个渠道并存），不是小程序码，无法进入菜单",
-                            "qr_external_web")
-            raise NeedsReview("已点击识别二维码，但尚未观察到唯一的小程序窗口；请查看本轮识别结果，未重复点击")
+            raise NeedsReview("已点击识别二维码，但尚未观察到新的小程序窗口；未重复点击，未进入小程序",
+                              "startup_no_miniapp")
 
     @staticmethod
     def _window_list(windows: Any) -> list[dict]:
@@ -2611,12 +2581,17 @@ class UiPathRunner:
                             "key": profile["close_key"]})
         self._send({"action": "noop", "seconds": settle_seconds})
         closed = self._screenshot(output_dir, profile["wechat_selector"], "wechat-after-close.png")
-        if not self._read_assistant_context(closed, "after_close"):
+        if self._read_assistant_context(closed, "after_close") is False:
             raise NeedsReview("关闭当前小程序后未确认回到文件传输助手；批次停止")
 
-    def _read_assistant_context(self, frame: dict, purpose: str) -> bool:
+    def _read_assistant_context(self, frame: dict, purpose: str) -> bool | None:
+        """True/False 为 OCR 结论；None 表示 OCR 不可用、未确认（不据此拦截）。"""
         with self._trace("wechat_ocr", purpose=purpose,
                          frame_evidence=self._debug_frame_ref(Path(frame["path"]))) as trace:
+            if self.ocr_reader is None:
+                trace.update(skipped=True, reason="ocr_unavailable",
+                             image_size={"width": frame["width"], "height": frame["height"]})
+                return None
             rows = self.ocr_reader(Path(frame["path"]))
             active = self._assistant_active(rows, frame["width"], frame["height"])
             trace.update(ocr_rows=rows, assistant_active=active, ocr_engine=self._ocr_engine_name(),
