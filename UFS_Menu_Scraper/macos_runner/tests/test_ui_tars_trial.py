@@ -820,7 +820,8 @@ def test_runner_resizes_before_fresh_agent_frame_and_stages_capture(
                     color = (12, 34, 56) if self.resized else (255, 255, 255)
                 else:
                     self.scroll_shots = getattr(self, "scroll_shots", 0) + 1
-                    color = (255, 255, 255) if self.scroll_shots == 1 else (0, 0, 0)
+                    # 首页用黑底，避免与 Windows 未重排时的白色首帧相同而被误判“已到底”。
+                    color = (0, 0, 0) if self.scroll_shots == 1 else (255, 255, 255)
                 Image.new("RGB", (320, 200), color).save(path)
                 self._window_selector = command.get("selector")
                 self._window_pixels = (320, 200)
