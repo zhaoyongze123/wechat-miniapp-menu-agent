@@ -46,7 +46,7 @@ class ConnectionManager:
 
     def _restore(self) -> None:
         try:
-            data = json.loads(self.path.read_text())
+            data = json.loads(self.path.read_text(encoding="utf-8"))
             self._events.extend(data.get("events", [])[-80:])
             cached = data.get("model")
             if cached and cached.get("fingerprint") == self._fingerprint():

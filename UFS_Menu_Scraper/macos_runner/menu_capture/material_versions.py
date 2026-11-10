@@ -38,7 +38,7 @@ class MaterialVersions:
                 marker = published_root / batch["snapshot_id"] / ".materials-snapshot.json"
                 if not marker.is_file():
                     continue
-                manifest = json.loads(marker.read_text())
+                manifest = json.loads(marker.read_text(encoding="utf-8"))
                 old = db.execute("SELECT * FROM material_releases WHERE snapshot_id=?", (batch["snapshot_id"],)).fetchone()
                 db.execute(
                     "INSERT INTO material_versions VALUES(?,?,?,?,?,?,?)",
@@ -151,7 +151,7 @@ class MaterialVersions:
                               "WHERE batch_id=? AND decision='confirmed'", (batch_id,)).fetchall()
         selected = {row["store_id"]: (row["selected_source_hash"], json.loads(row["selected_json"]).get("box"))
                     for row in rows}
-        manifest = json.loads((self.published_root / snapshot_id / ".materials-snapshot.json").read_text()) if snapshot_id else {"stores": []}
+        manifest = json.loads((self.published_root / snapshot_id / ".materials-snapshot.json").read_text(encoding="utf-8")) if snapshot_id else {"stores": []}
         previous = {row["store_id"]: (row["source_hash"], row["box"]) for row in manifest["stores"]}
         return {
             "added": len(selected.keys() - previous.keys()), "removed": len(previous.keys() - selected.keys()),

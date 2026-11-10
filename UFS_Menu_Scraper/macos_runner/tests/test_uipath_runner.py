@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -291,11 +292,14 @@ def test_cli_launch_passes_private_run_directory_and_reaps_own_process(tmp_path:
         "--output", "json",
     ]
     assert json.loads(args_path.read_text(encoding="utf-8")) == {"in_RunDirectory": str(runner.run_directory)}
-    assert args_path.stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":
+        # Windows 没有 POSIX 权限位，0600 只在 POSIX 平台成立。
+        assert args_path.stat().st_mode & 0o777 == 0o600
     assert captured["kwargs"]["shell"] is False
     assert captured["kwargs"]["cwd"] == str(project_dir)
     assert captured["kwargs"]["env"]["UIPATH_CLI_DISABLE_VERSION_SYNC"] == "true"
-    assert Path(runner._cli_log_path).stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":
+        assert Path(runner._cli_log_path).stat().st_mode & 0o777 == 0o600
     metadata = json.loads(runner._cli_metadata_path.read_text(encoding="utf-8"))
     assert metadata["pid"] == process.pid and metadata["exit_code"] == 0
     assert process.wait_calls
@@ -830,6 +834,7 @@ def test_fused_ocr_merges_scales_into_the_3x_coordinate_space(tmp_path: Path) ->
     assert runner._last_ocr_meta["fused"] is True
     assert runner._last_ocr_meta["fusion_rows_by_scale"] == {"2": 1, "4": 1}
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows 不使用 capture_rect 快路径，直接走 UiPath 窗口截图")
 def test_fast_window_capture_rejects_stale_rect_and_wrong_size(tmp_path):
     runner = object.__new__(UiPathRunner)
     runner._fast_capture_enabled = True
@@ -867,6 +872,7 @@ def test_fast_window_capture_rejects_stale_rect_and_wrong_size(tmp_path):
     runner._send = dark
     assert runner._fast_window_capture(tmp_path, "sel", "dark.png") is None
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows 不使用 capture_rect 快路径，直接走 UiPath 窗口截图")
 def test_screenshot_reuses_confirmed_rect_for_same_window(tmp_path):
     runner = object.__new__(UiPathRunner)
     runner._fast_capture_enabled = True

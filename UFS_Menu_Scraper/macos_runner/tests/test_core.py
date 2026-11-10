@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import stat
+import sys
 from io import BytesIO
 from pathlib import Path
 
@@ -53,8 +54,10 @@ def test_config_files_are_private_and_nested_input_output_paths_are_rejected(tmp
     store = ConfigStore(tmp_path / "settings")
     store.save(settings_payload(tmp_path / "inbox", tmp_path / "output", api_key="private"))
 
-    for path in (store.path, store.secret_path):
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        # Windows 没有 POSIX 权限位，这里只验证 POSIX 平台的 0600 语义。
+        for path in (store.path, store.secret_path):
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
     with pytest.raises(ValueError, match="不能相同或互相包含"):
         store.save(settings_payload(tmp_path / "root", tmp_path / "root" / "output"))

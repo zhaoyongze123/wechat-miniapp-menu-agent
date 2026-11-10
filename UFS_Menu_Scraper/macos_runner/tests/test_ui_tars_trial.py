@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -680,9 +681,28 @@ def test_windows_pipe_transport_reads_jsonl_and_reports_eof():
 def test_windows_pipe_transport_keeps_existing_message_size_limit():
     from menu_capture.ui_tars_trial import _exchange
 
+    # Windows 匿名管道容量小于这条超限消息。必须边读边写，否则 os.write 会在读取线程启动前永久阻塞。
     read_fd, write_fd = os.pipe()
-    os.write(write_fd, b"x" * 32_769)
-    os.close(write_fd)
+    payload = b"x" * 32_769
+
+    def write_payload():
+        try:
+            view = memoryview(payload)
+            while view:
+                written = os.write(write_fd, view)
+                if written <= 0:
+                    break
+                view = view[written:]
+        except OSError:
+            return
+        finally:
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+
+    writer = threading.Thread(target=write_payload, daemon=True)
+    writer.start()
 
     class Child:
         stdin = io.BytesIO()
@@ -698,6 +718,8 @@ def test_windows_pipe_transport_keeps_existing_message_size_limit():
             )
     finally:
         child.stdout.close()
+        writer.join(timeout=5)
+        assert not writer.is_alive()
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
@@ -829,7 +851,14 @@ def test_runner_resizes_before_fresh_agent_frame_and_stages_capture(
     report_path = Path(started["result_file"])
     report = json.loads(report_path.read_text(encoding="utf-8"))
     commands = runner.transport.commands
-    resize_index = next(i for i, command in enumerate(commands) if command["action"] == "resize")
+    windows_mode = sys.platform == "win32"
+    if resize_fails and windows_mode:
+        pytest.skip("Windows 使用当前捕获的窗口尺寸，不做窗口重排，resize 故障注入不适用")
+    resize_index = next((i for i, command in enumerate(commands) if command["action"] == "resize"), None)
+    if windows_mode:
+        assert resize_index is None
+    else:
+        assert resize_index is not None
     if resize_fails:
         assert report["navigation"] == {
             "outcome": "needs_review", "reason": "mock resize failure", "source": "runtime",
@@ -843,23 +872,26 @@ def test_runner_resizes_before_fresh_agent_frame_and_stages_capture(
         assert not any(command["action"] in {"screenshot", "click"} for command in commands)
         return
     first_screenshot_index = next(i for i, command in enumerate(commands) if command["action"] == "screenshot")
-    assert resize_index < first_screenshot_index
+    if not windows_mode:
+        assert resize_index < first_screenshot_index
+    # Windows 不重排窗口，截图保持窗口原始白底；Mac 重排后应换成本轮底色。
+    expected_pixel = (255, 255, 255) if windows_mode else (12, 34, 56)
     assert report["material"]["material_version_id"] == version_id
     assert report["material"]["material_batch_id"] == batch_id
     assert report["material"]["material_snapshot"] == snapshot_id
     assert (report_path.parent / report["initial_frame"]).is_file()
     with Image.open(report_path.parent / report["initial_frame"]) as initial_frame:
-        assert initial_frame.getpixel((0, 0)) == (12, 34, 56)
+        assert initial_frame.getpixel((0, 0)) == expected_pixel
     request_frame = _image_data_bytes(handler.requests[0]["body"]["messages"])
     assert request_frame is not None
     with Image.open(io.BytesIO(request_frame)) as image:
-        assert image.getpixel((0, 0)) == (12, 34, 56)
+        assert image.getpixel((0, 0)) == expected_pixel
     assert report["timing_ms"]["total"] >= report["timing_ms"]["navigation"]
     assert configs.load().input_dir == str(input_dir)
     assert report["navigation"]["outcome"] == "success"
     assert report["navigation"]["reason"] == "已核对页面"
     assert "evidence" not in report["navigation"]
-    assert report["navigation"]["frame"] == "evidence/ui-tars-002.png"
+    assert report["navigation"]["frame"] == str(Path("evidence") / "ui-tars-002.png")
     with Image.open(report_path.parent / report["navigation"]["frame"]) as terminal_frame:
         region = report["navigation"]["menu_region"]
         assert 0 <= region["x"] and region["x"] + region["width"] <= terminal_frame.width
@@ -1034,26 +1066,36 @@ def test_host_trace_keeps_failed_tool_attempt():
 
 
 def test_trial_window_calibration_checks_both_axes(tmp_path):
+    from menu_capture.window_contract import window_selector
+
     runner = object.__new__(UiPathRunner)
     runner._move_window_on_screen = lambda _selector: None
+    window = {"app": "Weixin.exe", "title": "点餐", "cls": "QtWindow",
+              "position": {"x": 0, "y": 0, "width": 240, "height": 400}}
+    selector = window_selector(window, window["title"])
 
     def frame(width, height, window_width, window_height):
-        return {"action": "screenshot", "selector": "window:one",
+        return {"action": "screenshot", "selector": selector,
                 "path": str(tmp_path / "window-prepare.png"),
                 "width": width, "height": height,
                 "window_width": window_width, "window_height": window_height}
 
-    runner._send = lambda _command: frame(320, 200, 240, 150)
+    def send(command, shot):
+        if command.get("action") == "discover":
+            return {"windows": [window]}
+        return shot
+
+    runner._send = lambda command: send(command, frame(320, 200, 240, 150))
     records: list[dict] = []
-    runner._prepare_trial_window("window:one", tmp_path,
+    runner._prepare_trial_window(selector, tmp_path,
                                 lambda kind, **fields: records.append({"kind": kind, **fields}))
     assert records[0]["scale_x"] == pytest.approx(320 / 240, abs=1e-4)
     assert records[0]["scale_y"] == pytest.approx(200 / 150, abs=1e-4)
 
     # 纵向比例与横向不一致，说明截图和窗口尺寸不同源，必须降级而不是带错坐标启动。
-    runner._send = lambda _command: frame(320, 200, 240, 600)
-    with pytest.raises(NeedsReview):
-        runner._prepare_trial_window("window:one", tmp_path, lambda *args, **kwargs: None)
+    runner._send = lambda command: send(command, frame(320, 200, 240, 600))
+    with pytest.raises(NeedsReview, match="宽高比例"):
+        runner._prepare_trial_window(selector, tmp_path, lambda *args, **kwargs: None)
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")

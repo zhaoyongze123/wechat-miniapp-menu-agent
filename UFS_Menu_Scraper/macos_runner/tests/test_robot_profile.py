@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,7 +28,9 @@ def test_profile_coordinates_are_explicit_and_private(tmp_path: Path):
     store = ProfileStore(tmp_path / "profile.json")
     result = store.save(RobotProfile().model_dump())
     assert result["coordinates_verified"] is False
-    assert store.path.stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":
+        # Windows 没有 POSIX 权限位，0600 只在 POSIX 平台成立。
+        assert store.path.stat().st_mode & 0o777 == 0o600
     with pytest.raises(ValueError):
         RobotProfile(wechat_input_x_ratio=float("inf"))
     with pytest.raises(ValueError):

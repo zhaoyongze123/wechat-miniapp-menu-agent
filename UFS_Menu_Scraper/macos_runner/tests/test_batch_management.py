@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import sys
 import time
 from pathlib import Path
 
@@ -335,6 +336,7 @@ def test_purge_journal_recovers_interruption_without_touching_originals(tmp_path
     assert (service.batch_root / batch_id).exists() is (not committed)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows 创建目录软链接需要额外特权")
 def test_purge_refuses_managed_symlink(tmp_path):
     app, client, headers = _setup(tmp_path)
     source = tmp_path / 'originals'

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from urllib.parse import quote
 
@@ -137,8 +138,10 @@ def test_artifact_endpoint_rejects_traversal_outside_task_output(tmp_path: Path)
     assert response.status_code == 404
     assert "outside" not in response.text
 
-    link = output / "linked.json"
-    link.symlink_to(outside)
-    symlink_response = client.get(f"/api/artifact/{record['id']}/linked.json")
-    assert symlink_response.status_code == 404
-    assert "outside" not in symlink_response.text
+    if sys.platform != "win32":
+        # Windows 创建软链接需要额外特权，这段只在 POSIX 平台验证。
+        link = output / "linked.json"
+        link.symlink_to(outside)
+        symlink_response = client.get(f"/api/artifact/{record['id']}/linked.json")
+        assert symlink_response.status_code == 404
+        assert "outside" not in symlink_response.text

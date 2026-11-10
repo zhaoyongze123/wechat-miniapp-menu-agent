@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -23,14 +24,18 @@ def test_output_probe_uses_and_removes_a_temporary_file(tmp_path: Path) -> None:
 
 def test_wechat_selector_uses_chat_window_and_skips_portrait_miniprogram() -> None:
     windows = [
-        {"app": "WeChat", "title": "门店点餐", "role": "AXWindow", "position": {"width": 420, "height": 900}},
-        {"app": "WeChat", "title": "文件传输助手", "role": "AXWindow", "position": {"width": 1100, "height": 760}},
+        {"app": "WeChat", "title": "门店点餐", "role": "AXWindow", "cls": "Qt51514QWindowIcon",
+         "position": {"width": 420, "height": 900}},
+        {"app": "WeChat", "title": "文件传输助手", "role": "AXWindow", "cls": "WeChatMainWndForPC",
+         "position": {"width": 1100, "height": 760}},
     ]
 
     selector = EnvironmentDiagnostics._find_wechat_selector(windows)
 
     assert "title=\"文件传输助手\"" in selector
-    assert "role=\"AXWindow\"" in selector
+    identity, value = (("cls", "WeChatMainWndForPC") if sys.platform == "win32"
+                       else ("role", "AXWindow"))
+    assert f'{identity}="{value}"' in selector
 
 
 def test_wechat_login_is_unknown_when_ocr_only_finds_app_name() -> None:

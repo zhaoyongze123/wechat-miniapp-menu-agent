@@ -1140,7 +1140,7 @@ class MaterialService:
             if release is None:
                 raise ValueError("发布版本不存在")
             snapshot = self.published_root / release["snapshot_id"]
-            manifest = json.loads((snapshot / ".materials-snapshot.json").read_text())
+            manifest = json.loads((snapshot / ".materials-snapshot.json").read_text(encoding="utf-8"))
             self._validate_snapshot_marker(snapshot, release["snapshot_id"], {row["path"] for row in manifest["artifacts"]})
             previous = self.configs.load().model_dump()
             updated = {**previous, "input_dir": str(snapshot)}
