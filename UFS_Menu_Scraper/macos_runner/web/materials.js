@@ -176,9 +176,13 @@
       const p = state.batch?.progress;
       if (p && Number(p.total) > 0) { const pct = Math.min(100, Math.round(Number(p.done) / Number(p.total) * 100)); $('materials-progress-bar').style.width = `${pct}%`; $('materials-upload-progress').textContent = `${p.done} / ${p.total}`; }
       const s = state.batch?.summary || {};
-      $('materials-store-subtitle').textContent = state.batch ? `共 ${Number(s.total_stores)||0} 家门店 · ${Number(s.total_images)||0} 张原图 · ${Number(s.pending_stores)||0} 待审核 · ${Number(s.confirmed_stores)||0} 已确认 · ${Number(s.skipped_stores)||0} 不合格` : '二维码候选和原始图片会显示在这里。';
+      const stats = s.detection_stats || {};
+      const roundsText = stats.circle_enabled
+        ? ` · 圆形码命中 ${Number(stats.circle?.hit_stores)||0} 家 · 方形码命中 ${Number(stats.square?.hit_stores)||0} 家 · 检测用时 ${((Number(stats.total_ms)||0)/1000).toFixed(1)} 秒`
+        : s.circle_detector_error ? ' · 圆形码检测不可用，已按原链路完成' : '';
+      $('materials-store-subtitle').textContent = state.batch ? `共 ${Number(s.total_stores)||0} 家门店 · ${Number(s.total_images)||0} 张原图 · ${Number(s.pending_stores)||0} 待审核 · ${Number(s.confirmed_stores)||0} 已确认 · ${Number(s.skipped_stores)||0} 不合格${roundsText}` : '二维码候选和原始图片会显示在这里。';
       renderStores(stores);
-      if (active) { const stage = state.batch.status === 'analyzing' && p && Number(p.total) ? (Number(p.done) < Number(p.total) / 2 ? '本地二维码检测' : '本地 OCR 用途筛选') : (statusLabels[state.batch.status] || '处理中'); $('materials-upload-progress').textContent = `${stage}${p && Number(p.total) ? ` · ${p.done}/${p.total} 步` : ''}`; }
+      if (active) { const ratio = p && Number(p.total) ? Number(p.done) / Number(p.total) : 0; const stage = state.batch.status === 'analyzing' && p && Number(p.total) ? (stats.circle_enabled ? (ratio < 1 / 3 ? '圆形小程序码检测' : ratio < 2 / 3 ? '方形二维码检测' : '本地 OCR 用途筛选') : (ratio < 0.5 ? '本地二维码检测' : '本地 OCR 用途筛选')) : (statusLabels[state.batch.status] || '处理中'); $('materials-upload-progress').textContent = `${stage}${p && Number(p.total) ? ` · ${p.done}/${p.total} 步` : ''}`; }
       renderAnalysisDialog();
       updateControls();
     }
@@ -265,11 +269,15 @@
       for (const { image, candidate } of candidates) {
         const card = node('article', `materials-candidate${String(state.selectedCandidate) === `${image.image_index}:${candidate.candidate_index}` ? ' selected' : ''}`);
         const thumb = document.createElement('img'); thumb.className = 'materials-candidate-thumb'; thumb.alt = `候选二维码裁剪 ${candidate.candidate_index + 1}`; thumb.src = candidateUrl(image.image_index, candidate.candidate_index); thumb.addEventListener('click', () => openPreview(thumb.src));
-        const title = node('div', 'materials-candidate-title', `原图 ${Number(image.image_index)+1} · 候选 ${Number(candidate.candidate_index) + 1}`); if (candidate.recommendation) title.append(node('span', 'materials-rec-tag', '推荐')); if (candidate.source === 'vision_fallback') title.append(node('span', 'materials-rec-tag', '旧批次模型补检'));
+        const title = node('div', 'materials-candidate-title', `原图 ${Number(image.image_index)+1} · 候选 ${Number(candidate.candidate_index) + 1}`); if (candidate.recommendation) title.append(node('span', 'materials-rec-tag', '推荐')); if (candidate.code_type === 'mini_program_code') title.append(node('span', 'materials-rec-tag', '第一轮命中')); if (candidate.source === 'vision_fallback') title.append(node('span', 'materials-rec-tag', '旧批次模型补检'));
         const quality = candidate.quality_score == null ? '未评分' : `质量分 ${Number(candidate.quality_score).toFixed(2)}`;
         const box = candidate.box || {};
         const dimensions = Number.isFinite(Number(box.width)) && Number.isFinite(Number(box.height)) ? `${Math.round(box.width)}×${Math.round(box.height)} px` : '尺寸未知';
-        const meta = node('div', 'materials-candidate-meta', `同码分组 ${groups.get(candidate.payload_sha256) || '未知'} · ${dimensions} · 短边 ${candidate.short_edge_px ?? '—'} px · ${quality}`);
+        const isMini = candidate.code_type === 'mini_program_code';
+        const metaText = isMini
+          ? `微信圆形小程序码 · 结构验证通过 · 待微信实际验证 · ${dimensions} · 短边 ${candidate.short_edge_px ?? '—'} px · ${quality}`
+          : `同码分组 ${groups.get(candidate.payload_sha256) || '未知'} · ${dimensions} · 短边 ${candidate.short_edge_px ?? '—'} px · ${quality}`;
+        const meta = node('div', 'materials-candidate-meta', metaText);
         const purpose = purposeLabels[candidate.purpose] ? candidate.purpose : 'unknown';
         const purposeRow = node('div', 'materials-purpose-row', `用途：${purposeLabels[purpose]}`);
         const reason = node('div', 'materials-purpose-reason', candidate.purpose_reason || (candidate.purpose ? '分类未提供依据，请结合原图人工判断。' : '旧数据没有用途分类，请结合原图人工选择。'));
@@ -851,6 +859,7 @@
         const info = node('div','materials-manage-info');
         info.append(node('span','',`${statusLabels[batch.status] || '未知状态'} · ${summary.total_stores||0} 家 · ${batch.versions_count||0} 个版本`));
         info.append(node('span','',`${summary.confirmed_stores||0} 已确认 · ${summary.pending_stores||0} 待审核`));
+        if (summary.detection_stats?.circle_enabled) info.append(node('span','',`圆形码 ${summary.detection_stats.circle?.hit_stores||0} 家 · 方形码 ${summary.detection_stats.square?.hit_stores||0} 家 · ${((Number(summary.detection_stats.total_ms)||0)/1000).toFixed(1)} 秒`));
         info.append(node('span','',`更新 ${String(batch.updated_at||'').slice(0,16).replace('T',' ')}`));
         const actions = node('div','materials-manage-actions');
         if (manageDeleted) {

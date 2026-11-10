@@ -189,3 +189,149 @@ def test_invalid_detection_bounds_go_to_review_without_a_partial_artifact(tmp_pa
     assert store["status"] == "needs_review"
     assert "ValueError" in store["images"][0]["error"]
     assert not (output / "可采集").exists()
+
+
+CIRCLE_BOX = {"x": 20, "y": 20, "width": 120, "height": 120}
+
+
+def _circle(path: Path) -> dict | None:
+    if path.parent.name == "A":
+        return {"box": CIRCLE_BOX, "detector_confidence": 0.99}
+    return None
+
+
+def test_round_one_hit_skips_square_detection_for_that_store_only(tmp_path: Path) -> None:
+    source, output = tmp_path / "source", tmp_path / "result"
+    _image(source / "A" / "a.jpg")
+    _image(source / "A" / "b.jpg", "gray")
+    _image(source / "B" / "b.jpg")
+    _image(source / "C" / "c.jpg")
+    square_calls: list[str] = []
+    circle_calls: list[str] = []
+    progress: list[dict] = []
+
+    def square(path: Path) -> list[dict]:
+        square_calls.append(f"{path.parent.name}/{path.name}")
+        if path.parent.name == "B":
+            return [{"box": {"x": 20, "y": 20, "width": 120, "height": 120}, "payload": PAYLOAD}]
+        return []
+
+    def circle(path: Path) -> dict | None:
+        circle_calls.append(f"{path.parent.name}/{path.name}")
+        return _circle(path)
+
+    manifest = build_materials(source, output, inspector=square, circle_inspector=circle, progress=progress.append)
+    stores = {item["source_name"]: item for item in manifest["stores"]}
+
+    # 门店 A 第一张图命中圆形码后，剩余图片不再做圆形检测，也整店不做方形检测。
+    assert circle_calls == ["A/a.jpg", "B/b.jpg", "C/c.jpg"]
+    # 只有未命中圆形的 B、C 进入第二轮方形检测。
+    assert square_calls == ["B/b.jpg", "C/c.jpg"]
+    assert stores["A"]["circle_hit"] is True
+    assert stores["A"]["square_checked"] is False
+    assert stores["A"]["status"] == "selected"
+    assert "第一轮命中" in stores["A"]["reason"]
+    assert stores["B"]["status"] == "selected"
+    assert stores["B"]["square_checked"] is True
+    assert stores["C"]["status"] == "needs_review"
+    assert stores["C"]["circle_hit"] is False
+    circle_candidate = stores["A"]["images"][0]["candidates"][0]
+    assert circle_candidate["payload_sha256"] is None
+    assert circle_candidate["code_type"] == "mini_program_code"
+    assert circle_candidate["selected"] is True
+    assert (output / "可采集" / "A" / "二维码.png").is_file()
+    assert manifest["summary"]["circle_hit_stores"] == 1
+    assert manifest["summary"]["square_checked_stores"] == 2
+    assert manifest["summary"]["detection_rounds"] == 2
+    assert progress[-1] == {"done": 8, "total": 8}
+
+
+def test_circle_hit_on_second_image_skips_all_later_images(tmp_path: Path) -> None:
+    source, output = tmp_path / "source", tmp_path / "result"
+    _image(source / "A" / "a.jpg")
+    _image(source / "A" / "b.jpg", "gray")
+    _image(source / "A" / "c.jpg", "black")
+    circle_calls: list[str] = []
+    square_calls: list[str] = []
+
+    def circle(path: Path) -> dict | None:
+        circle_calls.append(path.name)
+        return {"box": CIRCLE_BOX, "detector_confidence": 0.99} if path.name == "b.jpg" else None
+
+    store = build_materials(
+        source, output,
+        inspector=lambda path: square_calls.append(path.name) or [],
+        circle_inspector=circle,
+    )["stores"][0]
+
+    assert circle_calls == ["a.jpg", "b.jpg"]
+    assert square_calls == []
+    assert [image.get("scan_status") for image in store["images"]] == [None, "circle_hit", "skipped_after_circle_hit"]
+    assert store["status"] == "selected"
+    assert store["selected_source"] == "A/b.jpg"
+    # 未检测图片仍保留 path/sha256/candidates，前端可继续预览原图。
+    assert store["images"][0]["candidates"] == []
+    assert len(store["images"][1]["candidates"]) == 1
+    assert store["images"][2]["candidates"] == []
+    assert all(image["sha256"] for image in store["images"])
+
+
+def test_circle_error_is_review_not_silent_miss(tmp_path: Path) -> None:
+    source, output = tmp_path / "source", tmp_path / "result"
+    _image(source / "A" / "a.jpg")
+
+    def broken(_path: Path):
+        raise RuntimeError(PAYLOAD)
+
+    store = build_materials(
+        source, output,
+        inspector=lambda _path: [{"box": {"x": 20, "y": 20, "width": 120, "height": 120}, "payload": PAYLOAD}],
+        circle_inspector=broken,
+    )["stores"][0]
+
+    assert store["circle_error"] is True
+    assert store["status"] == "needs_review"
+    assert "检测异常" in store["reason"]
+    assert store["images"][0]["candidates"][0]["selected"] is False
+    assert store["images"][0]["candidates"][0]["purpose_hint"] == "unknown"
+    serialized = (output / "manifest.json").read_text(encoding="utf-8")
+    assert PAYLOAD not in serialized
+
+
+def test_circle_candidates_use_original_pixels_and_crop_artifact(tmp_path: Path) -> None:
+    source, output = tmp_path / "source", tmp_path / "result"
+    image_path = source / "A" / "a.png"
+    _image(image_path, size=(800, 600))
+    box = {"x": 200, "y": 150, "width": 240, "height": 240}
+    store = build_materials(
+        source, output,
+        inspector=lambda _path: [],
+        circle_inspector=lambda _path: {"box": box, "detector_confidence": 0.42},
+    )["stores"][0]
+
+    candidate = store["images"][0]["candidates"][0]
+    assert candidate["box"] == {"x": 200.0, "y": 150.0, "width": 240.0, "height": 240.0}
+    assert candidate["short_edge_px"] == 240
+    assert candidate["purpose"] == "ordering"
+    assert candidate["purpose_source"] == "mini_program_code_priority"
+    with Image.open(output / "可采集" / "A" / "二维码.png") as cropped:
+        assert cropped.size == (624, 582)
+
+
+def test_out_of_bounds_circle_result_is_treated_as_error_not_miss(tmp_path: Path) -> None:
+    source, output = tmp_path / "source", tmp_path / "result"
+    _image(source / "A" / "a.png", size=(240, 160))
+    square_calls: list[str] = []
+    store = build_materials(
+        source, output,
+        inspector=lambda path: square_calls.append(path.name) or [],
+        circle_inspector=lambda _path: {"box": {"x": 200, "y": 0, "width": 200, "height": 100}},
+    )["stores"][0]
+
+    assert store["circle_hit"] is False
+    assert store["circle_error"] is True
+    assert store["images"][0]["circle_error"] == "circle_detector_error"
+    assert store["status"] == "needs_review"
+    assert "检测异常" in store["reason"]
+    # 圆形检查异常仍会执行方形检测，但不能自动确认。
+    assert square_calls == ["a.png"]

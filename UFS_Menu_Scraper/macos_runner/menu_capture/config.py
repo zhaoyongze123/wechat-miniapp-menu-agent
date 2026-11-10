@@ -60,12 +60,19 @@ class DebugLoggingConfig(StrictModel):
     max_storage_mb: int = Field(default=512, ge=64, le=4096)
 
 
+class MaterialsConfig(StrictModel):
+    # off: 保持原有方形二维码链路；assist: 圆形码只作辅助候选，不跳过第二轮；
+    # priority: 圆形码命中后整店跳过第二轮（需独立标注集验收通过后再开启）。
+    circle_detection: Literal["off", "assist", "priority"] = "off"
+
+
 class Settings(StrictModel):
     input_dir: str = str(WORKSPACE_ROOT / "素材" / "原图")
     output_dir: str = str(WORKSPACE_ROOT / "输出" / "截图输出")
     model: ModelConfig = Field(default_factory=ModelConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     debug_logging: DebugLoggingConfig = Field(default_factory=DebugLoggingConfig)
+    materials: MaterialsConfig = Field(default_factory=MaterialsConfig)
     people_count: int = Field(default=1, ge=1, le=12)
     auto_authorize: bool = False
 

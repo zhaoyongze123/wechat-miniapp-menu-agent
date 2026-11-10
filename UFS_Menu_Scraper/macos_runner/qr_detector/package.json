@@ -1,0 +1,13 @@
+{
+  "name": "menu-qr-detector",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "微信圆形小程序码结构识别 worker（仅本地调用，不参与业务选择）",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@weapp-vite/qr": "1.2.1"
+  }
+}

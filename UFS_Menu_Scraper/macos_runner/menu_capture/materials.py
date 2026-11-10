@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -17,7 +18,7 @@ from typing import Callable, Iterable
 from PIL import Image
 
 from .config import ConfigStore, atomic_json
-from .preprocess import CROP_MARGIN_RATIO, SUPPORTED_EXTENSIONS, _apple_vision_inspector, _crop_candidate, _enumerate_images, _inspect_image, build_materials
+from .preprocess import CROP_MARGIN_RATIO, SUPPORTED_EXTENSIONS, _apple_vision_inspector, _crop_candidate, _enumerate_images, build_materials, inspect_store_images
 from .image_tools import image_ocr
 from .material_versions import MaterialVersions
 from .store import TaskStore
@@ -46,6 +47,11 @@ MAX_STORE_UPLOAD_BYTES = 500 * 1024 * 1024
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _UPLOAD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _FORMAT_BY_EXTENSION = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP"}
+# 两轮检测的受控状态码；只允许这些值进入 manifest 与决策库。
+_SCAN_STATUSES = {"circle_hit", "skipped_after_circle_hit", "square_checked"}
+_CIRCLE_ERROR_CODES = {
+    "circle_detector_unavailable", "circle_timeout", "circle_detector_error", "image_too_large",
+}
 
 
 def _now() -> str:
@@ -140,10 +146,21 @@ class MaterialService:
         inspector: Callable[[Path], list[dict]] | None = None,
         control_lock=None,
         ocr_reader: Callable[[Path], list[dict]] | None = None,
+        circle_inspector: Callable[[Path], dict | None] | None = None,
+        circle_mode: str | None = None,
     ):
         self.root = Path(root).expanduser().resolve()
         self.configs, self.task_store = configs, task_store
         self.inspector = inspector
+        self.circle_inspector = circle_inspector
+        if circle_mode is None:
+            # 显式注入圆形检测器视为已验收环境；生产按配置开关，默认关闭。
+            circle_mode = "priority" if circle_inspector is not None else configs.load().materials.circle_detection
+        if circle_mode not in {"off", "assist", "priority"}:
+            circle_mode = "off"
+        self.circle_mode = circle_mode
+        self.circle_priority = circle_mode == "priority"
+        self.circle_enabled = circle_mode in {"priority", "assist"}
         self.ocr_reader = ocr_reader or image_ocr
         self.control_lock = control_lock  # 发布并发/runner idle 由 API 外层负责。
         self.material_root = self.root / "materials"
@@ -469,19 +486,24 @@ class MaterialService:
         if not store.get("images"):
             raise ValueError("当前门店没有图片，请先补充素材")
         inspect = self.inspector or _apple_vision_inspector
-        refreshed_images = []
-        for image in store["images"]:
-            source = self._checked_source(batch, image)
-            refreshed = _inspect_image(source, image["path"], inspect)
-            for key in ("display_name", "origin", "supplement_store_id"):
-                if key in image:
-                    refreshed[key] = image[key]
-            refreshed_images.append(refreshed)
-        store["images"] = refreshed_images
-        store["selected_source"] = None
-        store["selected_artifact"] = None
         analysis_dir = self.batch_root / batch_id / "repair-analysis"
         analysis_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        circle_inspector, detector, _warning = self._open_circle_detector(analysis_dir / "circle-roi")
+        try:
+            # 单店重分析复用同一“圆形优先”的两轮检测，不能退回逐图方形检测。
+            stats = inspect_store_images(
+                store["images"],
+                lambda image: self._checked_source(batch, image),
+                inspect,
+                circle_inspector,
+                skip_square_on_circle_hit=self.circle_priority,
+            )
+        finally:
+            if detector is not None:
+                detector.close()
+        store["circle_hit"] = stats["circle_hit"]
+        store["circle_error"] = stats["circle_error"]
+        store["square_checked"] = stats["square_checked"]
         manifest = {"stores": [store]}
         source_root = Path(batch["source_root"])
         self._classify_and_select(
@@ -582,9 +604,11 @@ class MaterialService:
         summary["total_stores"] = len(rows)
         summary["selected_stores"] = sum(bool(row["recommendation"]) for row in rows)
         summary["review_stores"] = len(rows) - summary["selected_stores"]
+        # 圆形优先的两轮检测把总进度拆成 3 段（圆形/方形/用途分类），单店重分析也按同一口径。
+        units = 3 if summary.get("detection_rounds") == 2 else 2
         db.execute(
             "UPDATE material_batches SET summary_json=?,progress_done=?,progress_total=?,updated_at=? WHERE id=?",
-            (json.dumps(summary, ensure_ascii=False), summary["total_images"] * 2, summary["total_images"] * 2, _now(), batch_id),
+            (json.dumps(summary, ensure_ascii=False), summary["total_images"] * units, summary["total_images"] * units, _now(), batch_id),
         )
 
     def create_upload_batch(self, files: Iterable[dict]) -> dict:
@@ -620,11 +644,54 @@ class MaterialService:
                 raise
         return self.get_batch(batch_id)
 
+    def _open_circle_detector(self, work_dir: Path) -> tuple[Callable[[Path], dict | None] | None, object | None, str]:
+        """解析圆形码检测器；关闭时不启动 worker，显式注入优先于配置。"""
+        if not self.circle_enabled:
+            return None, None, ""
+        if self.circle_inspector is not None:
+            return self.circle_inspector, None, ""
+        try:
+            from .miniapp_code import MiniProgramCodeDetector
+
+            detector = MiniProgramCodeDetector(work_dir=work_dir)
+            return detector.detect, detector, ""
+        except Exception as exc:  # noqa: BLE001 - 依赖缺失只记录受控短码
+            return None, None, getattr(exc, "code", None) or "circle_detector_unavailable"
+
+    @staticmethod
+    def _detection_stats(stores: list[dict], circle_enabled: bool, total_ms: float) -> dict:
+        """两轮检测的聚合指标；只含计数与耗时，不含路径或二维码内容。"""
+        return {
+            "circle_enabled": circle_enabled,
+            "circle": {
+                "scanned_stores": sum(bool(store.get("circle_images")) for store in stores),
+                "scanned_images": sum(int(store.get("circle_images", 0)) for store in stores),
+                "hit_stores": sum(bool(store.get("circle_hit")) for store in stores),
+                "error_stores": sum(bool(store.get("circle_error")) and not store.get("circle_hit") for store in stores),
+                "skipped_images": sum(int(store.get("skipped_images", 0)) for store in stores),
+                "ms": round(sum(float(store.get("circle_ms", 0.0)) for store in stores), 1),
+            },
+            "square": {
+                "scanned_stores": sum(bool(store.get("square_checked")) for store in stores),
+                "hit_stores": sum(
+                    bool(store.get("square_checked"))
+                    and any(
+                        candidate.get("payload_sha256")
+                        for image in store.get("images", []) for candidate in image.get("candidates", [])
+                    )
+                    for store in stores
+                ),
+                "ms": round(sum(float(store.get("square_ms", 0.0)) for store in stores), 1),
+            },
+            "total_ms": total_ms,
+        }
+
     def _analyze_worker(self, batch_id: str) -> None:
         row = self._batch_row(batch_id)
         source_root = Path(row["source_root"])
         analysis_dir = self.batch_root / batch_id / "analysis"
         analysis_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        detector = None
         try:
             with self.task_store.connect() as db:
                 db.execute("UPDATE material_batches SET status='analyzing',updated_at=? WHERE id=?", (_now(), batch_id))
@@ -632,28 +699,43 @@ class MaterialService:
             self._validate_local_limits(current_files)
             if row["source_kind"] == "upload" and len(current_files) != row["upload_file_count"]:
                 raise ValueError("上传素材文件集合发生变化，拒绝分析")
+            circle_inspector, detector, circle_warning = self._open_circle_detector(analysis_dir / "circle-roi")
+            # 圆形阶段 + 方形阶段 + 用途分类阶段；缺失圆形检测器时退回旧的两阶段。
+            units_per_image = 3 if circle_inspector is not None else 2
+            unit_total = len(current_files) * units_per_image
             with self.task_store.connect() as db:
-                db.execute("UPDATE material_batches SET progress_total=?,updated_at=? WHERE id=?", (len(current_files) * 2, _now(), batch_id))
+                db.execute("UPDATE material_batches SET progress_total=?,updated_at=? WHERE id=?", (unit_total, _now(), batch_id))
 
             def on_progress(value: dict) -> None:
                 with self.task_store.connect() as db:
                     db.execute(
                         "UPDATE material_batches SET progress_done=?,progress_total=?,updated_at=? WHERE id=? AND status='analyzing'",
-                        (value["done"], value["total"] * 2, _now(), batch_id),
+                        (value["done"], unit_total, _now(), batch_id),
                     )
 
-            manifest = build_materials(source_root, analysis_dir, inspector=self.inspector, progress=on_progress)
+            started = time.perf_counter()
+            manifest = build_materials(
+                source_root, analysis_dir,
+                inspector=self.inspector, progress=on_progress, circle_inspector=circle_inspector,
+                circle_priority=self.circle_priority,
+            )
+
             def on_classified(done: int) -> None:
                 with self.task_store.connect() as db:
-                    db.execute("UPDATE material_batches SET progress_done=?,updated_at=? WHERE id=? AND status='analyzing'",
-                               (len(current_files) + done, _now(), batch_id))
+                    db.execute("UPDATE material_batches SET progress_done=?,progress_total=?,updated_at=? WHERE id=? AND status='analyzing'",
+                               ((units_per_image - 1) * len(current_files) + done, unit_total, _now(), batch_id))
 
             self._classify_and_select(manifest, source_root, analysis_dir, on_classified)
             after_files = _enumerate_images(source_root)
             self._validate_local_limits(after_files)
             if len(after_files) != len(current_files) or (row["source_kind"] == "upload" and len(after_files) != row["upload_file_count"]):
                 raise ValueError("分析期间素材文件集合发生变化，拒绝保存结果")
+            metrics = self._detection_stats(manifest["stores"], circle_inspector is not None, round((time.perf_counter() - started) * 1000, 1))
+            atomic_json(analysis_dir / "analysis-metrics.json", metrics)
             safe_manifest = self._sanitize_manifest(manifest)
+            summary = {**safe_manifest["summary"], "detection_stats": metrics}
+            if circle_warning:
+                summary["circle_detector_error"] = circle_warning
             atomic_json(analysis_dir / "manifest.json", safe_manifest)
             with self.task_store.connect() as db:
                 for store in safe_manifest["stores"]:
@@ -665,11 +747,14 @@ class MaterialService:
                     )
                 db.execute(
                     "UPDATE material_batches SET status='completed',progress_done=?,progress_total=?,summary_json=?,manifest_json=?,updated_at=? WHERE id=?",
-                    (safe_manifest["summary"]["total_images"] * 2, safe_manifest["summary"]["total_images"] * 2, json.dumps(safe_manifest["summary"], ensure_ascii=False), json.dumps(safe_manifest, ensure_ascii=False), _now(), batch_id),
+                    (unit_total, unit_total, json.dumps(summary, ensure_ascii=False), json.dumps(safe_manifest, ensure_ascii=False), _now(), batch_id),
                 )
         except Exception as exc:
             # 不把路径、图片内容或条码解码错误原文写进批次状态。
             self._set_batch_error(batch_id, "failed", f"素材分析失败（{type(exc).__name__}）")
+        finally:
+            if detector is not None:
+                detector.close()
 
     def adopt_manifest(self, manifest_path: Path) -> dict:
         path = Path(manifest_path).expanduser().resolve(strict=True)
@@ -709,6 +794,25 @@ class MaterialService:
         duplicate_names = {name for name, folders in names.items() if len(folders) > 1}
         processed = 0
         for store in manifest["stores"]:
+            # 清除 build_materials 的几何启发式预选；由语义分类单独决定建议。
+            self._reset_store_selection(store, analysis_dir)
+            has_circle = any(
+                candidate.get("code_type") == "mini_program_code"
+                for image in store["images"] for candidate in image["candidates"]
+            )
+            if has_circle and self.circle_priority:
+                # 圆形码命中店：不跑 OCR、不做方形码竞争，只做稳定选择。
+                for _image in store["images"]:
+                    processed += 1
+                    if progress:
+                        progress(processed)
+                if store["source_name"] in duplicate_names:
+                    store["status"] = "needs_review"
+                    store["reason"] = "不同父路径存在同名店铺目录，拒绝归档以防混店"
+                    continue
+                self._select_circle_candidate(store, resolve_source, analysis_dir)
+                continue
+
             for image in store["images"]:
                 source = resolve_source(image)
                 ocr_items = None
@@ -783,24 +887,28 @@ class MaterialService:
                 if progress:
                     progress(processed)
 
-            # 清除 build_materials 的几何启发式预选；由语义分类单独决定建议。
-            for image in store["images"]:
-                for candidate in image["candidates"]:
-                    candidate["selected"] = False
-            store["selected_source"] = None
-            old_artifact = store.get("selected_artifact")
-            if old_artifact:
-                (analysis_dir / old_artifact).unlink(missing_ok=True)
-            store["selected_artifact"] = None
             if store["source_name"] in duplicate_names:
                 store["status"] = "needs_review"
                 store["reason"] = "不同父路径存在同名店铺目录，拒绝归档以防混店"
+                continue
+            if has_circle and not any(
+                candidate.get("payload_sha256") and candidate.get("code_type") != "mini_program_code"
+                for image in store["images"] for candidate in image["candidates"]
+            ):
+                # 辅助模式：方形链路没有可解码码时，圆形码仍作为最高优先级兜底推荐。
+                self._select_circle_candidate(store, resolve_source, analysis_dir)
+                continue
+            if store.get("circle_error"):
+                # 圆形扫描异常不等于“确认无圆码”；方形候选只展示，不做自动推荐。
+                store["status"] = "needs_review"
+                store["reason"] = "圆形小程序码检测异常，方形候选仅作参考，需人工复核"
                 continue
 
             candidates = [
                 (image_index, candidate_index, image, candidate)
                 for image_index, image in enumerate(store["images"])
                 for candidate_index, candidate in enumerate(image["candidates"])
+                if candidate.get("code_type") != "mini_program_code"
             ]
             # 只要检测到二维码候选就自动推荐，不再要求用途必须是点餐码；用途留给下游微信验证。
             eligible = candidates
@@ -835,6 +943,58 @@ class MaterialService:
             store["reason"] = f"已按清晰度自动选取二维码候选（{purpose_label}），待微信验证"
             store["selected_source"] = image["path"]
             store["selected_artifact"] = artifact_relative.as_posix()
+
+    @staticmethod
+    def _reset_store_selection(store: dict, analysis_dir: Path) -> None:
+        for image in store["images"]:
+            for candidate in image["candidates"]:
+                candidate["selected"] = False
+        store["selected_source"] = None
+        old_artifact = store.get("selected_artifact")
+        if old_artifact:
+            (analysis_dir / old_artifact).unlink(missing_ok=True)
+        store["selected_artifact"] = None
+
+    def _select_circle_candidate(self, store: dict, resolve_source, analysis_dir: Path) -> None:
+        """圆形码命中店的最高优先级推荐：稳定选一张并裁剪，仍等待人工确认。"""
+        eligible = [
+            (image_index, candidate_index, image, candidate)
+            for image_index, image in enumerate(store["images"])
+            for candidate_index, candidate in enumerate(image["candidates"])
+            if candidate.get("code_type") == "mini_program_code"
+        ]
+        if not eligible:
+            store["status"] = "needs_review"
+            store["reason"] = "第一轮标记命中圆形小程序码，但缺少可用候选，需人工复核"
+            return
+        _image_index, _candidate_index, image, candidate = max(
+            eligible,
+            key=lambda item: (
+                item[3].get("quality_score", 0),
+                item[3].get("short_edge_px", 0),
+                item[2]["path"],
+            ),
+        )
+        artifact_relative = PurePosixPath("可采集") / store["source_name"] / "二维码.png"
+        artifact = analysis_dir.joinpath(*artifact_relative.parts)
+        try:
+            artifact.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            _crop_candidate(resolve_source(image), candidate["box"], artifact)
+        except Exception:
+            artifact.unlink(missing_ok=True)
+            store["status"] = "needs_review"
+            store["reason"] = "圆形小程序码候选裁剪失败，需人工复核"
+            return
+        candidate["selected"] = True
+        candidate.update(
+            purpose="ordering",
+            purpose_source="mini_program_code_priority",
+            purpose_reason="第一轮命中微信圆形小程序码，待微信实际验证",
+        )
+        store["status"] = "selected"
+        store["reason"] = "第一轮命中微信圆形小程序码，待微信实际验证"
+        store["selected_source"] = image["path"]
+        store["selected_artifact"] = artifact_relative.as_posix()
 
     def active_release(self, active_root: Path) -> dict | None:
         return self.versions.active(active_root)
@@ -1302,7 +1462,7 @@ class MaterialService:
             summary = json.loads(batch["summary_json"])
         except (ValueError, TypeError):
             summary = {}
-        return {
+        counts = {
             "total_stores": summary.get("total_stores", len(decisions)),
             "total_images": summary.get("total_images", batch["progress_total"]),
             "selected_stores": summary.get("selected_stores", sum(row["recommendation"] for row in decisions)),
@@ -1311,6 +1471,12 @@ class MaterialService:
             "skipped_stores": sum(row["decision"] == "skipped" for row in decisions),
             "pending_stores": sum(row["decision"] == "pending" for row in decisions),
         }
+        for key in ("detection_rounds", "circle_hit_stores", "circle_error_stores", "square_checked_stores", "circle_detector_error"):
+            if key in summary:
+                counts[key] = summary[key]
+        if isinstance(summary.get("detection_stats"), dict):
+            counts["detection_stats"] = summary["detection_stats"]
+        return counts
 
     def _batch_summary(self, row: dict) -> dict:
         with self.task_store.connect() as db:
@@ -1480,24 +1646,46 @@ class MaterialService:
                     if purpose not in {"ordering", "enterprise_wechat", "other", "unknown"}:
                         purpose = "unknown"
                     purpose_source = candidate.get("purpose_source")
+                    is_mini = candidate.get("code_type") == "mini_program_code"
                     safe_reason = cls._purpose_reason(purpose)
                     if purpose_source == "local_ocr" and candidate.get("purpose_reason") in _LOCAL_OCR_REASON_LABELS:
                         safe_reason = candidate["purpose_reason"]
+                    if is_mini:
+                        purpose, purpose_source = "ordering", "mini_program_code_priority"
+                        safe_reason = "第一轮命中微信圆形小程序码，待微信实际验证"
                     safe_candidate = {
                         "box": box, "payload_sha256": payload_hash, "short_edge_px": edge,
                         # 候选一旦被选中就保留推荐状态，不再要求用途为点餐码。
                         "selected": bool(candidate.get("selected")), "purpose": purpose,
                         # OCR 只保存受控判断标签，不把整段图片文字写入清单。
                         "purpose_reason": ("本地解码识别为企业微信域名" if purpose == "enterprise_wechat" and purpose_source == "payload_domain" else safe_reason),
-                        "source": "vision_fallback" if candidate.get("source") == "vision_fallback" else "local_detector",
+                        "source": (
+                            "mini_program_code" if is_mini
+                            else "vision_fallback" if candidate.get("source") == "vision_fallback"
+                            else "local_detector"
+                        ),
                         "purpose_source": (
-                            "payload_domain"
+                            "mini_program_code_priority"
+                            if is_mini
+                            else "payload_domain"
                             if purpose == "enterprise_wechat" and purpose_source == "payload_domain"
                             else "local_ocr"
                             if purpose_source == "local_ocr"
                             else "vision_model"
                         ),
                     }
+                    if is_mini:
+                        # 圆形码不解码，只保留受控来源标记与调试用启发式分数。
+                        safe_candidate["code_type"] = "mini_program_code"
+                        safe_candidate["detector"] = "weapp-vite-qr"
+                        confidence = candidate.get("detector_confidence")
+                        if (
+                            isinstance(confidence, (int, float))
+                            and not isinstance(confidence, bool)
+                            and math.isfinite(confidence)
+                            and confidence >= 0
+                        ):
+                            safe_candidate["detector_confidence"] = float(confidence)
                     for score_name in ("sharpness_score", "quality_score"):
                         score = candidate.get(score_name)
                         if score is not None:
@@ -1505,30 +1693,46 @@ class MaterialService:
                                 raise ValueError(f"manifest {score_name} 无效")
                             safe_candidate[score_name] = float(score)
                     candidates.append(safe_candidate)
+                scan_status = raw_image.get("scan_status")
                 images.append({
                     "path": normalized_image_path, "sha256": digest,
                     "detection_count": max(0, int(raw_image.get("detection_count", len(candidates)))),
                     "candidates": candidates,
                     **({"ordering_text_seen": True} if raw_image.get("ordering_text_seen") is True else {}),
                     **({"error": str(raw_image["error"])[:200]} if raw_image.get("error") else {}),
+                    **({"scan_status": scan_status} if scan_status in _SCAN_STATUSES else {}),
+                    **({"circle_error": raw_image["circle_error"]} if raw_image.get("circle_error") in _CIRCLE_ERROR_CODES else {}),
                 })
                 total_images += 1
             status = raw_store.get("status") if raw_store.get("status") in {"selected", "needs_review"} else "needs_review"
             has_recommendation = any(candidate["selected"] for image in images for candidate in image["candidates"])
             if status == "selected" and not has_recommendation:
                 status = "needs_review"
-            safe_stores.append({
+            safe_store = {
                 "source_name": source_name, "source_folder": folder_key, "status": status,
                 "reason": str(raw_store.get("reason", ""))[:300],
                 "selected_source": raw_store.get("selected_source") if has_recommendation and isinstance(raw_store.get("selected_source"), str) else None,
                 "selected_artifact": raw_store.get("selected_artifact") if has_recommendation and isinstance(raw_store.get("selected_artifact"), str) else None,
                 "images": images,
-            })
+            }
+            if "circle_hit" in raw_store:
+                # 保留门店级两轮检测状态，供单店重分析和前端展示。
+                safe_store["circle_hit"] = bool(raw_store.get("circle_hit"))
+                safe_store["circle_error"] = bool(raw_store.get("circle_error"))
+                safe_store["square_checked"] = bool(raw_store.get("square_checked"))
+            safe_stores.append(safe_store)
         summary = {
             "total_stores": len(safe_stores), "total_images": total_images,
             "selected_stores": sum(store["status"] == "selected" for store in safe_stores),
             "review_stores": sum(store["status"] != "selected" for store in safe_stores),
         }
+        if any("circle_hit" in store for store in safe_stores):
+            summary.update({
+                "detection_rounds": 2,
+                "circle_hit_stores": sum(bool(store.get("circle_hit")) for store in safe_stores),
+                "circle_error_stores": sum(bool(store.get("circle_error")) and not store.get("circle_hit") for store in safe_stores),
+                "square_checked_stores": sum(bool(store.get("square_checked")) for store in safe_stores),
+            })
         return {"input_root": input_root, "stores": safe_stores, "summary": summary}
 
     @staticmethod

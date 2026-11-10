@@ -30,7 +30,7 @@ def _bytes_png(color: str = "white", size=(240, 160)) -> bytes:
     return buffer.getvalue()
 
 
-def _setup(tmp_path: Path, inspector=None, ocr_reader=None):
+def _setup(tmp_path: Path, inspector=None, ocr_reader=None, circle_inspector=None, circle_mode=None):
     root = tmp_path / "data"
     input_root = tmp_path / "inbox"
     output_root = tmp_path / "old-output"
@@ -44,6 +44,8 @@ def _setup(tmp_path: Path, inspector=None, ocr_reader=None):
     service = MaterialService(
         root, config, store, inspector=inspector or _detector,
         ocr_reader=ocr_reader or (lambda _path: [{"text": "扫码点餐", "x": 40, "y": 130, "width": 100, "height": 20}]),
+        circle_inspector=circle_inspector,
+        circle_mode=circle_mode,
     )
     return service, config, store, input_root, root
 
@@ -592,3 +594,121 @@ def test_rejection_reason_is_persistent_and_cleared_on_review(tmp_path: Path) ->
     confirmed = service.decide_store(bid, sid, "confirm", image_index=0, candidate_index=0)
     assert confirmed["rejection"] is None
     assert confirmed["decision"] == "confirmed"
+
+CIRCLE_BOX = {"x": 30, "y": 20, "width": 100, "height": 100}
+
+
+def test_circle_mini_program_code_without_payload_is_recommended_confirmed_and_published(tmp_path: Path) -> None:
+    square_calls: list[Path] = []
+
+    def square(path: Path) -> list[dict]:
+        square_calls.append(path)
+        return []
+
+    service, config, task_store, input_root, _ = _setup(tmp_path, inspector=square, circle_inspector=lambda _path: {"box": CIRCLE_BOX, "detector_confidence": 0.99})
+    _png(input_root / "Circle Shop" / "menu.png")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+
+    # 两轮 + 分类共 3 个逻辑单位；圆形命中店不触发方形检测。
+    assert batch["progress"] == {"done": 3, "total": 3}
+    assert square_calls == []
+    assert batch["summary"]["detection_stats"]["circle_enabled"] is True
+    assert batch["summary"]["detection_stats"]["circle"]["hit_stores"] == 1
+    assert batch["summary"]["detection_stats"]["square"]["scanned_stores"] == 0
+    assert batch["summary"]["detection_rounds"] == 2
+
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    assert detail["decision"] == "pending"
+    assert detail["recommendation"] is True
+    candidate = detail["images"][0]["candidates"][0]
+    assert candidate["payload_sha256"] is None
+    assert candidate["code_type"] == "mini_program_code"
+    assert candidate["source"] == "mini_program_code"
+    assert candidate["detector"] == "weapp-vite-qr"
+    assert candidate["detector_confidence"] == 0.99
+    assert candidate["purpose"] == "ordering"
+    assert candidate["purpose_source"] == "mini_program_code_priority"
+    assert "待微信实际验证" in candidate["purpose_reason"]
+    assert detail["images"][0]["scan_status"] == "circle_hit"
+
+    candidate_preview = service.preview_candidate(batch["batch_id"], store["store_id"], 0, 0)
+    assert candidate_preview["media_type"] == "image/png"
+
+    accepted = service.accept_recommendations(batch["batch_id"])
+    assert accepted["confirmed"] == 1
+    result = service.publish_snapshot(batch["batch_id"])
+    assert result["task_scan"]["added"] == 1
+    assert (Path(result["input_dir"]) / "Circle Shop" / "二维码.png").is_file()
+
+
+def test_circle_error_keeps_square_candidate_in_review(tmp_path: Path) -> None:
+    def broken(_path: Path):
+        raise RuntimeError(PAYLOAD)
+
+    service, _, task_store, input_root, _ = _setup(tmp_path, circle_inspector=broken)
+    _png(input_root / "Shop" / "menu.png")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["analysis_status"] == "needs_review"
+    assert store["recommendation"] is False
+
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    image = detail["images"][0]
+    assert image["circle_error"] == "circle_detector_error"
+    assert image["candidates"], "方形候选应保留用于人工参考"
+    assert image["candidates"][0]["recommendation"] is False
+    assert "检测异常" in detail["reason"]
+    assert batch["summary"]["detection_stats"]["circle"]["error_stores"] == 1
+
+    with task_store.connect() as db:
+        saved = json.loads(db.execute("SELECT store_json FROM material_decisions WHERE batch_id=? AND store_id=?", (batch["batch_id"], store["store_id"])).fetchone()[0])
+    assert saved["circle_error"] is True
+    assert PAYLOAD not in json.dumps(saved, ensure_ascii=False)
+
+
+def test_reanalysis_reruns_circle_round_and_confirmed_store_is_protected(tmp_path: Path) -> None:
+    circle_calls: list[Path] = []
+
+    def circle(path: Path) -> dict | None:
+        circle_calls.append(path)
+        return None
+
+    service, _, _, input_root, _ = _setup(tmp_path, circle_inspector=circle)
+    _png(input_root / "Shop" / "menu.png")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert len(circle_calls) == 1
+
+    detail = service.reanalyze_store(batch["batch_id"], store["store_id"])
+    assert len(circle_calls) == 2
+    assert detail["recommendation"] is True
+    assert detail["images"][0]["candidates"][0]["payload_sha256"]
+
+    service.decide_store(batch["batch_id"], store["store_id"], "confirm", 0, 0)
+    with pytest.raises(ValueError, match="已确认"):
+        service.reanalyze_store(batch["batch_id"], store["store_id"])
+
+def test_circle_assist_mode_still_runs_square_round_and_prefers_decodable_code(tmp_path: Path) -> None:
+    square_calls: list[Path] = []
+
+    def square(path: Path) -> list[dict]:
+        square_calls.append(path)
+        return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": PAYLOAD}]
+
+    service, _, _, input_root, _ = _setup(
+        tmp_path, inspector=square, circle_inspector=lambda _path: {"box": CIRCLE_BOX, "detector_confidence": 0.99},
+        circle_mode="assist",
+    )
+    _png(input_root / "Shop" / "menu.png")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert len(square_calls) == 1, "辅助模式必须保留原有方形码检测"
+    assert batch["progress"] == {"done": 3, "total": 3}
+
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    candidates = detail["images"][0]["candidates"]
+    assert "mini_program_code" in {candidate.get("code_type") for candidate in candidates}
+    recommended = [candidate for candidate in candidates if candidate["recommendation"]]
+    assert len(recommended) == 1
+    assert recommended[0]["payload_sha256"], "有可解码方形码时圆形候选只作辅助，不抢推荐"

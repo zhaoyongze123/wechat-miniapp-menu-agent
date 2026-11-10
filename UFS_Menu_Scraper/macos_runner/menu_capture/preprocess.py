@@ -8,6 +8,7 @@ import math
 import os
 import shutil
 import sys
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -101,13 +102,36 @@ def _safe_progress(progress, done: int, total: int) -> None:
         progress({"done": done, "total": total})
 
 
-def _inspect_image(path: Path, relative: str, inspector: Callable[[Path], list[dict]]) -> dict:
+def _box_scores(path: Path, box: dict) -> tuple[int, float, float]:
+    """按候选框在原图上计算清晰度与尺寸分，用于稳定排序。"""
+    x, y, width, height = box["x"], box["y"], box["width"], box["height"]
+    with Image.open(path) as source_image:
+        patch = source_image.crop((int(x), int(y), int(x + width), int(y + height)))
+        patch = patch.convert("L").resize((256, 256))
+        edges = patch.filter(ImageFilter.Kernel((3, 3), (0, -1, 0, -1, 4, -1, 0, -1, 0), scale=1))
+        sharpness = ImageStat.Stat(edges.crop((1, 1, 255, 255))).var[0]
+    short_edge = int(round(min(width, height)))
+    quality_score = min(width, height) * math.sqrt(max(sharpness, 1.0))
+    return short_edge, round(sharpness, 2), round(quality_score, 2)
+
+
+def _prepare_image(path: Path, relative: str) -> tuple[dict, tuple[int, int] | None]:
     record = {"path": relative, "sha256": "", "detection_count": 0, "candidates": []}
     try:
         record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
         with Image.open(path) as image:
             image.load()
-            image_width, image_height = image.size
+            size = image.size
+    except Exception as exc:
+        # 不记录异常文本，防止某些解码器把条码内容写入错误消息。
+        record["error"] = f"本地图片/二维码检查失败（{type(exc).__name__}）"
+        return record, None
+    return record, size
+
+
+def _detect_square(path: Path, record: dict, size: tuple[int, int], inspector: Callable[[Path], list[dict]]) -> dict:
+    image_width, image_height = size
+    try:
         detections = inspector(path)
         if not isinstance(detections, (list, tuple)):
             raise TypeError("inspector 必须返回检测列表")
@@ -132,32 +156,199 @@ def _inspect_image(path: Path, relative: str, inspector: Callable[[Path], list[d
             except ValueError:
                 host = ""
             enterprise = host in {"work.weixin.qq.com", "qy.weixin.qq.com"} or host.endswith(".work.weixin.qq.com")
-            with Image.open(path) as source_image:
-                patch = source_image.crop((int(x), int(y), int(x + width), int(y + height)))
-                patch = patch.convert("L").resize((256, 256))
-                edges = patch.filter(ImageFilter.Kernel((3, 3), (0, -1, 0, -1, 4, -1, 0, -1, 0), scale=1))
-                sharpness = ImageStat.Stat(edges.crop((1, 1, 255, 255))).var[0]
+            short_edge, sharpness, quality_score = _box_scores(path, {"x": x, "y": y, "width": width, "height": height})
             # 只比较同码的可解码候选。尺寸和边缘变化是排序启发式，不代表微信扫码成功率。
-            quality_score = min(width, height) * math.sqrt(max(sharpness, 1.0))
             record["candidates"].append({
                 "box": {"x": x, "y": y, "width": width, "height": height},
                 "payload_sha256": payload_hash,
                 "purpose_hint": "enterprise_wechat" if enterprise else "unknown",
-                "short_edge_px": int(round(min(width, height))),
-                "sharpness_score": round(sharpness, 2),
-                "quality_score": round(quality_score, 2),
+                "short_edge_px": short_edge,
+                "sharpness_score": sharpness,
+                "quality_score": quality_score,
                 "selected": False,
             })
     except Exception as exc:
         # 不记录异常文本，防止某些解码器把条码内容写入错误消息。
-        record["error"] = f"本地图片/二维码检查失败（{type(exc).__name__}）"
+        record["error"] = f"本地图片/二维码检查失败（{type(exc).__name__})"
     return record
+
+
+def _inspect_image(path: Path, relative: str, inspector: Callable[[Path], list[dict]]) -> dict:
+    record, size = _prepare_image(path, relative)
+    if size is None:
+        return record
+    return _detect_square(path, record, size, inspector)
+
+
+def _circle_candidate(path: Path, detected: dict, size: tuple[int, int] | None = None) -> dict | None:
+    box = detected.get("box") if isinstance(detected, dict) else None
+    if not isinstance(box, dict):
+        return None
+    try:
+        x, y, width, height = (float(box[key]) for key in ("x", "y", "width", "height"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (x, y, width, height)):
+        return None
+    if x < 0 or y < 0 or width <= 0 or height <= 0:
+        return None
+    if size is not None and (x + width > size[0] + 0.5 or y + height > size[1] + 0.5):
+        return None
+    short_edge, sharpness, quality_score = _box_scores(path, box)
+    return {
+        "box": {"x": x, "y": y, "width": width, "height": height},
+        # 圆形码不可本地解码，只保留原图 SHA256；payload 哈希固定为 null。
+        "payload_sha256": None,
+        "code_type": "mini_program_code",
+        "source": "mini_program_code",
+        "purpose": "ordering",
+        "purpose_source": "mini_program_code_priority",
+        "purpose_reason": "第一轮命中微信圆形小程序码，待微信实际验证",
+        "short_edge_px": short_edge,
+        "sharpness_score": sharpness,
+        "quality_score": quality_score,
+        "detector_confidence": detected.get("detector_confidence"),
+        "selected": False,
+    }
+
+
+def _decode_circle(path: Path, circle_inspector: Callable[[Path], dict | None]) -> tuple[dict | None, str | None]:
+    try:
+        return circle_inspector(path), None
+    except Exception as exc:  # noqa: BLE001 - 异常只落受控短码
+        from .miniapp_code import error_code
+
+        return None, error_code(exc)
+
+
+def inspect_store_images(
+    images: list[dict],
+    resolve_path: Callable[[dict], Path],
+    inspector: Callable[[Path], list[dict]] | None,
+    circle_inspector: Callable[[Path], dict | None] | None,
+    on_unit: Callable[[], None] | None = None,
+    skip_square_on_circle_hit: bool = True,
+) -> dict:
+    """按门店执行“圆形码优先”的两轮检测，原地更新 images。
+
+    - 任一张图结构验证命中圆形码后，该店剩余图片不再做圆形检测；默认整店不做方形检测；
+    - 圆形未命中（或未启用）才进入第二轮方形检测；
+    - 圆形检测异常记录 circle_error，但不阻断整批，也不等同于“确认无圆码”。
+    - 未通过回归验收时可关闭 skip_square_on_circle_hit，圆形码只作辅助候选。
+    """
+    stats = {"circle_hit": False, "circle_error": False, "square_checked": False,
+             "circle_images": 0, "skipped_images": 0, "circle_ms": 0.0, "square_ms": 0.0}
+    unit = on_unit or (lambda: None)
+
+    if circle_inspector is None:
+        for image in images:
+            record, size = _prepare_image(resolve_path(image), image["path"])
+            image.clear()
+            image.update(record)
+            if size is not None and inspector is not None:
+                _detect_square(resolve_path(image), image, size, inspector)
+            unit()
+        return stats
+
+    # 第一轮：按图片顺序检测圆形码，命中即停。
+    circle_started = time.perf_counter()
+    for image in images:
+        path = resolve_path(image)
+        meta = {key: image[key] for key in ("display_name", "origin", "supplement_store_id") if key in image}
+        record, size = _prepare_image(path, image["path"])
+        image.clear()
+        image.update(record)
+        image.update(meta)
+        if size is None:
+            unit()
+            continue
+        if stats["circle_hit"]:
+            image["scan_status"] = "skipped_after_circle_hit"
+            stats["skipped_images"] += 1
+            unit()
+            continue
+        stats["circle_images"] += 1
+        detected, error = _decode_circle(path, circle_inspector)
+        if error is not None:
+            stats["circle_error"] = True
+            image["circle_error"] = error
+            unit()
+            continue
+        if detected is not None:
+            candidate = _circle_candidate(path, detected, size)
+            if candidate is None:
+                # 检测器返回越界/非法坐标视为检测异常，不能当成“确认无圆码”。
+                stats["circle_error"] = True
+                image["circle_error"] = "circle_detector_error"
+                unit()
+                continue
+            stats["circle_hit"] = True
+            image["candidates"] = [candidate]
+            image["detection_count"] = 1
+            image["scan_status"] = "circle_hit"
+            unit()
+            continue
+        unit()
+
+    # 第二轮：整店没有可信圆形码，才运行原有方形码检测。
+    stats["circle_ms"] = round((time.perf_counter() - circle_started) * 1000, 1)
+    if (stats["circle_hit"] and skip_square_on_circle_hit) or inspector is None:
+        # 圆形命中店整店跳过方形检测，但进度按“已处理”补齐，保持总量恒定。
+        for _image in images:
+            unit()
+    else:
+        square_started = time.perf_counter()
+        stats["square_checked"] = True
+        for image in images:
+            if image.get("error"):
+                unit()
+                continue
+            path = resolve_path(image)
+            try:
+                with Image.open(path) as source_image:
+                    size = source_image.size
+            except Exception as exc:
+                image["error"] = f"本地图片/二维码检查失败（{type(exc).__name__})"
+                unit()
+                continue
+            if image.get("scan_status") != "circle_hit":
+                image["scan_status"] = "square_checked"
+            _detect_square(path, image, size, inspector)
+            unit()
+        stats["square_ms"] = round((time.perf_counter() - square_started) * 1000, 1)
+    return stats
+
+
+def _select_circle_candidate(store: dict) -> tuple[int, int] | None:
+    """圆形码命中店只按清晰度/尺寸稳定选一张，不参与普通码载荷竞争。"""
+    eligible = [
+        (image_index, candidate_index, candidate)
+        for image_index, image in enumerate(store["images"])
+        for candidate_index, candidate in enumerate(image["candidates"])
+        if candidate.get("code_type") == "mini_program_code"
+    ]
+    if not eligible:
+        return None
+    image_index, candidate_index, _candidate = max(
+        eligible,
+        key=lambda item: (
+            item[2].get("quality_score", 0),
+            item[2].get("short_edge_px", 0),
+            store["images"][item[0]]["path"],
+        ),
+    )
+    return image_index, candidate_index
 
 
 def _select_store(store: dict) -> tuple[tuple[int, int] | None, str]:
     if any("error" in image for image in store["images"]):
         return None, "至少一张原图读取或二维码检查失败，需人工复核"
-    candidates = [candidate for image in store["images"] for candidate in image["candidates"]]
+    candidates = [
+        candidate
+        for image in store["images"]
+        for candidate in image["candidates"]
+        if candidate.get("code_type") != "mini_program_code"
+    ]
     if not candidates:
         return None, "未检测到二维码，需人工复核"
     if any(not candidate["payload_sha256"] for candidate in candidates):
@@ -211,18 +402,21 @@ def build_materials(
     output_root: Path,
     inspector: Callable[[Path], list[dict]] | None = None,
     progress: Callable[[dict], None] | None = None,
+    circle_inspector: Callable[[Path], dict | None] | None = None,
+    circle_priority: bool = True,
 ) -> dict:
-    """按图片直接父目录分店，筛出每店一张待微信验证的二维码候选。
+    """按图片直接父目录分店，先圆形码后方形码两轮筛出待微信验证的候选。
 
-    inspector(path) 返回 ``[{"box": {"x", "y", "width", "height"}, "payload": str|None}]``。
-    payload 只用于进程内计算 SHA256，manifest/review/crop 均不保存它。
+    inspector(path) 返回 ``[{"box": {"x", "y", "width", "height"}, "payload": str|None}]``；
+    circle_inspector(path) 返回结构验证通过的圆形码结果或 None。circle_priority=True 时
+    圆形码命中店不再执行方形检测与用途 OCR；关闭时圆形码只作辅助候选，第二轮照常运行。
     progress 收到的值只有 done/total 计数。
     """
     source, target = _ensure_paths(Path(input_root), Path(output_root))
     inspect = inspector or _apple_vision_inspector
     images = _enumerate_images(source)
     stores_by_folder: dict[str, dict] = {}
-    for index, image_path in enumerate(images, start=1):
+    for image_path in images:
         relative_path = image_path.relative_to(source).as_posix()
         relative_folder = image_path.parent.relative_to(source).as_posix() or "."
         source_name = image_path.parent.name or source.name
@@ -235,14 +429,38 @@ def build_materials(
             "selected_artifact": None,
             "images": [],
         })
-        store["images"].append(_inspect_image(image_path, relative_path, inspect))
-        _safe_progress(progress, index, len(images))
+        store["images"].append({"path": relative_path})
 
     stores = [stores_by_folder[key] for key in sorted(stores_by_folder)]
     folders_by_name: dict[str, list[dict]] = {}
     for store in stores:
         folders_by_name.setdefault(store["source_name"], []).append(store)
     duplicate_names = {name for name, group in folders_by_name.items() if len({item["source_folder"] for item in group}) > 1}
+
+    total_units = len(images) * (2 if circle_inspector is not None else 1)
+    done_units = 0
+
+    def unit() -> None:
+        nonlocal done_units
+        done_units += 1
+        _safe_progress(progress, done_units, total_units)
+
+    for store in stores:
+        store_stats = inspect_store_images(
+            store["images"],
+            lambda image: source / image["path"],
+            inspect,
+            circle_inspector,
+            unit,
+            skip_square_on_circle_hit=circle_priority,
+        )
+        store["circle_hit"] = store_stats["circle_hit"]
+        store["circle_error"] = store_stats["circle_error"]
+        store["square_checked"] = store_stats["square_checked"]
+        store["circle_ms"] = store_stats["circle_ms"]
+        store["square_ms"] = store_stats["square_ms"]
+        store["circle_images"] = store_stats["circle_images"]
+        store["skipped_images"] = store_stats["skipped_images"]
 
     stage = target.with_name(target.name + ".tmp-" + uuid.uuid4().hex)
     stage.mkdir(parents=True, mode=0o700, exist_ok=False)
@@ -251,6 +469,41 @@ def build_materials(
         for store in stores:
             if store["source_name"] in duplicate_names:
                 store["reason"] = "不同父路径存在同名店铺目录，拒绝归档以防混店"
+                continue
+            circle = _select_circle_candidate(store) if store.get("circle_hit") else None
+            if circle is not None and not circle_priority:
+                # 辅助模式：方形码链路优先；只有整店没有可解码码时才用圆形码兜底。
+                has_decodable = any(
+                    candidate.get("payload_sha256") and candidate.get("code_type") != "mini_program_code"
+                    for image in store["images"] for candidate in image["candidates"]
+                )
+                if has_decodable:
+                    circle = None
+            if circle is not None:
+                # 第一轮命中即最高优先级：跳过普通码载荷竞争，只做稳定选择与裁剪。
+                image_index, candidate_index = circle
+                image_record = store["images"][image_index]
+                candidate = image_record["candidates"][candidate_index]
+                original = source / image_record["path"]
+                artifact = collectible_root / store["source_name"] / "二维码.png"
+                try:
+                    artifact.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+                    if source in artifact.resolve(strict=False).parents:
+                        raise ValueError("归档目标解析后进入素材目录")
+                    _crop_candidate(original, candidate["box"], artifact)
+                except Exception as exc:
+                    artifact.unlink(missing_ok=True)
+                    store["reason"] = f"二维码候选裁剪失败（{type(exc).__name__}），需人工复核"
+                    continue
+                candidate["selected"] = True
+                store["status"] = "selected"
+                store["reason"] = "第一轮命中微信圆形小程序码，待微信实际验证"
+                store["selected_source"] = image_record["path"]
+                store["selected_artifact"] = artifact.relative_to(stage).as_posix()
+                continue
+            if store.get("circle_error"):
+                # 圆形扫描异常不等于“确认无圆码”，方形结果只能参考，必须人工复核。
+                store["reason"] = "圆形小程序码检测异常，方形候选仅作参考，需人工复核"
                 continue
             selected, reason = _select_store(store)
             if selected is None:
@@ -280,16 +533,24 @@ def build_materials(
             {"source_name": item["source_name"], "source_folder": item["source_folder"], "reason": item["reason"], "images": [image["path"] for image in item["images"]]}
             for item in stores if item["status"] != "selected"
         ]
+        summary = {
+            "total_stores": len(stores),
+            "total_images": len(images),
+            "selected_stores": sum(item["status"] == "selected" for item in stores),
+            "review_stores": sum(item["status"] != "selected" for item in stores),
+        }
+        if circle_inspector is not None:
+            summary.update({
+                "detection_rounds": 2,
+                "circle_hit_stores": sum(bool(item.get("circle_hit")) for item in stores),
+                "circle_error_stores": sum(bool(item.get("circle_error")) and not item.get("circle_hit") for item in stores),
+                "square_checked_stores": sum(bool(item.get("square_checked")) for item in stores),
+            })
         manifest = {
             "input_root": str(source),
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "stores": stores,
-            "summary": {
-                "total_stores": len(stores),
-                "total_images": len(images),
-                "selected_stores": sum(item["status"] == "selected" for item in stores),
-                "review_stores": sum(item["status"] != "selected" for item in stores),
-            },
+            "summary": summary,
         }
         _atomic_json(stage / "manifest.json", manifest)
         _atomic_json(stage / "待人工确认.json", {"stores": review, "summary": {"count": len(review)}})
