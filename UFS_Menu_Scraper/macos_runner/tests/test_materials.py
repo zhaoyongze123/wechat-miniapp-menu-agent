@@ -636,11 +636,12 @@ def test_circle_mini_program_code_without_payload_is_recommended_confirmed_and_p
 
     service, config, task_store, input_root, _ = _setup(tmp_path, inspector=square, circle_inspector=lambda _path: {"box": CIRCLE_BOX, "detector_confidence": 0.99})
     _png(input_root / "Circle Shop" / "menu.png")
+    _png(input_root / "Circle Shop" / "menu-2.png")
     batch = _analyze(service, input_root)
     store = batch["stores"][0]
 
-    # 两轮 + 分类共 3 个逻辑单位；圆形命中店不触发方形检测。
-    assert batch["progress"] == {"done": 3, "total": 3}
+    # 两轮 + 分类共 2 图 × 3 个逻辑单位；圆形命中店不触发方形检测。
+    assert batch["progress"] == {"done": 6, "total": 6}
     assert square_calls == []
     assert batch["summary"]["detection_stats"]["circle_enabled"] is True
     assert batch["summary"]["detection_stats"]["circle"]["hit_stores"] == 1
@@ -677,6 +678,7 @@ def test_circle_error_keeps_square_candidate_in_review(tmp_path: Path) -> None:
 
     service, _, task_store, input_root, _ = _setup(tmp_path, circle_inspector=broken)
     _png(input_root / "Shop" / "menu.png")
+    _png(input_root / "Shop" / "menu-2.png")
     batch = _analyze(service, input_root)
     store = batch["stores"][0]
     assert store["analysis_status"] == "needs_review"
@@ -705,12 +707,13 @@ def test_reanalysis_reruns_circle_round_and_confirmed_store_is_protected(tmp_pat
 
     service, _, _, input_root, _ = _setup(tmp_path, circle_inspector=circle)
     _png(input_root / "Shop" / "menu.png")
+    _png(input_root / "Shop" / "menu-2.png")
     batch = _analyze(service, input_root)
     store = batch["stores"][0]
-    assert len(circle_calls) == 1
+    assert len(circle_calls) == 2
 
     detail = service.reanalyze_store(batch["batch_id"], store["store_id"])
-    assert len(circle_calls) == 2
+    assert len(circle_calls) == 4
     assert detail["recommendation"] is True
     assert detail["images"][0]["candidates"][0]["payload_sha256"]
 
@@ -730,13 +733,14 @@ def test_circle_assist_mode_still_runs_square_round_and_prefers_decodable_code(t
         circle_mode="assist",
     )
     _png(input_root / "Shop" / "menu.png")
+    _png(input_root / "Shop" / "menu-2.png")
     batch = _analyze(service, input_root)
     store = batch["stores"][0]
-    assert len(square_calls) == 1, "辅助模式必须保留原有方形码检测"
-    assert batch["progress"] == {"done": 3, "total": 3}
+    assert len(square_calls) == 2, "辅助模式必须保留原有方形码检测"
+    assert batch["progress"] == {"done": 6, "total": 6}
 
     detail = service.get_store(batch["batch_id"], store["store_id"])
-    candidates = detail["images"][0]["candidates"]
+    candidates = [candidate for image in detail["images"] for candidate in image["candidates"]]
     assert "mini_program_code" in {candidate.get("code_type") for candidate in candidates}
     recommended = [candidate for candidate in candidates if candidate["recommendation"]]
     assert len(recommended) == 1

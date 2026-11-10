@@ -44,6 +44,8 @@ MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_BATCH_BYTES = 5 * 1024 * 1024 * 1024
 MAX_STORE_UPLOAD_FILES = 100
 MAX_STORE_UPLOAD_BYTES = 500 * 1024 * 1024
+# 图片数分流：只有 2–5 张的门店跑圆形小程序码检测。1 张门店基本是桌面立牌，≥6 张门店多为手机截图。
+CIRCLE_IMAGE_RANGE = (2, 5)
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _UPLOAD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _FORMAT_BY_EXTENSION = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP"}
@@ -672,6 +674,7 @@ class MaterialService:
                 "hit_stores": sum(bool(store.get("circle_hit")) for store in stores),
                 "error_stores": sum(bool(store.get("circle_error")) and not store.get("circle_hit") for store in stores),
                 "skipped_images": sum(int(store.get("skipped_images", 0)) for store in stores),
+                "skipped_stores_by_policy": sum(bool(store.get("circle_skipped")) for store in stores),
                 "ms": round(sum(float(store.get("circle_ms", 0.0)) for store in stores), 1),
             },
             "square": {
@@ -703,9 +706,16 @@ class MaterialService:
             if row["source_kind"] == "upload" and len(current_files) != row["upload_file_count"]:
                 raise ValueError("上传素材文件集合发生变化，拒绝分析")
             circle_inspector, detector, circle_warning = self._open_circle_detector(analysis_dir / "circle-roi")
-            # 圆形阶段 + 方形阶段 + 用途分类阶段；缺失圆形检测器时退回旧的两阶段。
-            units_per_image = 3 if circle_inspector is not None else 2
-            unit_total = len(current_files) * units_per_image
+            # 分流：只有 2–5 张门店跑圆形阶段；进度按“圆形 + 方形 + 用途分类”实际单元数统计。
+            store_counts: dict[Path, int] = {}
+            for path in current_files:
+                store_counts[path.parent] = store_counts.get(path.parent, 0) + 1
+            circle_images = sum(
+                count for count in store_counts.values()
+                if circle_inspector is not None and CIRCLE_IMAGE_RANGE[0] <= count <= CIRCLE_IMAGE_RANGE[1]
+            )
+            units_before_classify = len(current_files) + circle_images
+            unit_total = units_before_classify + len(current_files)
             with self.task_store.connect() as db:
                 db.execute("UPDATE material_batches SET progress_total=?,updated_at=? WHERE id=?", (unit_total, _now(), batch_id))
 
@@ -720,13 +730,13 @@ class MaterialService:
             manifest = build_materials(
                 source_root, analysis_dir,
                 inspector=self.inspector, progress=on_progress, circle_inspector=circle_inspector,
-                circle_priority=self.circle_priority,
+                circle_priority=self.circle_priority, circle_image_range=CIRCLE_IMAGE_RANGE,
             )
 
             def on_classified(done: int) -> None:
                 with self.task_store.connect() as db:
                     db.execute("UPDATE material_batches SET progress_done=?,progress_total=?,updated_at=? WHERE id=? AND status='analyzing'",
-                               ((units_per_image - 1) * len(current_files) + done, unit_total, _now(), batch_id))
+                               (units_before_classify + done, unit_total, _now(), batch_id))
 
             self._classify_and_select(manifest, source_root, analysis_dir, on_classified)
             after_files = _enumerate_images(source_root)

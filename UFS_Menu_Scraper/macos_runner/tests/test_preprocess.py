@@ -335,3 +335,38 @@ def test_out_of_bounds_circle_result_is_treated_as_error_not_miss(tmp_path: Path
     assert "检测异常" in store["reason"]
     # 圆形检查异常仍会执行方形检测，但不能自动确认。
     assert square_calls == ["a.png"]
+
+
+def test_circle_round_only_runs_for_stores_with_two_to_five_images(tmp_path: Path) -> None:
+    source, output = tmp_path / "source", tmp_path / "result"
+    _image(source / "One" / "a.jpg")
+    for name in ("a", "b", "c"):
+        _image(source / "Three" / f"{name}.jpg", "gray")
+    for name in ("a", "b", "c", "d", "e", "f"):
+        _image(source / "Six" / f"{name}.jpg", "black")
+    circle_calls: list[str] = []
+    square_calls: list[str] = []
+    progress: list[dict] = []
+
+    def square(path: Path) -> list[dict]:
+        square_calls.append(f"{path.parent.name}/{path.name}")
+        return []
+
+    def circle(path: Path) -> dict | None:
+        circle_calls.append(f"{path.parent.name}/{path.name}")
+        return None
+
+    manifest = build_materials(
+        source, output, inspector=square, circle_inspector=circle,
+        progress=progress.append, circle_image_range=(2, 5),
+    )
+    stores = {item["source_name"]: item for item in manifest["stores"]}
+
+    assert circle_calls == ["Three/a.jpg", "Three/b.jpg", "Three/c.jpg"]
+    assert len(square_calls) == 10
+    assert stores["One"]["circle_skipped"] == "single_image"
+    assert stores["Six"]["circle_skipped"] == "many_images"
+    assert stores["Three"]["circle_skipped"] == ""
+    assert stores["Three"]["circle_images"] == 3
+    # 跳过圆形阶段的门店每图只计 1 个单元，2–5 张门店计 2 个。
+    assert progress[-1] == {"done": 13, "total": 13}

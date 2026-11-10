@@ -221,6 +221,13 @@ def _decode_circle(path: Path, circle_inspector: Callable[[Path], dict | None]) 
         return None, error_code(exc)
 
 
+def _circle_applies(image_count: int, circle_image_range: tuple[int, int] | None) -> bool:
+    """按门店图片数决定是否跑圆形码检测；None 表示不做分流。"""
+    if circle_image_range is None:
+        return True
+    return circle_image_range[0] <= image_count <= circle_image_range[1]
+
+
 def inspect_store_images(
     images: list[dict],
     resolve_path: Callable[[dict], Path],
@@ -228,6 +235,7 @@ def inspect_store_images(
     circle_inspector: Callable[[Path], dict | None] | None,
     on_unit: Callable[[], None] | None = None,
     skip_square_on_circle_hit: bool = True,
+    circle_image_range: tuple[int, int] | None = None,
 ) -> dict:
     """按门店执行“圆形码优先”的两轮检测，原地更新 images。
 
@@ -235,12 +243,19 @@ def inspect_store_images(
     - 圆形未命中（或未启用）才进入第二轮方形检测；
     - 圆形检测异常记录 circle_error，但不阻断整批，也不等同于“确认无圆码”。
     - 未通过回归验收时可关闭 skip_square_on_circle_hit，圆形码只作辅助候选。
+    - circle_image_range 限定只有该图片数区间内的门店做圆形检测，1 张与 ≥6 张门店跳过。
     """
     stats = {"circle_hit": False, "circle_error": False, "square_checked": False,
-             "circle_images": 0, "skipped_images": 0, "circle_ms": 0.0, "square_ms": 0.0}
+             "circle_images": 0, "skipped_images": 0, "circle_ms": 0.0, "square_ms": 0.0,
+             "circle_skipped_reason": ""}
     unit = on_unit or (lambda: None)
 
-    if circle_inspector is None:
+    if circle_inspector is not None and not _circle_applies(len(images), circle_image_range):
+        stats["circle_skipped_reason"] = (
+            "single_image" if len(images) < circle_image_range[0] else "many_images"
+        )
+
+    if circle_inspector is None or stats["circle_skipped_reason"]:
         for image in images:
             record, size = _prepare_image(resolve_path(image), image["path"])
             image.clear()
@@ -404,6 +419,7 @@ def build_materials(
     progress: Callable[[dict], None] | None = None,
     circle_inspector: Callable[[Path], dict | None] | None = None,
     circle_priority: bool = True,
+    circle_image_range: tuple[int, int] | None = None,
 ) -> dict:
     """按图片直接父目录分店，先圆形码后方形码两轮筛出待微信验证的候选。
 
@@ -437,7 +453,10 @@ def build_materials(
         folders_by_name.setdefault(store["source_name"], []).append(store)
     duplicate_names = {name for name, group in folders_by_name.items() if len({item["source_folder"] for item in group}) > 1}
 
-    total_units = len(images) * (2 if circle_inspector is not None else 1)
+    total_units = sum(
+        len(store["images"]) * (2 if circle_inspector is not None and _circle_applies(len(store["images"]), circle_image_range) else 1)
+        for store in stores
+    )
     done_units = 0
 
     def unit() -> None:
@@ -453,6 +472,7 @@ def build_materials(
             circle_inspector,
             unit,
             skip_square_on_circle_hit=circle_priority,
+            circle_image_range=circle_image_range,
         )
         store["circle_hit"] = store_stats["circle_hit"]
         store["circle_error"] = store_stats["circle_error"]
@@ -461,6 +481,7 @@ def build_materials(
         store["square_ms"] = store_stats["square_ms"]
         store["circle_images"] = store_stats["circle_images"]
         store["skipped_images"] = store_stats["skipped_images"]
+        store["circle_skipped"] = store_stats["circle_skipped_reason"]
 
     stage = target.with_name(target.name + ".tmp-" + uuid.uuid4().hex)
     stage.mkdir(parents=True, mode=0o700, exist_ok=False)
