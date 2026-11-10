@@ -17,6 +17,7 @@
   <TextExpression.ReferencesForImplementation>
     <sco:Collection x:TypeArguments="AssemblyReference">
       <AssemblyReference>System.Private.CoreLib</AssemblyReference>
+      <AssemblyReference>System.Diagnostics.Process</AssemblyReference>
       <AssemblyReference>System.Linq</AssemblyReference>
       <AssemblyReference>System.Drawing.Primitives</AssemblyReference>
       <AssemblyReference>System.Text.Json</AssemblyReference>
@@ -31,6 +32,7 @@
       <Variable x:TypeArguments="x:String" Name="windowTitle" />
       <Variable x:TypeArguments="x:String" Name="windowApp" />
       <Variable x:TypeArguments="x:String" Name="windowRole" />
+      <Variable x:TypeArguments="x:String" Name="windowClass" />
       <Variable x:TypeArguments="sd:Rectangle" Name="windowPosition" />
     </Sequence.Variables>
     <Assign sap:VirtualizedContainerService.HintSize="500,82" sap2010:WorkflowViewState.IdRef="Assign_Records">
@@ -43,7 +45,7 @@
     </Assign>
     <uix:NFindElements Children="[foundWindows]" DisplayName="枚举 WeChat 顶层窗口" HealingAgentBehavior="SameAsCard" Mode="FindTopLevels" Version="V5" sap:VirtualizedContainerService.HintSize="500,120" sap2010:WorkflowViewState.IdRef="NFindElements_WeChat">
       <uix:NFindElements.FilterTarget>
-        <uix:TargetAnchorable FuzzySelectorArgument="&lt;wnd app='WeChat' role='AXWindow' /&gt;" SearchSteps="FuzzySelector" />
+        <uix:TargetAnchorable FuzzySelectorArgument="[If(System.OperatingSystem.IsWindows(), If(System.Diagnostics.Process.GetProcessesByName(&quot;Weixin&quot;).Length &gt; 0, &quot;&lt;wnd app='weixin.exe' /&gt;&quot;, &quot;&lt;wnd app='wechat.exe' /&gt;&quot;), &quot;&lt;wnd app='WeChat' role='AXWindow' /&gt;&quot;)]" SearchSteps="FuzzySelector" />
       </uix:NFindElements.FilterTarget>
     </uix:NFindElements>
     <ForEach x:TypeArguments="ui:UiElement" Values="[foundWindows]" sap:VirtualizedContainerService.HintSize="800,500" sap2010:WorkflowViewState.IdRef="ForEach_Window">
@@ -59,11 +61,11 @@
             </Assign>
             <Assign sap:VirtualizedContainerService.HintSize="350,70" sap2010:WorkflowViewState.IdRef="Assign_AppDefault">
               <Assign.To><OutArgument x:TypeArguments="x:String">[windowApp]</OutArgument></Assign.To>
-              <Assign.Value><InArgument x:TypeArguments="x:String">WeChat</InArgument></Assign.Value>
+              <Assign.Value><InArgument x:TypeArguments="x:String">[If(System.OperatingSystem.IsWindows(), String.Empty, "WeChat")]</InArgument></Assign.Value>
             </Assign>
             <Assign sap:VirtualizedContainerService.HintSize="350,70" sap2010:WorkflowViewState.IdRef="Assign_RoleDefault">
               <Assign.To><OutArgument x:TypeArguments="x:String">[windowRole]</OutArgument></Assign.To>
-              <Assign.Value><InArgument x:TypeArguments="x:String">AXWindow</InArgument></Assign.Value>
+              <Assign.Value><InArgument x:TypeArguments="x:String">[If(System.OperatingSystem.IsWindows(), String.Empty, "AXWindow")]</InArgument></Assign.Value>
             </Assign>
             <Assign sap:VirtualizedContainerService.HintSize="350,70" sap2010:WorkflowViewState.IdRef="Assign_PositionDefault">
               <Assign.To><OutArgument x:TypeArguments="sd:Rectangle">[windowPosition]</OutArgument></Assign.To>
@@ -71,10 +73,22 @@
             </Assign>
             <uix:NGetAttributeGeneric x:TypeArguments="x:String" Attribute="title" ContinueOnError="True" DisplayName="读取标题" InUiElement="[currentWindow]" Result="[windowTitle]" Version="V5" />
             <uix:NGetAttributeGeneric x:TypeArguments="sd:Rectangle" Attribute="position" ContinueOnError="True" DisplayName="读取窗口矩形" InUiElement="[currentWindow]" Result="[windowPosition]" Version="V5" />
+            <If Condition="[System.OperatingSystem.IsWindows()]">
+              <If.Then>
+                <Sequence DisplayName="读取 Windows 窗口进程和类名">
+                  <Assign>
+                    <Assign.To><OutArgument x:TypeArguments="x:String">[windowClass]</OutArgument></Assign.To>
+                    <Assign.Value><InArgument x:TypeArguments="x:String">[String.Empty]</InArgument></Assign.Value>
+                  </Assign>
+                  <uix:NGetAttributeGeneric x:TypeArguments="x:String" Attribute="app" ContinueOnError="True" DisplayName="读取实际窗口进程" InUiElement="[currentWindow]" Result="[windowApp]" Version="V5" />
+                  <uix:NGetAttributeGeneric x:TypeArguments="x:String" Attribute="cls" ContinueOnError="True" DisplayName="读取实际窗口类名" InUiElement="[currentWindow]" Result="[windowClass]" Version="V5" />
+                </Sequence>
+              </If.Then>
+            </If>
             <Assign sap:VirtualizedContainerService.HintSize="700,100" sap2010:WorkflowViewState.IdRef="Assign_AddRecord">
               <Assign.To><OutArgument x:TypeArguments="scg:List(scg:Dictionary(x:String, x:Object))">[windowRecords]</OutArgument></Assign.To>
               <Assign.Value>
-                <InArgument x:TypeArguments="scg:List(scg:Dictionary(x:String, x:Object))">[windowRecords.Concat(New Dictionary(Of String, Object)() {New Dictionary(Of String, Object) From {{"title", windowTitle}, {"app", windowApp}, {"role", windowRole}, {"position", New Dictionary(Of String, Integer) From {{"x", windowPosition.X}, {"y", windowPosition.Y}, {"width", windowPosition.Width}, {"height", windowPosition.Height}}}}}).ToList()]</InArgument>
+                <InArgument x:TypeArguments="scg:List(scg:Dictionary(x:String, x:Object))">[windowRecords.Concat(New Dictionary(Of String, Object)() {New Dictionary(Of String, Object) From {{"title", windowTitle}, {"app", windowApp}, {"role", windowRole}, {"cls", If(windowClass, String.Empty)}, {"position", New Dictionary(Of String, Integer) From {{"x", windowPosition.X}, {"y", windowPosition.Y}, {"width", windowPosition.Width}, {"height", windowPosition.Height}}}}}).ToList()]</InArgument>
               </Assign.Value>
             </Assign>
           </Sequence>

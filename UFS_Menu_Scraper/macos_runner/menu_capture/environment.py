@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 import shutil
@@ -14,6 +15,8 @@ from typing import Any
 
 from .config import ConfigStore
 from .uipath_runner import FileRobotTransport, UiPathRunner
+from .uipath_cli import cli_entry
+from .window_contract import is_windows_wechat_app, window_selector
 
 
 _STATUS = {"checking", "ready", "warning", "error", "unknown"}
@@ -144,6 +147,9 @@ class EnvironmentDiagnostics:
     @staticmethod
     def _automation_permission_unknown(check_id: str, name: str) -> dict:
         """macOS 的 Automation 授权按目标应用记录，不能从另一进程可靠读取。"""
+        if sys.platform == "win32":
+            return _item(check_id, name, "unknown", "等待 UiPath 桌面实测",
+                         "请在当前已登录的 Windows 桌面中测试窗口发现与截图。")
         actions = ([{"id": "open_settings", "label": "查看自动化设置", "kind": "open_settings", "target": "automation"}]
                    if sys.platform == "darwin" else [])
         return _item(
@@ -184,7 +190,8 @@ class EnvironmentDiagnostics:
                      "target": "accessibility" if permission == "accessibility" else "screen_recording"}]
                    if sys.platform == "darwin" else [])
         if sys.platform != "darwin":
-            return _item(check_id, name, "unknown", "当前平台不支持此权限检测", "本版本的桌面权限诊断面向 macOS。", actions=actions)
+            return _item(check_id, name, "unknown", "请以 UiPath 桌面实测为准",
+                         "这些系统权限状态适用于 macOS。", actions=actions)
         try:
             from .macos import MacDesktop
             state = MacDesktop().permissions().get(permission)
@@ -201,6 +208,15 @@ class EnvironmentDiagnostics:
 
     @staticmethod
     def _process_names() -> list[str] | None:
+        if sys.platform == "win32":
+            try:
+                result = subprocess.run(["tasklist.exe", "/FO", "CSV", "/NH"], capture_output=True,
+                                        text=True, errors="replace", timeout=5, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                return None
+            if result.returncode != 0:
+                return None
+            return [row[0] for row in csv.reader(result.stdout.splitlines()) if len(row) >= 2]
         if sys.platform != "darwin":
             return None
         try:
@@ -211,6 +227,14 @@ class EnvironmentDiagnostics:
 
     def _wechat_process_check(self) -> dict:
         actions = [{"id": "test_wechat", "label": "检测微信状态", "kind": "test", "target": "wechat"}]
+        if sys.platform == "win32":
+            names = self._process_names()
+            if names is None:
+                return _item("wechat_process", "微信客户端", "unknown", "无法读取微信进程状态", actions=actions)
+            running = any(is_windows_wechat_app(name) for name in names)
+            return _item("wechat_process", "微信客户端", "ready" if running else "error",
+                         "检测到微信正在运行" if running else "未检测到微信进程",
+                         "进程存在不等于已登录；登录状态请运行微信界面测试。", actions=actions)
         if sys.platform != "darwin":
             return _item("wechat_process", "微信客户端", "unknown", "当前平台不支持微信进程检测", actions=actions)
         try:
@@ -241,11 +265,11 @@ class EnvironmentDiagnostics:
     @staticmethod
     def _cli_check() -> dict:
         actions = [{"id": "test_uipath", "label": "测试 UiPath 桌面能力", "kind": "test", "target": "uipath_desktop"}]
-        cli = shutil.which("uip")
-        if not cli:
+        entry = cli_entry()
+        if not entry:
             return _item("uipath_cli", "UiPath CLI", "error", "未找到 uip 命令", "请安装 UiPath CLI 并确保它位于服务 PATH 中。", actions=actions)
         try:
-            result = subprocess.run([cli, "--version"], capture_output=True, text=True, timeout=8, check=False)
+            result = subprocess.run([*entry, "--version"], capture_output=True, text=True, timeout=8, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
             return _item("uipath_cli", "UiPath CLI", "error", "UiPath CLI 无法启动", type(exc).__name__, actions=actions)
         if result.returncode != 0:
@@ -407,10 +431,10 @@ class EnvironmentDiagnostics:
         permissions = self.system_permissions()
         result.update(permissions)
         try:
-            if sys.platform != "darwin":
-                raise RuntimeError("UiPath 桌面诊断当前仅支持 macOS")
-            cli = shutil.which("uip")
-            if not cli:
+            if sys.platform not in {"darwin", "win32"}:
+                raise RuntimeError("UiPath 桌面诊断需要 macOS 或 Windows")
+            entry = cli_entry()
+            if not entry:
                 raise RuntimeError("未找到 UiPath CLI（uip）")
             temp = tempfile.TemporaryDirectory(prefix="menu-capture-uipath-check-")
             work = Path(temp.name)
@@ -420,11 +444,11 @@ class EnvironmentDiagnostics:
             args_path.write_text(json.dumps({"in_RunDirectory": str(work)}, ensure_ascii=False), encoding="utf-8")
             args_path.chmod(0o600)
             log_stream = (work / "cli.log").open("wb")
-            command = [cli, "rpa", "run", "--project-dir", str(self.project_dir), "--file-path", "Main.xaml",
+            command = [*entry, "rpa", "run", "--project-dir", str(self.project_dir), "--file-path", "Main.xaml",
                        "--input-arguments-file", str(args_path), "--timeout", "90", "--output", "json"]
             environment = os.environ.copy()
             dotnet_root = Path.home() / ".dotnet"
-            if dotnet_root.is_dir():
+            if sys.platform == "darwin" and dotnet_root.is_dir():
                 environment["DOTNET_ROOT"] = str(dotnet_root)
                 environment["PATH"] = str(dotnet_root) + os.pathsep + environment.get("PATH", "")
             environment["UIPATH_CLI_DISABLE_VERSION_SYNC"] = "true"
@@ -461,7 +485,8 @@ class EnvironmentDiagnostics:
                     detail = (
                         f"截图命令返回 {screenshot['width']}×{screenshot['height']} 图片，但像素近乎全黑 "
                         f"（暗像素占比 {quality['dark_fraction']:.1%}）。窗口枚举成功不代表像素已捕获；"
-                        "请检查 UiPath 的屏幕录制权限及权限变更后的 Assistant 重启状态。"
+                        + ("请确认微信窗口在已登录且未锁屏的桌面中可见。"
+                           if sys.platform == "win32" else "请检查 UiPath 的屏幕录制权限及权限变更后的 Assistant 重启状态。")
                     )
                     result["uipath_screenshot"] = {"status": "error", "summary": "UiPath 返回了近乎全黑的微信截图", "detail": detail}
                     result["wechat_login"] = {"status": "unknown", "summary": "截图画面为黑帧，无法判断微信登录状态", "detail": detail}
@@ -571,6 +596,8 @@ class EnvironmentDiagnostics:
 
     def system_permissions(self) -> dict:
         """通过官方 CLI 查询 UIAutomation 宿主自己的权限，不能代替 Robot 执行能力。"""
+        if sys.platform == "win32":
+            return {}  # Windows 的实际执行能力由窗口发现与截图确认。
         cache = getattr(self, "_permissions_cache", None)
         if cache and time.monotonic() - cache[0] < 10:
             return cache[1]
@@ -607,7 +634,9 @@ class EnvironmentDiagnostics:
             title = str(window.get("title") or "").strip()
             app = str(window.get("app") or "")
             app_name = app.casefold()
-            if not title or ("wechat" not in app_name and "xinwechat" not in app_name and "微信" not in app):
+            allowed_app = (is_windows_wechat_app(app) if sys.platform == "win32"
+                           else "wechat" in app_name or "xinwechat" in app_name or "微信" in app)
+            if not title or not allowed_app:
                 continue
             if title in {"图片和视频", "聊天记录"}:
                 continue
@@ -618,16 +647,14 @@ class EnvironmentDiagnostics:
             if isinstance(width, (int, float)) and isinstance(height, (int, float)) and width > 100 and height > 100 and width < height * 0.8:
                 continue
             priority = 2 if title in {"微信", "WeChat", "文件传输助手"} else 1
+            if sys.platform == "win32":
+                priority = 2 if title.casefold() in {"微信", "wechat", "weixin", "文件传输助手"} else 1
             area = width * height if isinstance(width, (int, float)) and isinstance(height, (int, float)) else 0
             candidates.append((priority, area, window, title, app))
         if not candidates:
             return ""
-        _, _, window, title, app = max(candidates, key=lambda item: (item[0], item[1]))
-        attrs = {"app": app or "WeChat", "title": title}
-        if window.get("role"):
-            attrs["role"] = str(window["role"])
-        import xml.etree.ElementTree as ET
-        return ET.tostring(ET.Element("wnd", attrs), encoding="unicode", short_empty_elements=True)
+        _, _, window, title, _ = max(candidates, key=lambda item: (item[0], item[1]))
+        return window_selector(window, title)
 
     @staticmethod
     def _classify_wechat_screen(rows: list[dict], width: int, height: int) -> tuple[dict, dict]:

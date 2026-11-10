@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Literal
@@ -9,6 +10,7 @@ from typing import Literal
 from pydantic import Field, field_validator
 
 from .config import StrictModel, atomic_json
+from .window_contract import is_windows_wechat_app
 
 
 class RobotProfile(StrictModel):
@@ -22,9 +24,15 @@ class RobotProfile(StrictModel):
     coordinates_verified: bool = False
     wechat_input_x_ratio: float = Field(default=.68, ge=.05, le=.95)
     wechat_input_y_ratio: float = Field(default=.90, ge=.05, le=.95)
-    paste_shortcut: str = "[d(hk)][d(command)]v[u(command)][u(hk)]"
+    paste_shortcut: str = Field(default_factory=lambda: (
+        "[d(hk)][d(ctrl)]v[u(ctrl)][u(hk)]" if sys.platform == "win32" else
+        "[d(hk)][d(command)]v[u(command)][u(hk)]"
+    ))
     send_key: str = "[d(hk)][k(enter)][u(hk)]"
-    close_key: str = "[d(hk)][d(command)]w[u(command)][u(hk)]"
+    close_key: str = Field(default_factory=lambda: (
+        "[d(hk)][d(alt)][k(f4)][u(alt)][u(hk)]" if sys.platform == "win32" else
+        "[d(hk)][d(command)]w[u(command)][u(hk)]"
+    ))
     scroll_units: int = Field(default=6, ge=1, le=10)
     max_tasks: int = Field(default=1, ge=1, le=10)
 
@@ -44,7 +52,11 @@ class RobotProfile(StrictModel):
             raise ValueError("请粘贴完整 XML 选择器，不能只填写店名或窗口标题")
         # 这里只保存微信工作流的目标，拒绝将任意应用接入鼠标执行器。
         apps = [v for node in root.iter() for k, v in node.attrib.items() if k.lower() in {"app", "bundleid", "bundle-id", "processname"}]
-        if not apps or not all("wechat" in a.lower() or "微信" in a or "xinwechat" in a.lower() for a in apps):
+        if sys.platform == "win32":
+            valid_apps = apps and all(is_windows_wechat_app(app) for app in apps)
+        else:
+            valid_apps = apps and all("wechat" in a.lower() or "微信" in a or "xinwechat" in a.lower() for a in apps)
+        if not valid_apps:
             raise ValueError("需要包含微信进程的完整窗口选择器，请在 Studio 中复制完整选择器")
         return value
 

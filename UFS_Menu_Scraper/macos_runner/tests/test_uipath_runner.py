@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -213,7 +214,9 @@ class PagingActor(FakeActor):
             "width": 240, "height": 160, "window_width": 120, "window_height": 80,
         }
 
-def test_attached_mode_waits_for_manual_main_and_publishes_agent_capture(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_attached_mode_waits_for_manual_main_and_publishes_agent_capture(tmp_path: Path, monkeypatch, platform) -> None:
+    monkeypatch.setattr(uipath_runner_module, "sys", SimpleNamespace(platform=platform))
     runner, store, selected, other, _, output_root = _setup(tmp_path)
 
     def navigate(_model, _name, _people, _steps, *, observe, **_kwargs):
@@ -239,6 +242,8 @@ def test_attached_mode_waits_for_manual_main_and_publishes_agent_capture(tmp_pat
     assert record["status"] == "captured", record["message"]
     assert runner.transport.run_timeouts[0] == 300
     assert runner.transport.stop_requested is True
+    if platform == "win32":
+        assert not any(command["action"] in {"resize", "capture_rect"} for command in runner.transport.commands)
     assert store.get(other["id"])["status"] == "pending"
     report_path = next((output_root / ".uipath-runs").glob("*/gui-agent/*/navigation-result.json"))
     report = json.loads(report_path.read_text(encoding="utf-8"))
