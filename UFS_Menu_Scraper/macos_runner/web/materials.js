@@ -535,7 +535,7 @@
       const tooLarge = all.find((file) => file.size > 50*1024*1024), total = all.reduce((sum,file) => sum + file.size,0), tooMany = all.length > 10000;
       state.files = all;
       $('materials-file-count').textContent = `${all.length} 张有效图片已选择${raw.length > all.length ? `（忽略 ${raw.length-all.length} 个非支持文件）` : ''}`;
-      const error = tooLarge ? `${tooLarge.webkitRelativePath || tooLarge.name} 超过单文件 50 MB 限制。` : total > 2*1024*1024*1024 ? '所选图片总量超过 2 GB 限制。' : tooMany ? '图片数量超过 10,000 张限制。' : !all.length ? '没有找到支持的图片文件。' : '';
+      const error = tooLarge ? `${tooLarge.webkitRelativePath || tooLarge.name} 超过单文件 50 MB 限制。` : total > 5*1024*1024*1024 ? '所选图片总量超过 5 GB 限制。' : tooMany ? '图片数量超过 10,000 张限制。' : !all.length ? '没有找到支持的图片文件。' : '';
       setError('materials-import-error', error);
       $('materials-new-upload-count').textContent = all.length ? `${all.length} 张图片` : '';
     }

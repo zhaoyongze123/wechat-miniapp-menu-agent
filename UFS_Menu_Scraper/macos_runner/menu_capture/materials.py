@@ -40,7 +40,7 @@ REJECTION_REASONS = {
 
 MAX_FILES = 10_000
 MAX_FILE_BYTES = 50 * 1024 * 1024
-MAX_BATCH_BYTES = 2 * 1024 * 1024 * 1024
+MAX_BATCH_BYTES = 5 * 1024 * 1024 * 1024
 MAX_STORE_UPLOAD_FILES = 100
 MAX_STORE_UPLOAD_BYTES = 500 * 1024 * 1024
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -267,7 +267,7 @@ class MaterialService:
             if next_count > MAX_FILES:
                 raise ValueError("单批文件数超过 10000 限制")
             if next_size > MAX_BATCH_BYTES:
-                raise ValueError("单批总大小超过 2 GB 限制")
+                raise ValueError("单批总大小超过 5 GB 限制")
             source_root = Path(row["source_root"]).resolve(strict=True)
             target = source_root.joinpath(*rel.parts)
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1188,7 +1188,7 @@ class MaterialService:
                 raise ValueError("单文件超过 50 MB 限制")
             total += size
             if total > MAX_BATCH_BYTES:
-                raise ValueError("单批总大小超过 2 GB 限制")
+                raise ValueError("单批总大小超过 5 GB 限制")
 
     @staticmethod
     def _safe_upload_path(value: str) -> PurePosixPath:
