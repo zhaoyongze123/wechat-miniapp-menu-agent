@@ -94,6 +94,9 @@ _LOCAL_OCR_REASON_LABELS = {
     "二维码周边没有识别到明确点餐标识，需人工确认",
     "本地 OCR 未能完成，需人工确认",
 }
+_SINGLE_IMAGE_REASON = "门店仅有 1 张素材，未定位到二维码，按整图候选推荐，待人工确认"
+# 只有企业微信用途被排除；其余已分类用途都可以作为推荐候选被批量接受。
+_ACCEPTABLE_PURPOSES = frozenset({"ordering", "other", "unknown"})
 
 
 def _nearby_ocr_text(box: dict, items: list[dict], image_size: tuple[int, int]) -> str:
@@ -515,7 +518,7 @@ class MaterialService:
         for image in store["images"]:
             self._checked_source(batch, image)
         recommendation = any(
-            candidate.get("selected")
+            candidate.get("selected") and (candidate.get("purpose") or "unknown") in _ACCEPTABLE_PURPOSES
             for image in store["images"] for candidate in image.get("candidates", [])
         )
         with self.task_store.connect() as db:
@@ -904,27 +907,85 @@ class MaterialService:
                 store["reason"] = "圆形小程序码检测异常，方形候选仅作参考，需人工复核"
                 continue
 
-            candidates = [
+            # 解码成功就是本地可读的直接证据，不再用固定像素阈值排除较小的码。
+            eligible = [
                 (image_index, candidate_index, image, candidate)
                 for image_index, image in enumerate(store["images"])
                 for candidate_index, candidate in enumerate(image["candidates"])
                 if candidate.get("code_type") != "mini_program_code"
+                and candidate.get("purpose") == "ordering"
+                and candidate.get("payload_sha256")
             ]
-            # 只要检测到二维码候选就自动推荐，不再要求用途必须是点餐码；用途留给下游微信验证。
-            eligible = candidates
-            if not eligible:
+            # 批量接受只排除企业微信用途；其余候选都按识别结果作为建议。
+            acceptable = [
+                (image_index, candidate_index, image, candidate)
+                for image_index, image in enumerate(store["images"])
+                for candidate_index, candidate in enumerate(image["candidates"])
+                if candidate.get("code_type") != "mini_program_code"
+                and (candidate.get("purpose") or "unknown") in _ACCEPTABLE_PURPOSES
+            ]
+
+            def rank(item):
+                candidate = item[3]
+                return (
+                    candidate.get("quality_score", candidate.get("short_edge_px", 0)),
+                    candidate.get("short_edge_px", 0),
+                    bool(candidate.get("payload_sha256")),
+                    item[2]["path"],
+                )
+
+            if eligible:
+                picked = max(eligible, key=rank)
+                reason = "周边 OCR 识别到点餐标识且二维码本地解码成功；已按尺寸和清晰度选取，待微信验证"
+            elif acceptable:
+                picked = max(acceptable, key=rank)
+                reason = (
+                    "识别到点餐标识，但二维码未能由本地解码器读出；已按尺寸和清晰度选取，待微信验证"
+                    if picked[3].get("purpose") == "ordering"
+                    else "未识别到明确点餐标识，已按尺寸和清晰度选取候选，待微信验证"
+                )
+            elif len(store["images"]) == 1 and not store["images"][0]["candidates"]:
+                # 门店只有 1 张素材且没有定位到二维码：整图作为候选，交给人工确认后发布。
+                image = store["images"][0]
+                try:
+                    with Image.open(resolve_source(image)) as source_image:
+                        width, height = source_image.size
+                except Exception:
+                    store["status"] = "needs_review"
+                    store["reason"] = "无法读取原图尺寸，需人工确认"
+                    continue
+                candidate = {
+                    "box": {"x": 0, "y": 0, "width": width, "height": height},
+                    "payload_sha256": None,
+                    "short_edge_px": min(width, height),
+                    "purpose": "unknown",
+                    "purpose_source": "single_image",
+                    "purpose_reason": _SINGLE_IMAGE_REASON,
+                    "source": "single_image",
+                    "quality_score": 0.0,
+                    "selected": False,
+                }
+                image["candidates"].append(candidate)
+                image["detection_count"] = max(int(image.get("detection_count", 0)), len(image["candidates"]))
+                picked = (0, len(image["candidates"]) - 1, image, candidate)
+                reason = "门店仅有 1 张素材，未定位到二维码；按整图候选推荐，待人工确认"
+            else:
                 store["status"] = "needs_review"
                 if any(image.get("ordering_text_seen") for image in store["images"]):
                     store["reason"] = "原图 OCR 发现点餐标识，但本地没有定位到对应二维码，需人工确认"
+                elif not any(image["candidates"] for image in store["images"]):
+                    store["reason"] = "没有检测到可用二维码候选，需人工确认"
+                elif all(
+                    (candidate.get("purpose") or "unknown") == "enterprise_wechat"
+                    for image in store["images"] for candidate in image["candidates"]
+                ):
+                    store["reason"] = "仅识别到企业微信码，需人工确认"
                 elif any("本地 OCR 未能完成" in c.get("purpose_reason", "") for image in store["images"] for c in image["candidates"]):
                     store["reason"] = "本地 OCR 未能完成，需人工确认"
                 else:
-                    store["reason"] = "没有检测到可用二维码候选，需人工确认"
+                    store["reason"] = "没有在二维码周边识别到明确点餐标识，需人工确认"
                 continue
-            image_index, candidate_index, image, candidate = max(
-                eligible,
-                key=lambda item: (item[3].get("quality_score", item[3].get("short_edge_px", 0)), item[3].get("short_edge_px", 0), bool(item[3].get("payload_sha256")), item[2]["path"]),
-            )
+            image_index, candidate_index, image, candidate = picked
             artifact_relative = PurePosixPath("可采集") / store["source_name"] / "二维码.png"
             artifact = analysis_dir.joinpath(*artifact_relative.parts)
             try:
@@ -933,14 +994,11 @@ class MaterialService:
             except Exception:
                 artifact.unlink(missing_ok=True)
                 store["status"] = "needs_review"
-                store["reason"] = "二维码候选裁剪失败，需人工复核"
+                store["reason"] = "候选裁剪失败，需人工复核"
                 continue
             candidate["selected"] = True
             store["status"] = "selected"
-            # 用途仍按 OCR 结果标注，只是批量同意不再限制用途。
-            purpose_label = {"ordering": "点餐码", "enterprise_wechat": "企微码", "other": "其他二维码"}.get(
-                candidate.get("purpose") or "", "用途未识别")
-            store["reason"] = f"已按清晰度自动选取二维码候选（{purpose_label}），待微信验证"
+            store["reason"] = reason
             store["selected_source"] = image["path"]
             store["selected_artifact"] = artifact_relative.as_posix()
 
@@ -1103,7 +1161,7 @@ class MaterialService:
                 candidates.append({
                     **candidate,
                     "candidate_index": candidate_index,
-                    "recommendation": bool(candidate.get("selected")),
+                    "recommendation": bool(candidate.get("selected") and (candidate.get("purpose") or "unknown") in _ACCEPTABLE_PURPOSES),
                 })
             images.append({**image, "image_index": image_index, "candidates": candidates})
         return {
@@ -1228,7 +1286,7 @@ class MaterialService:
                     (image_index, candidate_index, candidate)
                     for image_index, image in enumerate(store["images"])
                     for candidate_index, candidate in enumerate(image["candidates"])
-                    if candidate.get("selected") and candidate.get("purpose") != "enterprise_wechat"
+                    if candidate.get("selected") and (candidate.get("purpose") or "unknown") in _ACCEPTABLE_PURPOSES
                 ), None)
                 if match is None:
                     continue
@@ -1494,7 +1552,7 @@ class MaterialService:
         data = json.loads(row["store_json"])
         selected = json.loads(row["selected_json"])
         valid_recommendation = bool(row["recommendation"]) and any(
-            candidate.get("selected")
+            candidate.get("selected") and (candidate.get("purpose") or "unknown") in _ACCEPTABLE_PURPOSES
             for image in data.get("images", []) for candidate in image.get("candidates", [])
         )
         return {
@@ -1642,9 +1700,8 @@ class MaterialService:
                     edge = candidate.get("short_edge_px")
                     if isinstance(edge, bool) or not isinstance(edge, int) or edge < 0:
                         raise ValueError("manifest 二维码尺寸无效")
-                    purpose = candidate.get("purpose", "unknown")
-                    if purpose not in {"ordering", "enterprise_wechat", "other", "unknown"}:
-                        purpose = "unknown"
+                    raw_purpose = candidate.get("purpose")
+                    purpose = raw_purpose if raw_purpose in {"ordering", "enterprise_wechat", "other", "unknown"} else "unknown"
                     purpose_source = candidate.get("purpose_source")
                     is_mini = candidate.get("code_type") == "mini_program_code"
                     safe_reason = cls._purpose_reason(purpose)
@@ -1653,14 +1710,17 @@ class MaterialService:
                     if is_mini:
                         purpose, purpose_source = "ordering", "mini_program_code_priority"
                         safe_reason = "第一轮命中微信圆形小程序码，待微信实际验证"
+                    elif purpose_source == "single_image" and candidate.get("purpose_reason") == _SINGLE_IMAGE_REASON:
+                        safe_reason = _SINGLE_IMAGE_REASON
                     safe_candidate = {
                         "box": box, "payload_sha256": payload_hash, "short_edge_px": edge,
-                        # 候选一旦被选中就保留推荐状态，不再要求用途为点餐码。
-                        "selected": bool(candidate.get("selected")), "purpose": purpose,
+                        # 旧清单缺用途时按 unknown 处理；只有企业微信用途不进入推荐。
+                        "selected": bool(candidate.get("selected")) and (is_mini or (raw_purpose or "unknown") in _ACCEPTABLE_PURPOSES), "purpose": purpose,
                         # OCR 只保存受控判断标签，不把整段图片文字写入清单。
                         "purpose_reason": ("本地解码识别为企业微信域名" if purpose == "enterprise_wechat" and purpose_source == "payload_domain" else safe_reason),
                         "source": (
                             "mini_program_code" if is_mini
+                            else "single_image" if candidate.get("source") == "single_image"
                             else "vision_fallback" if candidate.get("source") == "vision_fallback"
                             else "local_detector"
                         ),
@@ -1669,6 +1729,8 @@ class MaterialService:
                             if is_mini
                             else "payload_domain"
                             if purpose == "enterprise_wechat" and purpose_source == "payload_domain"
+                            else "single_image"
+                            if purpose_source == "single_image"
                             else "local_ocr"
                             if purpose_source == "local_ocr"
                             else "vision_model"
