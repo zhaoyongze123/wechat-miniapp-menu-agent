@@ -100,9 +100,10 @@ def test_batch_summary_uses_local_ocr_final_store_decisions(tmp_path: Path) -> N
 
     batch = _analyze(service, input_root)
 
-    assert batch["stores"][0]["analysis_status"] == "needs_review"
-    assert batch["summary"]["selected_stores"] == 0
-    assert batch["summary"]["review_stores"] == 1
+    assert batch["stores"][0]["analysis_status"] == "selected"
+    assert batch["stores"][0]["recommendation"] is True
+    assert batch["summary"]["selected_stores"] == 1
+    assert batch["summary"]["review_stores"] == 0
 
 
 def _wait_after_start(service: MaterialService, batch_id: str) -> dict:
@@ -196,7 +197,12 @@ def test_unrecognized_image_can_be_manually_selected_by_box(tmp_path: Path) -> N
     _png(input_root / "Manual Shop" / "menu.png")
     batch = _analyze(service, input_root)
     store = batch["stores"][0]
-    assert store["analysis_status"] == "needs_review"
+    # 门店只有 1 张素材：未定位到二维码也按整图推荐。
+    assert store["analysis_status"] == "selected"
+    assert store["recommendation"] is True
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    assert detail["images"][0]["candidates"][0]["box"] == {"x": 0.0, "y": 0.0, "width": 240.0, "height": 160.0}
+    assert detail["images"][0]["candidates"][0]["purpose_source"] == "single_image"
     confirmed = service.decide_store(
         batch["batch_id"], store["store_id"], "confirm", image_index=0,
         box={"x": 40, "y": 30, "width": 90, "height": 90},
@@ -380,7 +386,7 @@ def test_small_locally_decoded_ordering_code_is_not_rejected_by_arbitrary_pixel_
     assert batch["stores"][0]["analysis_status"] == "selected"
 
 
-def test_unreadable_code_with_point_ordering_text_goes_to_manual_review(tmp_path: Path) -> None:
+def test_unreadable_code_with_point_ordering_text_is_recommended_for_bulk_accept(tmp_path: Path) -> None:
     service, _, _, input_root, _ = _setup(
         tmp_path,
         inspector=lambda _path: [{"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": None}],
@@ -388,12 +394,13 @@ def test_unreadable_code_with_point_ordering_text_goes_to_manual_review(tmp_path
     _png(input_root / "Shop" / "menu.png")
     batch = _analyze(service, input_root)
     candidate = batch["stores"][0]
-    assert candidate["recommendation"] is False
-    assert candidate["analysis_status"] == "needs_review"
+    assert candidate["recommendation"] is True
+    assert candidate["analysis_status"] == "selected"
     assert "未能由本地解码器读出" in candidate["reason"]
+    assert service.accept_recommendations(batch["batch_id"])["confirmed"] == 1
 
 
-def test_ordering_text_without_located_qr_is_reported_for_manual_box_selection(tmp_path: Path) -> None:
+def test_single_image_without_located_qr_recommends_the_whole_image(tmp_path: Path) -> None:
     service, _, _, input_root, _ = _setup(
         tmp_path,
         inspector=lambda _path: [],
@@ -401,11 +408,28 @@ def test_ordering_text_without_located_qr_is_reported_for_manual_box_selection(t
     )
     _png(input_root / "Shop" / "menu.png", size=(240, 160))
     batch = _analyze(service, input_root)
-    assert batch["stores"][0]["recommendation"] is False
-    assert batch["stores"][0]["analysis_status"] == "needs_review"
-    assert "原图 OCR 发现点餐标识" in batch["stores"][0]["reason"]
-    detail = service.get_store(batch["batch_id"], batch["stores"][0]["store_id"])
+    store = batch["stores"][0]
+    assert store["recommendation"] is True
+    assert store["analysis_status"] == "selected"
+    assert "仅有 1 张素材" in store["reason"]
+    detail = service.get_store(batch["batch_id"], store["store_id"])
     assert detail["images"][0]["ordering_text_seen"] is True
+    assert detail["images"][0]["candidates"][0]["source"] == "single_image"
+    assert service.accept_recommendations(batch["batch_id"])["confirmed"] == 1
+
+
+def test_multi_image_unknown_purpose_candidate_is_recommended(tmp_path: Path) -> None:
+    service, _, _, input_root, _ = _setup(
+        tmp_path,
+        ocr_reader=lambda _path: [{"text": "欢迎光临", "x": 40, "y": 130, "width": 100, "height": 20}],
+    )
+    _png(input_root / "Shop" / "menu-a.png")
+    _png(input_root / "Shop" / "menu-b.png", color="blue")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["recommendation"] is True
+    assert store["analysis_status"] == "selected"
+    assert service.accept_recommendations(batch["batch_id"])["confirmed"] == 1
 
 
 def test_enterprise_wechat_payload_is_excluded_without_ocr_or_model(tmp_path: Path) -> None:
@@ -421,6 +445,9 @@ def test_enterprise_wechat_payload_is_excluded_without_ocr_or_model(tmp_path: Pa
     assert candidate["purpose_source"] == "payload_domain"
     assert not candidate["recommendation"]
     assert "secret-value" not in json.dumps(candidate)
+    assert batch["stores"][0]["analysis_status"] == "needs_review"
+    assert "仅识别到企业微信码" in batch["stores"][0]["reason"]
+    assert service.accept_recommendations(batch["batch_id"])["confirmed"] == 0
 
 
 def test_enterprise_and_ordering_codes_in_one_image_select_the_local_order_code(tmp_path: Path) -> None:
