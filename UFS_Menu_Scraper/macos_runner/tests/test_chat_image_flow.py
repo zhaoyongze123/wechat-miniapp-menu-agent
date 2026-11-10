@@ -6,8 +6,7 @@ from PIL import Image, ImageDraw
 
 from menu_capture.config import ConfigStore
 from menu_capture.store import TaskStore
-from menu_capture.uipath_runner import UiPathRunner, NeedsReview
-from menu_capture.chat_image_locator import ChatImageNotFound
+from menu_capture.uipath_runner import RobotCommandError, UiPathRunner
 
 
 NAME = "ZA0070214＿再回首＿宁波市＿再回首单店"
@@ -37,7 +36,7 @@ def setup_flow(tmp_path):
         qr_detector=no_qr_detection,
     )
     runner._debug_frame_ref = lambda _: None
-    runner._screenshot = lambda *_: {
+    runner._screenshot = lambda *_, **__: {
         "path": str(tmp_path / "chat.png"), "width": 864, "height": 958,
         "window_width": 432, "window_height": 479,
     }
@@ -49,36 +48,70 @@ def setup_flow(tmp_path):
     return runner, task, profile, commands, clipboard
 
 
-def test_repeated_store_names_use_last_anchor_and_convert_image_coordinates(tmp_path, monkeypatch):
+def test_normal_path_double_clicks_fixed_latest_image_point(tmp_path, monkeypatch):
     runner, task, profile, commands, clipboard = setup_flow(tmp_path)
     calls = []
-
-    def locate(shot, source, anchor):
-        calls.append((shot, source, anchor))
-        return {"box_image_px": [628, 629, 788, 789], "center_image_px": {"x": 708, "y": 709},
-                "method": "multiscale_thumbnail_match", "score": .96}
-
-    monkeypatch.setattr("menu_capture.uipath_runner.locate_sent_image", locate)
+    monkeypatch.setattr("menu_capture.uipath_runner.locate_sent_image",
+                        lambda *args: calls.append(args))
     assert runner._open_source_automatic(task, profile, tmp_path, .3) == {"preview_opened": True}
-    assert calls == [(tmp_path / "chat.png", Path(task["source_path"]), 610)]
+    # 正常路径不再截图做原图匹配，直接双击固定中心。
+    assert calls == []
     double_clicks = [c for c in commands if c["action"] == "double_click"]
     assert len(double_clicks) == 1
-    assert double_clicks[0]["x"] == 354
-    assert double_clicks[0]["y"] == 354.5
-    assert double_clicks[0]["trace"]["source"] == "source_thumbnail_match"
+    assert double_clicks[0]["x"] == pytest.approx(0.8035 * 432)
+    assert double_clicks[0]["y"] == pytest.approx(0.7610 * 479)
+    assert double_clicks[0]["trace"]["source"] == "fixed_latest_image_point"
     assert clipboard == [NAME, Path(task["source_path"])]
 
 
-def test_missing_current_image_never_opens_history(tmp_path, monkeypatch):
+def test_second_store_reuses_window_geometry_without_screenshot(tmp_path):
     runner, task, profile, commands, _ = setup_flow(tmp_path)
+    runner.run_id = "run-1"
+    shots = []
 
-    def missing(*_):
-        raise ChatImageNotFound("未找到本轮图片", {"reason": "no_confident_match"})
+    def shot(*_args, **kwargs):
+        shots.append(kwargs)
+        return {"path": str(tmp_path / "chat.png"), "width": 864, "height": 958,
+                "window_width": 432, "window_height": 479}
 
-    monkeypatch.setattr("menu_capture.uipath_runner.locate_sent_image", missing)
-    with pytest.raises(NeedsReview, match="未找到本轮图片"):
-        runner._open_source_automatic(task, profile, tmp_path, .3)
-    assert not any(c["action"] == "double_click" for c in commands)
+    runner._screenshot = shot
+    assert runner._open_source_automatic(task, profile, tmp_path, .3) == {"preview_opened": True}
+    # 批次首店保留一次 screenshot + OCR 保护。
+    assert len(shots) == 1
+    runner._window_geometry = lambda selector: {"width": 864, "height": 958,
+                                                "window_width": 432, "window_height": 479}
+    assert runner._open_source_automatic(task, profile, tmp_path, .3) == {"preview_opened": True}
+    assert len(shots) == 1
+    assert len([c for c in commands if c["action"] == "double_click"]) == 2
+
+
+def test_preview_not_opened_falls_back_to_source_image_match_once(tmp_path, monkeypatch):
+    runner, task, profile, commands, _ = setup_flow(tmp_path)
+    preview_calls, wait_calls = [], []
+
+    def preview(*_):
+        preview_calls.append(1)
+        if len(preview_calls) == 1:
+            raise RobotCommandError("UiPath 命令失败：找不到目标应用程序")
+        return {"preview_opened": True}
+
+    def wait_for_image(*_):
+        wait_calls.append(1)
+        return ({"path": str(tmp_path / "chat.png"), "width": 864, "height": 958,
+                 "window_width": 432, "window_height": 479},
+                {"box_image_px": [628, 629, 788, 789], "center_image_px": {"x": 708, "y": 709}})
+
+    runner._recognize_preview = preview
+    runner._wait_for_sent_image = wait_for_image
+    assert runner._open_source_automatic(task, profile, tmp_path, .3) == {"preview_opened": True}
+    assert len(preview_calls) == 2
+    assert len(wait_calls) == 1
+    double_clicks = [c for c in commands if c["action"] == "double_click"]
+    assert len(double_clicks) == 2
+    assert double_clicks[0]["trace"]["source"] == "fixed_latest_image_point"
+    assert double_clicks[1]["x"] == 354
+    assert double_clicks[1]["y"] == 354.5
+    assert double_clicks[1]["trace"]["source"] == "source_thumbnail_match"
 
 
 def test_latest_multiline_store_name_can_anchor_after_old_single_line(tmp_path):
@@ -108,6 +141,9 @@ def test_visible_thumbnail_opens_preview_without_resending(tmp_path, monkeypatch
         "box_image_px": [628, 629, 788, 789], "center_image_px": {"x": 708, "y": 709}})
     assert runner._open_source_automatic(task, profile, tmp_path, .3) == {"preview_opened": True}
     assert clipboard == [NAME, Path(task["source_path"])]
-    # 文本粘贴+回车合并为一条；图片粘贴后要等缩略图附着，粘贴与回车分开两条。
+    # 文本粘贴+回车合并为一条；图片粘贴与回车分开两条。
     assert len([c for c in commands if c["action"] == "key"]) == 3
     assert len([c for c in commands if c["action"] == "double_click"]) == 1
+    # 正常路径不再有固定等待；只会点击输入框一次。
+    assert not [c for c in commands if c["action"] == "noop"]
+    assert len([c for c in commands if c["action"] == "click"]) == 1

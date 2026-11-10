@@ -286,15 +286,27 @@ class TaskStore:
         with self.connect() as db:
             if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='material_versions'").fetchone():
                 return None
-            row = db.execute("SELECT v.* FROM material_selection s JOIN material_versions v ON v.id=s.version_id "
+            row = db.execute("SELECT v.*, b.name AS batch_name FROM material_selection s "
+                             "JOIN material_versions v ON v.id=s.version_id "
                              "JOIN material_batches b ON b.id=v.batch_id WHERE s.singleton=1 AND b.deleted_at=''").fetchone()
             if not row or Path(source).name != row["snapshot_id"]:
-                row = db.execute("SELECT v.* FROM material_versions v JOIN material_batches b ON b.id=v.batch_id "
+                row = db.execute("SELECT v.*, b.name AS batch_name FROM material_versions v "
+                                 "JOIN material_batches b ON b.id=v.batch_id "
                                  "WHERE v.snapshot_id=? AND b.deleted_at='' ORDER BY v.rowid DESC LIMIT 1",
                                  (Path(source).name,)).fetchone()
             if not row:
                 return None
         return dict(row)
+
+    def material_batch_name(self, batch_id: str) -> str:
+        """批次目录用用户起的批次名称；查不到名称时返回空串，由调用方回退到 ID。"""
+        if not batch_id:
+            return ""
+        with self.connect() as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='material_batches'").fetchone():
+                return ""
+            row = db.execute("SELECT name FROM material_batches WHERE id=?", (batch_id,)).fetchone()
+        return (row["name"] or "") if row else ""
 
     def complete_capture(self, task_id: str, destination: Path, message: str) -> None:
         """同一结果路径替换后，旧二维码版本不能再读取新结果。"""

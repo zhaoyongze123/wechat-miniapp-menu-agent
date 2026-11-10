@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { parseActionPayload } from './action-repair.mjs';
+import { NoProgressTracker } from './progress-tracker.mjs';
 
 // SDK 日志可能包含提示词、模型返回值或请求信息。协议输出使用启动时保存的原始写口，SDK 日志静默丢弃。
 const protocolWrite = process.stdout.write.bind(process.stdout);
@@ -31,10 +32,12 @@ let tracePath = '';
 let callSeq = 0;
 let currentCall = null;
 let actionCount = 0;
-let skillReads = 0;
 let formatRetries = 0;
 let toolRejections = 0;
 let screenshotCount = 0;
+let currentFrameHash = '';
+let noProgressNotices = 0;
+const progress = new NoProgressTracker();
 const frameHashes = new Map();
 // 动作名称、必填/选填字段与基础类型只有这一份定义，Python 侧从同一文件生成输出契约。
 const actionSchema = JSON.parse(readFileSync(new URL('./action-schema.json', import.meta.url), 'utf8'));
@@ -291,11 +294,6 @@ function parseModelAction(rawArgs) {
       checkShape('switch_window', args);
       return { type: 'switch_window', inputs: { title: text(args.title) } };
     }
-    case 'read_skill': {
-      // Skill 是 Agent 按需加载的参考经验，不改变页面。
-      checkShape('read_skill', args);
-      return { type: 'skill', inputs: { name: text(args.name, 80) } };
-    }
     case 'terminate': {
       // 业务只收一个状态、一条理由；success 额外要求菜品区域。字段白名单之外一律视为格式违规。
       checkShape('terminate', args, 'invalid_terminal');
@@ -393,11 +391,67 @@ function makeCustomActionParser() {
   };
 }
 
+// 点餐小程序导航经验只维护这一份，作为系统提示词常驻；不再提供按需读取的 Skill。
+const navigationGuide = `点餐小程序导航经验
+
+目标是浏览本轮门店的菜单并交接。根据截图自主选择动作。浏览期间避免登录、入会、储值、加购、下单、支付或发起外部联系。
+
+一、三个终态怎么分
+
+success：已经出现可直接截图和滚动浏览的真实菜品菜单，通常能看到对应价格，且 \`menu_box\` 能框住当前可见的菜品列表。滚动采集由程序完成。
+可以判 success：
+- 一两道菜也算，不要求菜品很多。
+- 截图里没有显示店名时，如果开窗和导航过程能对应本轮门店，仍可交接。
+- 页面显示的是其他分店时，只要已经出现可截图、可滚动的真实菜品菜单，就照常交接。
+- 门店打烊、暂停接单，但菜单仍能浏览，也算 success。
+- 顶部横幅、分类导航、底部购物车或角落提示未挡住菜品列表和滚动时，可以交接。
+- 覆盖在菜品列表上的广告、会员、储值或活动浮层必须先关闭再交接。
+不要判 success：
+- 只有欢迎页、“立即点餐”按钮、门店介绍、广告。
+- 只有分类名或搜索框，还没有菜品和价格。
+- 购物车、订单确认、订单详情、历史订单、已下单成功页、支付页、开票页。
+- 页面正在加载或白屏。
+- 模态弹窗盖住菜品区域或拦住列表滚动。
+- 人数选择页（“选择人数”“开始点餐”“欢迎来到…”）不是菜单页；应先选中人数并进入点餐，再进行判定。
+
+unqualified：要有清楚、可见的证据表明本轮拿不到菜单，而不是“暂时没成功”。
+常见证据：明确提示扫码点餐已关闭且无菜单入口；要求到店后再扫码；二维码失效、小程序停止服务或门店未配置菜单；明确写暂无菜单/暂无菜品且重试后仍一样。
+不算 unqualified：打烊但菜单可见→success；提示暂时无法下单但有“查看菜单/进入点餐”入口→继续；白屏、加载慢、一般网络异常→有限恢复或观察等待，持续失败返回 needs_review；点击没反应、弹窗关不掉、需要登录、页面归属不明→needs_review；菜品很少、店名不全→不影响 success。
+
+needs_review：合理尝试后仍无法确定——强制手机号+验证码；持续白屏或一直加载；打开的页面与本轮二维码关系不明；工具连续失败或窗口反复被拒绝；弹窗无法消除；停在人数选择、欢迎页等前置页且找不到进入菜单的入口。
+
+二、常见页面怎么处理
+
+- 欢迎页或广告页优先找能直接通向菜品菜单的入口；同时有点餐、会员中心、储值、外卖或商城时，结合按钮与内容选择菜单路径。误入无关页面后优先退出、返回或切回原窗口。
+- 全屏广告、会员礼遇、储值海报等有叉号、关闭、跳过入口时先关闭再观察；不要未关闭遮挡就反复点底部导航。
+- 门店首页是海报加人数选择时，先按任务人数选中对应数字，确认选中状态，再点底部“开始点餐/去点餐”一次；没有页面变化时先核对按钮位置和选中状态，再决定是否重试，不要连续点海报或空白区域。
+- 扫码后直接进入已有订单、订单详情或当前餐桌的点餐记录时，可用返回、关闭、左上角返回箭头离开，或切换底部“菜单/点餐/首页”导航，或找“继续点餐/加菜/再来一单”入口进入菜品列表；全程只浏览，不勾选菜品、不修改订单、不提交、不支付；都无法回到可浏览菜单时返回 needs_review。
+- 订单详情、历史订单或下单成功页中的菜名与价格，不是菜单成功交接的充分证据；必须真正回到可滚动的菜品列表才判 success。
+- 遇到隐私或授权弹窗时，优先使用可跳过、关闭或拒绝的入口；若只能通过手机号、登录或未授权的个人信息请求，返回 needs_review。
+- 系统通知弹窗优先拒绝或关闭。
+- 等待应有可见依据，例如加载提示、转场或刚触发的页面变化。等待后重新观察。有稳定的非目标页面时，转向返回或其他入口。
+- 点击没反应时，对照动作前后的截图，看按钮是否可用、有没有前置条件、点击是否落在目标上。只有新证据支持时才重试同一位置。
+- 点击点餐后，如果原窗口停在加载页、浏览器跳转页或没有明显变化，先用 \`list_windows\` 核对是否另开了微信小程序，再决定是否待检查；窗口标题只是线索，可用 \`switch_window\` 查看合理候选的新截图。
+
+三、操作没有进展时
+
+- 每次操作后先对照新截图，确认页面是否出现预期变化；工具执行成功不代表页面已经响应。
+- 没有变化时，先检查是否仍在加载、按钮是否被遮挡、是否缺少前置步骤。只有发现新的依据，才重新点击原目标。
+- 同一目标连续两次点击都没有响应时，放弃当前点击方式：可改点按钮中心或其他有效位置，也可尝试其他菜单入口、返回路径或窗口切换。不要反复点击同一区域直到耗尽步数。
+- 如果执行反馈指出画面没有变化，把它作为判断依据，而不是必须终止的信号；延迟生效或不可见的变化仍可继续观察。
+- 多个合理入口都没有进展时，停止机械重试，说明已经尝试的方式和当前阻碍，返回 needs_review。
+
+四、交接时的注意事项
+
+- \`menu_box\` 只框菜品列表区域，不要包含顶部状态栏、底部购物车栏；不要用接近整窗的框代替菜品区域。
+- 只框当前截图中可见的部分，不推测滚动后的区域。
+- 理由写实际观察到的内容，例如“已进入菜单，可见菜品与价格”，不要写推测或截图中不存在的内容。`;
+
 class HostOperator extends Operator {
   async initialize() {}
 
   supportedActions() {
-    return ['click', 'scroll', 'wait', 'windows', 'switch_window', 'skill', 'finished', 'notice'];
+    return ['click', 'scroll', 'wait', 'windows', 'switch_window', 'finished', 'notice'];
   }
 
   screenContext() {
@@ -413,10 +467,18 @@ class HostOperator extends Operator {
     actionUsedOnFrame = false;
     screenshotCount += 1;
     const hash = sha256(info.bytes);
+    currentFrameHash = hash;
     frameHashes.set(hash, currentFrame);
     if (frameHashes.size > 64) frameHashes.delete(frameHashes.keys().next().value);
+    // 对比动作前后的截图：只提示“画面是否变化”，是否换策略仍由 Agent 决定。
+    const notice = progress.observe(hash, info.width, info.height);
+    if (notice && !pendingNotice) {
+      pendingNotice = notice;
+      noProgressNotices += 1;
+    }
     trace({ type: 'screenshot', at: now(), frame_id: currentFrame, width: info.width, height: info.height,
-            bytes: info.bytes.length, sha256: hash });
+            bytes: info.bytes.length, sha256: hash,
+            no_change_streak: progress.noChangeStreak, same_target_streak: progress.sameTargetStreak });
     return { base64: result.base64, status: 'success' };
   }
 
@@ -430,19 +492,6 @@ class HostOperator extends Operator {
       if (!action || !action.inputs || typeof action.type !== 'string') throw new Error('invalid_action');
       method = action.type;
       let reply = {};
-      if (action.type === 'skill') {
-        // 读取 Skill 不改变页面，也不消耗当前帧；Agent 下一轮可继续在同一画面操作。
-        skillReads += 1;
-        const name = text(action.inputs.name);
-        if (!name) throw new Error('invalid_action');
-        const result = await callHost('skill', { frame_id: currentFrame, name });
-        reply = { name };
-        pendingNotice = text(result?.content, 6000) || '该 Skill 没有可读内容。';
-        trace({ type: 'tool', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
-                method: 'skill', inputs: sanitized(inputs), ok: true, reply,
-                bytes: pendingNotice.length });
-        return { status: 'success' };
-      }
       actionUsedOnFrame = true;
       if (action.type === 'notice') {
         // 格式修正不是导航动作；次数已在解析阶段计入 format_retries。
@@ -457,6 +506,7 @@ class HostOperator extends Operator {
         const point = action.inputs.point?.raw;
         if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error('invalid_action');
         await callHost('click', { frame_id: currentFrame, x: point.x, y: point.y });
+        progress.clickSent(currentFrameHash, { x: point.x, y: point.y });
       } else if (action.type === 'scroll') {
         const point = action.inputs.point?.raw;
         if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || !['up', 'down'].includes(action.inputs.direction)) throw new Error('invalid_action');
@@ -521,16 +571,16 @@ class HostOperator extends Operator {
   }
 }
 
-// 辅助调用与导航动作分开计数，便于判断 read_skill / 格式修正是否挤占导航预算。
+// 辅助调用与导航动作分开计数，便于判断格式修正是否挤占导航预算。
 function metrics() {
   return {
     model_calls: callSeq,
     screenshots: screenshotCount,
     navigation_actions: actionCount,
-    skill_reads: skillReads,
     format_retries: formatRetries,
     tool_rejections: toolRejections,
     format_failures: parseFailuresTotal,
+    no_progress_notices: noProgressNotices,
   };
 }
 
@@ -574,6 +624,7 @@ async function main() {
       '终态示例：<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"success","reason":"已进入菜单","menu_box":[50,150,950,950]}}</tool_call>；<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"needs_review","reason":"..."}}</tool_call>。',
       '安全边界：不要下单、支付、加购物车、领券、登录或切换门店；不要编造坐标，也不要声称截图里没有出现的内容。',
       config.output_contract,
+      navigationGuide,
     ].join('\n');
     const agent = new class extends GUIAgent {
       async onLLMRequest(_id, payload) {

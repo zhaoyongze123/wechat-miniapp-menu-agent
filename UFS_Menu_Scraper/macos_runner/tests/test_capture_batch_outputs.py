@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from menu_capture.capture_outputs import batch_output_dir
 from menu_capture.server import create_app
 
 
@@ -28,6 +29,28 @@ def _snapshot(parent: Path, snapshot_id: str, color: str) -> Path:
 def _page(path: Path, color: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (32, 24), color).save(path, format="PNG")
+
+
+def test_batch_output_directory_uses_batch_name_instead_of_id(tmp_path: Path):
+    root = tmp_path / "output"
+    assert batch_output_dir(root, "a" * 32, "0514二维码（去重）") == \
+        root.resolve() / "清洗批次" / "0514二维码（去重）"
+    # 查不到名称的历史批次仍回退到 ID，保证旧结果可继续访问。
+    assert batch_output_dir(root, "a" * 32) == root.resolve() / "清洗批次" / ("a" * 32)
+
+
+def test_store_output_dir_resolves_batch_name(tmp_path: Path):
+    app = create_app(tmp_path)
+    root = tmp_path / "input" / "同一家店"
+    _image(root / "二维码.png", "red")
+    app.state.store.scan(root.parent)
+    task = app.state.store.tasks()[0]
+
+    destination = app.state.runner._store_output_dir(tmp_path / "output", task, "f" * 32, "100张测试素材")
+
+    assert destination.parent.parent == (tmp_path / "output").resolve() / "清洗批次"
+    assert destination.parent.name == "100张测试素材"
+    assert destination.name == "同一家店"
 
 
 def test_same_store_in_separate_cleaning_batches_has_separate_task_and_output(tmp_path: Path):

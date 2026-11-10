@@ -270,7 +270,9 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
                 "running": runner.running, "stop_requested": runner.stop.is_set(),
                 "run": run, "current_task": runner.current_task,
                 "material_release": release,
-                "batch_output_dir": (str(batch_output_dir(settings.output_dir, release["batch_id"] if release else ""))
+                "batch_output_dir": (str(batch_output_dir(settings.output_dir,
+                                                          release["batch_id"] if release else "",
+                                                          release.get("batch_name", "") if release else ""))
                                      if settings.output_dir else ""),
                 "input_name": current_root.name if current_root else "",
                 "tasks": tasks, "counts": dict(Counter(t["status"] for t in tasks)), "events": store.events()}
@@ -735,8 +737,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         if not selected.strip():
             raise ValueError("请先选择采集素材版本" if payload["path"] == "input" else "请先设置输出目录")
         release = materials.active_release(Path(config.input_dir).resolve()) if config.input_dir else None
-        path = (batch_output_dir(selected, release["batch_id"]) if payload["path"] == "output" and release
-                else Path(selected))
+        path = (batch_output_dir(selected, release["batch_id"], release.get("batch_name", ""))
+                if payload["path"] == "output" and release else Path(selected))
         path.mkdir(parents=True, exist_ok=True)
         subprocess.run(["/usr/bin/open", str(path)], check=True)
         return {"ok": True}

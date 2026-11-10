@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -171,7 +172,8 @@ class FakeActor:
         self._window_selector = command["selector"]
         self._window_pixels = (240, 160)
         path = Path(command["path"])
-        color = "white" if self.scrolls == 0 else "gray"
+        # 菜单页黑白交替，每 3 次滚动重复一次，模拟“滚动到底”；跨门店仍能稳定复现。
+        color = "black" if self.scrolls % 3 == 1 else "white"
         _image(path, color, size=(240, 160))
         return {
             "id": command["id"], "ok": True, "error": "", "path": str(path),
@@ -902,3 +904,49 @@ def test_build_cache_skips_rebuild_only_when_sources_unchanged(tmp_path):
     (project / "Main.xaml").write_text("<Activity x:Class='Main'/>", encoding="utf-8")
     runner._build_fingerprint = runner._project_build_fingerprint()
     assert runner._build_cache_matches() is False
+
+def _evidence_case(root: Path, name: str, *, outcome: str, capture: str, age_seconds: float) -> Path:
+    case = root / ".uipath-runs" / "run-1" / "gui-agent" / name
+    case.mkdir(parents=True)
+    _image(case / "ui-tars-001.png", "white")
+    _image(case / "ui-tars-handoff.png", "gray")
+    (case / "agent-calls.jsonl").write_text("{}\n", encoding="utf-8")
+    (case / "navigation-result.json").write_text(json.dumps({
+        "agent_outcome": outcome,
+        "capture": {"status": capture},
+        "navigation": {"frame": str(case / "ui-tars-handoff.png")},
+    }), encoding="utf-8")
+    stamp = time.time() - age_seconds
+    for path in [case / "ui-tars-001.png", case / "ui-tars-handoff.png",
+                 case / "agent-calls.jsonl", case / "navigation-result.json"]:
+        os.utime(path, (stamp, stamp))
+    return case
+
+
+def test_prune_keeps_success_evidence_today_and_trims_it_after_one_day(tmp_path):
+    runner, _store, _selected, _other, _profile_path, output_dir = _setup(tmp_path)
+    fresh = _evidence_case(output_dir, "fresh", outcome="success", capture="staged", age_seconds=60)
+    stale = _evidence_case(output_dir, "stale", outcome="success", capture="staged", age_seconds=25 * 3600)
+
+    runner._prune_run_evidence(output_dir, 1024)
+
+    # 当天成功门店保留完整过程截图，供人工复核。
+    assert (fresh / "ui-tars-001.png").is_file()
+    # 一天后只留导航结果、Agent 日志和交接帧。
+    assert not (stale / "ui-tars-001.png").exists()
+    assert (stale / "ui-tars-handoff.png").is_file()
+    assert (stale / "navigation-result.json").is_file()
+    assert (stale / "agent-calls.jsonl").is_file()
+
+
+def test_prune_deletes_failed_evidence_after_two_days_only(tmp_path):
+    runner, _store, _selected, _other, _profile_path, output_dir = _setup(tmp_path)
+    recent = _evidence_case(output_dir, "recent-failure", outcome="needs_review", capture="not_started",
+                            age_seconds=25 * 3600)
+    expired = _evidence_case(output_dir, "old-failure", outcome="needs_review", capture="not_started",
+                             age_seconds=49 * 3600)
+
+    runner._prune_run_evidence(output_dir, 1024)
+
+    assert (recent / "ui-tars-001.png").is_file()
+    assert not expired.exists()

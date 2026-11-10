@@ -21,7 +21,6 @@ from menu_capture.ui_tars_trial import (
     TrialModel,
     TrialProtocolError,
     _run_agent,
-    load_skill,
     run_navigation,
     trial_model_from_env,
 )
@@ -397,35 +396,7 @@ def test_parse_failures_reset_after_valid_action(model_server, tmp_path):
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
-def test_skill_read_does_not_consume_frame_before_click(model_server, tmp_path):
-    server, handler = model_server
-    handler.responses = [
-        _tool_call({"action": "read_skill", "name": "menu-navigation"}),
-        _tool_call({"action": "left_click", "coordinate": [375, 450]}),
-        _terminal("needs_review", reason="已参考经验并核对页面"),
-    ]
-    observe, frames = _frame_factory(tmp_path)
-    actions = []
-
-    result, _frame = run_navigation(
-        _model(server), "测试门店", 2, 4,
-        observe=observe, execute=lambda command, frame_id: actions.append((command, frame_id)),
-        check_stop=lambda: None,
-    )
-
-    assert result["outcome"] == "needs_review"
-    assert "三个终态" in _all_text(handler.requests[1]["body"]["messages"])
-    # Skill 不影响页面语义；点击必须使用读取 Skill 后最新观察到的有效截图，而不是旧帧。
-    assert len(actions) == 1 and actions[0][0]["action"] == "click"
-    assert len(frames) == 3
-    assert actions[0][1] == "2"
-    assert result["metrics"]["skill_reads"] == 1
-    assert result["metrics"]["navigation_actions"] == 1
-    assert result["metrics"]["screenshots"] == len(frames)
-
-
-@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
-def test_navigation_starts_with_full_skill_and_can_return_terminal_without_read_skill(model_server, tmp_path):
+def test_navigation_puts_full_guide_in_system_prompt(model_server, tmp_path):
     server, handler = model_server
     handler.responses = [_terminal("needs_review", reason="页面状态需要人工核实")]
     observe, _frames = _frame_factory(tmp_path)
@@ -436,10 +407,13 @@ def test_navigation_starts_with_full_skill_and_can_return_terminal_without_read_
     )
 
     assert result["outcome"] == "needs_review"
-    assert result["metrics"]["skill_reads"] == 0
     assert len(handler.requests) == 1
-    first_request = _all_text(handler.requests[0]["body"]["messages"])
-    assert load_skill("menu-navigation") in first_request
+    messages = handler.requests[0]["body"]["messages"]
+    system_text = "\n".join(str(m.get("content")) for m in messages if m.get("role") == "system")
+    # 业务经验只维护系统提示词一份：三个终态与人数选择页反例都必须常驻。
+    assert "点餐小程序导航经验" in system_text
+    assert "三个终态" in system_text
+    assert "人数选择页" in system_text
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
@@ -761,7 +735,13 @@ def test_runner_resizes_before_fresh_agent_frame_and_stages_capture(
             if command["action"] in {"screenshot", "scroll_capture"}:
                 path = Path(command["path"])
                 path.parent.mkdir(parents=True, exist_ok=True)
-                color = (12, 34, 56) if self.resized else (255, 255, 255)
+                # 黑白交替保证相邻页差异超过“到底”阈值，最后一页重复模拟滚动到底。
+                self.shots = getattr(self, "shots", 0) + 1
+                if command["action"] == "screenshot":
+                    color = (12, 34, 56) if self.resized else (255, 255, 255)
+                else:
+                    self.scroll_shots = getattr(self, "scroll_shots", 0) + 1
+                    color = (255, 255, 255) if self.scroll_shots == 1 else (0, 0, 0)
                 Image.new("RGB", (320, 200), color).save(path)
                 self._window_selector = command.get("selector")
                 self._window_pixels = (320, 200)
@@ -828,14 +808,14 @@ def test_runner_resizes_before_fresh_agent_frame_and_stages_capture(
         assert 0 <= region["x"] and region["x"] + region["width"] <= terminal_frame.width
         assert 0 <= region["y"] and region["y"] + region["height"] <= terminal_frame.height
     assert report["capture"]["status"] == "staged"
-    assert len(report["capture"]["pages"]) == 1
+    # 至少 3 页才算“可滚动菜单”；1–2 页会被转人工复核。
+    assert len(report["capture"]["pages"]) >= 3
     assert report["agent_outcome"] == "success"
     assert report["agent_reason"] == "已核对页面"
     assert report["runtime_status"] == "ok"
     assert report["runtime_code"] == ""
     assert report["capture_status"] == "staged"
     assert report["metrics"]["navigation_actions"] == 1
-    assert report["metrics"]["skill_reads"] == 0
     assert (report_path.parent / report["capture"]["pages"][0]).is_file()
     assert report_path.parent.parent.parent.name == ".uipath-runs"
     assert not (output_dir / "Trial Shop").exists()
@@ -1199,88 +1179,6 @@ def test_live_gui_plus_pixel_contract_before_mouse(tmp_path, width, height, squa
     left, top, side = square
     assert left <= actions[0]["x"] <= left + side
     assert top <= actions[0]["y"] <= top + side
-
-
-def test_read_skill_returns_indexed_document_without_consuming_frame():
-    from menu_capture.ui_tars_trial import _exchange
-
-    read_fd, write_fd = os.pipe()
-    events = [
-        {"type": "request", "id": "1", "method": "skill", "params": {"name": "menu-navigation"}},
-        {"type": "result", "outcome": "needs_review", "reason": "已加载经验后继续观察"},
-    ]
-    os.write(write_fd, b"".join(json.dumps(item).encode() + b"\n" for item in events))
-
-    class Child:
-        stdin = io.BytesIO()
-        stdout = os.fdopen(read_fd, "rb", buffering=0)
-
-    try:
-        result, _frame = _exchange(
-            Child(), {},
-            observe=lambda _seq: pytest.fail("读取 Skill 不应触发截图"),
-            execute=lambda *args: pytest.fail("读取 Skill 不应执行桌面动作"),
-            check_stop=lambda: None,
-        )
-        assert result["outcome"] == "needs_review"
-        replies = [json.loads(line) for line in Child.stdin.getvalue().decode().splitlines()]
-        assert replies[1]["ok"] is True
-        assert replies[1]["result"]["name"] == "menu-navigation"
-        assert "三个终态" in replies[1]["result"]["content"]
-    finally:
-        os.close(write_fd)
-
-
-def test_unknown_skill_is_fed_back_without_terminating():
-    from menu_capture.ui_tars_trial import _exchange
-
-    read_fd, write_fd = os.pipe()
-    events = [
-        {"type": "request", "id": "1", "method": "skill", "params": {"name": "not-exist"}},
-        {"type": "result", "outcome": "needs_review", "reason": "没有该经验文档，按截图判断"},
-    ]
-    os.write(write_fd, b"".join(json.dumps(item).encode() + b"\n" for item in events))
-
-    class Child:
-        stdin = io.BytesIO()
-        stdout = os.fdopen(read_fd, "rb", buffering=0)
-
-    try:
-        result, _frame = _exchange(
-            Child(), {},
-            observe=lambda _seq: pytest.fail("无效 Skill 不应触发截图"),
-            execute=lambda *args: pytest.fail("无效 Skill 不应执行桌面动作"),
-            check_stop=lambda: None,
-        )
-        assert result["outcome"] == "needs_review"
-        replies = [json.loads(line) for line in Child.stdin.getvalue().decode().splitlines()]
-        assert replies[1]["ok"] is False
-        assert "没有该 Skill" in replies[1]["error"]
-    finally:
-        os.close(write_fd)
-
-
-@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
-def test_agent_can_load_skill_on_demand_before_deciding(model_server, tmp_path):
-    server, handler = model_server
-    handler.responses = [
-        _tool_call({"action": "read_skill", "name": "menu-navigation"}),
-        _terminal("needs_review", reason="已参考经验并核对页面"),
-    ]
-    observe, _frames = _frame_factory(tmp_path)
-    trace_path = tmp_path / "agent-calls.jsonl"
-
-    result, _terminal_frame = run_navigation(
-        _model(server), "测试门店", 2, 4,
-        observe=observe, execute=lambda command, frame_id: None, check_stop=lambda: None,
-        trace_path=trace_path,
-    )
-
-    assert result["outcome"] == "needs_review"
-    loaded = _all_text(handler.requests[1]["body"]["messages"])
-    assert "点餐小程序导航经验" in loaded and "三个终态" in loaded
-    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
-    assert any(row.get("method") == "skill" and row.get("ok") for row in rows)
 
 
 def test_reference_image_is_downscaled_and_missing_file_is_ignored(tmp_path):

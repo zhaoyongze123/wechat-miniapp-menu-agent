@@ -38,13 +38,6 @@
       },
       "optional": {}
     },
-    "read_skill": {
-      "doc": "read_skill：必填 name（只能是已提供 Skill 索引中的名称）。",
-      "required": {
-        "name": { "type": "string" }
-      },
-      "optional": {}
-    },
     "terminate": {
       "doc": "terminate：必填 outcome（success / unqualified / needs_review）和 reason（中文，说明实际观察到的结果，尽量简洁，建议不超过 300 字）；menu_box 只在 success 时必填，为 4 个 0..1000 的数字 [x1,y1,x2,y2]，且 x1<x2、y1<y2；非 success 不得提供非空 menu_box。",
       "required": {

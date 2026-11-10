@@ -22,23 +22,17 @@ from .model import Region
 
 _ENTRY = Path(__file__).resolve().parent.parent / "ui_tars" / "adapter.mjs"
 _SCHEMA_PATH = Path(__file__).resolve().parent.parent / "ui_tars" / "action-schema.json"
-_SKILLS_DIR = Path(__file__).resolve().parent.parent / "ui_tars" / "skills"
 GUI_PLUS_MODEL = "gui-plus-2026-02-26"
 _GUI_PLUS_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 _MAX_MODEL_IMAGE_PIXELS = 1_003_520
 _REFERENCE_MAX_PIXELS = 640_000
 _TERMINAL_OUTCOMES = ("success", "needs_review", "unqualified")
-_SKILL_MAX_CHARS = 6000
 # UiPath 的滚动量是滚轮格数，不是屏幕像素；按 1000 归一化空间换算，并限制单次上限。
 _SCROLL_UNITS_PER_SCREEN = 6
 _SCROLL_UNITS_MAX = 6
-# Adapter 上报的执行计数；辅助调用与导航分开，便于评估预算占用。
-_METRIC_FIELDS = ("model_calls", "screenshots", "navigation_actions", "skill_reads",
-                  "format_retries", "tool_rejections", "format_failures")
-# 唯一业务 Skill 在导航开始时注入，保留固定索引供现有读取工具使用。
-_SKILLS = {
-    "menu-navigation": "点餐小程序导航经验：三终态判定、弹窗与前置步骤、常见误判反例。",
-}
+# Adapter 上报的执行计数；格式修正单独计数，便于评估预算占用。
+_METRIC_FIELDS = ("model_calls", "screenshots", "navigation_actions",
+                  "format_retries", "tool_rejections", "format_failures", "no_progress_notices")
 
 
 def _output_contract() -> str:
@@ -68,19 +62,6 @@ class TrialProtocolError(RuntimeError):
 
 class TrialActionRejected(RuntimeError):
     """模型动作本身可修正：回传错误并保留会话，由 Agent 重新决策。"""
-
-
-def load_skill(name: str) -> str:
-    """按名称读取本地 Skill 文档；名称必须来自固定索引，避免任意路径读取。"""
-    if name not in _SKILLS:
-        raise TrialActionRejected("没有该 Skill；可用：" + "、".join(sorted(_SKILLS)))
-    try:
-        content = (_SKILLS_DIR / f"{name}.md").read_text(encoding="utf-8").strip()
-    except OSError:
-        raise TrialActionRejected("该 Skill 文档当前无法读取") from None
-    if not content:
-        raise TrialActionRejected("该 Skill 文档为空")
-    return content[:_SKILL_MAX_CHARS] + ("\n（内容已截断）" if len(content) > _SKILL_MAX_CHARS else "")
 
 
 def reference_image(path) -> dict | None:
@@ -146,14 +127,12 @@ def run_navigation(model: TrialModel, store_name: str, people: int, max_steps: i
                    *, observe, execute, check_stop, log_path: Path | None = None,
                    trace_path: Path | None = None, trace_meta: dict | None = None,
                    source_image=None) -> tuple[dict, dict | None]:
-    skill = load_skill("menu-navigation")
     instruction = (
         f"目标门店：{store_name}，用餐人数 {people} 人。你正在操作已经打开的微信点餐小程序。"
         "\n目标：进入目标门店可采集的菜品菜单。根据当前截图自主决定动作与终态，交接后由程序滚动截图。"
-        "\n下方业务经验已完整提供，可直接使用。"
+        "\n业务经验已全部写在系统提示词中，按其中的终态标准判断。"
         "\n如果请求里附带二维码原图，它只用于理解门店背景；所有点击坐标仍以当前屏幕截图为准。"
-        "\n输出必须严格符合系统提示中的固定输出契约。\n\n"
-        f"{skill}"
+        "\n输出必须严格符合系统提示中的固定输出契约。"
     )
     return _run_agent(model, instruction, max_steps, observe=observe, execute=execute,
                       check_stop=check_stop, log_path=log_path,
@@ -239,19 +218,6 @@ def _exchange(child, config, observe, execute, check_stop):
                 or not isinstance(request_id, (int, str)) or isinstance(request_id, bool)):
             raise TrialProtocolError("GUI Agent 返回未知请求")
         method = event.get("method")
-        if method == "skill":
-            # 读取 Skill 不改变页面，也不消耗当前帧；由 Agent 自主决定何时加载。
-            name = params.get("name")
-            if not isinstance(name, str) or not name.strip():
-                send({"id": request_id, "ok": False, "error": "read_skill 缺少 name"})
-                continue
-            try:
-                content = load_skill(name.strip())
-            except TrialActionRejected as exc:
-                send({"id": request_id, "ok": False, "error": str(exc)[:300]})
-                continue
-            send({"id": request_id, "ok": True, "result": {"name": name.strip(), "content": content}})
-            continue
         if method == "screenshot":
             sequence += 1
             frame = observe(sequence)

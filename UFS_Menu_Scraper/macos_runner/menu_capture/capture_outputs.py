@@ -1,4 +1,4 @@
-"""采集目录以清洗批次 ID 固定，批次改名和切换版本不移动结果。"""
+"""采集目录按清洗批次名称归档，批次改名和切换版本不移动已有结果。"""
 
 from __future__ import annotations
 
@@ -7,21 +7,28 @@ import re
 from pathlib import Path
 
 
-def batch_output_dir(output_root: str | Path, batch_id: str = "") -> Path:
+def _batch_label(batch_name: str) -> str:
+    """批次名称直接作为目录名；非法字符转义，空名回退到批次 ID。"""
+    name = batch_name if isinstance(batch_name, str) else ""
+    return re.sub(r"[\x00-\x1f/\\:]", "_", name).strip(" .")[:120]
+
+
+def batch_output_dir(output_root: str | Path, batch_id: str = "", batch_name: str = "") -> Path:
     root = Path(output_root).expanduser().resolve()
     if not batch_id:
         return root
     if not re.fullmatch(r"[0-9a-f]{32}", batch_id):
         raise ValueError("清洗批次 ID 无效")
     grouped = root / "清洗批次"
-    directory = grouped / batch_id
+    directory = grouped / (_batch_label(batch_name) or batch_id)
     if grouped.is_symlink() or directory.is_symlink():
         raise ValueError("清洗批次输出目录不能是符号链接")
     return directory
 
 
-def store_output_dir(output_root: str | Path, source_name: str, batch_id: str = "") -> Path:
-    parent = batch_output_dir(output_root, batch_id)
+def store_output_dir(output_root: str | Path, source_name: str, batch_id: str = "",
+                     batch_name: str = "") -> Path:
+    parent = batch_output_dir(output_root, batch_id, batch_name)
     name = re.sub(r"[\x00-\x1f/\\:]", "_", source_name).strip(" .") or "未命名来源"
     if not batch_id:
         return parent / name[:120]
