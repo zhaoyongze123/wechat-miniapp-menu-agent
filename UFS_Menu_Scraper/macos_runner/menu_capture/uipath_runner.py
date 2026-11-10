@@ -7,13 +7,13 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import traceback
 import unicodedata
 import uuid
-import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -31,7 +31,7 @@ from .model_usage import usage_context
 from .chat_anchor import find_store_name_matches
 from .chat_layout import find_sent_text_bubbles
 from .failures import classify as classify_failure
-from .window_contract import validate_target_window
+from .window_contract import is_windows_wechat_app, validate_target_window, window_selector, windows_selectors_overlap
 from .close_icon_locator import refine_close_icon, locate_close_icon, refine_back_arrow
 from .checkbox_locator import refine_consent_checkbox
 from .scene_agent import SceneDecision
@@ -41,6 +41,7 @@ from .preview_locator import PreviewIconNotFound, locate_preview_recognize
 from .chat_image_locator import ChatImageNotFound, locate_sent_image
 from .ui_tars_trial import GUI_PLUS_MODEL, TrialModel, TrialProtocolError, run_navigation, trial_model_from_env
 from .capture_outputs import store_output_dir
+from .uipath_cli import cli_entry
 
 
 class RobotProtocolError(RuntimeError):
@@ -520,8 +521,7 @@ class UiPathRunner:
         if launch_mode not in {"cli", "manual"}:
             issues.append("launch_mode 只能是 cli 或 manual")
         if launch_mode == "cli":
-            cli_path = shutil.which("uip")
-            if not cli_path:
+            if not cli_entry():
                 issues.append("未找到 UiPath CLI（uip）；请确认已安装并位于 PATH")
             if not self.project_dir.is_dir():
                 issues.append("UiPath 项目目录不存在")
@@ -790,8 +790,8 @@ class UiPathRunner:
     def _launch_cli(self, run_directory: Path, settings, profile: dict, *, task_count: int | None = None,
                     timeout_seconds: float | None = None, allow_skip_build: bool = True) -> None:
         """只启动当前这轮自己的 Main.xaml 进程，并把 CLI 工件留在私有 run 目录。"""
-        cli_path = shutil.which("uip")
-        if not cli_path:
+        entry = cli_entry()
+        if not entry:
             raise ValueError("未找到 UiPath CLI（uip）；请确认已安装并位于 PATH")
         args_path = run_directory / "args.json"
         log_path = self.debug_log.cli_log_path(self.run_id or run_directory.name) if self.debug_log else run_directory / "cli.log"
@@ -800,7 +800,7 @@ class UiPathRunner:
 
         environment = os.environ.copy()
         dotnet_root = Path("/Users/mac/.dotnet")
-        if dotnet_root.is_dir():
+        if sys.platform != "win32" and dotnet_root.is_dir():
             environment["DOTNET_ROOT"] = str(dotnet_root)
             environment["PATH"] = str(dotnet_root) + os.pathsep + environment.get("PATH", "")
         else:
@@ -815,7 +815,7 @@ class UiPathRunner:
         cli_timeout = (int(timeout_seconds) if timeout_seconds else
                        settings.capture.max_task_seconds * max_tasks + startup_timeout + 60)
         command = [
-            cli_path, "rpa", "run",
+            *entry, "rpa", "run",
             "--project-dir", str(self.project_dir),
             "--file-path", "Main.xaml",
             "--input-arguments-file", str(args_path),
@@ -1116,7 +1116,7 @@ class UiPathRunner:
         except RobotCommandError as exc:
             # 其他窗口抢焦点时 UiPath 会拒绝截图/键盘输入；把微信唤回前台后重试一次。
             # 试验期间 Agent 的动作同样需要这次恢复，否则一次失焦就会整店失败。
-            if ("foreground=false" in str(exc)
+            if (sys.platform == "darwin" and "foreground=false" in str(exc)
                     and not getattr(self, "_focus_retry_active", False)):
                 self._focus_retry_active = True
                 try:
@@ -1619,12 +1619,15 @@ class UiPathRunner:
         """微信主窗口被关掉后，所有 selector 都会报“找不到目标应用程序”；
         先用系统命令把主窗口唤回，避免整批被环境问题卡死。"""
         def has_main(windows: Any) -> bool:
-            return any(str(item.get("title") or "").strip().casefold() in {"微信", "wechat"}
+            titles = {"微信", "wechat", "weixin"} if sys.platform == "win32" else {"微信", "wechat"}
+            return any(str(item.get("title") or "").strip().casefold() in titles
                        for item in self._window_list(windows))
 
         try:
             if has_main(self._send({"action": "discover"}).get("windows")):
                 return True
+            if sys.platform == "win32":
+                return False
             subprocess.run(["open", "-a", "WeChat"], check=False, timeout=15)
             time.sleep(2.5)
             return has_main(self._send({"action": "discover"}).get("windows"))
@@ -1644,6 +1647,8 @@ class UiPathRunner:
         confirmed = self._read_assistant_context(frame, "resume_safe_start")
         if confirmed:
             return
+        if sys.platform == "win32":
+            raise NeedsReview("未确认微信已回到文件传输助手，请手动切回后继续")
         windows = self._window_list(self._send({"action": "discover"}).get("windows"))
         if confirmed is None:
             # OCR 不可用时不能核对聊天标题：先收起残留小程序窗口，再按微信主窗口继续。
@@ -1897,7 +1902,7 @@ class UiPathRunner:
         取图由 UiPath 调用 screencapture 完成（它已有屏幕录制权限）；矩形只用在
         刚通过窗口尺寸校验的那次动作之后，尺寸/缩放比例异常时一律放弃并退回 UiPath 截图。
         """
-        if not getattr(self, "_fast_capture_enabled", True):
+        if sys.platform == "win32" or not getattr(self, "_fast_capture_enabled", True):
             return None
         transport = getattr(self, "transport", None)
         # 矩形只对最近一次校验过的那个窗口有效；换了窗口就必须重新走完整截图。
@@ -1961,6 +1966,11 @@ class UiPathRunner:
             if not isinstance(item, dict):
                 continue
             title = str(item.get("title") or "").strip()
+            if sys.platform == "win32" and (
+                not is_windows_wechat_app(str(item.get("app") or ""))
+                or title.casefold().startswith("weixin")
+            ):
+                continue
             role = str(item.get("role") or "").strip()
             rect = item.get("position") or {}
             if not isinstance(rect, dict) or not title or title.casefold() in {"微信", "wechat"}:
@@ -1981,11 +1991,8 @@ class UiPathRunner:
             candidates = narrow
         result = []
         for item, title, role, _, _ in candidates:
-            attrs = {"app": str(item.get("app") or "WeChat"), "title": title}
-            if role:
-                attrs["role"] = role
             result.append({
-                "selector": ET.tostring(ET.Element("wnd", attrs), encoding="unicode", short_empty_elements=True),
+                "selector": window_selector(item, title),
                 "title": title,
                 "position": item.get("position"),
             })
@@ -2042,6 +2049,10 @@ class UiPathRunner:
 
     def _prepare_trial_window(self, selector: str, evidence_dir: Path, host_trace=None) -> None:
         """Agent 启动前先归位窗口，再用一次实测截图校准截图像素与窗口坐标的比例。"""
+        if sys.platform == "win32":
+            windows = self._send({"action": "discover"}).get("windows")
+            if sum(item["selector"] == selector for item in self._miniapp_candidates(windows)) != 1:
+                raise NeedsReview("Windows 无法唯一确认目标小程序窗口；未发送操作")
         self._move_window_on_screen(selector)
         frame = self._send({"action": "screenshot", "selector": selector,
                             "path": str(evidence_dir / "window-prepare.png")})
@@ -2394,6 +2405,9 @@ class UiPathRunner:
 
     def _move_window_on_screen(self, selector: str) -> None:
         """把滞留在屏幕外的小程序窗口挪回主屏；否则点击右上角会直接报“超出屏幕边界”。"""
+        if sys.platform == "win32":
+            # 先使用实际的窗口截图和几何，避免将 Mac 布局坐标套到 Windows DPI。
+            return
         from screeninfo import get_monitors
         screens = get_monitors()
         screen = next((item for item in screens if item.is_primary), screens[0])
@@ -2403,6 +2417,10 @@ class UiPathRunner:
     def _close_miniapp_windows(self, profile: dict, output_dir: Path,
                                settle_seconds: float = .4, rounds: int = 3) -> int:
         """收起所有残留的小程序窗口；清不干净也不阻断当前结论，交给下一轮安全起点校验。"""
+        if sys.platform == "win32":
+            # Windows 批次仅通过 _close_to_file_assistant 关闭本轮已接管窗口。
+            # 其他微信窗口保留，由批次收尾的重新发现检查能否安全继续。
+            return 0
         close_key = profile.get("close_key")
         if not close_key:
             return 0
@@ -2461,6 +2479,23 @@ class UiPathRunner:
         if not all((profile.get("miniapp_selector"), profile.get("wechat_selector"), profile.get("close_key"))):
             raise NeedsReview("缺少关闭小程序所需的已录制 selector/key")
         self._guard()
+        if sys.platform == "win32":
+            selector = profile["miniapp_selector"]
+            windows = self._send({"action": "discover"}).get("windows")
+            matches = [item for item in self._miniapp_candidates(windows) if item["selector"] == selector]
+            if len(matches) > 1 or any(
+                windows_selectors_overlap(selector, profile.get(key, ""))
+                for key in ("wechat_selector", "preview_selector")
+            ):
+                raise NeedsReview("无法安全区分待关闭的小程序与微信聊天或图片预览窗口")
+            if matches:
+                self._screenshot(output_dir, selector, "miniapp-before-close.png")
+                self._send({"action": "key", "selector": selector, "key": profile["close_key"]})
+            self._send({"action": "noop", "seconds": settle_seconds})
+            closed = self._screenshot(output_dir, profile["wechat_selector"], "wechat-after-close.png")
+            if self._read_assistant_context(closed, "after_close") is not True:
+                raise NeedsReview("关闭当前小程序后未确认回到文件传输助手；批次停止")
+            return
         # 小程序页面会吞掉 Cmd+W；优先点右上角胶囊的“关闭”，失败再退回聚焦 + Cmd+W。
         shot = self._screenshot(output_dir, profile["miniapp_selector"], "miniapp-before-close.png")
         width = float(shot.get("window_width") or 0)

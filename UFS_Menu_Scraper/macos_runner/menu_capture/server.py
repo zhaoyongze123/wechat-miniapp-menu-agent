@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import hmac
 import json
 import os
@@ -35,6 +34,7 @@ from .connections import ConnectionManager
 from .debug_log import DebugLog
 from .model_usage import UsageLedger
 from .annotation import AnnotationSession, RunnerExecutor
+from .instance_lock import InstanceLockedError, instance_lock
 
 
 def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
@@ -47,7 +47,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
     store = TaskStore(root / "data/tasks.sqlite3")
     model_usage = UsageLedger(store)
     debug_log = DebugLog(root / "data", configs.load().debug_logging.max_storage_mb)
-    profiles = ProfileStore(root / "uipath.profile.json")
+    profile_name = "uipath.windows.profile.json" if sys.platform == "win32" else "uipath.profile.json"
+    profiles = ProfileStore(root / profile_name)
     if profiles.path.exists():
         profiles.load()  # 启动时完成旧预览定位字段的单次清理。
     project_dir = ROOT.parent.parent / "UFS_Menu_Capture_CrossPlatform"
@@ -904,15 +905,14 @@ def main():
     import uvicorn
     ROOT.joinpath("data").mkdir(exist_ok=True)
     # 进程锁防止两个服务实例同时接管鼠标；不用新增桌面代理进程。
-    lockfile = open(ROOT / "data/runner.lock", "w")
     try:
-        fcntl.flock(lockfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+        with instance_lock(ROOT / "data/runner.lock"):
+            os.umask(0o077)
+            app = create_app()
+            app.state.debug_log.install_service_logging()
+            uvicorn.run(app, host="127.0.0.1", port=8765, access_log=False, log_config=None)
+    except InstanceLockedError:
         raise SystemExit("本机控制台已运行，请打开 http://127.0.0.1:8765")
-    os.umask(0o077)
-    app = create_app()
-    app.state.debug_log.install_service_logging()
-    uvicorn.run(app, host="127.0.0.1", port=8765, access_log=False, log_config=None)
 
 
 if __name__ == "__main__":

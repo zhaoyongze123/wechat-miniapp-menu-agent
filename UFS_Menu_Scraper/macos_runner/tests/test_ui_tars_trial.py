@@ -669,6 +669,63 @@ def test_stale_frame_action_is_rejected_before_transport_execution(tmp_path):
         os.close(write_fd)
 
 
+def test_windows_pipe_transport_reads_jsonl_and_reports_eof():
+    from menu_capture.ui_tars_trial import _exchange
+
+    read_fd, write_fd = os.pipe()
+    events = [{"type": "result", "outcome": "needs_review", "reason": "窗口需要人工确认"}]
+    os.write(write_fd, b"".join(json.dumps(item).encode() + b"\n" for item in events))
+    os.close(write_fd)
+
+    class Child:
+        stdin = io.BytesIO()
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    child = Child()
+    result, frame = _exchange(
+        child, {}, observe=lambda *_: pytest.fail("无需观察"),
+        execute=lambda *_: pytest.fail("无需操作"), check_stop=lambda: None,
+        _windows_pipe=True,
+    )
+    assert result == {"outcome": "needs_review", "reason": "窗口需要人工确认"}
+    assert frame is None
+    child.stdout.close()
+
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    child.stdout = os.fdopen(read_fd, "rb", buffering=0)
+    with pytest.raises(TrialProtocolError, match="返回有效终态前退出"):
+        _exchange(
+            child, {}, observe=lambda *_: pytest.fail("无需观察"),
+            execute=lambda *_: pytest.fail("无需操作"), check_stop=lambda: None,
+            _windows_pipe=True,
+        )
+    child.stdout.close()
+
+
+def test_windows_pipe_transport_keeps_existing_message_size_limit():
+    from menu_capture.ui_tars_trial import _exchange
+
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"x" * 32_769)
+    os.close(write_fd)
+
+    class Child:
+        stdin = io.BytesIO()
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+
+    child = Child()
+    try:
+        with pytest.raises(TrialProtocolError, match="超过大小上限"):
+            _exchange(
+                child, {}, observe=lambda *_: pytest.fail("无需观察"),
+                execute=lambda *_: pytest.fail("无需操作"), check_stop=lambda: None,
+                _windows_pipe=True,
+            )
+    finally:
+        child.stdout.close()
+
+
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 def test_stop_check_interrupts_live_sdk_loop(model_server, tmp_path):
     server, handler = model_server

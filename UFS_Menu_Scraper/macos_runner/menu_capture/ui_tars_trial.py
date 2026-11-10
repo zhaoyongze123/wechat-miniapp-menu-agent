@@ -7,9 +7,11 @@ import io
 import json
 import math
 import os
+import queue
 import select
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -198,7 +200,64 @@ def _run_agent(model: TrialModel, instruction: str, max_steps: int,
             log.close()
 
 
-def _exchange(child, config, observe, execute, check_stop):
+class _WindowsPipeReader:
+    """Windows 子进程管道不能交给 select；后台线程负责有界分块读取。"""
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._events: queue.Queue[tuple[str, bytes | None]] = queue.Queue(maxsize=4)
+        self._stopped = threading.Event()
+        self._thread = threading.Thread(target=self._read, name="gui-agent-stdout", daemon=True)
+        self._thread.start()
+
+    def _publish(self, event: tuple[str, bytes | None]) -> bool:
+        while not self._stopped.is_set():
+            try:
+                self._events.put(event, timeout=.05)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _read(self):
+        try:
+            # read1 最多读取指定字节数，且不等待凑满整个缓冲区。
+            read = getattr(self._stream, "read1", self._stream.read)
+            while not self._stopped.is_set():
+                data = read(8192)
+                if not data:
+                    self._publish(("eof", None))
+                    return
+                if not self._publish(("data", data)):
+                    return
+        except (OSError, ValueError):
+            if not self._stopped.is_set():
+                self._publish(("error", None))
+
+    def read(self, timeout: float) -> bytes | None:
+        kind, payload = self._events.get(timeout=timeout)
+        if kind == "eof":
+            return None
+        if kind == "error":
+            raise TrialProtocolError("GUI Agent 子进程输出读取失败")
+        return payload if isinstance(payload, bytes) else b""
+
+    def close(self):
+        # 子进程由 _run_agent 统一终止；这里仅停止有界队列生产者。
+        self._stopped.set()
+
+
+def _exchange(child, config, observe, execute, check_stop, *, _windows_pipe=None):
+    use_windows_pipe = os.name == "nt" if _windows_pipe is None else _windows_pipe
+    pipe_reader = _WindowsPipeReader(child.stdout) if use_windows_pipe else None
+    try:
+        return _exchange_protocol(child, config, observe, execute, check_stop, pipe_reader)
+    finally:
+        if pipe_reader is not None:
+            pipe_reader.close()
+
+
+def _exchange_protocol(child, config, observe, execute, check_stop, pipe_reader=None):
     def send(payload):
         try:
             child.stdin.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
@@ -215,9 +274,15 @@ def _exchange(child, config, observe, execute, check_stop):
     while True:
         check_stop()
         if b"\n" not in pending:
-            if not select.select([child.stdout], [], [], .2)[0]:
-                continue
-            data = os.read(child.stdout.fileno(), 8192)
+            if pipe_reader is not None:
+                try:
+                    data = pipe_reader.read(.2)
+                except queue.Empty:
+                    continue
+            else:
+                if not select.select([child.stdout], [], [], .2)[0]:
+                    continue
+                data = os.read(child.stdout.fileno(), 8192)
             if not data:
                 raise TrialProtocolError("GUI Agent 在返回有效终态前退出")
             pending += data

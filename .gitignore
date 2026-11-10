@@ -13,6 +13,7 @@ node_modules/
 config.local.json
 secrets.local.json
 uipath.profile.json
+uipath.windows.profile.json
 
 # 大体积素材与历史归档
 素材/
