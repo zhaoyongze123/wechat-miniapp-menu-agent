@@ -86,9 +86,15 @@ def image_ocr(path: Path) -> list[dict]:
 def qr_detections(path: Path) -> list[dict]:
     """Find QR boxes with OpenCV; decoded payload remains transient to caller."""
     import cv2
+    import numpy as np
 
     image_path = Path(path).expanduser().resolve(strict=True)
-    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    # cv2.imread 在 Windows 上按 ANSI 打开路径，中文目录会直接读失败；改为先读字节再解码。
+    try:
+        buffer = np.frombuffer(image_path.read_bytes(), dtype=np.uint8)
+    except OSError as exc:
+        raise RuntimeError("OpenCV 无法读取图片") from exc
+    image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
     if image is None:
         raise RuntimeError("OpenCV 无法读取图片")
     detector = cv2.QRCodeDetector()

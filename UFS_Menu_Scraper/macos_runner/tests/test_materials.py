@@ -100,9 +100,9 @@ def test_batch_summary_uses_local_ocr_final_store_decisions(tmp_path: Path) -> N
 
     batch = _analyze(service, input_root)
 
-    assert batch["stores"][0]["analysis_status"] == "needs_review"
-    assert batch["summary"]["selected_stores"] == 0
-    assert batch["summary"]["review_stores"] == 1
+    assert batch["stores"][0]["analysis_status"] == "selected"
+    assert batch["summary"]["selected_stores"] == 1
+    assert batch["summary"]["review_stores"] == 0
 
 
 def _wait_after_start(service: MaterialService, batch_id: str) -> dict:
@@ -254,7 +254,7 @@ def test_skip_pending_and_adopted_recommendation_are_not_implicit_confirmations(
     adopted = service.adopt_manifest(manifest_path)
     adopted_store = adopted["stores"][0]
     assert adopted["status"] == "completed"
-    assert adopted_store["recommendation"] is False
+    assert adopted_store["recommendation"] is True
     assert adopted_store["decision"] == "pending"
     assert adopted["summary"]["confirmed_stores"] == 0
     adopted_detail = service.get_store(adopted["batch_id"], adopted_store["store_id"])
@@ -380,7 +380,7 @@ def test_small_locally_decoded_ordering_code_is_not_rejected_by_arbitrary_pixel_
     assert batch["stores"][0]["analysis_status"] == "selected"
 
 
-def test_unreadable_code_with_point_ordering_text_goes_to_manual_review(tmp_path: Path) -> None:
+def test_unreadable_code_is_still_recommended_for_wechat_verification(tmp_path: Path) -> None:
     service, _, _, input_root, _ = _setup(
         tmp_path,
         inspector=lambda _path: [{"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": None}],
@@ -388,9 +388,9 @@ def test_unreadable_code_with_point_ordering_text_goes_to_manual_review(tmp_path
     _png(input_root / "Shop" / "menu.png")
     batch = _analyze(service, input_root)
     candidate = batch["stores"][0]
-    assert candidate["recommendation"] is False
-    assert candidate["analysis_status"] == "needs_review"
-    assert "未能由本地解码器读出" in candidate["reason"]
+    assert candidate["recommendation"] is True
+    assert candidate["analysis_status"] == "selected"
+    assert "点餐码" in candidate["reason"]
 
 
 def test_ordering_text_without_located_qr_is_reported_for_manual_box_selection(tmp_path: Path) -> None:
@@ -416,10 +416,12 @@ def test_enterprise_wechat_payload_is_excluded_without_ocr_or_model(tmp_path: Pa
     service, _, _, input_root, _ = _setup(tmp_path, inspector=detector, ocr_reader=unexpected_ocr)
     _png(input_root / "Shop" / "menu.png")
     batch = _analyze(service, input_root)
-    candidate = service.get_store(batch["batch_id"], batch["stores"][0]["store_id"])["images"][0]["candidates"][0]
+    store = service.get_store(batch["batch_id"], batch["stores"][0]["store_id"])
+    candidate = store["images"][0]["candidates"][0]
     assert candidate["purpose"] == "enterprise_wechat"
     assert candidate["purpose_source"] == "payload_domain"
-    assert not candidate["recommendation"]
+    assert candidate["recommendation"] is True
+    assert store["analysis_status"] == "selected"
     assert "secret-value" not in json.dumps(candidate)
 
 
@@ -441,7 +443,7 @@ def test_enterprise_and_ordering_codes_in_one_image_select_the_local_order_code(
     assert batch["stores"][0]["analysis_status"] == "selected"
 
 
-def test_legacy_unclassified_recommendation_is_not_bulk_accepted(tmp_path: Path) -> None:
+def test_legacy_candidate_without_purpose_is_still_bulk_accepted(tmp_path: Path) -> None:
     service, _, store, input_root, _ = _setup(tmp_path)
     _png(input_root / "Shop" / "menu.png")
     batch = _analyze(service, input_root)
@@ -451,9 +453,54 @@ def test_legacy_unclassified_recommendation_is_not_bulk_accepted(tmp_path: Path)
         legacy = json.loads(row[0])
         legacy["images"][0]["candidates"][0].pop("purpose", None)
         db.execute("UPDATE material_decisions SET store_json=? WHERE batch_id=? AND store_id=?", (json.dumps(legacy), batch["batch_id"], sid))
-    assert service.get_store(batch["batch_id"], sid)["recommendation"] is False
+    assert service.get_store(batch["batch_id"], sid)["recommendation"] is True
+    assert service.accept_recommendations(batch["batch_id"])["confirmed"] == 1
+    assert service.get_store(batch["batch_id"], sid)["decision"] == "confirmed"
+
+
+def test_enterprise_wechat_candidate_is_recommended_but_never_bulk_confirmed(tmp_path: Path) -> None:
+    def detector(_path: Path) -> list[dict]:
+        return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": "https://work.weixin.qq.com/secret-value"}]
+
+    def unexpected_ocr(_path: Path):
+        raise AssertionError("企业微信码可由本地载荷直接识别")
+
+    service, _, _, input_root, _ = _setup(tmp_path, inspector=detector, ocr_reader=unexpected_ocr)
+    _png(input_root / "Shop" / "menu.png")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["recommendation"] is True
     assert service.accept_recommendations(batch["batch_id"])["confirmed"] == 0
-    assert service.get_store(batch["batch_id"], sid)["decision"] == "pending"
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    assert detail["decision"] == "pending"
+
+
+def test_batch_reanalysis_reruns_only_selected_pending_stores(tmp_path: Path) -> None:
+    inspected: list[str] = []
+
+    def detector(path: Path) -> list[dict]:
+        inspected.append(path.name)
+        return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": PAYLOAD}]
+
+    service, _, _, input_root, _ = _setup(tmp_path, inspector=detector)
+    _png(input_root / "A" / "a.png")
+    _png(input_root / "B" / "b.png")
+    batch = _analyze(service, input_root)
+    service._worker.join(timeout=3)
+    ids = {store["source_name"]: store["store_id"] for store in batch["stores"]}
+    assert service.accept_recommendations(batch["batch_id"], [ids["A"]])["confirmed"] == 1
+    with pytest.raises(ValueError, match="未知门店"):
+        service.start_reanalysis(batch["batch_id"], ["0" * 24])
+    with pytest.raises(ValueError, match="都已确认"):
+        service.start_reanalysis(batch["batch_id"], [ids["A"]])
+    inspected.clear()
+    service.start_reanalysis(batch["batch_id"], [ids["A"], ids["B"]])
+    result = _wait(service, batch["batch_id"])
+    assert result["status"] == "completed"
+    assert result["progress"]["done"] == result["progress"]["total"]
+    assert inspected == ["b.png"]
+    assert service.get_store(batch["batch_id"], ids["A"])["decision"] == "confirmed"
+    assert service.get_store(batch["batch_id"], ids["B"])["decision"] == "pending"
 
 
 def test_batch_versions_keep_snapshots_and_reuse_unchanged_capture(tmp_path: Path) -> None:

@@ -24,6 +24,13 @@ class RobotProfile(StrictModel):
     coordinates_verified: bool = False
     wechat_input_x_ratio: float = Field(default=.68, ge=.05, le=.95)
     wechat_input_y_ratio: float = Field(default=.90, ge=.05, le=.95)
+    # 最新图片消息缩略图中心距窗口右/下边缘的固定点距（points）。微信会话区布局不从窗口左上角等比缩放，
+    # 必须按右下角固定偏移；默认值是 Mac 实机 432×479 窗口的测量结果，Windows 需按实机重新校准。
+    latest_image_offset_x: float = Field(default=85.0, ge=20, le=400)
+    latest_image_offset_y: float = Field(default=115.0, ge=20, le=400)
+    # 微信消息输入框中心距窗口右/下边缘的固定点距（points）。输入框贴底、高度固定，同样不能按比例算。
+    wechat_input_offset_x: float = Field(default=138.0, ge=20, le=600)
+    wechat_input_offset_y: float = Field(default=48.0, ge=10, le=200)
     paste_shortcut: str = Field(default_factory=lambda: (
         "[d(hk)][d(ctrl)]v[u(ctrl)][u(hk)]" if sys.platform == "win32" else
         "[d(hk)][d(command)]v[u(command)][u(hk)]"

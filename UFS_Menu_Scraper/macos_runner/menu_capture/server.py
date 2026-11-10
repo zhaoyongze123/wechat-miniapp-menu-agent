@@ -371,6 +371,20 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         except RuntimeError:
             raise HTTPException(409, "已有素材批次正在分析，请等待完成") from None
 
+    @app.post("/api/materials/batches/{batch_id}/reanalyze")
+    def reanalyze_materials(batch_id: str, payload: dict):
+        store_ids = payload.get("store_ids")
+        if not isinstance(store_ids, list) or not store_ids or any(not isinstance(item, str) for item in store_ids):
+            raise HTTPException(422, "store_ids 必须是非空字符串数组") from None
+        if len(store_ids) > 2000:
+            raise HTTPException(422, "单次最多重新分析 2000 家门店") from None
+        try:
+            return materials.start_reanalysis(batch_id, store_ids)
+        except RuntimeError:
+            raise HTTPException(409, "已有素材批次正在分析，请等待完成") from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+
     @app.get("/api/materials/batches/{batch_id}")
     def material_batch(batch_id: str):
         return materials.get_batch(batch_id)

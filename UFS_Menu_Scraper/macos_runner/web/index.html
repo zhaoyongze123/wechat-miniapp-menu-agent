@@ -252,6 +252,16 @@
         <dialog id="materials-manage-dialog" class="materials-manage-dialog" aria-labelledby="materials-manage-title"><div class="materials-manage-shell"><header><div><h2 id="materials-manage-title">批次管理</h2><p class="card-desc">查看清洗批次及回收站中的批次。</p></div><button class="btn" id="materials-manage-close" type="button" aria-label="关闭">关闭</button></header><div class="materials-manage-tabs" role="tablist"><button type="button" role="tab" id="materials-tab-active" aria-selected="true">批次</button><button type="button" role="tab" id="materials-tab-trash" aria-selected="false">回收站</button></div><label class="visually-hidden" for="materials-manage-search">搜索批次</label><input id="materials-manage-search" type="search" placeholder="搜索批次名称或描述"><div id="materials-manage-error" class="inline-error" role="alert" hidden></div><div id="materials-manage-list" class="materials-manage-list" aria-live="polite"><div class="materials-placeholder">正在加载批次…</div></div></div></dialog>
         <dialog id="materials-edit-dialog" class="materials-dialog" aria-labelledby="materials-edit-title"><form id="materials-edit-form"><h2 id="materials-edit-title">编辑批次</h2><label for="materials-edit-name">批次名称</label><input id="materials-edit-name" required maxlength="80"><label for="materials-edit-description">描述</label><textarea id="materials-edit-description" maxlength="500" rows="4"></textarea><p id="materials-edit-error" class="inline-error" role="alert" hidden></p><div class="release-form-actions"><button class="btn" id="materials-edit-cancel" type="button">取消</button><button class="btn btn-primary" type="submit">保存</button></div></form></dialog>
         <dialog id="materials-action-dialog" class="materials-dialog" aria-labelledby="materials-action-title" aria-describedby="materials-action-copy"><form method="dialog"><h2 id="materials-action-title"></h2><p id="materials-action-copy" class="materials-confirm-copy"></p><div class="release-form-actions"><button class="btn" value="cancel" autofocus>取消</button><button class="btn btn-danger" id="materials-action-confirm" value="confirm">确认</button></div></form></dialog>
+        <dialog id="materials-reanalyze-dialog" class="materials-dialog materials-reanalyze-dialog" aria-labelledby="materials-reanalyze-title">
+          <div class="materials-reanalyze-body">
+            <h2 id="materials-reanalyze-title">重新分析门店</h2>
+            <p class="card-desc">选择要重新分析的门店；已确认的门店需先撤销确认。</p>
+            <label class="reanalyze-toolbar"><input type="checkbox" id="materials-reanalyze-all"> 全选 <span id="materials-reanalyze-count"></span></label>
+            <div class="reanalyze-list" id="materials-reanalyze-list" role="group" aria-label="选择要重新分析的门店"></div>
+            <p id="materials-reanalyze-error" class="inline-error" role="alert" hidden></p>
+            <div class="release-form-actions"><button class="btn" id="materials-reanalyze-cancel" type="button">取消</button><button class="btn btn-primary" id="materials-reanalyze-submit" type="button" disabled>开始重新分析</button></div>
+          </div>
+        </dialog>
         <div class="materials-workspace section-gap">
           <section class="card materials-store-panel" aria-label="门店列表">
             <div class="materials-store-tools"><label class="visually-hidden" for="materials-search">搜索门店</label><input id="materials-search" type="search" placeholder="搜索门店"></div>

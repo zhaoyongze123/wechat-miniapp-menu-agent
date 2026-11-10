@@ -437,7 +437,9 @@
 #page-materials .materials-upload-meta { display: flex; justify-content: space-between; gap: 10px; margin-top: 8px; color: var(--mat-muted); font-size: 10px; }
 #page-materials .materials-progress-track { height: 4px; margin-top: 6px; overflow: hidden; border-radius: 9999px; background: #eaeaea; }
 #page-materials .materials-progress-track div { width: 0; height: 100%; background: #444; transition: width .16s; }
-#page-materials .materials-analysis-dialog { width: min(420px, calc(100vw - 32px)); }
+#page-materials .materials-dialog.materials-analysis-dialog { width: min(420px, calc(100vw - 32px)); }
+/* 分析进度是非阻塞提示，用非模态 show() 展示，需自行固定在视口居中。 */
+#page-materials .materials-analysis-dialog[open] { position: fixed; inset: 0; margin: auto; height: fit-content; z-index: 40; }
 #page-materials .materials-analysis-body { display: grid; gap: 10px; padding: 22px; }
 #page-materials .materials-analysis-body .card-desc { margin: 0; }
 #page-materials .materials-analysis-track { height: 4px; overflow: hidden; border-radius: 9999px; background: #ececec; }
@@ -529,6 +531,21 @@
 #page-materials .materials-manage-shell .inline-error { flex: none; }
 #page-materials .materials-placeholder { padding: 22px; color: var(--mat-muted); text-align: center; }
 #page-materials .materials-confirm-copy { margin: 3px 0 10px; color: #505050; font-size: 12px; line-height: 1.65; white-space: pre-line; overflow-wrap: anywhere; }
+/* 批次重新分析：门店复选列表。 */
+#page-materials #materials-reanalyze-dialog { width: min(620px, calc(100vw - 28px)); }
+#page-materials .materials-reanalyze-body { display: grid; gap: 10px; padding: 22px; }
+#page-materials .materials-reanalyze-body .card-desc { margin: 0; }
+#page-materials .materials-reanalyze-dialog .reanalyze-toolbar { display: flex; align-items: center; gap: 7px; margin: 0; padding: 8px 11px; border: 1px solid var(--mat-line); border-radius: 11px; background: #fafafa; color: #444; font-size: 11px; font-weight: 600; }
+#page-materials .materials-reanalyze-dialog .reanalyze-toolbar #materials-reanalyze-count { color: var(--mat-muted); font-weight: 400; }
+#page-materials .reanalyze-list { max-height: 46vh; overflow: auto; border: 1px solid var(--mat-line); border-radius: 12px; overscroll-behavior: contain; }
+#page-materials .materials-reanalyze-dialog .reanalyze-row { display: flex; align-items: center; gap: 9px; margin: 0; padding: 9px 11px; border-bottom: 1px solid #f0f0f0; font-size: 11px; font-weight: 400; cursor: pointer; }
+#page-materials .materials-reanalyze-dialog .reanalyze-row:last-child { border-bottom: 0; }
+#page-materials .materials-reanalyze-dialog .reanalyze-row:hover { background: #fafafa; }
+#page-materials .materials-reanalyze-dialog .reanalyze-row input[type="checkbox"] { flex: none; width: auto; min-height: 0; margin: 0; }
+#page-materials .reanalyze-name { flex: 1; min-width: 0; color: var(--mat-text); font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }
+#page-materials .reanalyze-meta { flex: none; color: var(--mat-muted); font-size: 10px; }
+#page-materials .reanalyze-empty { padding: 22px; color: var(--mat-muted); font-size: 11px; text-align: center; }
+#page-materials #materials-reanalyze-error { margin: 0; }
 
 /* 素材管理下拉与人工框选候选。 */
 #page-materials .materials-source-menu { position: relative; z-index: 3; }

@@ -3,7 +3,7 @@
   const $ = (id) => document.getElementById(id);
   if (typeof window.__materialsInit !== 'function') return;
   window.__materialsInit(({ api, token }) => {
-    const state = { batches: [], batchId: '', batch: null, storeId: '', detail: null, selectionSeq: 0, imageLoadSeq: 0, filter: 'pending', search: '', selectedCandidate: null, selectedImageIndex: null, manualBox: null, manualBoxImageIndex: null, manualPreviewUrl: '', manualBoxBeforeDraw: null, manualImageBeforeDraw: null, manualPreviewBeforeDraw: '', selectedBeforeDraw: null, manualMode: false, repairMode: false, uploadMode: 'append', dragging: null, busy: false, files: [], pollTimer: null, selectedReleaseId: '', analysisDismissed: false, analysisStarted: '', analysisCloseTimer: null };
+    const state = { batches: [], batchId: '', batch: null, storeId: '', detail: null, selectionSeq: 0, imageLoadSeq: 0, filter: 'pending', search: '', selectedCandidate: null, selectedImageIndex: null, manualBox: null, manualBoxImageIndex: null, manualPreviewUrl: '', manualBoxBeforeDraw: null, manualImageBeforeDraw: null, manualPreviewBeforeDraw: '', selectedBeforeDraw: null, manualMode: false, repairMode: false, uploadMode: 'append', dragging: null, busy: false, files: [], pollTimer: null, selectedReleaseId: '', analysisDismissed: false, analysisStarted: '', analysisCloseTimer: null, reanalyzeMode: false };
     const purposeLabels = { ordering: '点餐', enterprise_wechat: '企业微信', other: '其他', unknown: '未知' };
     const statusLabels = { ready_to_analyze: '待分析', uploading: '上传中', queued: '排队分析', analyzing: '分析中', completed: '分析完成', failed: '分析失败', ready: '待确认', interrupted: '已中断', error: '分析失败' };
     const esc = (v) => String(v ?? '');
@@ -17,7 +17,9 @@
     function canEditDetail() { const decision = normalizeDecision(state.detail?.decision || selectedStore()?.decision); return readyToReview() && !!state.detail && (decision === 'pending' || (decision === 'skipped' && state.repairMode)); }
     function updateControls() {
       const ready = readyToReview(), hasDetail = !!state.detail, selected = state.selectedCandidate !== null;
-      $('materials-analyze').disabled = state.busy || !state.batchId || state.batch?.status !== 'ready_to_analyze';
+      const batchStatus = state.batch?.status, canAnalyze = batchStatus === 'ready_to_analyze', canReanalyze = batchStatus === 'completed';
+      $('materials-analyze').textContent = canReanalyze ? '重新分析' : '开始分析';
+      $('materials-analyze').disabled = state.busy || !state.batchId || !(canAnalyze || canReanalyze);
       $('materials-accept-recommended').disabled = state.busy || !ready || !Number(state.batch?.summary?.pending_stores || 0);
       $('materials-publish').disabled = state.busy || !ready || !Number(state.batch?.summary?.confirmed_stores || 0);
       $('materials-batch').disabled = state.busy || !state.batches.length;
@@ -133,24 +135,27 @@
       if (!ui) return;
       const status = state.batch?.status || '', { total, done, percent } = analysisProgress();
       if (status === 'queued' || status === 'analyzing') {
-        const stage = status === 'queued' ? '等待分析线程启动…' : total && done < total / 2 ? '本地二维码检测' : '本地 OCR 用途筛选';
-        fillAnalysisDialog(percent, { title: '正在分析素材', stage, count: total ? `${done} / ${total} 步` : '', action: '后台运行' });
+        const reanalyze = state.reanalyzeMode;
+        const stage = reanalyze ? '正在重跑所选门店的二维码检测与用途识别…' : status === 'queued' ? '等待分析线程启动…' : total && done < total / 2 ? '本地二维码检测' : '本地 OCR 用途筛选';
+        fillAnalysisDialog(percent, { title: reanalyze ? '正在重新分析门店' : '正在分析素材', stage, count: total ? (reanalyze ? `${done} / ${total} 家` : `${done} / ${total} 步`) : '', action: '后台运行' });
         const otherOpen = [...document.querySelectorAll('#page-materials dialog[open]')].some((dialog) => dialog !== ui.dialog);
-        if (!state.analysisDismissed && !ui.dialog.open && !otherOpen) ui.dialog.showModal();
+        if (!state.analysisDismissed && !ui.dialog.open && !otherOpen) ui.dialog.show();
         return;
       }
       clearTimeout(state.analysisCloseTimer); state.analysisCloseTimer = null;
       if (status === 'completed' || status === 'ready') {
         state.analysisStarted = '';
-        fillAnalysisDialog(100, { title: '分析完成', stage: '正在载入门店与二维码候选…', count: total ? `${total} / ${total} 步` : '', action: '关闭' });
+        fillAnalysisDialog(100, { title: state.reanalyzeMode ? '重新分析完成' : '分析完成', stage: '正在载入门店与二维码候选…', count: total ? (state.reanalyzeMode ? `${total} / ${total} 家` : `${total} / ${total} 步`) : '', action: '关闭' });
+        state.reanalyzeMode = false;
         if (ui.dialog.open) state.analysisCloseTimer = window.setTimeout(() => ui.dialog.close(), 1600);
         return;
       }
       if (['failed', 'error', 'interrupted'].includes(status)) {
         fillAnalysisDialog(percent, { title: '分析未完成', stage: state.batch?.error || '分析失败，请检查批次后重试。', count: total ? `${done} / ${total} 步` : '', action: '关闭' });
         if (state.analysisStarted && state.analysisStarted === state.batch?.batch_id && !state.analysisDismissed && !ui.dialog.open
-          && ![...document.querySelectorAll('#page-materials dialog[open]')].some((dialog) => dialog !== ui.dialog)) ui.dialog.showModal();
+          && ![...document.querySelectorAll('#page-materials dialog[open]')].some((dialog) => dialog !== ui.dialog)) ui.dialog.show();
         state.analysisStarted = '';
+        state.reanalyzeMode = false;
       }
     }
     function renderBatch() {
@@ -579,18 +584,67 @@
       updateSource();
       selectedFiles(files);
     });
+    const reanalyzeDialog = $('materials-reanalyze-dialog');
+    function reanalyzeCandidates() { return (state.batch?.stores || []).filter((store) => normalizeDecision(store.decision) !== 'confirmed'); }
+    function syncReanalyzeSelection() {
+      const boxes = [...reanalyzeDialog.querySelectorAll('input[name="materials-reanalyze-store"]')];
+      const checked = boxes.filter((box) => box.checked).length, all = $('materials-reanalyze-all');
+      all.checked = boxes.length > 0 && checked === boxes.length;
+      all.indeterminate = checked > 0 && checked < boxes.length;
+      all.disabled = state.busy || !boxes.length;
+      $('materials-reanalyze-count').textContent = boxes.length ? `已选 ${checked} / ${boxes.length} 家` : '';
+      $('materials-reanalyze-submit').disabled = state.busy || !checked;
+    }
+    function openReanalyzeDialog() {
+      const rows = reanalyzeCandidates(), list = $('materials-reanalyze-list');
+      list.replaceChildren();
+      if (!rows.length) list.append(node('div', 'reanalyze-empty', '没有可重新分析的门店；已确认的门店需先撤销确认。'));
+      for (const store of rows) {
+        const row = document.createElement('label'); row.className = 'reanalyze-row';
+        const box = document.createElement('input'); box.type = 'checkbox'; box.name = 'materials-reanalyze-store'; box.value = String(store.store_id);
+        box.checked = false; box.addEventListener('change', syncReanalyzeSelection);
+        row.append(box, node('span', 'reanalyze-name', store.source_name || '未命名门店'), node('span', 'reanalyze-meta', decisionLabel(store)));
+        list.append(row);
+      }
+      setError('materials-reanalyze-error', '');
+      syncReanalyzeSelection();
+      list.scrollTop = 0;
+      reanalyzeDialog.showModal();
+    }
+    $('materials-reanalyze-cancel').addEventListener('click', () => reanalyzeDialog.close());
+    reanalyzeDialog.addEventListener('cancel', (event) => { if (state.busy) event.preventDefault(); });
+    $('materials-reanalyze-all').addEventListener('change', (event) => {
+      reanalyzeDialog.querySelectorAll('input[name="materials-reanalyze-store"]').forEach((box) => { box.checked = event.target.checked; });
+      syncReanalyzeSelection();
+    });
+    $('materials-reanalyze-submit').addEventListener('click', async () => {
+      if (state.busy || !state.batchId) return;
+      const storeIds = [...reanalyzeDialog.querySelectorAll('input[name="materials-reanalyze-store"]:checked')].map((box) => box.value);
+      if (!storeIds.length) { setError('materials-reanalyze-error', '请选择要重新分析的门店。'); return; }
+      setBusy(true); setError('materials-batch-error', '');
+      const ui = analysisDialogParts();
+      try {
+        await api(url(`/batches/${encodeURIComponent(state.batchId)}/reanalyze`), { method: 'POST', body: JSON.stringify({ store_ids: storeIds }) });
+        reanalyzeDialog.close();
+        state.analysisDismissed = false; state.analysisStarted = state.batchId; state.reanalyzeMode = true;
+        if (ui) { fillAnalysisDialog(0, { title: '正在重新分析门店', stage: '正在重跑所选门店的二维码检测与用途识别…', count: `0 / ${storeIds.length} 家`, action: '后台运行' }); if (!ui.dialog.open) ui.dialog.show(); }
+        await refreshBatch(false);
+      } catch (err) { setError('materials-reanalyze-error', err.message); }
+      finally { setBusy(false); if (reanalyzeDialog.open) syncReanalyzeSelection(); }
+    });
     $('materials-analyze').addEventListener('click', async () => {
       if (state.busy || !state.batchId) return;
-      setBusy(true); setError('materials-batch-error',''); state.analysisDismissed = false; state.analysisStarted = state.batchId;
+      if (state.batch?.status === 'completed') { openReanalyzeDialog(); return; }
+      setBusy(true); setError('materials-batch-error',''); state.analysisDismissed = false; state.analysisStarted = state.batchId; state.reanalyzeMode = false;
       const ui = analysisDialogParts();
-      if (ui) { fillAnalysisDialog(0, { title: '正在分析素材', stage: '正在启动本地分析…', count: '', action: '后台运行' }); if (!ui.dialog.open) ui.dialog.showModal(); }
+      if (ui) { fillAnalysisDialog(0, { title: '正在分析素材', stage: '正在启动本地分析…', count: '', action: '后台运行' }); if (!ui.dialog.open) ui.dialog.show(); }
       try { await api(url(`/batches/${encodeURIComponent(state.batchId)}/analyze`),{method:'POST',body:'{}'}); await refreshBatch(false); }
       catch(err) { state.analysisStarted = ''; ui?.dialog.close(); setError('materials-batch-error',err.message); }
       finally { setBusy(false); }
     });
     $('materials-analysis-hide').addEventListener('click', () => $('materials-analysis-dialog').close());
     $('materials-analysis-dialog').addEventListener('close', () => { state.analysisDismissed = true; clearTimeout(state.analysisCloseTimer); state.analysisCloseTimer = null; });
-    $('materials-batch').addEventListener('change', async (e) => { state.analysisDismissed = false; state.analysisStarted = ''; $('materials-analysis-dialog').close(); state.batchId=e.target.value; state.selectedReleaseId=''; state.selectionSeq++; state.storeId=''; state.detail=null; state.selectedCandidate=null; state.selectedImageIndex=null; clearManualCandidate(); setError('materials-batch-error',''); await refreshBatch(false); renderDetail(); });
+    $('materials-batch').addEventListener('change', async (e) => { state.analysisDismissed = false; state.analysisStarted = ''; state.reanalyzeMode = false; $('materials-analysis-dialog').close(); state.batchId=e.target.value; state.selectedReleaseId=''; state.selectionSeq++; state.storeId=''; state.detail=null; state.selectedCandidate=null; state.selectedImageIndex=null; clearManualCandidate(); setError('materials-batch-error',''); await refreshBatch(false); renderDetail(); });
     function reconcileVisibleSelection() { if (state.storeId && !filteredStores().some((s) => String(s.store_id) === String(state.storeId))) { const next = filteredStores()[0]; state.selectionSeq++; state.storeId = ''; state.detail = null; if (next) void selectStore(next.store_id); else { renderDetail(); renderStores(state.batch?.stores || []); } } else renderStores(state.batch?.stores || []); updateControls(); }
     $('materials-search').addEventListener('input',(e)=>{state.search=e.target.value;reconcileVisibleSelection();});
     document.querySelectorAll('[data-material-filter]').forEach((b)=>b.addEventListener('click',()=>{state.filter=b.dataset.materialFilter;document.querySelectorAll('[data-material-filter]').forEach((x)=>x.classList.toggle('active',x===b));reconcileVisibleSelection();}));
@@ -676,7 +730,21 @@
         await selectStore(storeId,true);
       } catch (error) { setError('materials-batch-error', error.message); }
     });
-    $('materials-accept-recommended').addEventListener('click',async()=>{if(state.busy)return;const batchId=state.batchId,storeId=state.storeId;setBusy(true);setError('materials-batch-error','');try{await api(url(`/batches/${encodeURIComponent(batchId)}/accept-recommendations`),{method:'POST',body:'{}'});await refreshBatch();if(batchId===state.batchId&&storeId&&storeId===state.storeId){state.detail=await api(url(`/batches/${encodeURIComponent(batchId)}/stores/${encodeURIComponent(storeId)}`));renderDetail();}}catch(err){setError('materials-batch-error',err.message);}finally{setBusy(false);}});
+    $('materials-accept-recommended').addEventListener('click', async () => {
+      if (state.busy) return;
+      const batchId = state.batchId, storeId = state.storeId, pendingBefore = Number(state.batch?.summary?.pending_stores || 0);
+      setBusy(true); setError('materials-batch-error', '');
+      try {
+        const result = await api(url(`/batches/${encodeURIComponent(batchId)}/accept-recommendations`), { method: 'POST', body: '{}' });
+        await refreshBatch();
+        if (batchId === state.batchId) {
+          const confirmed = Number(result?.confirmed || 0), left = Math.max(0, pendingBefore - confirmed);
+          setSuccess('materials-batch-error', left > 0 ? `已确认 ${confirmed} 家；${left} 家未批量确认（仅识别到企微码或缺少可用候选），请逐店确认。` : `已确认 ${confirmed} 家自动推荐门店。`);
+        }
+        if (batchId === state.batchId && storeId && storeId === state.storeId) { state.detail = await api(url(`/batches/${encodeURIComponent(batchId)}/stores/${encodeURIComponent(storeId)}`)); renderDetail(); }
+      } catch (err) { setError('materials-batch-error', err.message); }
+      finally { setBusy(false); }
+    });
     const releaseDialog=$('materials-release-dialog');
     $('materials-publish').addEventListener('click',()=>{
       if(state.busy)return;

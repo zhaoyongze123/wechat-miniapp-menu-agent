@@ -457,47 +457,106 @@ class MaterialService:
             batch = self._batch_row(batch_id)
             if batch["status"] != "completed":
                 raise ValueError("只有分析完成的批次可以重新分析单店")
-            row = self._decision_row(batch_id, store_id)
-            if row["decision"] == "confirmed":
-                raise ValueError("该门店已确认；请先撤销确认再重新分析")
-            store = json.loads(row["store_json"])
-            if not store.get("images"):
-                raise ValueError("当前门店没有图片，请先补充素材")
-            inspect = self.inspector or _apple_vision_inspector
-            refreshed_images = []
-            for image in store["images"]:
-                source = self._checked_source(batch, image)
-                refreshed = _inspect_image(source, image["path"], inspect)
-                for key in ("display_name", "origin", "supplement_store_id"):
-                    if key in image:
-                        refreshed[key] = image[key]
-                refreshed_images.append(refreshed)
-            store["images"] = refreshed_images
-            store["selected_source"] = None
-            store["selected_artifact"] = None
-            analysis_dir = self.batch_root / batch_id / "repair-analysis"
-            analysis_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-            manifest = {"stores": [store]}
-            source_root = Path(batch["source_root"])
-            self._classify_and_select(
-                manifest, source_root, analysis_dir,
-                source_resolver=lambda image: self._checked_source(batch, image),
+            self._reanalyze_store_locked(batch, store_id)
+        return self.get_store(batch_id, store_id)
+
+    def _reanalyze_store_locked(self, batch: dict, store_id: str) -> None:
+        batch_id = batch["id"]
+        row = self._decision_row(batch_id, store_id)
+        if row["decision"] == "confirmed":
+            raise ValueError("该门店已确认；请先撤销确认再重新分析")
+        store = json.loads(row["store_json"])
+        if not store.get("images"):
+            raise ValueError("当前门店没有图片，请先补充素材")
+        inspect = self.inspector or _apple_vision_inspector
+        refreshed_images = []
+        for image in store["images"]:
+            source = self._checked_source(batch, image)
+            refreshed = _inspect_image(source, image["path"], inspect)
+            for key in ("display_name", "origin", "supplement_store_id"):
+                if key in image:
+                    refreshed[key] = image[key]
+            refreshed_images.append(refreshed)
+        store["images"] = refreshed_images
+        store["selected_source"] = None
+        store["selected_artifact"] = None
+        analysis_dir = self.batch_root / batch_id / "repair-analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        manifest = {"stores": [store]}
+        source_root = Path(batch["source_root"])
+        self._classify_and_select(
+            manifest, source_root, analysis_dir,
+            source_resolver=lambda image: self._checked_source(batch, image),
+        )
+        store = manifest["stores"][0]
+        # 检测后再核一次源图 hash，避免分析期间文件被替换。
+        for image in store["images"]:
+            self._checked_source(batch, image)
+        recommendation = any(
+            candidate.get("selected")
+            for image in store["images"] for candidate in image.get("candidates", [])
+        )
+        with self.task_store.connect() as db:
+            db.execute(
+                "UPDATE material_decisions SET analysis_status=?,recommendation=?,selected_json='{}',selected_source_hash='',store_json=?,updated_at=? WHERE batch_id=? AND store_id=?",
+                (store["status"], int(recommendation), json.dumps(store, ensure_ascii=False), _now(), batch_id, store_id),
             )
-            store = manifest["stores"][0]
-            # 检测后再核一次源图 hash，避免分析期间文件被替换。
-            for image in store["images"]:
-                self._checked_source(batch, image)
-            recommendation = any(
-                candidate.get("selected") and candidate.get("purpose") == "ordering"
-                for image in store["images"] for candidate in image.get("candidates", [])
-            )
+            self._refresh_batch_summary(db, batch_id)
+
+    def start_reanalysis(self, batch_id: str, store_ids: list[str]) -> dict:
+        """对已完成批次里选中的门店重跑检测，其余门店保持不变。"""
+        with self._worker_lock:
+            if self._worker is not None and self._worker.is_alive():
+                raise RuntimeError("已有素材批次正在分析")
+            batch = self._batch_row(batch_id)
+            if batch["status"] != "completed":
+                raise ValueError("只有分析完成的批次可以重新分析")
+            ids = list(dict.fromkeys(store_ids))
+            if not ids:
+                raise ValueError("请选择要重新分析的门店")
+            with self.task_store.connect() as db:
+                rows = {row["store_id"]: dict(row) for row in db.execute(
+                    "SELECT store_id,decision FROM material_decisions WHERE batch_id=?", (batch_id,),
+                )}
+            if not set(ids) <= set(rows):
+                raise ValueError("重新分析列表含有未知门店")
+            pending = [store_id for store_id in ids if rows[store_id]["decision"] != "confirmed"]
+            if not pending:
+                raise ValueError("选中的门店都已确认；请先撤销确认再重新分析")
             with self.task_store.connect() as db:
                 db.execute(
-                    "UPDATE material_decisions SET analysis_status=?,recommendation=?,selected_json='{}',selected_source_hash='',store_json=?,updated_at=? WHERE batch_id=? AND store_id=?",
-                    (store["status"], int(recommendation), json.dumps(store, ensure_ascii=False), _now(), batch_id, store_id),
+                    "UPDATE material_batches SET status='analyzing',progress_done=0,progress_total=?,error='',updated_at=? WHERE id=?",
+                    (len(pending), _now(), batch_id),
+                )
+            worker = threading.Thread(target=self._reanalyze_worker, args=(batch_id, pending),
+                                      name=f"materials-recheck-{batch_id[:8]}", daemon=True)
+            self._worker = worker
+            worker.start()
+        return self.get_batch(batch_id)
+
+    def _reanalyze_worker(self, batch_id: str, store_ids: list[str]) -> None:
+        failed = 0
+        try:
+            batch = self._batch_row(batch_id)
+            for done, store_id in enumerate(store_ids, 1):
+                try:
+                    with self._lock:
+                        self._reanalyze_store_locked(batch, store_id)
+                except ValueError:
+                    failed += 1
+                with self.task_store.connect() as db:
+                    db.execute(
+                        "UPDATE material_batches SET progress_done=?,progress_total=?,updated_at=? WHERE id=? AND status='analyzing'",
+                        (done, len(store_ids), _now(), batch_id),
+                    )
+            with self.task_store.connect() as db:
+                db.execute(
+                    "UPDATE material_batches SET status='completed',progress_done=progress_total,error=?,updated_at=? WHERE id=?",
+                    ("部分门店未能重新分析" if failed else "", _now(), batch_id),
                 )
                 self._refresh_batch_summary(db, batch_id)
-        return self.get_store(batch_id, store_id)
+        except Exception:
+            self._set_batch_error(batch_id, "failed", "素材重新分析失败")
 
     def _supplement_dir(self, batch_id: str, store_id: str, upload_id: str) -> Path:
         if not _UPLOAD_ID_RE.fullmatch(batch_id) or not re.fullmatch(r"[0-9a-f]{24}", store_id) or not _UPLOAD_ID_RE.fullmatch(upload_id):
@@ -738,26 +797,21 @@ class MaterialService:
                 store["reason"] = "不同父路径存在同名店铺目录，拒绝归档以防混店"
                 continue
 
-            ordering = [
+            candidates = [
                 (image_index, candidate_index, image, candidate)
                 for image_index, image in enumerate(store["images"])
                 for candidate_index, candidate in enumerate(image["candidates"])
-                if candidate.get("purpose") == "ordering"
             ]
-            # 解码成功就是本地可读的直接证据，不再用固定像素阈值排除较小的码。
-            eligible = [item for item in ordering if item[3].get("payload_sha256")]
+            # 只要检测到二维码候选就自动推荐，不再要求用途必须是点餐码；用途留给下游微信验证。
+            eligible = candidates
             if not eligible:
                 store["status"] = "needs_review"
-                if ordering:
-                    store["reason"] = "识别到点餐标识，但二维码未能由本地解码器读出，需人工确认"
-                elif any(image.get("ordering_text_seen") for image in store["images"]):
+                if any(image.get("ordering_text_seen") for image in store["images"]):
                     store["reason"] = "原图 OCR 发现点餐标识，但本地没有定位到对应二维码，需人工确认"
-                elif not any(image["candidates"] for image in store["images"]):
-                    store["reason"] = "没有检测到可用二维码候选，需人工确认"
                 elif any("本地 OCR 未能完成" in c.get("purpose_reason", "") for image in store["images"] for c in image["candidates"]):
                     store["reason"] = "本地 OCR 未能完成，需人工确认"
                 else:
-                    store["reason"] = "没有在二维码周边识别到明确点餐标识，需人工确认"
+                    store["reason"] = "没有检测到可用二维码候选，需人工确认"
                 continue
             image_index, candidate_index, image, candidate = max(
                 eligible,
@@ -771,11 +825,14 @@ class MaterialService:
             except Exception:
                 artifact.unlink(missing_ok=True)
                 store["status"] = "needs_review"
-                store["reason"] = "点餐候选裁剪失败，需人工复核"
+                store["reason"] = "二维码候选裁剪失败，需人工复核"
                 continue
             candidate["selected"] = True
             store["status"] = "selected"
-            store["reason"] = "周边 OCR 识别到点餐标识且二维码本地解码成功；已按尺寸和清晰度选取，待微信验证"
+            # 用途仍按 OCR 结果标注，只是批量同意不再限制用途。
+            purpose_label = {"ordering": "点餐码", "enterprise_wechat": "企微码", "other": "其他二维码"}.get(
+                candidate.get("purpose") or "", "用途未识别")
+            store["reason"] = f"已按清晰度自动选取二维码候选（{purpose_label}），待微信验证"
             store["selected_source"] = image["path"]
             store["selected_artifact"] = artifact_relative.as_posix()
 
@@ -886,7 +943,7 @@ class MaterialService:
                 candidates.append({
                     **candidate,
                     "candidate_index": candidate_index,
-                    "recommendation": bool(candidate.get("selected") and candidate.get("purpose") == "ordering"),
+                    "recommendation": bool(candidate.get("selected")),
                 })
             images.append({**image, "image_index": image_index, "candidates": candidates})
         return {
@@ -1011,7 +1068,7 @@ class MaterialService:
                     (image_index, candidate_index, candidate)
                     for image_index, image in enumerate(store["images"])
                     for candidate_index, candidate in enumerate(image["candidates"])
-                    if candidate.get("selected") and candidate.get("purpose") == "ordering"
+                    if candidate.get("selected") and candidate.get("purpose") != "enterprise_wechat"
                 ), None)
                 if match is None:
                     continue
@@ -1271,14 +1328,13 @@ class MaterialService:
         data = json.loads(row["store_json"])
         selected = json.loads(row["selected_json"])
         valid_recommendation = bool(row["recommendation"]) and any(
-            candidate.get("selected") and candidate.get("purpose") == "ordering"
+            candidate.get("selected")
             for image in data.get("images", []) for candidate in image.get("candidates", [])
         )
-        stale_pending = bool(row["recommendation"]) and not valid_recommendation and row["decision"] == "pending"
         return {
             "store_id": row["store_id"], "source_name": row["source_name"], "source_folder": row["source_folder"],
-            "analysis_status": "needs_review" if stale_pending else row["analysis_status"],
-            "reason": "旧批次未判断二维码用途，请重新导入分析或人工选择" if stale_pending else data.get("reason", ""),
+            "analysis_status": row["analysis_status"],
+            "reason": data.get("reason", ""),
             "recommendation": valid_recommendation, "decision": row["decision"],
             "rejection": self.rejection(row),
             "selected": selected or None,
@@ -1429,8 +1485,8 @@ class MaterialService:
                         safe_reason = candidate["purpose_reason"]
                     safe_candidate = {
                         "box": box, "payload_sha256": payload_hash, "short_edge_px": edge,
-                        # 旧 manifest 没有用途分类；不能沿用旧几何启发式的推荐状态。
-                        "selected": bool(candidate.get("selected")) and purpose == "ordering", "purpose": purpose,
+                        # 候选一旦被选中就保留推荐状态，不再要求用途为点餐码。
+                        "selected": bool(candidate.get("selected")), "purpose": purpose,
                         # OCR 只保存受控判断标签，不把整段图片文字写入清单。
                         "purpose_reason": ("本地解码识别为企业微信域名" if purpose == "enterprise_wechat" and purpose_source == "payload_domain" else safe_reason),
                         "source": "vision_fallback" if candidate.get("source") == "vision_fallback" else "local_detector",
@@ -1463,7 +1519,7 @@ class MaterialService:
                 status = "needs_review"
             safe_stores.append({
                 "source_name": source_name, "source_folder": folder_key, "status": status,
-                "reason": ("旧清单缺少二维码用途分类，需人工复核" if raw_store.get("status") == "selected" and not has_recommendation else str(raw_store.get("reason", ""))[:300]),
+                "reason": str(raw_store.get("reason", ""))[:300],
                 "selected_source": raw_store.get("selected_source") if has_recommendation and isinstance(raw_store.get("selected_source"), str) else None,
                 "selected_artifact": raw_store.get("selected_artifact") if has_recommendation and isinstance(raw_store.get("selected_artifact"), str) else None,
                 "images": images,

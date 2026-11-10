@@ -84,16 +84,18 @@ class RunnerTerminated(RuntimeError):
 
 _ACTIONS = {"screenshot", "screenshot_desktop", "capture_rect", "click", "click_desktop_overlay", "right_click", "double_click", "scroll", "scroll_capture", "type_text", "key", "resize", "discover", "noop", "stop"}
 # 微信窗口位置与尺寸固定时，本轮最新图片消息所在的缩略图中心可直接双击打开。
-# 取自实机成功样本（窗口 865×958 时约 695,729；历史缩略图范围 x 684–709、y 725–729）。
-_LATEST_IMAGE_POINT_RATIO = (0.8035, 0.7610)
+# 缩略图右对齐、贴输入框上方，布局不随窗口等比缩放，因此按距窗口右/下边缘的固定点距计算。
+# 取自实机成功样本（窗口 432×479 points，点在 347,365；等价 865×958 px 下的 695,729）。
+_LATEST_IMAGE_POINT_OFFSET = (85.0, 115.0)
 _COMMAND_FIELDS = {
     "id", "action", "selector", "x", "y", "text", "path", "direction", "units", "key", "seconds",
     "expected_window_width", "expected_window_height", "width", "height",
 }
 _PROFILE_FIELDS = {
     "mode", "launch_mode", "wechat_selector", "miniapp_selector", "preview_selector",
-    "selected_task_id", "selected_task_ids", "wechat_input_x_ratio",
-    "wechat_input_y_ratio", "paste_shortcut", "send_key", "close_key",
+    "selected_task_id", "selected_task_ids", "wechat_input_x_ratio", "wechat_input_y_ratio",
+    "latest_image_offset_x", "latest_image_offset_y",
+    "wechat_input_offset_x", "wechat_input_offset_y", "paste_shortcut", "send_key", "close_key",
     "coordinates_verified", "scroll_units", "max_tasks",
 }
 # “价格”本身不是交易动作；菜单与隐私说明页都会出现，不能据此判定为交易界面。
@@ -2317,13 +2319,25 @@ class UiPathRunner:
             return self._screenshot(output_dir, selector, "wechat-before-send.png")
 
     def _click_wechat_input(self, profile: dict, frame: dict) -> None:
-        x = float(profile["wechat_input_x_ratio"]) * float(frame["window_width"])
-        y = float(profile["wechat_input_y_ratio"]) * float(frame["window_height"])
-        self._trace_click = {"source": "profile_input_ratio", "target": "微信消息输入区",
+        width = float(frame["window_width"])
+        height = float(frame["window_height"])
+        # 输入框贴底且高度固定，按距右下角的固定点距计算；旧配置只有比例时按比例反推点距。
+        offset_x = profile.get("wechat_input_offset_x")
+        offset_y = profile.get("wechat_input_offset_y")
+        source = "profile_input_offset"
+        if not offset_x:
+            offset_x = width * (1 - float(profile["wechat_input_x_ratio"]))
+            source = "profile_input_ratio"
+        if not offset_y:
+            offset_y = height * (1 - float(profile["wechat_input_y_ratio"]))
+            source = "profile_input_ratio"
+        x = max(1.0, width - float(offset_x))
+        y = max(1.0, height - float(offset_y))
+        self._trace_click = {"source": source, "target": "微信消息输入区",
                              "coordinates": {"window_points": {"x": x, "y": y},
-                                             "window_size_points": {"width": frame["window_width"], "height": frame["window_height"]},
+                                             "window_size_points": {"width": width, "height": height},
                                              "screenshot_size_px": {"width": frame["width"], "height": frame["height"]},
-                                             "ratio": {"x": profile["wechat_input_x_ratio"], "y": profile["wechat_input_y_ratio"]}}}
+                                             "offset_from_right_bottom": {"x": offset_x, "y": offset_y}}}
         try:
             self._send({"action": "click", "selector": profile["wechat_selector"], "x": x, "y": y})
         finally:
@@ -2331,13 +2345,17 @@ class UiPathRunner:
 
     def _double_click_latest_image(self, profile: dict, frame: dict) -> None:
         """窗口位置固定时直接双击最新图片消息中心，不再截图、OCR、原图匹配。"""
-        ratio_x, ratio_y = _LATEST_IMAGE_POINT_RATIO
-        x = ratio_x * float(frame["window_width"])
-        y = ratio_y * float(frame["window_height"])
+        default_x, default_y = _LATEST_IMAGE_POINT_OFFSET
+        offset_x = float(profile.get("latest_image_offset_x") or default_x)
+        offset_y = float(profile.get("latest_image_offset_y") or default_y)
+        width = float(frame["window_width"])
+        height = float(frame["window_height"])
+        x = max(1.0, width - offset_x)
+        y = max(1.0, height - offset_y)
         self._trace_click = {"source": "fixed_latest_image_point", "target": "本轮最新图片消息",
                              "coordinates": {"window_points": {"x": x, "y": y},
-                                             "window_size_points": {"width": frame["window_width"], "height": frame["window_height"]},
-                                             "ratio": {"x": ratio_x, "y": ratio_y}}}
+                                             "window_size_points": {"width": width, "height": height},
+                                             "offset_from_right_bottom": {"x": offset_x, "y": offset_y}}}
         try:
             self._send({"action": "double_click", "selector": profile["wechat_selector"], "x": x, "y": y})
         finally:

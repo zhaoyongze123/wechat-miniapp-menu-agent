@@ -58,10 +58,28 @@ def test_normal_path_double_clicks_fixed_latest_image_point(tmp_path, monkeypatc
     assert calls == []
     double_clicks = [c for c in commands if c["action"] == "double_click"]
     assert len(double_clicks) == 1
-    assert double_clicks[0]["x"] == pytest.approx(0.8035 * 432)
-    assert double_clicks[0]["y"] == pytest.approx(0.7610 * 479)
+    assert double_clicks[0]["x"] == pytest.approx(432 - 85)
+    assert double_clicks[0]["y"] == pytest.approx(479 - 115)
     assert double_clicks[0]["trace"]["source"] == "fixed_latest_image_point"
     assert clipboard == [NAME, Path(task["source_path"])]
+
+
+def test_latest_image_point_uses_bottom_right_offset_not_ratio(tmp_path):
+    runner, _, profile, commands, _ = setup_flow(tmp_path)
+    # 窗口变大时，点击点只随右下角平移，不按比例放大。
+    runner._double_click_latest_image(profile, {"window_width": 600, "window_height": 700})
+    assert commands[-1]["x"] == pytest.approx(600 - 85)
+    assert commands[-1]["y"] == pytest.approx(700 - 115)
+
+
+def test_wechat_input_point_uses_bottom_right_offset_when_configured(tmp_path):
+    runner, _, profile, commands, _ = setup_flow(tmp_path)
+    configured = {**profile, "wechat_input_offset_x": 100, "wechat_input_offset_y": 40}
+    runner._click_wechat_input(configured, {"window_width": 600, "window_height": 700,
+                                           "width": 1200, "height": 1400})
+    assert commands[-1]["x"] == pytest.approx(600 - 100)
+    assert commands[-1]["y"] == pytest.approx(700 - 40)
+    assert commands[-1]["trace"]["source"] == "profile_input_offset"
 
 
 def test_second_store_reuses_window_geometry_without_screenshot(tmp_path):
