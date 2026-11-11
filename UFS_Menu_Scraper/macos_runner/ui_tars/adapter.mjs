@@ -21,6 +21,8 @@ let faulted = false;
 // 连续格式错误与整个任务的格式错误分开计数：连续合法输出后允许重新获得修正机会。
 const CONSECUTIVE_PARSE_FAILURE_LIMIT = 2;
 const TOTAL_PARSE_FAILURE_LIMIT = 4;
+// 小程序切页常有一两秒白屏/半渲染，此时模型给不出动作；这类空输出按“等加载”处理，不占格式预算。
+const LOADING_WAIT_LIMIT = 5;
 const REASON_MAX_CHARS = 500;
 let parseFailures = 0;
 let parseFailuresTotal = 0;
@@ -33,6 +35,7 @@ let callSeq = 0;
 let currentCall = null;
 let actionCount = 0;
 let formatRetries = 0;
+let loadingWaits = 0;
 let toolRejections = 0;
 let screenshotCount = 0;
 let currentFrameHash = '';
@@ -345,6 +348,10 @@ function describeFormatError(code, args) {
   return '这不是一个合法的 computer_use JSON，或字段缺失、有多余字段、类型不对';
 }
 
+function isEmptyActionArguments(args) {
+  return Boolean(args) && typeof args === 'object' && !Array.isArray(args) && Object.keys(args).length === 0;
+}
+
 function makeCustomActionParser() {
   return (rawContent) => {
     lastRawContent = typeof rawContent === 'string' ? rawContent : '';
@@ -365,6 +372,13 @@ function makeCustomActionParser() {
         : 'invalid_action';
       trace({ type: 'action', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
               ok: false, error: code, ...rawRecord(rawContent) });
+      // 一整条 arguments 都没有，通常是模型面对白屏/半渲染页面无从下手，不是字段写错。
+      // 让它等页面渲染完再看一眼，不占用格式修正预算；次数有上限，真卡住仍会转人工。
+      if (code === 'invalid_action' && isEmptyActionArguments(args) && loadingWaits < LOADING_WAIT_LIMIT) {
+        loadingWaits += 1;
+        pendingNotice = '上一次没有给出可执行动作，页面可能仍在加载。已等待页面渲染，请根据最新截图重新判断。';
+        return { rawContent, reasoningContent: '', actions: [{ type: 'wait', inputs: { time: 1 } }] };
+      }
       const formatError = code === 'invalid_action' || code === 'invalid_terminal';
       if (formatError) {
         // 先记发生次数：即使这次超出修正上限直接终止，也会计入 format_failures。
@@ -646,6 +660,7 @@ function metrics() {
     format_retries: formatRetries,
     tool_rejections: toolRejections,
     format_failures: parseFailuresTotal,
+    loading_waits: loadingWaits,
     no_progress_notices: noProgressNotices,
   };
 }

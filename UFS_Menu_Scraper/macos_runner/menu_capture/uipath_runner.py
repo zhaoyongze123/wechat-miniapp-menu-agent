@@ -2555,8 +2555,7 @@ class UiPathRunner:
         self._send({"action": "key", "selector": profile["wechat_selector"],
                     "key": profile["paste_shortcut"]})
         self._await_image_attached(profile, output_dir, Path(task["source_path"]))
-        self._send({"action": "key", "selector": profile["wechat_selector"],
-                    "key": profile["send_key"]})
+        self._press_send_until_cleared(profile, output_dir)
         mark("image_sent")
         try:
             self._double_click_latest_image(profile, wechat)
@@ -2675,9 +2674,30 @@ class UiPathRunner:
                 if attempt == 0:
                     self._send({"action": "key", "selector": profile["wechat_selector"],
                                 "key": profile["paste_shortcut"]})
-            trace.update(attempts=2, result="not_attached",
-                         elapsed_ms=round((time.monotonic() - started) * 1000))
+            trace.update(attempts=2, elapsed_ms=round((time.monotonic() - started) * 1000))
         raise NeedsReview("二维码图片未附着到微信输入框；未发送空消息")
+
+    def _press_send_until_cleared(self, profile: dict, output_dir: Path,
+                                  attempts: int = 5, interval: float = 1.5) -> None:
+        """回车发送，并确认输入框已清空。
+
+        发送按钮变绿只代表微信已接收到粘贴，大图仍在后台解码时回车不会生效；
+        所以以“输入框清空（按钮变灰）”为发送成功的判据，未清空就再按一次回车。
+        输入框仍有附件说明消息没发出去，重复回车不会产生重复消息。
+        """
+        for _ in range(attempts):
+            self._send({"action": "key", "selector": profile["wechat_selector"],
+                        "key": profile["send_key"]})
+            deadline = time.monotonic() + interval
+            while True:
+                self._guard()
+                frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-state.png")
+                if not self._send_button_active(Path(frame["path"])):
+                    return
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(.3)
+        raise NeedsReview("二维码图片已附着但回车未能发送；大图可能仍在解码")
 
     @staticmethod
     def _image_pixels(source_path: Path | None) -> tuple[int, int]:
@@ -2691,9 +2711,12 @@ class UiPathRunner:
 
     @staticmethod
     def _image_attach_timeout(pixels: tuple[int, int]) -> float:
-        """按像素量给粘贴留时间：3 秒起步，每百万像素加 1 秒，最多 20 秒。"""
+        """按像素量给粘贴留时间：3 秒起步，每百万像素加 1.4 秒，最多 20 秒。
+
+        实测 12MP 手机原图（48MB DIB）在微信里要约 18 秒才附着。
+        """
         megapixels = max(1, pixels[0] * pixels[1]) / 1_000_000
-        return min(20.0, 3.0 + megapixels)
+        return min(20.0, 3.0 + 1.4 * megapixels)
 
     @staticmethod
     def _send_button_active(image_path: Path) -> bool:
