@@ -173,7 +173,7 @@ def test_detail_preview_decision_and_publish_snapshot_are_safe_and_idempotent(tm
     assert original_preview["media_type"] == "image/png"
     assert candidate_preview["media_type"] == "image/png"
     with Image.open(io.BytesIO(candidate_preview["bytes"])) as preview_image:
-            assert preview_image.size == (210, 160)
+            assert preview_image.size == (240, 160)
 
     accepted = service.accept_recommendations(batch["batch_id"])
     assert accepted["confirmed"] == 1
@@ -306,7 +306,9 @@ def test_only_one_analysis_worker_runs_and_decisions_are_locked_while_analyzing(
 
     service, _, _, input_root, _ = _setup(tmp_path, inspector=slow_inspector)
     _png(input_root / "First Shop" / "one.png")
+    _png(input_root / "First Shop" / "z-one.png", "gray")
     _png(input_root / "Second Shop" / "two.png", "gray")
+    _png(input_root / "Second Shop" / "z-two.png", "black")
     first = service.create_local_batch(input_root / "First Shop")
     second = service.create_local_batch(input_root / "Second Shop")
     service.start_analysis(first["batch_id"])
@@ -322,7 +324,9 @@ def test_only_one_analysis_worker_runs_and_decisions_are_locked_while_analyzing(
 
 
 def test_local_ocr_selects_point_ordering_code_and_keeps_safe_fields(tmp_path: Path) -> None:
-    def detector(_path: Path) -> list[dict]:
+    def detector(path: Path) -> list[dict]:
+        if path.name != "menu.png":
+            return []
         return [
             {"box": {"x": 30, "y": 20, "width": 90, "height": 90}, "payload": "private-one"},
             {"box": {"x": 500, "y": 20, "width": 70, "height": 70}, "payload": "https://work.weixin.qq.com/private-two"},
@@ -334,6 +338,7 @@ def test_local_ocr_selects_point_ordering_code_and_keeps_safe_fields(tmp_path: P
         ocr_reader=lambda _path: [{"text": "扫码点餐", "x": 40, "y": 130, "width": 100, "height": 20}],
     )
     _png(input_root / "Shop" / "menu.png", size=(800, 300))
+    _png(input_root / "Shop" / "z-extra.png", "gray")
     batch = _analyze(service, input_root)
     store = service.get_store(batch["batch_id"], batch["stores"][0]["store_id"])
     candidates = store["images"][0]["candidates"]
@@ -350,7 +355,9 @@ def test_local_ocr_selects_point_ordering_code_and_keeps_safe_fields(tmp_path: P
 
 
 def test_multiple_local_ordering_codes_choose_the_clearest_even_with_different_payloads(tmp_path: Path) -> None:
-    def detector(_path: Path) -> list[dict]:
+    def detector(path: Path) -> list[dict]:
+        if path.name != "menu.png":
+            return []
         return [
             {"box": {"x": 20, "y": 20, "width": 100, "height": 100}, "payload": "private-one"},
             {"box": {"x": 450, "y": 20, "width": 160, "height": 160}, "payload": "private-two"},
@@ -365,6 +372,7 @@ def test_multiple_local_ordering_codes_choose_the_clearest_even_with_different_p
         ],
     )
     _png(input_root / "Shop" / "menu.png", size=(800, 300))
+    _png(input_root / "Shop" / "z-extra.png", "gray")
     batch = _analyze(service, input_root)
     store = batch["stores"][0]
     assert store["recommendation"] is True
@@ -391,9 +399,13 @@ def test_small_locally_decoded_ordering_code_is_not_rejected_by_arbitrary_pixel_
 def test_unreadable_code_with_point_ordering_text_is_recommended_for_bulk_accept(tmp_path: Path) -> None:
     service, _, _, input_root, _ = _setup(
         tmp_path,
-        inspector=lambda _path: [{"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": None}],
+        inspector=lambda path: (
+            [{"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": None}]
+            if path.name == "menu.png" else []
+        ),
     )
     _png(input_root / "Shop" / "menu.png")
+    _png(input_root / "Shop" / "z-extra.png", "gray")
     batch = _analyze(service, input_root)
     candidate = batch["stores"][0]
     assert candidate["recommendation"] is True
@@ -435,12 +447,15 @@ def test_multi_image_unknown_purpose_candidate_is_recommended(tmp_path: Path) ->
 
 
 def test_enterprise_wechat_payload_is_excluded_without_ocr_or_model(tmp_path: Path) -> None:
-    def detector(_path):
+    def detector(path):
+        if path.name != "menu.png":
+            return []
         return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": "https://work.weixin.qq.com/secret-value"}]
     def unexpected_ocr(_path: Path):
         raise AssertionError("企业微信码可由本地载荷直接识别")
     service, _, _, input_root, _ = _setup(tmp_path, inspector=detector, ocr_reader=unexpected_ocr)
     _png(input_root / "Shop" / "menu.png")
+    _png(input_root / "Shop" / "z-extra.png", "gray")
     batch = _analyze(service, input_root)
     store = service.get_store(batch["batch_id"], batch["stores"][0]["store_id"])
     candidate = store["images"][0]["candidates"][0]
@@ -455,7 +470,9 @@ def test_enterprise_wechat_payload_is_excluded_without_ocr_or_model(tmp_path: Pa
 
 
 def test_enterprise_and_ordering_codes_in_one_image_select_the_local_order_code(tmp_path: Path) -> None:
-    def detector(_path):
+    def detector(path):
+        if path.name != "menu.png":
+            return []
         return [
             {"box": {"x": 20, "y": 20, "width": 90, "height": 90}, "payload": "https://work.weixin.qq.com/a"},
             {"box": {"x": 500, "y": 20, "width": 100, "height": 100}, "payload": "private-order"},
@@ -466,6 +483,7 @@ def test_enterprise_and_ordering_codes_in_one_image_select_the_local_order_code(
         ocr_reader=lambda _path: [{"text": "美团扫码点餐", "x": 510, "y": 130, "width": 120, "height": 20}],
     )
     _png(input_root / "Shop" / "menu.png", size=(800, 300))
+    _png(input_root / "Shop" / "z-extra.png", "gray")
     batch = _analyze(service, input_root)
     candidates = service.get_store(batch["batch_id"], batch["stores"][0]["store_id"])["images"][0]["candidates"]
     assert [candidate["purpose"] for candidate in candidates] == ["enterprise_wechat", "ordering"]
@@ -488,7 +506,9 @@ def test_legacy_candidate_without_purpose_is_still_bulk_accepted(tmp_path: Path)
 
 
 def test_enterprise_wechat_candidate_is_not_recommended_and_never_bulk_confirmed(tmp_path: Path) -> None:
-    def detector(_path: Path) -> list[dict]:
+    def detector(path: Path) -> list[dict]:
+        if path.name != "menu.png":
+            return []
         return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": "https://work.weixin.qq.com/secret-value"}]
 
     def unexpected_ocr(_path: Path):
@@ -496,6 +516,7 @@ def test_enterprise_wechat_candidate_is_not_recommended_and_never_bulk_confirmed
 
     service, _, _, input_root, _ = _setup(tmp_path, inspector=detector, ocr_reader=unexpected_ocr)
     _png(input_root / "Shop" / "menu.png")
+    _png(input_root / "Shop" / "z-extra.png", "gray")
     batch = _analyze(service, input_root)
     store = batch["stores"][0]
     assert store["recommendation"] is False
@@ -516,6 +537,7 @@ def test_batch_reanalysis_reruns_only_selected_pending_stores(tmp_path: Path) ->
     service, _, _, input_root, _ = _setup(tmp_path, inspector=detector)
     _png(input_root / "A" / "a.png")
     _png(input_root / "B" / "b.png")
+    _png(input_root / "B" / "z-b.png", "gray")
     batch = _analyze(service, input_root)
     service._worker.join(timeout=3)
     ids = {store["source_name"]: store["store_id"] for store in batch["stores"]}
@@ -529,7 +551,7 @@ def test_batch_reanalysis_reruns_only_selected_pending_stores(tmp_path: Path) ->
     result = _wait(service, batch["batch_id"])
     assert result["status"] == "completed"
     assert result["progress"]["done"] == result["progress"]["total"]
-    assert inspected == ["b.png"]
+    assert inspected == ["b.png", "z-b.png"]
     assert service.get_store(batch["batch_id"], ids["A"])["decision"] == "confirmed"
     assert service.get_store(batch["batch_id"], ids["B"])["decision"] == "pending"
 
@@ -640,12 +662,12 @@ def test_circle_mini_program_code_without_payload_is_recommended_confirmed_and_p
     batch = _analyze(service, input_root)
     store = batch["stores"][0]
 
-    # 两轮 + 分类共 2 图 × 3 个逻辑单位；圆形命中店不触发方形检测。
+    # 方形 + 圆形 + 分类共 2 图 × 3 个逻辑单位；方形先跑，圆形作兜底。
     assert batch["progress"] == {"done": 6, "total": 6}
-    assert square_calls == []
+    assert len(square_calls) == 2
     assert batch["summary"]["detection_stats"]["circle_enabled"] is True
     assert batch["summary"]["detection_stats"]["circle"]["hit_stores"] == 1
-    assert batch["summary"]["detection_stats"]["square"]["scanned_stores"] == 0
+    assert batch["summary"]["detection_stats"]["square"]["scanned_stores"] == 1
     assert batch["summary"]["detection_rounds"] == 2
 
     detail = service.get_store(batch["batch_id"], store["store_id"])
@@ -676,7 +698,10 @@ def test_circle_error_keeps_square_candidate_in_review(tmp_path: Path) -> None:
     def broken(_path: Path):
         raise RuntimeError(PAYLOAD)
 
-    service, _, task_store, input_root, _ = _setup(tmp_path, circle_inspector=broken)
+    service, _, task_store, input_root, _ = _setup(
+        tmp_path, circle_inspector=broken,
+        ocr_reader=lambda _path: [{"text": "企业微信", "x": 40, "y": 130, "width": 100, "height": 20}],
+    )
     _png(input_root / "Shop" / "menu.png")
     _png(input_root / "Shop" / "menu-2.png")
     batch = _analyze(service, input_root)
@@ -705,7 +730,10 @@ def test_reanalysis_reruns_circle_round_and_confirmed_store_is_protected(tmp_pat
         circle_calls.append(path)
         return None
 
-    service, _, _, input_root, _ = _setup(tmp_path, circle_inspector=circle)
+    service, _, _, input_root, _ = _setup(
+        tmp_path, circle_inspector=circle,
+        ocr_reader=lambda _path: [{"text": "企业微信", "x": 40, "y": 130, "width": 100, "height": 20}],
+    )
     _png(input_root / "Shop" / "menu.png")
     _png(input_root / "Shop" / "menu-2.png")
     batch = _analyze(service, input_root)
@@ -731,6 +759,7 @@ def test_circle_assist_mode_still_runs_square_round_and_prefers_decodable_code(t
     service, _, _, input_root, _ = _setup(
         tmp_path, inspector=square, circle_inspector=lambda _path: {"box": CIRCLE_BOX, "detector_confidence": 0.99},
         circle_mode="assist",
+        ocr_reader=lambda _path: [{"text": "企业微信", "x": 40, "y": 130, "width": 100, "height": 20}],
     )
     _png(input_root / "Shop" / "menu.png")
     _png(input_root / "Shop" / "menu-2.png")
@@ -764,3 +793,64 @@ def test_six_image_store_reanalysis_skips_circle_detection(tmp_path: Path) -> No
 
     service.reanalyze_store(batch["batch_id"], store["store_id"])
     assert circle_calls == []
+
+
+def test_single_image_skips_all_detection_and_recommends_whole_image(tmp_path: Path) -> None:
+    def unexpected(_path: Path):
+        raise AssertionError("1 张门店不应运行任何二维码检测")
+
+    service, _, _, input_root, _ = _setup(
+        tmp_path, inspector=unexpected, circle_inspector=unexpected, circle_mode="assist",
+    )
+    _png(input_root / "Shop" / "menu.png", size=(320, 200))
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["analysis_status"] == "selected"
+    assert store["recommendation"] is True
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    candidate = detail["images"][0]["candidates"][0]
+    assert candidate["source"] == "single_image"
+    assert candidate["box"] == {"x": 0, "y": 0, "width": 320, "height": 200}
+
+
+def test_square_candidate_skips_circle_for_two_to_five_store(tmp_path: Path) -> None:
+    circle_calls: list[Path] = []
+    service, _, _, input_root, _ = _setup(
+        tmp_path,
+        circle_inspector=lambda path: circle_calls.append(path),
+        circle_mode="assist",
+    )
+    _png(input_root / "Shop" / "menu.png")
+    _png(input_root / "Shop" / "menu-2.png", "gray")
+    batch = _analyze(service, input_root)
+    assert batch["stores"][0]["recommendation"] is True
+    assert circle_calls == []
+
+
+def test_square_without_usable_candidate_runs_circle(tmp_path: Path) -> None:
+    circle_calls: list[Path] = []
+    service, _, _, input_root, _ = _setup(
+        tmp_path,
+        inspector=lambda _path: [],
+        circle_inspector=lambda path: circle_calls.append(path),
+        circle_mode="assist",
+    )
+    _png(input_root / "Shop" / "menu.png")
+    _png(input_root / "Shop" / "menu-2.png", "gray")
+    batch = _analyze(service, input_root)
+    assert batch["stores"][0]["analysis_status"] == "needs_review"
+    assert sorted(circle_calls) == sorted([input_root / "Shop" / "menu.png", input_root / "Shop" / "menu-2.png"])
+
+
+def test_store_with_more_than_thirteen_images_skips_detection(tmp_path: Path) -> None:
+    def unexpected(_path: Path):
+        raise AssertionError("超过 13 张的门店不应运行任何二维码检测")
+
+    service, _, _, input_root, _ = _setup(tmp_path, inspector=unexpected, circle_inspector=unexpected)
+    for index in range(14):
+        _png(input_root / "Shop" / f"menu-{index}.png", "gray" if index % 2 else "white")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["analysis_status"] == "needs_review"
+    assert store["recommendation"] is False
+    assert "超过 13 张" in store["reason"]

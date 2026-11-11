@@ -18,7 +18,10 @@ from typing import Callable, Iterable
 from PIL import Image
 
 from .config import ConfigStore, atomic_json
-from .preprocess import CROP_MARGIN_RATIO, SUPPORTED_EXTENSIONS, _apple_vision_inspector, _crop_candidate, _enumerate_images, build_materials, inspect_store_images
+from .preprocess import (
+    CROP_MARGIN_RATIO, MAX_STORE_IMAGES, SQUARE_IMAGE_RANGE, SUPPORTED_EXTENSIONS,
+    _apple_vision_inspector, _crop_candidate, _enumerate_images, build_materials, inspect_store_images,
+)
 from .image_tools import image_ocr
 from .material_versions import MaterialVersions
 from .store import TaskStore
@@ -179,6 +182,7 @@ class MaterialService:
         self._worker_lock = threading.Lock()
         self._publish_lock = threading.Lock()
         self._worker: threading.Thread | None = None
+        self._ocr_cache: dict[Path, list[dict] | None] = {}
         self._init_schema()
         self.versions = MaterialVersions(self.task_store, self.published_root)
         # 崩溃后不恢复半截分析或上传，避免悄悄重跑/发布不完整素材。
@@ -244,6 +248,32 @@ class MaterialService:
                     db.execute(f"ALTER TABLE material_decisions ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
             # 管理列表按批次查询引用运行；索引避免每个批次都扫描完整 runs 表。
             db.execute("CREATE INDEX IF NOT EXISTS runs_material_batch ON runs(material_batch_id)")
+
+    def _read_ocr(self, path: Path) -> list[dict] | None:
+        """按路径缓存本地 OCR 结果，避免方形判定与用途分类重复调用。"""
+        key = Path(path)
+        if key not in self._ocr_cache:
+            try:
+                items = self.ocr_reader(key)
+                self._ocr_cache[key] = items if isinstance(items, list) else None
+            except Exception:
+                self._ocr_cache[key] = None
+        return self._ocr_cache[key]
+
+    def _circle_gate(self, images: list[dict], resolve: Callable[[dict], Path]) -> bool:
+        """方形检测后判断是否仍需补跑圆形：只有候选全被判为微信/企微用途时才补跑。"""
+        for image in images:
+            for candidate in image.get("candidates", []):
+                if candidate.get("purpose_hint") == "enterprise_wechat":
+                    continue
+                items = self._read_ocr(resolve(image)) or []
+                full_text = " ".join(
+                    item.get("text", "") for item in items
+                    if isinstance(item, dict) and isinstance(item.get("text"), str)
+                )
+                if _classify_local_purpose(full_text)[0] != "other":
+                    return False
+        return True
 
     @staticmethod
     def rejection(row: dict) -> dict | None:
@@ -496,6 +526,7 @@ class MaterialService:
         circle_inspector, detector, _warning = self._open_circle_detector(analysis_dir / "circle-roi")
         try:
             # 单店重分析复用同一“圆形优先”的两轮检测，不能退回逐图方形检测。
+            self._ocr_cache = {}
             stats = inspect_store_images(
                 store["images"],
                 lambda image: self._checked_source(batch, image),
@@ -503,6 +534,11 @@ class MaterialService:
                 circle_inspector,
                 skip_square_on_circle_hit=self.circle_priority,
                 circle_image_range=CIRCLE_IMAGE_RANGE,
+                square_image_range=SQUARE_IMAGE_RANGE,
+                max_images=MAX_STORE_IMAGES,
+                circle_gate=lambda images: self._circle_gate(
+                    images, lambda image: self._checked_source(batch, image)
+                ),
             )
         finally:
             if detector is not None:
@@ -711,11 +747,15 @@ class MaterialService:
             store_counts: dict[Path, int] = {}
             for path in current_files:
                 store_counts[path.parent] = store_counts.get(path.parent, 0) + 1
+            square_images = sum(
+                count for count in store_counts.values()
+                if SQUARE_IMAGE_RANGE[0] <= count <= SQUARE_IMAGE_RANGE[1]
+            )
             circle_images = sum(
                 count for count in store_counts.values()
                 if circle_inspector is not None and CIRCLE_IMAGE_RANGE[0] <= count <= CIRCLE_IMAGE_RANGE[1]
             )
-            units_before_classify = len(current_files) + circle_images
+            units_before_classify = square_images + circle_images
             unit_total = units_before_classify + len(current_files)
             with self.task_store.connect() as db:
                 db.execute("UPDATE material_batches SET progress_total=?,updated_at=? WHERE id=?", (unit_total, _now(), batch_id))
@@ -728,10 +768,13 @@ class MaterialService:
                     )
 
             started = time.perf_counter()
+            self._ocr_cache = {}
             manifest = build_materials(
                 source_root, analysis_dir,
                 inspector=self.inspector, progress=on_progress, circle_inspector=circle_inspector,
                 circle_priority=self.circle_priority, circle_image_range=CIRCLE_IMAGE_RANGE,
+                square_image_range=SQUARE_IMAGE_RANGE, max_images=MAX_STORE_IMAGES,
+                circle_gate=lambda images: self._circle_gate(images, lambda image: source_root / image["path"]),
             )
 
             def on_classified(done: int) -> None:
@@ -810,6 +853,14 @@ class MaterialService:
         for store in manifest["stores"]:
             # 清除 build_materials 的几何启发式预选；由语义分类单独决定建议。
             self._reset_store_selection(store, analysis_dir)
+            if len(store["images"]) > MAX_STORE_IMAGES:
+                store["status"] = "needs_review"
+                store["reason"] = f"图片超过 {MAX_STORE_IMAGES} 张，不做检测，转人工处理"
+                for _image in store["images"]:
+                    processed += 1
+                    if progress:
+                        progress(processed)
+                continue
             has_circle = any(
                 candidate.get("code_type") == "mini_program_code"
                 for image in store["images"] for candidate in image["candidates"]
@@ -833,7 +884,7 @@ class MaterialService:
                 image_size = None
                 if any(candidate.get("purpose_hint") != "enterprise_wechat" for candidate in image["candidates"]):
                     try:
-                        ocr_items = self.ocr_reader(source)
+                        ocr_items = self._read_ocr(source)
                         if not isinstance(ocr_items, list):
                             raise TypeError("OCR 结果格式无效")
                         full_text = " ".join(
@@ -884,7 +935,7 @@ class MaterialService:
                     if image["candidates"]:
                         continue
                     try:
-                        ocr_items = self.ocr_reader(resolve_source(image))
+                        ocr_items = self._read_ocr(resolve_source(image))
                         if not isinstance(ocr_items, list):
                             continue
                         full_text = " ".join(
@@ -979,7 +1030,7 @@ class MaterialService:
                 image["candidates"].append(candidate)
                 image["detection_count"] = max(int(image.get("detection_count", 0)), len(image["candidates"]))
                 picked = (0, len(image["candidates"]) - 1, image, candidate)
-                reason = "门店仅有 1 张素材，未定位到二维码；按整图候选推荐，待人工确认"
+                reason = "门店仅有 1 张素材，未做二维码检测；按整图候选推荐，待人工确认"
             else:
                 store["status"] = "needs_review"
                 if any(image.get("ordering_text_seen") for image in store["images"]):

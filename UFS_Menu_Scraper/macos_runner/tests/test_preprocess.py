@@ -200,7 +200,7 @@ def _circle(path: Path) -> dict | None:
     return None
 
 
-def test_round_one_hit_skips_square_detection_for_that_store_only(tmp_path: Path) -> None:
+def test_square_runs_before_circle_for_every_store(tmp_path: Path) -> None:
     source, output = tmp_path / "source", tmp_path / "result"
     _image(source / "A" / "a.jpg")
     _image(source / "A" / "b.jpg", "gray")
@@ -223,12 +223,12 @@ def test_round_one_hit_skips_square_detection_for_that_store_only(tmp_path: Path
     manifest = build_materials(source, output, inspector=square, circle_inspector=circle, progress=progress.append)
     stores = {item["source_name"]: item for item in manifest["stores"]}
 
-    # 门店 A 第一张图命中圆形码后，剩余图片不再做圆形检测，也整店不做方形检测。
+    # 新流程方形先跑：每家门店都先做方形检测，命中圆形的门店也保留方形结果。
+    assert square_calls == ["A/a.jpg", "A/b.jpg", "B/b.jpg", "C/c.jpg"]
+    # 圆形只做兜底：A 第一张图命中圆形码后，剩余图片不再做圆形检测。
     assert circle_calls == ["A/a.jpg", "B/b.jpg", "C/c.jpg"]
-    # 只有未命中圆形的 B、C 进入第二轮方形检测。
-    assert square_calls == ["B/b.jpg", "C/c.jpg"]
     assert stores["A"]["circle_hit"] is True
-    assert stores["A"]["square_checked"] is False
+    assert stores["A"]["square_checked"] is True
     assert stores["A"]["status"] == "selected"
     assert "第一轮命中" in stores["A"]["reason"]
     assert stores["B"]["status"] == "selected"
@@ -241,7 +241,7 @@ def test_round_one_hit_skips_square_detection_for_that_store_only(tmp_path: Path
     assert circle_candidate["selected"] is True
     assert (output / "可采集" / "A" / "二维码.png").is_file()
     assert manifest["summary"]["circle_hit_stores"] == 1
-    assert manifest["summary"]["square_checked_stores"] == 2
+    assert manifest["summary"]["square_checked_stores"] == 3
     assert manifest["summary"]["detection_rounds"] == 2
     assert progress[-1] == {"done": 8, "total": 8}
 
@@ -265,8 +265,8 @@ def test_circle_hit_on_second_image_skips_all_later_images(tmp_path: Path) -> No
     )["stores"][0]
 
     assert circle_calls == ["a.jpg", "b.jpg"]
-    assert square_calls == []
-    assert [image.get("scan_status") for image in store["images"]] == [None, "circle_hit", "skipped_after_circle_hit"]
+    assert square_calls == ["a.jpg", "b.jpg", "c.jpg"]
+    assert [image.get("scan_status") for image in store["images"]] == ["square_checked", "circle_hit", "skipped_after_circle_hit"]
     assert store["status"] == "selected"
     assert store["selected_source"] == "A/b.jpg"
     # 未检测图片仍保留 path/sha256/candidates，前端可继续预览原图。

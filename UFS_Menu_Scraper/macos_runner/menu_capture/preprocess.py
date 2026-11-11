@@ -20,6 +20,10 @@ from PIL import Image, ImageFilter, ImageStat
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MIN_QR_EDGE_PX = 80
 CROP_MARGIN_RATIO = 0.80
+# 超过该图片数的门店不做任何检测，直接转人工。
+MAX_STORE_IMAGES = 13
+# 只有该区间内的门店跑方形检测；1 张门店直接用整图候选。
+SQUARE_IMAGE_RANGE = (2, MAX_STORE_IMAGES)
 
 
 def _apple_vision_inspector(path: Path) -> list[dict]:
@@ -236,45 +240,72 @@ def inspect_store_images(
     on_unit: Callable[[], None] | None = None,
     skip_square_on_circle_hit: bool = True,
     circle_image_range: tuple[int, int] | None = None,
+    square_image_range: tuple[int, int] | None = None,
+    circle_gate: Callable[[list[dict]], bool] | None = None,
+    max_images: int | None = None,
 ) -> dict:
-    """按门店执行“圆形码优先”的两轮检测，原地更新 images。
+    """按门店图片数选择检测：先方形，方形没有可用候选时才补圆形。
 
-    - 任一张图结构验证命中圆形码后，该店剩余图片不再做圆形检测；默认整店不做方形检测；
-    - 圆形未命中（或未启用）才进入第二轮方形检测；
-    - 圆形检测异常记录 circle_error，但不阻断整批，也不等同于“确认无圆码”。
-    - 未通过回归验收时可关闭 skip_square_on_circle_hit，圆形码只作辅助候选。
-    - circle_image_range 限定只有该图片数区间内的门店做圆形检测，1 张与 ≥6 张门店跳过。
+    - max_images：张数超过上限整店不检测（too_many_images）；
+    - square_image_range：只有该区间内的门店跑方形检测；
+    - circle_image_range：只有该区间内的门店可能跑圆形检测；
+    - circle_gate：方形检测后调用，返回 True 表示“没有可用方形候选”，才继续跑圆形；
+    - skip_square_on_circle_hit 保留为兼容参数：新流程方形始终先跑，圆形只做兜底。
     """
     stats = {"circle_hit": False, "circle_error": False, "square_checked": False,
              "circle_images": 0, "skipped_images": 0, "circle_ms": 0.0, "square_ms": 0.0,
-             "circle_skipped_reason": ""}
+             "circle_skipped_reason": "", "square_skipped_reason": ""}
     unit = on_unit or (lambda: None)
+    count = len(images)
 
-    if circle_inspector is not None and not _circle_applies(len(images), circle_image_range):
-        stats["circle_skipped_reason"] = (
-            "single_image" if len(images) < circle_image_range[0] else "many_images"
-        )
-
-    if circle_inspector is None or stats["circle_skipped_reason"]:
-        for image in images:
-            record, size = _prepare_image(resolve_path(image), image["path"])
-            image.clear()
-            image.update(record)
-            if size is not None and inspector is not None:
-                _detect_square(resolve_path(image), image, size, inspector)
-            unit()
-        return stats
-
-    # 第一轮：按图片顺序检测圆形码，命中即停。
-    circle_started = time.perf_counter()
-    for image in images:
+    def prepare(image: dict) -> tuple[Path, tuple[int, int] | None]:
         path = resolve_path(image)
         meta = {key: image[key] for key in ("display_name", "origin", "supplement_store_id") if key in image}
         record, size = _prepare_image(path, image["path"])
         image.clear()
         image.update(record)
         image.update(meta)
-        if size is None:
+        return path, size
+
+    if max_images is not None and count > max_images:
+        stats["square_skipped_reason"] = stats["circle_skipped_reason"] = "too_many_images"
+        for image in images:
+            prepare(image)
+        return stats
+
+    square_allowed = square_image_range is None or square_image_range[0] <= count <= square_image_range[1]
+    if square_allowed and inspector is not None:
+        stats["square_checked"] = True
+        square_started = time.perf_counter()
+        for image in images:
+            path, size = prepare(image)
+            if size is not None:
+                image["scan_status"] = "square_checked"
+                _detect_square(path, image, size, inspector)
+            unit()
+        stats["square_ms"] = round((time.perf_counter() - square_started) * 1000, 1)
+    else:
+        stats["square_skipped_reason"] = (
+            "single_image" if square_image_range is not None and count < square_image_range[0] else "many_images"
+        )
+        for image in images:
+            prepare(image)
+
+    if circle_inspector is None or not _circle_applies(count, circle_image_range):
+        if circle_inspector is not None and circle_image_range is not None:
+            stats["circle_skipped_reason"] = (
+                "single_image" if count < circle_image_range[0] else "many_images"
+            )
+        return stats
+    if circle_gate is not None and not circle_gate(images):
+        # 方形已经给出可用候选，圆形阶段整店跳过；进度由调用方补齐。
+        stats["circle_skipped_reason"] = "square_candidate_found"
+        return stats
+
+    circle_started = time.perf_counter()
+    for image in images:
+        path = resolve_path(image)
+        if image.get("error"):
             unit()
             continue
         if stats["circle_hit"]:
@@ -290,7 +321,12 @@ def inspect_store_images(
             unit()
             continue
         if detected is not None:
-            candidate = _circle_candidate(path, detected, size)
+            try:
+                with Image.open(path) as source_image:
+                    size = source_image.size
+            except Exception:
+                size = None
+            candidate = _circle_candidate(path, detected, size) if size is not None else None
             if candidate is None:
                 # 检测器返回越界/非法坐标视为检测异常，不能当成“确认无圆码”。
                 stats["circle_error"] = True
@@ -304,33 +340,7 @@ def inspect_store_images(
             unit()
             continue
         unit()
-
-    # 第二轮：整店没有可信圆形码，才运行原有方形码检测。
     stats["circle_ms"] = round((time.perf_counter() - circle_started) * 1000, 1)
-    if (stats["circle_hit"] and skip_square_on_circle_hit) or inspector is None:
-        # 圆形命中店整店跳过方形检测，但进度按“已处理”补齐，保持总量恒定。
-        for _image in images:
-            unit()
-    else:
-        square_started = time.perf_counter()
-        stats["square_checked"] = True
-        for image in images:
-            if image.get("error"):
-                unit()
-                continue
-            path = resolve_path(image)
-            try:
-                with Image.open(path) as source_image:
-                    size = source_image.size
-            except Exception as exc:
-                image["error"] = f"本地图片/二维码检查失败（{type(exc).__name__})"
-                unit()
-                continue
-            if image.get("scan_status") != "circle_hit":
-                image["scan_status"] = "square_checked"
-            _detect_square(path, image, size, inspector)
-            unit()
-        stats["square_ms"] = round((time.perf_counter() - square_started) * 1000, 1)
     return stats
 
 
@@ -420,6 +430,9 @@ def build_materials(
     circle_inspector: Callable[[Path], dict | None] | None = None,
     circle_priority: bool = True,
     circle_image_range: tuple[int, int] | None = None,
+    square_image_range: tuple[int, int] | None = None,
+    circle_gate: Callable[[list[dict]], bool] | None = None,
+    max_images: int | None = None,
 ) -> dict:
     """按图片直接父目录分店，先圆形码后方形码两轮筛出待微信验证的候选。
 
@@ -453,10 +466,16 @@ def build_materials(
         folders_by_name.setdefault(store["source_name"], []).append(store)
     duplicate_names = {name for name, group in folders_by_name.items() if len({item["source_folder"] for item in group}) > 1}
 
-    total_units = sum(
-        len(store["images"]) * (2 if circle_inspector is not None and _circle_applies(len(store["images"]), circle_image_range) else 1)
-        for store in stores
-    )
+    def store_units(store: dict) -> int:
+        count = len(store["images"])
+        if max_images is not None and count > max_images:
+            return 0
+        units = count if square_image_range is None or square_image_range[0] <= count <= square_image_range[1] else 0
+        if circle_inspector is not None and _circle_applies(count, circle_image_range):
+            units += count
+        return units
+
+    total_units = sum(store_units(store) for store in stores)
     done_units = 0
 
     def unit() -> None:
@@ -473,7 +492,14 @@ def build_materials(
             unit,
             skip_square_on_circle_hit=circle_priority,
             circle_image_range=circle_image_range,
+            square_image_range=square_image_range,
+            circle_gate=circle_gate,
+            max_images=max_images,
         )
+        if store_stats["circle_skipped_reason"] == "square_candidate_found":
+            # 圆形未跑时把预留的单元补齐，避免进度停在 90%。
+            for _image in store["images"]:
+                unit()
         store["circle_hit"] = store_stats["circle_hit"]
         store["circle_error"] = store_stats["circle_error"]
         store["square_checked"] = store_stats["square_checked"]
