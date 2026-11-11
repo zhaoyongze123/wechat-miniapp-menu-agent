@@ -1312,3 +1312,20 @@ def test_source_image_is_sent_as_reference_context(model_server, tmp_path):
                for item in message["content"]]
     assert len([item for item in content if item.get("type") == "image_url"]) == 2
     assert any("二维码原图" in item.get("text", "") for item in content)
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_qr_hint_is_injected_into_agent_instruction(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [_terminal("unqualified", reason="这是大众点评的团购界面，不是点餐码")]
+    observe, _frames = _frame_factory(tmp_path)
+
+    result, _terminal_frame = run_navigation(
+        _model(server), "测试门店", 2, 2,
+        observe=observe, execute=lambda command, frame_id: None, check_stop=lambda: None,
+        qr_hint="\n二维码原图的初步判断（只作参考）：平台=大众点评，用途=买单/结账。",
+    )
+
+    assert result["outcome"] == "unqualified"
+    body = json.dumps(handler.requests[0]["body"], ensure_ascii=False)
+    assert "二维码原图的初步判断" in body

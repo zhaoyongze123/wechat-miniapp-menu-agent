@@ -128,12 +128,13 @@ def trial_model_from_env(configs: ConfigStore | None = None) -> TrialModel:
 def run_navigation(model: TrialModel, store_name: str, people: int, max_steps: int,
                    *, observe, execute, check_stop, log_path: Path | None = None,
                    trace_path: Path | None = None, trace_meta: dict | None = None,
-                   source_image=None) -> tuple[dict, dict | None]:
+                   source_image=None, qr_hint: str = "") -> tuple[dict, dict | None]:
     instruction = (
         f"目标门店：{store_name}，用餐人数 {people} 人。你正在操作已经打开的微信点餐小程序。"
         "\n目标：进入目标门店可采集的菜品菜单。根据当前截图自主决定动作与终态，交接后由程序滚动截图。"
         "\n业务经验已全部写在系统提示词中，按其中的终态标准判断。"
         "\n如果请求里附带二维码原图，它只用于理解门店背景；所有点击坐标仍以当前屏幕截图为准。"
+        f"{qr_hint}"
         "\n输出必须严格符合系统提示中的固定输出契约。"
     )
     return _run_agent(model, instruction, max_steps, observe=observe, execute=execute,

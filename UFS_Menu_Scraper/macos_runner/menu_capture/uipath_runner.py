@@ -1293,6 +1293,24 @@ class UiPathRunner:
         return self._run_gui_agent_case(task, settings, profile, output_dir, model,
                                         automatic=automatic, capture_dir=output_dir, trial=True)
 
+    def _start_qr_precheck(self, task: dict):
+        """任务开始即异步判断二维码用途；失败或超时都不影响主流程。"""
+        path = task.get("source_path")
+        if not path:
+            return None
+        try:
+            from .qr_precheck import AsyncQrPrecheck
+
+            return AsyncQrPrecheck(
+                path, self.configs,
+                usage_ledger=self.usage_ledger,
+                context={"source": "capture", "stage": "qr_precheck",
+                         "run_id": self.run_id, "task_id": task.get("id", ""),
+                         "source_name": task.get("source_name", "")},
+            ).start()
+        except Exception:
+            return None
+
     def _run_gui_agent_case(self, task: dict, settings, profile: dict, output_dir: Path,
                             model: TrialModel, *, automatic: bool, capture_dir: Path, trial: bool = False) -> dict:
         """正式任务与试验共用窗口准备、Agent 工具和菜单截图交接。"""
@@ -1300,6 +1318,7 @@ class UiPathRunner:
         self._trace_click = {}
         self._debug_frame_refs.clear()
         active = None
+        precheck = None
         safe_to_reset = True
         report = {
             "task_id": task["id"], "run_id": self.run_id, "source_name": task["source_name"],
@@ -1338,6 +1357,8 @@ class UiPathRunner:
             report["material"] = self._trace_material.copy()
             self._guard()
             self._validate_source(task, settings.input_dir)
+            # 二维码用途预判与后面的发图、点图、识别小程序并行；导航前只等一小段时间。
+            precheck = self._start_qr_precheck(task)
             if trial and not automatic:
                 with self._trace("uipath_startup"):
                     self._await_cli_startup()
@@ -1349,6 +1370,8 @@ class UiPathRunner:
                 if not selector:
                     # 识别后没有任何可操作的小程序窗口：多半是二维码指向团购页、公众号或网页，
                     # 不是本店点餐码。按不合格记录并保留原因，不再进入 Agent 导航或人工复核。
+                    if precheck is not None:
+                        report["qr_precheck"] = precheck.wait(0.3).to_dict()
                     reason = "扫码后未出现点餐小程序窗口，二维码可能不是点餐码"
                     report["agent_outcome"] = "unqualified"
                     report["agent_reason"] = reason
@@ -1392,6 +1415,10 @@ class UiPathRunner:
 
             navigation_started = time.monotonic()
             timing["startup"] = round((navigation_started - started_at) * 1000)
+            # 先验通常已经跑完；没跑完只再等 0.6s，超时按“无先验”继续导航。
+            hint = precheck.wait(0.6) if precheck is not None else None
+            if hint is not None:
+                report["qr_precheck"] = hint.to_dict()
             with self._trace("ui_tars_navigation", model=GUI_PLUS_MODEL) as trace:
                 decision, frame = run_navigation(
                     model, task["source_name"], settings.people_count, settings.capture.max_agent_steps,
@@ -1403,6 +1430,7 @@ class UiPathRunner:
                                 "batch": self._trace_material.get("material_batch_id", "")},
                     # 原始二维码照片提供品牌、桌号等背景，只作参考，不能当成可点击屏幕。
                     source_image=task.get("source_path"),
+                    qr_hint=hint.instruction() if hint is not None else "",
                 )
                 timing["navigation"] = round((time.monotonic() - navigation_started) * 1000)
                 for field in ("reason",):
