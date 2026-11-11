@@ -2551,11 +2551,10 @@ class UiPathRunner:
         with self._trace("prepare_image_clipboard", source_file=Path(task["source_path"]).name):
             self.clipboard_preparer(Path(task["source_path"]))
         # 图片粘贴与发送仍分开两条命令：拼在一起回车会被吞掉。
-        # 手机原图会生成几十 MB 的 DIB，微信解码附着需要数秒；UiPath 的 key 命令回车即返回，
-        # 覆盖不了这段延迟，必须按输入框状态确认图片已附着后再回车。
+        # 文字粘贴可以立刻回车；图片要先等微信把 DIB 解码附着，等待上限按像素量动态放大。
         self._send({"action": "key", "selector": profile["wechat_selector"],
                     "key": profile["paste_shortcut"]})
-        self._await_image_attached(profile, output_dir)
+        self._await_image_attached(profile, output_dir, Path(task["source_path"]))
         self._send({"action": "key", "selector": profile["wechat_selector"],
                     "key": profile["send_key"]})
         mark("image_sent")
@@ -2646,28 +2645,55 @@ class UiPathRunner:
             return sent, match
         raise NeedsReview(last_reason + "；未打开历史二维码")
 
-    def _await_image_attached(self, profile: dict, output_dir: Path, timeout: float = 8.0) -> None:
+    def _await_image_attached(self, profile: dict, output_dir: Path,
+                              source_path: Path | None = None) -> None:
         """等二维码缩略图真正附着到输入框后再回车。
 
-        微信发送按钮只在输入框有内容时变绿，用它作为“图片已附着”的唯一判据：
-        大图粘贴（手机原图几十 MB DIB）解码要数秒，过早回车会把图片整条丢掉。
-        超时未附着说明这次粘贴被吞了（失焦、剪贴板延迟），补贴一次；仍不行就转人工，
-        此时代码还没有按过回车，不会产生重复消息。
+        微信发送按钮只在输入框有内容时变绿，用它作为“图片已附着”的唯一判据；
+        等待上限按图片像素量放大：手机原图（12MP 级）DIB 可达 48MB，解码要十几秒。
+        超时说明这次粘贴被吞了（失焦、剪贴板延迟），补贴一次；仍不行转人工。
+        此时还没有按过回车，不会产生重复消息。
         """
-        for attempt in range(2):
-            deadline = time.monotonic() + timeout
-            while True:
-                self._guard()
-                frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-state.png")
-                if self._send_button_active(Path(frame["path"])):
-                    return
-                if time.monotonic() >= deadline:
-                    break
-                time.sleep(.3)
-            if attempt == 0:
-                self._send({"action": "key", "selector": profile["wechat_selector"],
-                            "key": profile["paste_shortcut"]})
+        pixels = self._image_pixels(source_path)
+        timeout = self._image_attach_timeout(pixels)
+        started = time.monotonic()
+        with self._trace("image_attach", source_file=(source_path.name if source_path else ""),
+                         pixel_size={"width": pixels[0], "height": pixels[1]},
+                         timeout_seconds=timeout) as trace:
+            for attempt in range(2):
+                deadline = time.monotonic() + timeout
+                while True:
+                    self._guard()
+                    frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-state.png")
+                    if self._send_button_active(Path(frame["path"])):
+                        trace.update(attempts=attempt + 1,
+                                     elapsed_ms=round((time.monotonic() - started) * 1000))
+                        return
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(.5)
+                if attempt == 0:
+                    self._send({"action": "key", "selector": profile["wechat_selector"],
+                                "key": profile["paste_shortcut"]})
+            trace.update(attempts=2, result="not_attached",
+                         elapsed_ms=round((time.monotonic() - started) * 1000))
         raise NeedsReview("二维码图片未附着到微信输入框；未发送空消息")
+
+    @staticmethod
+    def _image_pixels(source_path: Path | None) -> tuple[int, int]:
+        if source_path is None:
+            return (0, 0)
+        try:
+            with Image.open(source_path) as image:
+                return image.size
+        except (OSError, ValueError):
+            return (0, 0)
+
+    @staticmethod
+    def _image_attach_timeout(pixels: tuple[int, int]) -> float:
+        """按像素量给粘贴留时间：3 秒起步，每百万像素加 1 秒，最多 20 秒。"""
+        megapixels = max(1, pixels[0] * pixels[1]) / 1_000_000
+        return min(20.0, 3.0 + megapixels)
 
     @staticmethod
     def _send_button_active(image_path: Path) -> bool:

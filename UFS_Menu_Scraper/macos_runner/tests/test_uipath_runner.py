@@ -1003,3 +1003,11 @@ def test_send_button_state_detects_pasted_content(tmp_path):
     assert UiPathRunner._send_button_active(empty) is False
     assert UiPathRunner._send_button_active(attached) is True
     assert UiPathRunner._send_button_active(tmp_path / "missing.png") is False
+
+
+def test_image_attach_timeout_scales_with_pixel_count():
+    # 12MP 手机原图约 15 秒；小图最低 3 秒；超大图封顶 20 秒，避免单店无限等。
+    assert UiPathRunner._image_attach_timeout((3024, 4032)) == pytest.approx(15.193, abs=.001)
+    assert UiPathRunner._image_attach_timeout((800, 600)) == pytest.approx(3.48, abs=.01)
+    assert UiPathRunner._image_attach_timeout((0, 0)) == pytest.approx(3.0)
+    assert UiPathRunner._image_attach_timeout((12000, 9000)) == 20.0
