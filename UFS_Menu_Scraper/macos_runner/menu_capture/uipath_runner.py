@@ -2133,9 +2133,44 @@ class UiPathRunner:
                 raise
             time.sleep(0.4)
             reply = self._send(dict(command))
+        reply = self._retry_non_main_wechat_frame(reply, command, selector, desktop)
         reply["path"] = str(Path(reply["path"]).resolve())
         reply["capture_scope"] = "desktop" if desktop else "window"
         return reply
+
+    def _retry_non_main_wechat_frame(self, reply: dict, command: dict, selector: str,
+                                     desktop: bool) -> dict:
+        """丢弃命中的同名微信浮窗截图并重拍。
+
+        微信会同时存在一个同名的 296×388 悬浮小窗，选择器匹配到它时截到的画面里没有聊天内容，
+        会让发送按钮状态和图片定位同时失真；主聊天窗口必定宽于高，且尺寸不会小到这个程度。
+        """
+        if desktop or selector != self._configured_wechat_selector():
+            return reply
+        for attempt in range(3):
+            width = float(reply.get("window_width") or 0)
+            height = float(reply.get("window_height") or 0)
+            if width >= 600 and width > height:
+                return reply
+            task_id = (self.current_task or {}).get("id")
+            self.store.event(f"截图命中微信同名小窗（{width:.0f}×{height:.0f}），丢弃重拍", "warn", task_id)
+            time.sleep(1)
+            reply = self._send(dict(command))
+            reply["path"] = str(Path(reply["path"]).resolve())
+        raise RobotCommandError("微信截图命中非主窗口（尺寸过小），已重拍 3 次")
+
+    def _configured_wechat_selector(self) -> str | None:
+        """读取 profile 里配置的微信主窗口 selector，用于区分同名的浮动小窗。"""
+        cached = getattr(self, "_cached_wechat_selector", None)
+        if cached is not None:
+            return cached or None
+        try:
+            parsed = json.loads(self.profile_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            parsed = {}
+        value = parsed.get("wechat_selector") if isinstance(parsed, dict) else None
+        self._cached_wechat_selector = value if isinstance(value, str) else ""
+        return value if isinstance(value, str) and value.strip() else None
 
     def _fast_window_capture(self, output_dir: Path, selector: str, name: str) -> dict | None:
         """按点击时刚校验过的窗口矩形直接截屏，省掉 UiPath 的窗口定位与重拍。
