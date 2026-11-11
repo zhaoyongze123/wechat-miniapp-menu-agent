@@ -27,35 +27,37 @@ def test_parse_hint_defaults_missing_qr_fields_to_unclear() -> None:
     hint = _parse_hint('{"platform":"wechat","purpose":"ordering","confidence":0.9}')
     assert hint.has_qr == "unclear"
     assert hint.content_type == "other"
+    assert hint.verdict == "uncertain"
     assert hint.intercept_reason() == ""
 
 
-def test_intercept_reason_blocks_menu_photo_without_qr() -> None:
-    hint = QrHint(status="ok", has_qr="no", content_type="menu_photo", confidence=0.9)
-    assert hint.intercept_reason() == "素材为菜单照片且画面中没有可扫描的二维码"
+def test_intercept_reason_uses_model_verdict_and_reason() -> None:
+    hint = QrHint(status="ok", has_qr="no", content_type="menu_photo",
+                  verdict="blocked", block_reason="整张图是带价格的菜品列表，没有码")
+    assert hint.intercept_reason() == "整张图是带价格的菜品列表，没有码"
 
 
 @pytest.mark.parametrize(
     "hint",
     [
-        QrHint(status="ok", has_qr="no", content_type="qr_code", confidence=0.95),
-        QrHint(status="ok", has_qr="unclear", content_type="menu_photo", confidence=0.95),
-        QrHint(status="ok", has_qr="no", content_type="menu_photo", confidence=0.6),
-        QrHint(status="ok", has_qr="no", content_type="menu_photo", confidence=None),
-        QrHint(status="error", error="timeout", has_qr="no", content_type="menu_photo", confidence=0.99),
+        QrHint(status="ok", has_qr="yes", content_type="qr_code", verdict="usable", confidence=0.95),
+        QrHint(status="ok", has_qr="unclear", content_type="menu_photo", verdict="uncertain", confidence=0.9),
+        QrHint(status="error", error="timeout", has_qr="no", content_type="menu_photo",
+               verdict="blocked", confidence=0.99),
     ],
 )
 def test_intercept_reason_fails_open(hint: QrHint) -> None:
-    """判断不明确、置信不足或接口失败时一律放行，避免误杀可采集门店。"""
+    """只有模型明确判 blocked 才拦截；其余一律放行，避免误杀可采集门店。"""
     assert hint.intercept_reason() == ""
 
 
-def test_prompt_explains_stage_method_and_output() -> None:
+def test_prompt_explains_stage_method_verdict_and_output() -> None:
     text = qr_precheck._prompt("沪州太太")
     assert "一、你正在做的这一步" in text
     assert "二、判断方法" in text
-    assert "三、输出要求" in text
-    assert "has_qr" in text and "content_type" in text
+    assert "三、你要给出的结论" in text
+    assert "四、输出要求" in text
+    assert "verdict" in text and "block_reason" in text
     assert "本轮门店：沪州太太" in text
 
 
