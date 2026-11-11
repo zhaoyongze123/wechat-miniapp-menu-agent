@@ -675,9 +675,9 @@ class MaterialService:
             )}
         if not set(ids) <= set(rows):
             raise ValueError("重新分析列表含有未知门店")
-        pending = [store_id for store_id in ids if rows[store_id]["decision"] != "confirmed"]
+        pending = [store_id for store_id in ids if rows[store_id]["decision"] == "pending"]
         if not pending:
-            raise ValueError("选中的门店都已确认；请先撤销确认再重新分析")
+            raise ValueError("选中的门店没有待审核的；已确认和不合格的门店不在重新分析范围内")
         items = [{"store_id": store_id, "source_folder": rows[store_id]["source_folder"]} for store_id in pending]
         concurrency = self._analysis_concurrency()
         job = self.jobs.create(batch_id, "reanalyze", items, concurrency)
@@ -784,8 +784,14 @@ class MaterialService:
         except ValueError:
             row = None
         if row is not None:
-            if row["decision"] == "confirmed":
-                raise ValueError("该门店已确认；请先撤销确认再重新分析")
+            if row["decision"] != "pending":
+                # 运行期间门店可能被人工确认或判为不合格：这是受保护状态，跳过而不是判失败。
+                self.jobs.event(
+                    job["id"], "warn",
+                    f"{row['source_folder'].rstrip('/').split('/')[-1]}：已人工处理，跳过重新分析",
+                    store_id=store_id,
+                )
+                return
             store = json.loads(row["store_json"])
             if not store.get("images"):
                 raise ValueError("当前门店没有图片，请先补充素材")

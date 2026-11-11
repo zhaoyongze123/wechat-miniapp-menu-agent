@@ -554,7 +554,7 @@ def test_batch_reanalysis_reruns_only_selected_pending_stores(tmp_path: Path) ->
     assert service.accept_recommendations(batch["batch_id"], [ids["A"]])["confirmed"] == 1
     with pytest.raises(ValueError, match="未知门店"):
         service.start_reanalysis(batch["batch_id"], ["0" * 24])
-    with pytest.raises(ValueError, match="都已确认"):
+    with pytest.raises(ValueError, match="没有待审核"):
         service.start_reanalysis(batch["batch_id"], [ids["A"]])
     inspected.clear()
     service.start_reanalysis(batch["batch_id"], [ids["A"], ids["B"]])
@@ -960,3 +960,20 @@ def test_batch_and_per_store_decisions_are_identical(tmp_path: Path) -> None:
 
     for folder in sorted(per_store):
         assert decision(per_store[folder]) == decision(wholesale[folder]), folder
+
+
+def test_reanalysis_scope_is_pending_stores_only(tmp_path: Path) -> None:
+    """重新分析范围只包含待审核门店；已确认、已判不合格的门店不参与。"""
+    service, _, _, input_root, _ = _setup(tmp_path)
+    _png(input_root / "Shop A" / "menu.png")
+    _png(input_root / "Shop B" / "menu.png")
+    batch = _analyze(service, input_root)
+    batch_id = batch["batch_id"]
+    stores = {store["source_name"]: store for store in batch["stores"]}
+    shop_a, shop_b = stores["Shop A"], stores["Shop B"]
+    service.decide_store(batch_id, shop_a["store_id"], "confirm", image_index=0,
+                         box={"x": 40, "y": 30, "width": 90, "height": 90})
+    service.decide_store(batch_id, shop_b["store_id"], "skip",
+                         reject_reason="other", reject_detail="测试用不合格")
+    with pytest.raises(ValueError, match="没有待审核"):
+        service.start_reanalysis(batch_id, [shop_a["store_id"], shop_b["store_id"]])

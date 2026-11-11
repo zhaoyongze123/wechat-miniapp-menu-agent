@@ -653,7 +653,7 @@
       selectedFiles(files);
     });
     const reanalyzeDialog = $('materials-reanalyze-dialog');
-    function reanalyzeCandidates() { return (state.batch?.stores || []).filter((store) => normalizeDecision(store.decision) !== 'confirmed'); }
+    function reanalyzeCandidates() { return (state.batch?.stores || []).filter((store) => normalizeDecision(store.decision) === 'pending'); }
     function syncReanalyzeSelection() {
       const boxes = [...reanalyzeDialog.querySelectorAll('input[name="materials-reanalyze-store"]')];
       const checked = boxes.filter((box) => box.checked).length, all = $('materials-reanalyze-all');
@@ -666,7 +666,7 @@
     function openReanalyzeDialog() {
       const rows = reanalyzeCandidates(), list = $('materials-reanalyze-list');
       list.replaceChildren();
-      if (!rows.length) list.append(node('div', 'reanalyze-empty', '没有可重新分析的门店；已确认的门店需先撤销确认。'));
+      if (!rows.length) list.append(node('div', 'reanalyze-empty', '没有待审核的门店；已确认和不合格的门店不在重新分析范围内。'));
       for (const store of rows) {
         const row = document.createElement('label'); row.className = 'reanalyze-row';
         const box = document.createElement('input'); box.type = 'checkbox'; box.name = 'materials-reanalyze-store'; box.value = String(store.store_id);

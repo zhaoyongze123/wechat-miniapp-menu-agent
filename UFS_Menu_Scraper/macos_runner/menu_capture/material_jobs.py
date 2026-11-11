@@ -579,7 +579,8 @@ class JobRunner:
                     error = ""
                     break
                 except Exception as exc:  # 单店任何异常都不能打断 worker，只记录受控短码
-                    error = getattr(exc, "code", None) or type(exc).__name__
+                    detail = getattr(exc, "code", None) or f"{type(exc).__name__}: {exc}"
+                    error = detail[:200]
             ok = not error
             self.store.finish_item(job_id, item["store_id"], ok, error)
             if ok:
