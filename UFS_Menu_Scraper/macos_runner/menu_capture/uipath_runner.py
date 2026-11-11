@@ -1373,6 +1373,20 @@ class UiPathRunner:
                     self._await_cli_startup()
             self._deadline = time.monotonic() + settings.capture.max_task_seconds
             if automatic:
+                # 打开微信前先取素材判断结果：画面里明确没有二维码时，扫码流程不可能成功，
+                # 直接判该店不合格并写原因，不再开小程序、不再跑导航。失败或超时按无判断继续。
+                if precheck is not None:
+                    material_hint = precheck.wait()
+                    report["qr_precheck"] = material_hint.to_dict()
+                    reason = material_hint.intercept_reason()
+                    if reason:
+                        report["agent_outcome"] = "unqualified"
+                        report["agent_reason"] = reason
+                        report["navigation"] = {"outcome": "unqualified", "reason": reason,
+                                                "source": "qr_precheck"}
+                        report["runtime_status"] = "ok"
+                        self._set_stage(task, "done", "素材中没有二维码，已直接判不合格")
+                        return report
                 self._startup_timing = timing
                 self._open_source_automatic(task, profile, output_dir, settings.capture.settle_seconds)
                 selector = profile["miniapp_selector"]
