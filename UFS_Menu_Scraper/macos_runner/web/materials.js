@@ -697,7 +697,12 @@
         state.analysisDismissed = false; state.analysisStarted = state.batchId; state.reanalyzeMode = true;
         if (ui) { fillAnalysisDialog(0, { title: '正在重新分析门店', stage: '正在重跑所选门店的二维码检测与用途识别…', count: `0 / ${storeIds.length} 家`, action: '后台运行' }); if (!ui.dialog.open) ui.dialog.show(); }
         await refreshBatch(false);
-      } catch (err) { setError('materials-reanalyze-error', err.message); }
+      } catch (err) {
+        setError('materials-reanalyze-error', err.message);
+        // 后端仍有未结束任务时，刷新拿到该任务并直接打开进度弹窗，让用户可暂停/继续/取消。
+        await refreshBatch(false).catch(() => {});
+        if (jobOpen()) { reanalyzeDialog.close(); openAnalysisDialog(); }
+      }
       finally { setBusy(false); if (reanalyzeDialog.open) syncReanalyzeSelection(); }
     });
     $('materials-analyze').addEventListener('click', async () => {
@@ -708,7 +713,12 @@
       const ui = analysisDialogParts();
       if (ui) { fillAnalysisDialog(0, { title: '正在分析素材', stage: '正在创建分析任务…', count: '', action: '后台运行' }); if (!ui.dialog.open) ui.dialog.show(); }
       try { await api(url(`/batches/${encodeURIComponent(state.batchId)}/analyze`),{method:'POST',body:'{}'}); await refreshBatch(false); }
-      catch(err) { state.analysisStarted = ''; ui?.dialog.close(); setError('materials-batch-error',err.message); }
+      catch(err) {
+        state.analysisStarted = ''; ui?.dialog.close(); setError('materials-batch-error',err.message);
+        // 冲突通常是同批已有未结束任务：刷新后把进度弹窗打开，避免只留一句错误提示。
+        await refreshBatch(false).catch(() => {});
+        if (jobOpen()) openAnalysisDialog();
+      }
       finally { setBusy(false); }
     });
     async function jobAction(action, confirmText='') {

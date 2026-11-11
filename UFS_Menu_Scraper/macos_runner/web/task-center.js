@@ -11,7 +11,6 @@
   window.__taskCenterInit = function init({ api, toast, setPage }) {
     const panel = document.createElement('section');
     panel.className = 'task-center';
-    panel.hidden = true;
     panel.setAttribute('aria-label', '任务中心');
     panel.innerHTML = `
       <div class="task-center-head">
@@ -83,9 +82,17 @@
 
     function renderList(tasks) {
       lastTasks = tasks;
-      panel.hidden = !tasks.length;
+      // 面板常驻：没有任务时也保留入口，避免用户既看不到历史任务也找不到暂停/取消。
+      panel.hidden = false;
       list.replaceChildren();
-      countLabel.textContent = tasks.length ? `${tasks.length} 个任务` : '';
+      countLabel.textContent = tasks.length ? `${tasks.length} 个任务` : '暂无进行中的任务';
+      if (!tasks.length) {
+        const empty = document.createElement('div');
+        empty.className = 'task-empty';
+        empty.textContent = '当前没有运行中的任务；最近 10 分钟内结束的任务会保留在这里。';
+        list.append(empty);
+        return;
+      }
       for (const task of tasks) {
         const row = document.createElement('button');
         row.type = 'button';
