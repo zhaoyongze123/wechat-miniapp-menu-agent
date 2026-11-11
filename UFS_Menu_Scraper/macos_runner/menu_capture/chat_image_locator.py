@@ -26,6 +26,15 @@ _COARSE_EDGES = (80, 112, 144, 176, 224, 288, 352, 416)
 def _read_image(path: Path, role: str) -> np.ndarray:
     image = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if image is None:
+        # cv2.imread 在 Windows 上打不开含中文的路径，退回 PIL 解码。
+        try:
+            from PIL import Image
+
+            with Image.open(path) as raw:
+                image = cv2.cvtColor(np.array(raw.convert("RGB")), cv2.COLOR_RGB2BGR)
+        except Exception:
+            image = None
+    if image is None:
         raise ChatImageNotFound(
             f"无法读取{'聊天截图' if role == 'screenshot' else '来源图片'}：{path}",
             {"reason": "unreadable_image", "role": role, "path": str(path)},

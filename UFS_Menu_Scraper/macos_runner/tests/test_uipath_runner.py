@@ -122,9 +122,11 @@ class FakeCliProcess:
         self.exit_code = -9
 
 def test_file_assistant_ocr_uses_chat_content_boundary_not_sidebar_text():
-    # 真实 864px 截图中聊天标题 OCR 框从 x=234 开始，侧栏/会话区分界约在 x=220。
+    # 真实 864px 截图中聊天标题 OCR 框从 x=234 开始，侧栏/会话区分界约在 x=220；
+    # Windows 微信 4.x 侧栏是固定宽度（约 232px），不随窗口缩放。
+    chat_x = 244 if sys.platform == "win32" else 234
     assert UiPathRunner._assistant_active(
-        [{"text": "文件传输助手", "x": 234, "y": 20}], 864, 958
+        [{"text": "文件传输助手", "x": chat_x, "y": 20}], 864, 958
     )
     assert not UiPathRunner._assistant_active(
         [{"text": "文件传输助手", "x": 116, "y": 66}], 864, 958

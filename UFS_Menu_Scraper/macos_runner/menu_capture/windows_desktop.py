@@ -11,6 +11,7 @@ from __future__ import annotations
 import ctypes
 import fnmatch
 import io
+import re
 import time
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -27,6 +28,9 @@ PW_RENDERFULLCONTENT = 0x00000002
 SRCCOPY = 0x00CC0020
 SW_RESTORE = 9
 SW_SHOW = 5
+HWND_TOP = 0
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_RIGHTDOWN = 0x0008
@@ -35,6 +39,10 @@ MOUSEEVENTF_WHEEL = 0x0800
 GE_VK = 0x12
 KEYEVENTF_KEYUP = 0x0002
 CF_UNICODETEXT = 13
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+SM_CXVIRTUALSCREEN = 78
+SM_CYVIRTUALSCREEN = 79
 
 
 class RECT(ctypes.Structure):
@@ -69,12 +77,16 @@ def _declare() -> None:
     user32.SetForegroundWindow.argtypes = [wintypes.HWND]
     user32.BringWindowToTop.argtypes = [wintypes.HWND]
     user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, wintypes.UINT]
     user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
     user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
     user32.GetDC.argtypes = [wintypes.HWND]
     user32.GetDC.restype = wintypes.HDC
     user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
     user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+    user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+    user32.GetSystemMetrics.restype = ctypes.c_int
     user32.mouse_event.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
                                    ctypes.c_void_p]
     user32.keybd_event.argtypes = [wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_void_p]
@@ -121,6 +133,7 @@ _KEYS = {
 }
 for _index in range(1, 25):
     _KEYS[f"f{_index}"] = 0x6F + _index
+_SHORTCUT = re.compile(r"\[([a-z]+)\(([^)]*)\)\]")
 
 
 def _enable_dpi_awareness() -> None:
@@ -201,8 +214,8 @@ def _matches(window: dict, expected: dict) -> bool:
 class WindowsDesktop:
     """实现 FileRobotTransport 会下发的窗口级动作；失败时回 ok=False 由上层转成命令错误。"""
 
-    actions = frozenset({"screenshot", "scroll_capture", "click", "right_click", "double_click",
-                         "scroll", "type_text", "key", "noop"})
+    actions = frozenset({"screenshot", "screenshot_desktop", "scroll_capture", "click", "click_desktop_overlay",
+                         "right_click", "double_click", "scroll", "type_text", "key", "resize", "discover", "noop"})
 
     def __init__(self) -> None:
         _enable_dpi_awareness()
@@ -213,7 +226,17 @@ class WindowsDesktop:
             time.sleep(float(command.get("seconds") or 0))
             return {"ok": True, "action": "noop"}
         try:
+            if action == "discover":
+                # 窗口发现也走本机枚举，UiPath Studio 不可用时批处理不会卡住。
+                return {"ok": True, "action": "discover", "windows": self._discover()}
+            if action == "screenshot_desktop":
+                # 整屏取图不激活任何窗口，否则弹出的右键菜单会被抢焦点收起。
+                return self._capture_desktop(command)
+            if action == "click_desktop_overlay":
+                return self._click_desktop_overlay(command)
             window = self._resolve(str(command.get("selector") or ""))
+            if action == "resize":
+                return self._resize(window, command)
             if action in {"screenshot", "scroll_capture"}:
                 return self._capture_command(window, command)
             if action in {"click", "right_click", "double_click"}:
@@ -227,6 +250,16 @@ class WindowsDesktop:
         except RuntimeError as exc:
             return {"ok": False, "action": action, "error": str(exc)[:300]}
         return {"ok": False, "action": action, "error": f"Windows 桌面驱动不支持 {action}"}
+
+    def _discover(self) -> list[dict]:
+        windows = []
+        for item in _windows():
+            if not item["visible"]:
+                continue
+            left, top, width, height = item["rect"]
+            windows.append({"app": item["app"], "title": item["title"], "cls": item["cls"], "role": "",
+                            "position": {"x": left, "y": top, "width": width, "height": height}})
+        return windows
 
     def _resolve(self, selector: str) -> dict:
         try:
@@ -278,6 +311,23 @@ class WindowsDesktop:
         left, top, width, height = window["rect"]
         return {"window_x": left, "window_y": top, "window_width": width, "window_height": height}
 
+    def _resize(self, window: dict, command: dict) -> dict:
+        """把窗口拉到目标尺寸与位置；系统仍会按窗口最小尺寸约束自动收敛。"""
+        hwnd = window["hwnd"]
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, SW_RESTORE)
+            time.sleep(0.15)
+        left, top, _, _ = _rect(hwnd)
+        x = left if command.get("x") is None else int(command["x"])
+        y = top if command.get("y") is None else int(command["y"])
+        width, height = int(command["width"]), int(command["height"])
+        if not user32.SetWindowPos(hwnd, HWND_TOP, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE):
+            raise RuntimeError("调整窗口尺寸失败")
+        time.sleep(0.2)
+        left, top, width, height = _rect(hwnd)
+        return {"ok": True, "action": "resize", "window_x": left, "window_y": top,
+                "window_width": width, "window_height": height}
+
     def _capture_command(self, window: dict, command: dict) -> dict:
         hwnd = window["hwnd"]
         foreground = self._activate(hwnd)
@@ -294,6 +344,46 @@ class WindowsDesktop:
                 "width": image.width, "height": image.height,
                 **self._geometry({"rect": (left, top, width, height)}),
                 "target_window": self._identity(window, foreground)}
+
+    def _capture_desktop(self, command: dict) -> dict:
+        """整屏取图：右键菜单等系统弹窗是独立窗口，只有屏幕内容才抓得到。"""
+        left = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+        top = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+        width = user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
+        height = user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+        if width <= 0 or height <= 0:
+            raise RuntimeError(f"桌面尺寸无效：{width}x{height}")
+        screen = user32.GetDC(None)
+        memory = gdi32.CreateCompatibleDC(screen)
+        bitmap = gdi32.CreateCompatibleBitmap(screen, width, height)
+        previous = gdi32.SelectObject(memory, bitmap)
+        try:
+            if not gdi32.BitBlt(memory, 0, 0, width, height, screen, left, top, SRCCOPY):
+                raise RuntimeError("整屏截图失败")
+            buffer = ctypes.create_string_buffer(width * height * 4)
+            info = BITMAPINFO()
+            info.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            info.bmiHeader.biWidth = width
+            info.bmiHeader.biHeight = -height
+            info.bmiHeader.biPlanes = 1
+            info.bmiHeader.biBitCount = 32
+            if gdi32.GetDIBits(memory, bitmap, 0, height, buffer, ctypes.byref(info), 0) != height:
+                raise RuntimeError("整屏截图失败：无法读取位图")
+        finally:
+            gdi32.SelectObject(memory, previous)
+            gdi32.DeleteObject(bitmap)
+            gdi32.DeleteDC(memory)
+            user32.ReleaseDC(None, screen)
+        from PIL import Image
+
+        image = Image.frombuffer("RGBA", (width, height), buffer.raw, "raw", "BGRA", 0, 1).convert("RGB")
+        path = Path(command["path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        image.save(path)
+        return {"ok": True, "action": "screenshot_desktop", "path": str(path.resolve()),
+                "width": image.width, "height": image.height, "window_x": left, "window_y": top,
+                "target_window": {"app": "desktop", "title": "desktop", "class": "",
+                                  "foreground": False, "capture_scope": "desktop"}}
 
     def _print_window(self, hwnd, width: int, height: int):
         if width <= 0 or height <= 0:
@@ -334,6 +424,19 @@ class WindowsDesktop:
         if not (0 <= x < width and 0 <= y < height):
             raise RuntimeError(f"坐标超出窗口范围：{x:.0f},{y:.0f} 不在 {width}x{height} 内")
         return left, top, width, height
+
+    def _click_desktop_overlay(self, command: dict) -> dict:
+        """按整屏坐标点击系统弹窗；不激活任何窗口，否则弹窗会被收起。"""
+        left = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+        top = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+        x = left + float(command["x"])
+        y = top + float(command["y"])
+        user32.SetCursorPos(int(round(x)), int(round(y)))
+        time.sleep(0.05)
+        user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, None)
+        time.sleep(0.02)
+        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, None)
+        return {"ok": True, "action": "click_desktop_overlay", "screen_points": {"x": x, "y": y}}
 
     def _click(self, window: dict, command: dict) -> dict:
         hwnd = window["hwnd"]
@@ -384,24 +487,17 @@ class WindowsDesktop:
     def _key(self, window: dict, key: str) -> dict:
         if not self._activate(window["hwnd"]):
             raise RuntimeError("目标窗口未置前；未执行按键")
-        parts = [part.strip().casefold() for part in key.replace("-", "+").split("+") if part.strip()]
-        if not parts:
-            raise RuntimeError("按键为空")
-        codes = []
-        for part in parts:
-            code = _MODIFIERS.get(part) or _KEYS.get(part)
-            if code is None and len(part) == 1:
-                code = ord(part.upper())
-            if code is None:
-                raise RuntimeError(f"不支持的按键：{part}")
-            codes.append(code)
-        for code in codes[:-1]:
-            user32.keybd_event(code, 0, 0, None)
-        user32.keybd_event(codes[-1], 0, 0, None)
-        time.sleep(0.03)
-        user32.keybd_event(codes[-1], 0, KEYEVENTF_KEYUP, None)
-        for code in reversed(codes[:-1]):
-            user32.keybd_event(code, 0, KEYEVENTF_KEYUP, None)
+        # profile 里的快捷键来自 UiPath 语法（[d(ctrl)]v[u(ctrl)]），也兼容 ctrl+v 这种写法。
+        steps = _shortcut_steps(key) if "[" in key else _hotkey_steps(key)
+        for kind, code in steps:
+            if kind == "down":
+                user32.keybd_event(code, 0, 0, None)
+            elif kind == "up":
+                user32.keybd_event(code, 0, KEYEVENTF_KEYUP, None)
+            else:
+                user32.keybd_event(code, 0, 0, None)
+                time.sleep(0.03)
+                user32.keybd_event(code, 0, KEYEVENTF_KEYUP, None)
         return {"ok": True, "action": "key", "target_window": self._identity(window, True)}
 
 
@@ -419,6 +515,48 @@ def _tap(modifier: int, key: int) -> None:
     time.sleep(0.02)
     user32.keybd_event(key, 0, KEYEVENTF_KEYUP, None)
     user32.keybd_event(modifier, 0, KEYEVENTF_KEYUP, None)
+
+
+def _key_code(name: str) -> int:
+    name = name.strip().casefold()
+    code = _MODIFIERS.get(name) or _KEYS.get(name)
+    if code is None and len(name) == 1:
+        code = ord(name.upper())
+    if code is None:
+        raise RuntimeError(f"不支持的按键：{name}")
+    return code
+
+
+def _hotkey_steps(text: str) -> list[tuple[str, int]]:
+    parts = [part.strip().casefold() for part in text.replace("-", "+").split("+") if part.strip()]
+    if not parts:
+        raise RuntimeError("按键为空")
+    codes = [_key_code(part) for part in parts]
+    steps: list[tuple[str, int]] = [("down", code) for code in codes[:-1]]
+    steps.append(("tap", codes[-1]))
+    steps.extend(("up", code) for code in reversed(codes[:-1]))
+    return steps
+
+
+def _shortcut_steps(text: str) -> list[tuple[str, int]]:
+    """解析 UiPath 快捷键语法：[d(hk)][d(ctrl)]v[u(ctrl)][u(hk)]、[k(enter)]。"""
+    steps: list[tuple[str, int]] = []
+    index = 0
+    for match in _SHORTCUT.finditer(text):
+        for char in text[index:match.start()].strip():
+            steps.append(("tap", _key_code(char)))
+        index = match.end()
+        kind = match.group(1).casefold()
+        name = match.group(2)
+        if name.strip().casefold() == "hk":
+            continue  # 热键分组的起止标记，不对应实际按键
+        code = _key_code(name)
+        steps.append(("down" if kind == "d" else "up" if kind == "u" else "tap", code))
+    for char in text[index:].strip():
+        steps.append(("tap", _key_code(char)))
+    if not steps:
+        raise RuntimeError("按键为空")
+    return steps
 
 
 def _clipboard_text() -> str:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import cv2
@@ -11,8 +12,31 @@ from .template_locator import DEFAULT_SCALES as _SCALES, locate_templates
 
 
 _TEMPLATE_PATH = Path(__file__).parent / "assets" / "preview-recognize.png"
+# Windows 微信 4.x 的入口在工具栏“用 AI 处理”左侧，图标与 mac 版不同，必须单独取样。
+_WINDOWS_TEMPLATE_PATH = Path(__file__).parent / "assets" / "preview-recognize-windows.png"
 _MIN_SCORE = 0.70
 _MIN_MARGIN = 0.045
+
+
+def _template_path() -> Path:
+    """按平台选模板；Windows 模板缺失时退回 mac 模板，由置信度阈值决定是否可用。"""
+    if sys.platform == "win32" and _WINDOWS_TEMPLATE_PATH.is_file():
+        return _WINDOWS_TEMPLATE_PATH
+    return _TEMPLATE_PATH
+
+
+def _read_bgr(path: Path) -> np.ndarray | None:
+    """cv2.imread 打不开含中文的输出路径，退回 PIL 解码。"""
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if image is not None and image.size:
+        return image
+    try:
+        from PIL import Image
+
+        with Image.open(path) as raw:
+            return cv2.cvtColor(np.array(raw.convert("RGB")), cv2.COLOR_RGB2BGR)
+    except Exception:
+        return None
 
 
 class PreviewIconNotFound(ValueError):
@@ -50,13 +74,14 @@ def _estimate_toolbar_bottom(image: np.ndarray, template_height: int) -> int | N
 def locate_preview_recognize(image_path: Path) -> dict:
     """定位图标，返回截图像素坐标；低置信度或重复候选时抛 PreviewIconNotFound。"""
     image_path = Path(image_path)
-    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    image = _read_bgr(image_path)
     if image is None:
         raise PreviewIconNotFound("无法读取预览截图", {"image_path": str(image_path)})
     height, width = image.shape[:2]
-    template = cv2.imread(str(_TEMPLATE_PATH), cv2.IMREAD_COLOR)
+    template_path = _template_path()
+    template = _read_bgr(template_path)
     if template is None:
-        raise RuntimeError(f"图标模板缺失或不可读: {_TEMPLATE_PATH}")
+        raise RuntimeError(f"图标模板缺失或不可读: {template_path}")
 
     # 分隔边缘可随截图像素密度变化；只用它限定工具栏 ROI，不推算固定点击坐标。
     toolbar_bottom = _estimate_toolbar_bottom(image, template.shape[0])
