@@ -270,6 +270,17 @@ class WindowsDesktop:
         sized = [item for item in candidates
                  if item["visible"] and item["rect"][2] > 200 and item["rect"][3] > 200]
         if not sized:
+            # 目标窗口可能被最小化（矩形变成 -32000/160x28）。这里是唯一匹配的目标，
+            # 还原一次再取矩形，避免整批因为窗口被最小化而阻塞。
+            iconic = [item for item in candidates if user32.IsIconic(item["hwnd"])]
+            for item in iconic[:1]:
+                user32.ShowWindow(item["hwnd"], SW_RESTORE)
+                time.sleep(0.2)
+            if iconic:
+                candidates = [item for item in _windows() if _matches(item, expected)]
+                sized = [item for item in candidates
+                         if item["visible"] and item["rect"][2] > 200 and item["rect"][3] > 200]
+        if not sized:
             raise RuntimeError("未找到可操作的目标窗口")
         if len(sized) > 1:
             raise RuntimeError(f"目标窗口不唯一（{len(sized)} 个可见候选）")
@@ -334,7 +345,8 @@ class WindowsDesktop:
         if command["action"] == "scroll_capture":
             self._wheel(window, float(command["x"]), float(command["y"]), command["direction"],
                         int(command["units"]))
-            time.sleep(0.25)
+            # 只留最短渲染时间；页面没跟上时由 _capture_menu 比对差异后补拍。
+            time.sleep(0.12)
         left, top, width, height = _rect(hwnd)
         image = self._print_window(hwnd, width, height)
         path = Path(command["path"])

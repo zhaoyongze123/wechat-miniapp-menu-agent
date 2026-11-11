@@ -14,6 +14,7 @@ import time
 import traceback
 import unicodedata
 import uuid
+import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -42,6 +43,12 @@ from .chat_image_locator import ChatImageNotFound, locate_sent_image
 from .ui_tars_trial import GUI_PLUS_MODEL, TrialModel, TrialProtocolError, run_navigation, trial_model_from_env
 from .capture_outputs import store_output_dir
 from .uipath_cli import cli_entry
+
+# 预览按钮、小程序窗口与关闭动作统一改为短间隔轮询：条件满足即停，避免固定等待。
+_PREVIEW_ICON_POLL_INTERVAL = 0.35
+_PREVIEW_ICON_POLL_TIMEOUT = 6.0
+_MINIAPP_POLL_INTERVAL = 0.2
+_MINIAPP_POLL_TIMEOUT = 6.0
 
 
 class RobotProtocolError(RuntimeError):
@@ -1339,6 +1346,15 @@ class UiPathRunner:
                 self._startup_timing = timing
                 self._open_source_automatic(task, profile, output_dir, settings.capture.settle_seconds)
                 selector = profile["miniapp_selector"]
+                if not selector:
+                    # 识别后没有任何可操作的小程序窗口：多半是二维码指向团购页、公众号或网页，
+                    # 不是本店点餐码。按不合格记录并保留原因，不再进入 Agent 导航或人工复核。
+                    reason = "扫码后未出现点餐小程序窗口，二维码可能不是点餐码"
+                    report["agent_outcome"] = "unqualified"
+                    report["agent_reason"] = reason
+                    report["navigation"] = {"outcome": "unqualified", "reason": reason, "source": "host"}
+                    report["runtime_status"] = "ok"
+                    return report
             else:
                 # 宿主只负责发现窗口；多个候选时先接管一个，由 Agent 用
                 # list_windows / switch_window 自行判断该操作哪个页面。
@@ -2452,8 +2468,8 @@ class UiPathRunner:
                     trace.update(skipped=True, reason="ocr_unavailable")
                 else:
                     ocr_started = time.monotonic()
-                    texts = self.ocr_reader(Path(wechat["path"]))
-                    trace.update(ocr_rows=texts, ocr_engine=self._ocr_engine_name(),
+                    texts = self._ocr_title_strip(Path(wechat["path"]))
+                    trace.update(ocr_rows=texts, ocr_engine=self._ocr_engine_name(), ocr_region="title_strip",
                                  ocr_elapsed_ms=round((time.monotonic() - ocr_started) * 1000))
                     if not self._assistant_active(texts, wechat["width"], wechat["height"]):
                         raise NeedsReview("微信右上方未确认文件传输助手；未输入或发送素材")
@@ -2593,20 +2609,36 @@ class UiPathRunner:
         selector = profile["preview_selector"]
         # 预览窗口宽高每轮都可能不同，必须重新取窗口矩形，不能复用上一轮。
         preview = self._screenshot(output_dir, selector, "image-preview.png", allow_fast=False)
+        icon_poll: dict = {}
         if sys.platform == "win32":
             # Windows 微信 4.x 在预览工具栏“用 AI 处理”左侧有固定的二维码按钮，
-            # 优先做图标匹配点击；按钮要等微信分析完图里的二维码才出现，因此分档重拍。
+            # 但按钮要等微信分析完图里的二维码才出现：先立即判断一次，之后按短间隔重拍，
+            # 出现即停。重试次数与每次耗时写入 trace，后续可按分位数精确化等待时间。
             icon_hit: tuple[dict, dict] | None = None
-            for attempt, wait_seconds in enumerate((0.0, 2.0, 3.0), start=1):
-                if wait_seconds:
-                    self._send({"action": "noop", "seconds": wait_seconds})
-                    preview = self._screenshot(output_dir, selector, f"image-preview-{attempt}.png",
-                                               allow_fast=False)
+            poll_started = time.monotonic()
+            attempt_times: list[int] = []
+            for attempt in range(1, 40):
+                attempt_started = time.monotonic()
                 try:
                     icon_hit = (preview, locate_preview_recognize(Path(preview["path"])))
-                    break
                 except PreviewIconNotFound:
-                    continue
+                    icon_hit = None
+                attempt_times.append(round((time.monotonic() - attempt_started) * 1000))
+                if icon_hit is not None:
+                    break
+                elapsed = time.monotonic() - poll_started
+                if elapsed >= _PREVIEW_ICON_POLL_TIMEOUT:
+                    break
+                self._send({"action": "noop",
+                            "seconds": min(_PREVIEW_ICON_POLL_INTERVAL, _PREVIEW_ICON_POLL_TIMEOUT - elapsed)})
+                preview = self._screenshot(output_dir, selector, f"image-preview-{attempt + 1}.png",
+                                           allow_fast=False)
+            icon_poll = {
+                "icon_poll_attempts": len(attempt_times),
+                "icon_poll_match_ms": attempt_times,
+                "icon_poll_total_ms": round((time.monotonic() - poll_started) * 1000),
+                "icon_poll_found": icon_hit is not None,
+            }
             if icon_hit is not None:
                 shot, located = icon_hit
                 center = located["center_image_px"]
@@ -2626,7 +2658,7 @@ class UiPathRunner:
                     self._send({"action": "click", "selector": selector, "x": x, "y": y})
                 finally:
                     self._trace_click = {}
-                with self._trace("preview_recognition_result") as trace:
+                with self._trace("preview_recognition_result", **icon_poll) as trace:
                     result = self._await_miniapp_window(profile, output_dir, before_windows, trace)
                 self._close_preview_window(selector)
                 return result
@@ -2649,7 +2681,7 @@ class UiPathRunner:
                             "x": match["desktop_points"]["x"], "y": match["desktop_points"]["y"]})
             finally:
                 self._trace_click = {}
-            with self._trace("preview_recognition_result") as trace:
+            with self._trace("preview_recognition_result", **icon_poll) as trace:
                 result = self._await_miniapp_window(profile, output_dir, before_windows, trace)
             # Windows 的图片预览不会自动关闭；留着会挡住微信主窗口，也会让下一轮 selector 不唯一。
             self._close_preview_window(selector)
@@ -2691,39 +2723,81 @@ class UiPathRunner:
         """预览不关会留下额外的“图片和视频”窗口，下一轮取图会因目标不唯一失败。"""
         try:
             self._send({"action": "key", "selector": selector, "key": "escape"})
+        except (RobotTimeout, RunnerPaused, RunnerTerminated):
+            raise
+        except Exception:
+            return
+        if sys.platform == "win32":
+            # Esc 之后按“窗口是否还在”轮询，通常几十毫秒就能确认关闭，不必固定等 0.3 秒。
+            deadline = time.monotonic() + 1.2
+            while time.monotonic() < deadline:
+                try:
+                    if not self._window_present(selector):
+                        return
+                except (RobotTimeout, RunnerPaused, RunnerTerminated):
+                    raise
+                except Exception:
+                    return
+                time.sleep(0.1)
+            return
+        try:
             self._send({"action": "noop", "seconds": .3})
         except (RobotTimeout, RunnerPaused, RunnerTerminated):
             raise
         except Exception:
             pass
 
+    def _window_present(self, selector: str) -> bool:
+        """用本机窗口枚举确认 selector 对应的窗口是否仍存在；解析不了的 selector 视为不存在。"""
+        if not selector.lstrip().startswith("<wnd"):
+            return False
+        expected = ET.fromstring(f"<root>{selector}</root>").find("wnd")
+        if expected is None:
+            return False
+        windows = self._window_list(self._send({"action": "discover"}).get("windows"))
+        for item in windows:
+            # 关闭确认必须严格匹配标题/类名：宽松匹配会把别的微信窗口当成还没关掉。
+            if all(not expected.get(key) or str(item.get(key) or "").casefold() == expected.get(key, "").casefold()
+                   for key in ("title", "cls")):
+                return True
+        return False
+
     def _await_miniapp_window(self, profile: dict, output_dir: Path, before_windows: list[dict] | None,
                               trace) -> dict:
         """点击识别入口后只观察新窗口，不重复点击。"""
         selector = profile["preview_selector"]
         # 只需要小程序窗口被创建；页面内容由后续 resize、截图和就绪判断承担。
-        # 首次 discover 本身要数秒，已足够覆盖窗口创建，不再额外固定等待；
-        # 偶发慢的才补两次短等待，仍失败转人工，不重发点击。
-        for attempt, wait_seconds in enumerate((0, .5, 1.0), start=1):
-            if wait_seconds:
-                self._send({"action": "noop", "seconds": wait_seconds})
+        # Windows 的 discover 是本机枚举（毫秒级），按短间隔轮询，窗口一出现立即接管；
+        # macOS 的 discover 本身要数秒，保留原来的两次补等待。
+        started = time.monotonic()
+        attempts = 0
+        while True:
+            attempts += 1
             after_windows = self._window_list(self._send({"action": "discover"}).get("windows"))
             # 正常路径开始前已收起旧小程序，任何小程序窗口都属于本轮；
             # 恢复路径仍用点击前窗口列表排除旧窗口，避免误接管。
             scoped = after_windows if before_windows is None else self._new_windows(before_windows, after_windows)
             candidates = self._miniapp_candidates(scoped)
-            trace.update(observation=attempt, new_windows=[item["title"] for item in candidates])
-            if not candidates:
-                continue
-            # 多个新窗口不在启动阶段做业务取舍：先接管第一个，
-            # Agent 可用 list_windows / switch_window 自行判断该操作哪个页面。
-            if len(candidates) > 1:
-                trace["candidate_count"] = len(candidates)
-            profile["miniapp_selector"] = candidates[0]["selector"]
-            # 小程序一出现就调整到窄高布局，后续所有截图都在同一版面上进行。
-            self._resize_miniapp_window(candidates[0]["selector"])
-            trace.update(result="miniapp_opened", selector=candidates[0]["selector"])
-            return {"miniapp_selector": candidates[0]["selector"]}
+            trace.update(observation=attempts, wait_elapsed_ms=round((time.monotonic() - started) * 1000),
+                         new_windows=[item["title"] for item in candidates])
+            if candidates:
+                # 多个新窗口不在启动阶段做业务取舍：先接管第一个，
+                # Agent 可用 list_windows / switch_window 自行判断该操作哪个页面。
+                if len(candidates) > 1:
+                    trace["candidate_count"] = len(candidates)
+                profile["miniapp_selector"] = candidates[0]["selector"]
+                # 小程序一出现就调整到窄高布局，后续所有截图都在同一版面上进行。
+                self._resize_miniapp_window(candidates[0]["selector"], candidates[0], trace)
+                trace.update(result="miniapp_opened", selector=candidates[0]["selector"])
+                return {"miniapp_selector": candidates[0]["selector"]}
+            if sys.platform == "win32":
+                if time.monotonic() - started >= _MINIAPP_POLL_TIMEOUT:
+                    break
+                self._send({"action": "noop", "seconds": _MINIAPP_POLL_INTERVAL})
+            elif attempts >= 3:
+                break
+            else:
+                self._send({"action": "noop", "seconds": (.5, 1.0)[min(attempts - 1, 1)]})
         trace["result"] = "no_miniapp_window"
         # 无新窗口时保留结果画面作为证据；OCR 文字只留痕，不据此判定门店业务状态。
         try:
@@ -2751,10 +2825,10 @@ class UiPathRunner:
         click_y = float(preview["window_height"]) * 0.5
         window_x, window_y = float(preview.get("window_x") or 0), float(preview.get("window_y") or 0)
         point = (window_x + click_x, window_y + click_y)
-        for attempt, wait_seconds in enumerate((2.0, 3.0, 4.0), start=1):
+        for attempt, wait_seconds in enumerate((1.0, 1.5, 2.0), start=1):
             self._send({"action": "noop", "seconds": wait_seconds})
             self._send({"action": "right_click", "selector": selector, "x": click_x, "y": click_y})
-            self._send({"action": "noop", "seconds": 1.0})
+            self._send({"action": "noop", "seconds": .8})
             name = "preview-context-menu.png" if attempt == 1 else f"preview-context-menu-{attempt}.png"
             desktop = self._screenshot(output_dir, selector, name, desktop=True)
             origin_x, origin_y = float(desktop.get("window_x") or 0), float(desktop.get("window_y") or 0)
@@ -2830,18 +2904,32 @@ class UiPathRunner:
         previous = {cls._window_identity(item) for item in before}
         return [item for item in after if cls._window_identity(item) not in previous]
 
-    def _resize_miniapp_window(self, selector: str) -> None:
+    def _resize_miniapp_window(self, selector: str, window: dict | None = None,
+                               trace: dict | None = None) -> None:
         """Windows 小程序默认按宽屏打开；采集前拉到最窄、最高，减少横向留白与滚动误差。
 
         微信会按自身最小宽度收敛，240 只是期望值，实际尺寸以随后的截图为准。
+        discover 已经拿到窗口矩形时先比对，已在目标布局就不重复 resize。
         """
         if sys.platform != "win32":
             return
         import ctypes
 
         screen_height = int(ctypes.windll.user32.GetSystemMetrics(1))
+        target_height = max(300, screen_height - 100)
+        position = (window or {}).get("position") or {}
+        if position:
+            width = float(position.get("width") or 0)
+            height = float(position.get("height") or 0)
+            if abs(float(position.get("x") or 0)) <= 2 and abs(float(position.get("y") or 0) - 35) <= 2 \
+                    and 200 <= width <= 340 and height >= target_height - 60:
+                if trace is not None:
+                    trace["resize"] = "skipped"
+                return
         self._send({"action": "resize", "selector": selector, "width": 240,
-                    "height": max(300, screen_height - 100), "x": 0, "y": 35})
+                    "height": target_height, "x": 0, "y": 35})
+        if trace is not None:
+            trace["resize"] = "applied"
 
     def _move_window_on_screen(self, selector: str) -> None:
         """把滞留在屏幕外的小程序窗口挪回主屏；否则点击右上角会直接报“超出屏幕边界”。"""
@@ -2891,7 +2979,7 @@ class UiPathRunner:
                             width = float(moved.get("window_width") or width)
                             self._send({"action": "click", "selector": candidate["selector"],
                                         "x": width - 21, "y": 30})
-                        self._send({"action": "noop", "seconds": .5})
+                        self._wait_title_gone(candidate["title"], 1.0)
                         remaining = self._miniapp_candidates(
                             self._window_list(self._send({"action": "discover"}).get("windows")))
                         if any(item["title"] == candidate["title"] for item in remaining):
@@ -2900,7 +2988,7 @@ class UiPathRunner:
                                         "x": width / 2, "y": 18})
                             self._send({"action": "key", "selector": candidate["selector"],
                                         "key": close_key})
-                            self._send({"action": "noop", "seconds": .3})
+                            self._wait_title_gone(candidate["title"], 0.8)
                             remaining = self._miniapp_candidates(
                                 self._window_list(self._send({"action": "discover"}).get("windows")))
                         if not any(item["title"] == candidate["title"] for item in remaining):
@@ -2909,8 +2997,34 @@ class UiPathRunner:
                     raise
                 except Exception:
                     continue
-            self._send({"action": "noop", "seconds": settle_seconds})
+            if sys.platform == "win32":
+                # 点击关闭后按“窗口是否还在”轮询，全部消失即结束本轮。
+                if self._wait_no_miniapp(1.0):
+                    break
+            else:
+                self._send({"action": "noop", "seconds": settle_seconds})
         return closed
+
+    def _wait_no_miniapp(self, timeout: float) -> bool:
+        """轮询直到没有任何小程序窗口；返回是否在超时前清空。"""
+        deadline = time.monotonic() + timeout
+        while True:
+            if not self._miniapp_candidates(
+                    self._window_list(self._send({"action": "discover"}).get("windows"))):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.1)
+
+    def _wait_title_gone(self, title: str, timeout: float) -> None:
+        """轮询同标题的小程序窗口是否已消失，替代固定的“点完等 0.5 秒”。"""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            remaining = self._miniapp_candidates(
+                self._window_list(self._send({"action": "discover"}).get("windows")))
+            if not any(item["title"] == title for item in remaining):
+                return
+            time.sleep(0.1)
 
     def _close_to_file_assistant(self, profile: dict, output_dir: Path, settle_seconds: float) -> None:
         if not all((profile.get("miniapp_selector"), profile.get("wechat_selector"), profile.get("close_key"))):
@@ -2936,7 +3050,8 @@ class UiPathRunner:
                         self._send({"action": "key", "selector": selector, "key": profile["close_key"]})
                 else:
                     self._send({"action": "key", "selector": selector, "key": profile["close_key"]})
-            self._send({"action": "noop", "seconds": settle_seconds})
+            # 关闭动作后按窗口是否消失轮询，通常远快于固定 settle。
+            self._wait_no_miniapp(max(.4, settle_seconds + .6))
             closed = self._screenshot(output_dir, profile["wechat_selector"], "wechat-after-close.png")
             if self._read_assistant_context(closed, "after_close") is not True:
                 raise NeedsReview("关闭当前小程序后未确认回到文件传输助手；批次停止")
@@ -2976,11 +3091,31 @@ class UiPathRunner:
                 trace.update(skipped=True, reason="ocr_unavailable",
                              image_size={"width": frame["width"], "height": frame["height"]})
                 return None
-            rows = self.ocr_reader(Path(frame["path"]))
+            rows = self._ocr_title_strip(Path(frame["path"]))
             active = self._assistant_active(rows, frame["width"], frame["height"])
             trace.update(ocr_rows=rows, assistant_active=active, ocr_engine=self._ocr_engine_name(),
-                         image_size={"width": frame["width"], "height": frame["height"]})
+                         ocr_region="title_strip", image_size={"width": frame["width"], "height": frame["height"]})
             return active
+
+    def _ocr_title_strip(self, image_path: Path, height_ratio: float = .16) -> list[dict]:
+        """只 OCR 顶部标题条：整窗 OCR 每次约 1.6-2.2 秒，而上下文判断只看窗口顶部。
+        裁剪从 (0,0) 开始且不缩放，返回的坐标仍是原图坐标系，可直接复用原有位置判断。
+        """
+        if self.ocr_reader is None:
+            return []
+        with Image.open(image_path) as original:
+            width, height = original.size
+            strip = original.convert("RGB").crop((0, 0, width, max(1, int(height * height_ratio))))
+        fd, name = tempfile.mkstemp(prefix="title-strip-", suffix=".png", dir=str(Path(image_path).parent))
+        os.close(fd)
+        temporary = Path(name)
+        temporary.chmod(0o600)
+        try:
+            strip.save(temporary, format="PNG")
+            rows = self.ocr_reader(temporary)
+            return rows if isinstance(rows, list) else []
+        finally:
+            temporary.unlink(missing_ok=True)
 
     @staticmethod
     def _assistant_active(items: list[dict], width: int, height: int) -> bool:
@@ -5260,18 +5395,30 @@ class UiPathRunner:
                 "units": int(profile.get("scroll_units", 4)),
             })
 
-        # 截图、滚动、再截图；相邻两帧近似一致即视为到底。
-        for index in range(settings.capture.max_pages + 1):
-            self._guard()
-            with Image.open(frame["path"]) as image_file:
+        def frame_content(target: dict) -> Image.Image:
+            with Image.open(target["path"]) as image_file:
                 image_file.load()
                 if box[2] > image_file.width or box[3] > image_file.height:
                     raise NeedsReview("菜单区域超出当前截图边界")
-                content = image_file.crop(box).copy()
+                return image_file.crop(box).copy()
+
+        # 截图、滚动、再截图；相邻两帧近似一致即视为到底。
+        for index in range(settings.capture.max_pages + 1):
+            self._guard()
+            content = frame_content(frame)
+            difference = self._image_difference_images(previous, content) if previous is not None else None
+            rechecks = 0
+            # 刚滚完可能还没渲染完：相似时补拍一次再判到底，避免把“没加载出来”当成已滚到底。
+            while difference is not None and difference < 0.7 and rechecks < 1:
+                self._guard()
+                time.sleep(0.25)
+                frame = self._screenshot(output_dir, selector, f"menu-recheck-{index + 1}.png")
+                content = frame_content(frame)
+                difference = self._image_difference_images(previous, content)
+                rechecks += 1
             with self._trace("menu_page_check", page_index=index + 1,
                              threshold=0.7, comparison_region=region.model_dump()) as trace:
-                difference = self._image_difference_images(previous, content) if previous is not None else None
-                trace.update(image_difference=difference,
+                trace.update(image_difference=difference, recheck_count=rechecks,
                              stop_reason="similar_to_previous" if difference is not None and difference < 0.7 else "continue")
             if difference is not None and difference < 0.7:
                 return pages

@@ -113,7 +113,6 @@ def test_windows_cleanup_protects_recorded_wechat_windows(monkeypatch, tmp_path)
     assert calls == [{"action": "discover"}]
     profile["preview_selector"] = "<wnd app='weixin.exe' cls='ImagePreview' />"
     runner._close_to_file_assistant(profile, tmp_path, 0.5)
-    assert calls[2:] == [
-        {"action": "key", "selector": selector, "key": "recorded-close"},
-        {"action": "noop", "seconds": 0.5},
-    ]
+    assert calls[2] == {"action": "key", "selector": selector, "key": "recorded-close"}
+    # 关闭后按窗口是否消失轮询，不再发送固定时长的 noop。
+    assert calls[3:] and all(command["action"] == "discover" for command in calls[3:])

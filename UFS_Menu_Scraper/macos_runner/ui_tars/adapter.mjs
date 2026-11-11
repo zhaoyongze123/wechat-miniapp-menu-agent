@@ -396,10 +396,17 @@ const navigationGuide = `点餐小程序导航经验
 
 目标是浏览本轮门店的菜单并交接。根据截图自主选择动作。浏览期间避免登录、入会、储值、加购、下单、支付或发起外部联系。
 
+先确认扫码进来的是不是点餐码
+- 如果打开的是大众点评/美团团购、外卖平台、优惠券或团购详情、门店介绍、公众号文章、支付或开票等非点餐页面，说明这个二维码不是本店点餐码。
+- 直接 terminate，outcome=unqualified，reason 写明实际看到的平台与页面，例如“这是大众点评的团购界面，不是点餐码。”；不要在这些页面里继续浏览、登录或下单。
+- 如果多次尝试（换入口、返回、切窗口）后仍进不到点餐菜单，也判 unqualified，reason 说明尝试过哪些入口、最后停在什么页面，例如“尝试 5 次后仍停在团购详情页，未进入点餐菜单，二维码可能不是点餐码”。
+- 只有白屏、加载慢、网络异常这类“暂时没成功”，才用 needs_review。
+
 一、三个终态怎么分
 
 success：已经出现可直接截图和滚动浏览的真实菜品菜单，通常能看到对应价格，且 \`menu_box\` 能框住当前可见的菜品列表。滚动采集由程序完成。
 可以判 success：
+- 当前截图已经出现可滚动浏览的菜品名和价格列表时，立即判 success 并给出 \`menu_box\`，不必再滚动或点其他入口确认。
 - 一两道菜也算，不要求菜品很多。
 - 截图里没有显示店名时，如果开窗和导航过程能对应本轮门店，仍可交接。
 - 页面显示的是其他分店时，只要已经出现可截图、可滚动的真实菜品菜单，就照常交接。
@@ -415,7 +422,7 @@ success：已经出现可直接截图和滚动浏览的真实菜品菜单，通�
 - 人数选择页（“选择人数”“开始点餐”“欢迎来到…”）不是菜单页；应先选中人数并进入点餐，再进行判定。
 
 unqualified：要有清楚、可见的证据表明本轮拿不到菜单，而不是“暂时没成功”。
-常见证据：明确提示扫码点餐已关闭且无菜单入口；要求到店后再扫码；二维码失效、小程序停止服务或门店未配置菜单；明确写暂无菜单/暂无菜品且重试后仍一样。
+常见证据：打开的是大众点评、美团团购等非点餐平台页面（二维码不是点餐码，reason 写明平台与页面）；多次尝试后仍进不到点餐菜单；明确提示扫码点餐已关闭且无菜单入口；要求到店后再扫码；二维码失效、小程序停止服务或门店未配置菜单；明确写暂无菜单/暂无菜品且重试后仍一样。
 不算 unqualified：打烊但菜单可见→success；提示暂时无法下单但有“查看菜单/进入点餐”入口→继续；白屏、加载慢、一般网络异常→有限恢复或观察等待，持续失败返回 needs_review；点击没反应、弹窗关不掉、需要登录、页面归属不明→needs_review；菜品很少、店名不全→不影响 success。
 
 needs_review：合理尝试后仍无法确定——强制手机号+验证码；持续白屏或一直加载；打开的页面与本轮二维码关系不明；工具连续失败或窗口反复被拒绝；弹窗无法消除；停在人数选择、欢迎页等前置页且找不到进入菜单的入口。
@@ -621,7 +628,7 @@ async function main() {
     const systemPrompt = [
       '每一轮只做一次观察和一个动作。',
       '只输出一个 tool_call：<tool_call>{"name":"computer_use","arguments":{...}}</tool_call>。坐标与 menu_box 使用当前截图的 1000x1000 归一化空间，左上角为原点。',
-      '终态示例：<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"success","reason":"已进入菜单","menu_box":[50,150,950,950]}}</tool_call>；<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"needs_review","reason":"..."}}</tool_call>。',
+      '终态示例：<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"success","reason":"已进入菜单","menu_box":[50,150,950,950]}}</tool_call>；<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"unqualified","reason":"这是大众点评的团购界面，不是点餐码"}}</tool_call>；<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"needs_review","reason":"..."}}</tool_call>。',
       '安全边界：不要下单、支付、加购物车、领券、登录或切换门店；不要编造坐标，也不要声称截图里没有出现的内容。',
       config.output_contract,
       navigationGuide,

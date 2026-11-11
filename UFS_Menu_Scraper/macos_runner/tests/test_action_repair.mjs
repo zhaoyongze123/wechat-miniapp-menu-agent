@@ -39,6 +39,13 @@ test('超出归一化坐标空间的数值不是可确认的变体，拒绝', ()
   assert.throws(() => parseActionPayload(payload), SyntaxError);
 });
 
+test('修复 menu_box 输出成两个角点的 terminate', () => {
+  const payload = '{"name":"computer_use","arguments":{"action":"terminate","outcome":"success","reason":"已进入菜单","menu_box":[59,243],[940,907]}}';
+  assert.deepEqual(parseActionPayload(payload), {
+    action: 'terminate', outcome: 'success', reason: '已进入菜单', menu_box: [59, 243, 940, 907],
+  });
+});
+
 test('结构不符的无关 JSON 拒绝', () => {
   assert.throws(() => parseActionPayload('{"foo":1}'), /invalid_action/);
   assert.throws(() => parseActionPayload('{"name":"computer_use","arguments":[]}'), /invalid_action/);

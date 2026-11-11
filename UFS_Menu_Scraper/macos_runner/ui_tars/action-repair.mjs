@@ -3,6 +3,8 @@
 const CLICK_WITHOUT_BRACKETS = /^\s*\{\s*"name"\s*:\s*"computer_use"\s*,\s*"arguments"\s*:\s*\{\s*"action"\s*:\s*"left_click"\s*,\s*"coordinate"\s*:\s*(0|[1-9]\d{0,2})\s*,\s*(0|[1-9]\d{0,2})\s*\]?\s*\}\s*\}\s*$/;
 // 百炼实测还会漏掉字段名开头的引号（如 ,menu_box":[40,230,960,970]）；键名与结构唯一，可安全补齐。
 const UNQUOTED_KEY = /([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)"\s*:/g;
+// 百炼实测会把 menu_box 输出成两个角点（"menu_box":[59,243],[940,907]）；角点顺序唯一，可展开成扁平四元组。
+const MENU_BOX_AS_POINTS = /("menu_box"\s*:\s*)\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]\s*,\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]/;
 
 export function parseActionPayload(payload) {
   let parsed;
@@ -12,7 +14,8 @@ export function parseActionPayload(payload) {
     // 百炼实测偶发漏掉点击坐标的方括号。只接受结构完整、恰好包含两个整数的 left_click 变体。
     const click = payload.match(CLICK_WITHOUT_BRACKETS);
     if (click) return { action: 'left_click', coordinate: [Number(click[1]), Number(click[2])] };
-    const repaired = payload.replace(UNQUOTED_KEY, '$1"$2":');
+    const repaired = payload.replace(UNQUOTED_KEY, '$1"$2":')
+      .replace(MENU_BOX_AS_POINTS, '$1[$2,$3,$4,$5]');
     if (repaired === payload) throw error;
     try {
       parsed = JSON.parse(repaired);
