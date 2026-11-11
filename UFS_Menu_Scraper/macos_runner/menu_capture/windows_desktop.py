@@ -11,12 +11,15 @@ from __future__ import annotations
 import ctypes
 import fnmatch
 import io
+import logging
 import re
 import time
 import unicodedata
 import xml.etree.ElementTree as ET
 from ctypes import wintypes
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
@@ -283,6 +286,14 @@ class WindowsDesktop:
         if not sized:
             raise RuntimeError("未找到可操作的目标窗口")
         if len(sized) > 1:
+            # 微信会额外浮出同名的辅助窗口（浮动面板、独立聊天窗），主窗口面积明显更大。
+            # 面积主窗口占优时按最大面积取主窗口并留痕，避免整批被“不唯一”卡死；
+            # 面积接近说明选择器确实有歧义，仍然报错，交给人工处理。
+            ranked = sorted(sized, key=lambda item: item["rect"][2] * item["rect"][3], reverse=True)
+            first, second = ranked[0], ranked[1]
+            if (first["rect"][2] * first["rect"][3]) >= 1.5 * (second["rect"][2] * second["rect"][3]):
+                logger.warning("目标窗口不唯一，按面积取主窗口：%s %s", first["title"], first["rect"])
+                return first
             raise RuntimeError(f"目标窗口不唯一（{len(sized)} 个可见候选）")
         return sized[0]
 
