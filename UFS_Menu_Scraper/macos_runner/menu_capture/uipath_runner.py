@@ -31,7 +31,7 @@ from .model_usage import usage_context
 from .chat_anchor import find_store_name_matches
 from .chat_layout import find_sent_text_bubbles
 from .failures import classify as classify_failure
-from .window_contract import is_windows_wechat_app, validate_target_window, window_selector, windows_selectors_overlap
+from .window_contract import is_windows_miniapp_app, is_windows_wechat_app, validate_target_window, window_selector, windows_selectors_overlap
 from .close_icon_locator import refine_close_icon, locate_close_icon, refine_back_arrow
 from .checkbox_locator import refine_consent_checkbox
 from .scene_agent import SceneDecision
@@ -170,7 +170,11 @@ def production_window_geometry(screen) -> dict:
 class FileRobotTransport:
     """UiPath 与 Python 之间的一命令一回复文件 IPC。超时后绝不重发动作。"""
 
-    def __init__(self, run_directory: Path, output_directory: Path | None = None, poll_interval: float = 0.05):
+    def __init__(self, run_directory: Path, output_directory: Path | None = None, poll_interval: float = 0.05,
+                 local: Any | None = None):
+        # local 是平台本地桌面驱动（Windows 用 Win32）。UiPath 只保留窗口发现，
+        # 其余窗口级动作由驱动同步完成，回包与文件 IPC 完全同构。
+        self.local = local
         self.run_directory = Path(run_directory).expanduser().resolve()
         self.output_directory = Path(output_directory or run_directory).expanduser().resolve()
         self.run_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -223,6 +227,21 @@ class FileRobotTransport:
                 raise ValueError("timeout 必须是正数")
             if cancel_event and cancel_event.is_set():
                 raise RobotCancelled("命令发送前已收到暂停")
+            if self.local is not None and payload["action"] in self.local.actions:
+                # 本地驱动同步执行：不能写 command.json，否则仍在轮询的 UiPath 会重复执行同一动作。
+                if self.retain_command_history:
+                    safe_payload = {key: value for key, value in payload.items() if key not in {"text", "key"}}
+                    _atomic_write_json(self.run_directory / "last-command.json", safe_payload)
+                    audit_dir = self.run_directory / "commands"
+                    audit_dir.mkdir(mode=0o700, exist_ok=True)
+                    _atomic_write_json(audit_dir / (command_id + ".json"), safe_payload)
+                reply = self.local.execute(payload)
+                reply["id"] = command_id
+                if not reply.get("ok"):
+                    raise RobotCommandError(f"桌面命令失败：{str(reply.get('error') or '未提供原因')[:300]}")
+                self._validate_reply(payload, reply)
+                self._apply_reply(payload, reply)
+                return reply
             if self.reply_path.exists():
                 self.reply_path.unlink()
             # 实时 IPC 仍必须使用 command.json/reply.json；冗余历史副本由调试日志替代。
@@ -250,42 +269,7 @@ class FileRobotTransport:
                     if not reply["ok"]:
                         raise RobotCommandError(f"UiPath 命令失败：{reply['error'][:300] or '未提供原因'}")
                     self._validate_reply(payload, reply)
-                    if payload["action"] in {"screenshot", "scroll_capture"}:
-                        self._window_bounds = (reply["window_width"], reply["window_height"])
-                        self._window_selector = payload["selector"]
-                        self._window_pixels = (reply["width"], reply["height"])
-                        self._window_origin = ((reply["window_x"], reply["window_y"])
-                                               if "window_x" in reply and "window_y" in reply else None)
-                        self._geometry[payload["selector"]] = {
-                            "bounds": self._window_bounds,
-                            "pixels": self._window_pixels,
-                            "origin": self._window_origin,
-                        }
-                    elif payload["action"] == "resize":
-                        # 窗口被移动/改尺寸后，旧矩形立即失效；下一次截图必须重新确认。
-                        self._geometry.pop(payload.get("selector"), None)
-                        self._window_origin = None
-                        self._window_bounds = None
-                        self._window_pixels = None
-                        self._window_selector = None
-                    elif payload["action"] == "screenshot_desktop":
-                        # 整屏观察不覆盖最近一次小程序窗口的点击几何信息。
-                        self._window_origin = ((reply["window_x"], reply["window_y"])
-                                               if "window_x" in reply and "window_y" in reply else None)
-                        # 整屏坐标不能当作窗口矩形复用，下一次窗口截图必须重新确认。
-                        self._window_selector = None
-                    elif payload["action"] in {"click", "click_desktop_overlay", "right_click", "double_click"} \
-                            and "window_x" in reply and "window_y" in reply:
-                        # 点击时 UiPath 已校验过窗口尺寸，这里拿到的是刚确认过的窗口矩形，
-                        # 可用于点击后立即按矩形取图，不必再等一次窗口截图。
-                        self._window_origin = (reply["window_x"], reply["window_y"])
-                        if reply.get("window_width") and reply.get("window_height"):
-                            self._window_bounds = (reply["window_width"], reply["window_height"])
-                        cached = self._geometry.get(payload.get("selector"))
-                        if cached is not None:
-                            cached["origin"] = self._window_origin
-                            if reply.get("window_width") and reply.get("window_height"):
-                                cached["bounds"] = self._window_bounds
+                    self._apply_reply(payload, reply)
                     return reply
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -294,6 +278,45 @@ class FileRobotTransport:
                 time.sleep(min(self.poll_interval, remaining))
         finally:
             self._lock.release()
+
+    def _apply_reply(self, payload: dict, reply: dict) -> None:
+        """登记回复里实测到的窗口几何；后续坐标动作只认最近一次实测。"""
+        if payload["action"] in {"screenshot", "scroll_capture"}:
+            self._window_bounds = (reply["window_width"], reply["window_height"])
+            self._window_selector = payload["selector"]
+            self._window_pixels = (reply["width"], reply["height"])
+            self._window_origin = ((reply["window_x"], reply["window_y"])
+                                   if "window_x" in reply and "window_y" in reply else None)
+            self._geometry[payload["selector"]] = {
+                "bounds": self._window_bounds,
+                "pixels": self._window_pixels,
+                "origin": self._window_origin,
+            }
+        elif payload["action"] == "resize":
+            # 窗口被移动/改尺寸后，旧矩形立即失效；下一次截图必须重新确认。
+            self._geometry.pop(payload.get("selector"), None)
+            self._window_origin = None
+            self._window_bounds = None
+            self._window_pixels = None
+            self._window_selector = None
+        elif payload["action"] == "screenshot_desktop":
+            # 整屏观察不覆盖最近一次小程序窗口的点击几何信息。
+            self._window_origin = ((reply["window_x"], reply["window_y"])
+                                   if "window_x" in reply and "window_y" in reply else None)
+            # 整屏坐标不能当作窗口矩形复用，下一次窗口截图必须重新确认。
+            self._window_selector = None
+        elif payload["action"] in {"click", "click_desktop_overlay", "right_click", "double_click"} \
+                and "window_x" in reply and "window_y" in reply:
+            # 点击时 UiPath 已校验过窗口尺寸，这里拿到的是刚确认过的窗口矩形，
+            # 可用于点击后立即按矩形取图，不必再等一次窗口截图。
+            self._window_origin = (reply["window_x"], reply["window_y"])
+            if reply.get("window_width") and reply.get("window_height"):
+                self._window_bounds = (reply["window_width"], reply["window_height"])
+            cached = self._geometry.get(payload.get("selector"))
+            if cached is not None:
+                cached["origin"] = self._window_origin
+                if reply.get("window_width") and reply.get("window_height"):
+                    cached["bounds"] = self._window_bounds
 
     def request_stop(self) -> None:
         """替换仍排队的动作，通知手动运行的 Main 尽快退出；不等待、不重发原动作。"""
@@ -727,6 +750,12 @@ class UiPathRunner:
             self.transport = self.transport_factory(run_directory, Path(settings.output_dir).expanduser().resolve())
             if isinstance(self.transport, FileRobotTransport):
                 self.transport.retain_command_history = self.debug_log is None
+                if sys.platform == "win32":
+                    # 微信 4.x 的网页版/小程序窗口被 UiPath 当成 Chromium 浏览器，
+                    # 窗口级动作全部解析失败；改为本进程 Win32 直接执行，UiPath 只做发现。
+                    from .windows_desktop import WindowsDesktop
+
+                    self.transport.local = WindowsDesktop()
             self._cli_process = None
             self._cli_metadata_path = self._cli_log_path = self._cli_args_path = None
             self._cli_info = None
@@ -2096,31 +2125,47 @@ class UiPathRunner:
             if not isinstance(item, dict):
                 continue
             title = str(item.get("title") or "").strip()
-            if sys.platform == "win32" and (
-                not is_windows_wechat_app(str(item.get("app") or ""))
-                or title.casefold().startswith("weixin")
-            ):
+            app = str(item.get("app") or "")
+            if not title:
                 continue
-            role = str(item.get("role") or "").strip()
+            if sys.platform == "win32":
+                if not (is_windows_wechat_app(app) or is_windows_miniapp_app(app)):
+                    continue
+                miniapp_host = is_windows_miniapp_app(app)
+                if not miniapp_host and title.casefold().startswith(("weixin", "wechat")):
+                    continue
+                # 微信主窗口、托盘、剪贴板等 Qt 内部窗口类名形如 Qt51514xxx，
+                # 它们不是小程序窗口，误选会得到一个不可见的操作目标。
+                window_class = str(item.get("cls") or "").strip().casefold()
+                if len(window_class) > 2 and window_class.startswith("qt") and window_class[2].isdigit():
+                    continue
+                # 主窗口标题偶尔带后缀（如“微信 (3)”），绝不能把它当小程序关掉；
+                # 但小程序窗口本身也常叫“微信”，只能靠承载进程区分。
+                if not miniapp_host and "微信" in title and "窗口" not in title:
+                    continue
+            else:
+                if title.casefold() in {"微信", "wechat"} or title.casefold().startswith("wechat"):
+                    continue
+                if "微信" in title and "窗口" not in title:
+                    continue
             rect = item.get("position") or {}
-            if not isinstance(rect, dict) or not title or title.casefold() in {"微信", "wechat"}:
-                continue
-            # 主窗口标题偶尔带后缀（如“微信 (3)”），绝不能把它当小程序关掉；
-            # 但微信把独立小程序窗口标题成“微信 (窗口)”，它属于小程序窗口。
-            if title.casefold().startswith("wechat"):
-                continue
-            if "微信" in title and "窗口" not in title:
+            if not isinstance(rect, dict):
                 continue
             if "聊天记录" in title or title in {"图片和视频", "文件传输助手"}:
                 continue
             width, height = rect.get("width", 0), rect.get("height", 0)
             if isinstance(width, (int, float)) and isinstance(height, (int, float)) and width > 100 and height > 200:
-                candidates.append((item, title, role, width, height))
-        narrow = [candidate for candidate in candidates if candidate[3] < candidate[4] * 0.8]
+                candidates.append((item, title, width, height))
+        # 微信 4.x 把小程序放在独立进程里；有它时只认它，避免和老式同进程窗口混在一起。
+        hosted = [candidate for candidate in candidates
+                  if is_windows_miniapp_app(str(candidate[0].get("app") or ""))]
+        if hosted:
+            candidates = hosted
+        narrow = [candidate for candidate in candidates if candidate[2] < candidate[3] * 0.8]
         if narrow:
             candidates = narrow
         result = []
-        for item, title, role, _, _ in candidates:
+        for item, title, _, _ in candidates:
             result.append({
                 "selector": window_selector(item, title),
                 "title": title,

@@ -22,6 +22,11 @@ def is_windows_wechat_app(value: str) -> bool:
     return windows_app_name(value) in {"wechat", "weixin"}
 
 
+def is_windows_miniapp_app(value: str) -> bool:
+    """Windows 微信小程序由独立进程 WeChatAppEx.exe 承载，窗口是内嵌浏览器。"""
+    return windows_app_name(value) == "wechatappex"
+
+
 def window_selector(window: dict, title: str) -> str:
     attrs = {"app": str(window.get("app") or "WeChat"), "title": title}
     attr = "cls" if sys.platform == "win32" else "role"
