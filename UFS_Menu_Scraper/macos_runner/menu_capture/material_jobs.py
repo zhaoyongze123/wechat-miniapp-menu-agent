@@ -592,6 +592,8 @@ class JobRunner:
         if job is None:
             return
         if job["status"] == "cancelled":
+            # 取消也要走收尾回调：释放圆形码检测器等资源，只跳过状态改写。
+            self._notify(job_id, context)
             return
         counts = job["counts"]
         if job["status"] == "pause_requested":
@@ -606,8 +608,13 @@ class JobRunner:
         self.store.finish(job_id, status, error=error, message=message)
         detail = f"{message}（{error}）" if error else message
         self.store.event(job_id, "info" if status == "completed" else "warn", detail)
-        if self.on_finish is not None:
-            try:
-                self.on_finish(self.store.get(job_id), context)
-            except Exception:
-                pass
+        self._notify(job_id, context)
+
+    def _notify(self, job_id: str, context) -> None:
+        """收尾回调失败不能影响调度线程；取消与正常结束共用同一出口。"""
+        if self.on_finish is None:
+            return
+        try:
+            self.on_finish(self.store.get(job_id), context)
+        except Exception:
+            pass

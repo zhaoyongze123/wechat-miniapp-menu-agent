@@ -207,6 +207,31 @@ def test_open_job_unique_per_batch_including_interrupted(tmp_path) -> None:
     assert replacement["status"] == "queued"
 
 
+def test_cancelled_job_still_runs_finish_hook(tmp_path) -> None:
+    """取消任务也要触发收尾回调：检测器等资源靠它释放，不能因 cancelled 提前返回。"""
+    store = _store(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+    finished: list[str] = []
+
+    def unit(job, item, context):
+        started.set()
+        release.wait(5)
+
+    runner = JobRunner(store, unit, on_finish=lambda job, ctx: finished.append(job["status"]))
+    job = store.create("batch-1", "analyze", _items(2))
+    runner.start()
+    try:
+        assert started.wait(5)
+        assert store.cancel(job["id"]) is True
+        release.set()
+        _wait(lambda: finished, message="取消后未触发收尾回调")
+        assert finished == ["cancelled"]
+        assert store.get(job["id"])["status"] == "cancelled"
+    finally:
+        runner.stop()
+
+
 def test_same_second_jobs_keep_creation_order(tmp_path) -> None:
     """同一秒内连续创建的任务必须按 rowid 稳定排序，不能取到旧任务或插队。"""
     store = _store(tmp_path)
