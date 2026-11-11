@@ -1576,11 +1576,15 @@ class MaterialService:
             if not rows:
                 raise ValueError("没有已人工确认的店铺；未发布任何素材")
             stores = [(row, json.loads(row["store_json"]), json.loads(row["selected_json"])) for row in rows]
+            # 已确认却没有候选坐标属于历史脏数据：直接列出门店名，便于撤销确认后重分析。
+            missing = [row["source_name"] for row, _store, selected in stores if not selected]
+            if missing:
+                sample = "、".join(missing[:5])
+                more = f" 等 {len(missing)} 家" if len(missing) > 5 else ""
+                raise ValueError(f"已确认但没有候选坐标：{sample}{more}；请撤销确认后重新分析")
             names: dict[str, str] = {}
             fingerprint_items = []
             for row, store, selected in stores:
-                if not selected:
-                    raise ValueError("已确认决策缺少候选坐标")
                 if row["source_name"] in names and names[row["source_name"]] != row["source_folder"]:
                     raise ValueError("已确认店铺中存在不同父路径的同名目录，拒绝发布")
                 names[row["source_name"]] = row["source_folder"]
