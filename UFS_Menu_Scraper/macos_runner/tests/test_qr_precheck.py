@@ -55,8 +55,9 @@ def test_prompt_explains_stage_method_verdict_and_output() -> None:
     text = qr_precheck._prompt("沪州太太")
     assert "一、你正在做的这一步" in text
     assert "二、判断方法" in text
-    assert "三、你要给出的结论" in text
-    assert "四、输出要求" in text
+    assert "三、二维码用途的判断方法" in text
+    assert "四、你要给出的结论" in text
+    assert "五、输出要求" in text
     assert "verdict" in text and "block_reason" in text
     assert "本轮门店：沪州太太" in text
 
@@ -91,7 +92,8 @@ def test_instruction_warns_about_platform_group_buy_pages() -> None:
     text = QrHint(status="ok", platform="dianping", purpose="payment",
                   evidence="点评扫码买单", confidence=0.95).instruction()
     assert "大众点评" in text
-    assert "unqualified" in text
+    assert "以实际打开的页面为准" in text
+    assert "不要因为这条线索直接判不合格" in text
     assert "点评扫码买单" in text
 
 
@@ -128,7 +130,8 @@ def test_instruction_high_confidence_uses_advisory_wording() -> None:
 def test_instruction_medium_confidence_softens_wording() -> None:
     text = QrHint(status="ok", platform="dianping", purpose="group_buy", confidence=0.7).instruction()
     assert "较可能" in text
-    assert "倾向判 unqualified" in text
+    assert "以实际打开的页面为准" in text
+    assert "倾向判 unqualified" not in text
 
 
 def test_instruction_low_confidence_only_gives_clue() -> None:
