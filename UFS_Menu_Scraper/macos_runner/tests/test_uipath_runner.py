@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from menu_capture.config import ConfigStore
 from menu_capture.store import TaskStore
@@ -988,3 +988,18 @@ def test_prune_deletes_failed_evidence_after_two_days_only(tmp_path):
 
     assert (recent / "ui-tars-001.png").is_file()
     assert not expired.exists()
+
+
+def test_send_button_state_detects_pasted_content(tmp_path):
+    # 微信发送按钮：输入框为空时灰色，有内容时变绿；用它判断大图是否已附着。
+    empty = tmp_path / "empty.png"
+    attached = tmp_path / "attached.png"
+    _image(empty, "#EDEDED", size=(999, 749))
+    _image(attached, "#EDEDED", size=(999, 749))
+    with Image.open(attached) as image:
+        ImageDraw.Draw(image).rectangle((919, 696, 969, 726), fill="#07C160")
+        image.save(attached)
+
+    assert UiPathRunner._send_button_active(empty) is False
+    assert UiPathRunner._send_button_active(attached) is True
+    assert UiPathRunner._send_button_active(tmp_path / "missing.png") is False

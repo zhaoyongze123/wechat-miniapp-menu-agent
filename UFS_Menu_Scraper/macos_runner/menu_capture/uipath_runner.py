@@ -2551,9 +2551,11 @@ class UiPathRunner:
         with self._trace("prepare_image_clipboard", source_file=Path(task["source_path"]).name):
             self.clipboard_preparer(Path(task["source_path"]))
         # 图片粘贴与发送仍分开两条命令：拼在一起回车会被吞掉。
-        # 下一条 key 命令自身往返数秒，已覆盖缩略图附着，不再额外固定等待。
+        # 手机原图会生成几十 MB 的 DIB，微信解码附着需要数秒；UiPath 的 key 命令回车即返回，
+        # 覆盖不了这段延迟，必须按输入框状态确认图片已附着后再回车。
         self._send({"action": "key", "selector": profile["wechat_selector"],
                     "key": profile["paste_shortcut"]})
+        self._await_image_attached(profile, output_dir)
         self._send({"action": "key", "selector": profile["wechat_selector"],
                     "key": profile["send_key"]})
         mark("image_sent")
@@ -2643,6 +2645,47 @@ class UiPathRunner:
             # 只发到文件传输助手，缩略图出现即可继续；不校验上传徽标，避免把图片内容误判为发送失败。
             return sent, match
         raise NeedsReview(last_reason + "；未打开历史二维码")
+
+    def _await_image_attached(self, profile: dict, output_dir: Path, timeout: float = 8.0) -> None:
+        """等二维码缩略图真正附着到输入框后再回车。
+
+        微信发送按钮只在输入框有内容时变绿，用它作为“图片已附着”的唯一判据：
+        大图粘贴（手机原图几十 MB DIB）解码要数秒，过早回车会把图片整条丢掉。
+        超时未附着说明这次粘贴被吞了（失焦、剪贴板延迟），补贴一次；仍不行就转人工，
+        此时代码还没有按过回车，不会产生重复消息。
+        """
+        for attempt in range(2):
+            deadline = time.monotonic() + timeout
+            while True:
+                self._guard()
+                frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-state.png")
+                if self._send_button_active(Path(frame["path"])):
+                    return
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(.3)
+            if attempt == 0:
+                self._send({"action": "key", "selector": profile["wechat_selector"],
+                            "key": profile["paste_shortcut"]})
+        raise NeedsReview("二维码图片未附着到微信输入框；未发送空消息")
+
+    @staticmethod
+    def _send_button_active(image_path: Path) -> bool:
+        """发送按钮可用（微信绿）说明输入框已有内容；灰色按钮表示粘贴还没生效。"""
+        try:
+            with Image.open(image_path) as image:
+                rgb = image.convert("RGB")
+                # 只看右下角输入区，避开聊天气泡、侧栏和窗口外黑边。
+                region = rgb.crop((int(rgb.width * .86), int(rgb.height * .88),
+                                   rgb.width, int(rgb.height * .99)))
+        except (OSError, ValueError):
+            return False
+        colors = region.getcolors(maxcolors=region.width * region.height) or []
+        hits = sum(
+            count for count, (red, green, blue) in colors
+            if green >= 150 and red <= 110 and blue <= 150 and green - max(red, blue) >= 60
+        )
+        return hits >= 200
 
     def _preview_external_link(self, profile: dict, output_dir: Path, seconds: float = 6.0) -> bool:
         """预览里是否出现“在浏览器打开”一类提示；仅作为启动阶段的诊断证据。"""
