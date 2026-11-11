@@ -49,6 +49,9 @@ _PREVIEW_ICON_POLL_INTERVAL = 0.35
 _PREVIEW_ICON_POLL_TIMEOUT = 6.0
 _MINIAPP_POLL_INTERVAL = 0.2
 _MINIAPP_POLL_TIMEOUT = 6.0
+# 批次开始前把微信主窗口固定成三家测试通过时的版面。最新图片缩略图的固定点位与
+# 模板匹配阈值都是按这个尺寸标定的：窗口变窄后点位落到图片下方、匹配分跌破阈值，整批会稳定点空。
+_BATCH_WECHAT_FRAME = (999, 749)
 
 
 class RobotProtocolError(RuntimeError):
@@ -1244,6 +1247,9 @@ class UiPathRunner:
             self._trace_attempt = self.run_directory.name
             with self._trace("uipath_startup"):
                 self._await_cli_startup()
+            # 批次版面先校准一次，后面各店复用同一窗口尺寸与几何。
+            with self._trace("wechat_batch_frame"):
+                self._prepare_batch_wechat_frame(profile)
             for task_id, source in batch_sources.items():
                 self._guard()
                 task = self.store.get(task_id)
@@ -1265,7 +1271,7 @@ class UiPathRunner:
                 summary.update(status="terminated", reason="已终止试验")
         except Exception as exc:
             if summary is not None:
-                summary.update(status="blocked", reason=f"试验执行中断（{type(exc).__name__}）")
+                summary.update(status="blocked", reason=f"试验执行中断（{type(exc).__name__}）：{str(exc)[:300]}")
         finally:
             try:
                 if summary is not None:
@@ -1390,17 +1396,6 @@ class UiPathRunner:
                 self._startup_timing = timing
                 self._open_source_automatic(task, profile, output_dir, settings.capture.settle_seconds)
                 selector = profile["miniapp_selector"]
-                if not selector:
-                    # 识别后没有任何可操作的小程序窗口：多半是二维码指向团购页、公众号或网页，
-                    # 不是本店点餐码。按不合格记录并保留原因，不再进入 Agent 导航或人工复核。
-                    if precheck is not None:
-                        report["qr_precheck"] = precheck.wait(0.3).to_dict()
-                    reason = "扫码后未出现点餐小程序窗口，二维码可能不是点餐码"
-                    report["agent_outcome"] = "unqualified"
-                    report["agent_reason"] = reason
-                    report["navigation"] = {"outcome": "unqualified", "reason": reason, "source": "host"}
-                    report["runtime_status"] = "ok"
-                    return report
             else:
                 # 宿主只负责发现窗口；多个候选时先接管一个，由 Agent 用
                 # list_windows / switch_window 自行判断该操作哪个页面。
@@ -1453,7 +1448,6 @@ class UiPathRunner:
                                 "batch": self._trace_material.get("material_batch_id", "")},
                     # 原始二维码照片提供品牌、桌号等背景，只作参考，不能当成可点击屏幕。
                     source_image=task.get("source_path"),
-                    qr_hint=hint.instruction() if hint is not None else "",
                 )
                 timing["navigation"] = round((time.monotonic() - navigation_started) * 1000)
                 for field in ("reason",):
@@ -1602,6 +1596,10 @@ class UiPathRunner:
             self._set_stage(task, "connecting", "等待 UiPath Main 响应 IPC noop 命令")
             with self._trace("uipath_startup"):
                 self._await_cli_startup()
+            if profile["mode"] == "automatic":
+                # 批次版面先校准一次，后面各店复用同一窗口尺寸与几何。
+                with self._trace("wechat_batch_frame"):
+                    self._prepare_batch_wechat_frame(profile)
             task_ids = selected_task_ids if selected_task_ids is not None else [initial_task["id"]]
             if resumed and profile["mode"] == "automatic":
                 profile["miniapp_selector"] = ""
@@ -1736,6 +1734,12 @@ class UiPathRunner:
         except RobotCommandError as exc:
             self._persist_task_result(task, output_dir, "needs_review", "uipath_error", str(exc)[:500])
             run_status, run_message = "blocked", "UiPath 执行失败；批次已阻塞"
+        except NeedsReview as exc:
+            # 批次入口检查（如微信窗口版面校准）失败时保留原始原因，不能只说“启动失败”。
+            message = str(exc)[:500]
+            self._persist_task_result(task, output_dir, "needs_review", "needs_review", message,
+                                      getattr(exc, "code", ""))
+            run_status, run_message = "blocked", f"批次启动检查未通过：{message}"
         except Exception as exc:
             self._persist_task_result(task, output_dir, "needs_review", "uipath_error", f"{type(exc).__name__}；结果待人工检查")
             run_status, run_message = "blocked", "批次启动或执行失败；请查看当前门店详情"
@@ -1787,6 +1791,29 @@ class UiPathRunner:
             raise
         except Exception:
             return False
+
+    def _prepare_batch_wechat_frame(self, profile: dict) -> None:
+        """批次开始前把微信主窗口调到采集版面；调不到就拒绝开跑。
+
+        图片定位依赖 999×749 下的固定点位与模板匹配阈值，窗口尺寸不对时每店都会点空，
+        与其跑完一整批再回滚，不如在批次入口直接暴露环境问题。
+        """
+        if sys.platform != "win32":
+            return
+        selector = profile.get("wechat_selector") or self._configured_wechat_selector()
+        if not selector:
+            raise NeedsReview("未配置微信主窗口 selector，无法校准批次版面", "batch_window_frame")
+        width, height = _BATCH_WECHAT_FRAME
+        reply = self._send({"action": "resize", "selector": selector,
+                            "width": width, "height": height})
+        # 真实本机驱动会回读窗口矩形；驱动不回报尺寸时只能信任命令本身，不凭空阻断批次。
+        actual_width, actual_height = reply.get("window_width"), reply.get("window_height")
+        if actual_width is None or actual_height is None:
+            return
+        if abs(float(actual_width) - width) > 2 or abs(float(actual_height) - height) > 2:
+            raise NeedsReview(
+                f"微信主窗口未调整到 {width}×{height}（实际 {int(actual_width)}×{int(actual_height)}），批次未开始",
+                "batch_window_frame")
 
     def _ensure_file_assistant(self, profile: dict, output_dir: Path, settle_seconds: float) -> None:
         """恢复或失败续跑前用微信当前画面确认安全起点，不依赖进程存在状态。"""

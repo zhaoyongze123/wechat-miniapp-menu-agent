@@ -132,6 +132,31 @@ def test_file_assistant_ocr_uses_chat_content_boundary_not_sidebar_text():
         [{"text": "文件传输助手", "x": 116, "y": 66}], 864, 958
     )
 
+def test_batch_frame_resizes_wechat_and_rejects_wrong_size(tmp_path: Path, monkeypatch) -> None:
+    """批次开始前必须把微信主窗口校准到 999×749；调不到位直接拒绝开跑。"""
+    runner, *_ = _setup(tmp_path, mode="automatic")
+    monkeypatch.setattr(sys, "platform", "win32")
+    sent = []
+
+    def send(command):
+        sent.append(command)
+        return {"ok": True, "window_width": 999, "window_height": 749}
+
+    monkeypatch.setattr(runner, "_send", send)
+    profile = {"wechat_selector": "<wnd title='微信' />"}
+    runner._prepare_batch_wechat_frame(profile)
+    assert sent == [{"action": "resize", "selector": "<wnd title='微信' />",
+                     "width": 999, "height": 749}]
+
+    monkeypatch.setattr(runner, "_send",
+                        lambda command: {"ok": True, "window_width": 659, "window_height": 749})
+    with pytest.raises(NeedsReview) as raised:
+        runner._prepare_batch_wechat_frame(profile)
+    assert raised.value.code == "batch_window_frame"
+    assert "999×749" in str(raised.value)
+    assert "659×749" in str(raised.value)
+
+
 class FakeActor:
     def __init__(self, ipc_dir: Path, output_dir: Path):
         self.ipc_dir, self.output_dir = Path(ipc_dir), Path(output_dir)
