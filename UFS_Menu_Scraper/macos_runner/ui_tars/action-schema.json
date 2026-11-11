@@ -39,7 +39,7 @@
       "optional": {}
     },
     "terminate": {
-      "doc": "terminate：必填 outcome（success / unqualified / needs_review）和 reason（中文，说明实际观察到的结果，尽量简洁，建议不超过 300 字）；menu_box 只在 success 时必填，为 4 个 0..1000 的数字 [x1,y1,x2,y2]，且 x1<x2、y1<y2；非 success 不得提供非空 menu_box。unqualified 用于确认本轮拿不到本店点餐菜单：二维码不是点餐码（打开大众点评/美团团购、优惠券、外卖、公众号文章等非点餐页面）时，reason 必须写明实际平台与页面，例如“这是大众点评的团购界面，不是点餐码”；多次尝试仍进不到点餐菜单时也判 unqualified。",
+      "doc": "terminate：必填 outcome（success / unqualified / needs_review）和 reason（中文，说明实际观察到的结果，尽量简洁，建议不超过 300 字）；menu_box 只在 success 时必填，为 4 个 0..1000 的数字 [x1,y1,x2,y2]，且 x1<x2、y1<y2；非 success 不得提供非空 menu_box。",
       "required": {
         "outcome": { "type": "enum", "values": ["success", "unqualified", "needs_review"] },
         "reason": { "type": "string" }
