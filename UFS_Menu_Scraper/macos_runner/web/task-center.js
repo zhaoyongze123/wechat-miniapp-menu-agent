@@ -26,6 +26,15 @@
       const collapsed = panel.classList.toggle('collapsed');
       toggle.textContent = collapsed ? '展开' : '收起';
     });
+    // 侧边栏「任务中心」入口：展开面板并高亮，避免面板被其他浮层遮住时找不到。
+    const openPanel = () => {
+      panel.classList.remove('collapsed');
+      toggle.textContent = '收起';
+      panel.classList.add('flash');
+      setTimeout(() => panel.classList.remove('flash'), 1500);
+    };
+    window.__taskCenterOpen = openPanel;
+    document.querySelectorAll('[data-task-center]').forEach((btn) => btn.addEventListener('click', openPanel));
 
     const dialog = document.createElement('dialog');
     dialog.className = 'task-detail';

@@ -165,7 +165,7 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         if name not in {"materials.js", "materials.css", "workspace.css", "model-usage.js", "model-usage.css",
                         "annotation.js", "annotation.css", "task-center.js", "task-center.css"}:
             raise HTTPException(404, "资源不存在")
-        return FileResponse(ROOT / "web" / name)
+        return FileResponse(ROOT / "web" / name, headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/model-usage")
     def model_usage_report(date_from: str | None = None, date_to: str | None = None,
