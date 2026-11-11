@@ -416,6 +416,10 @@ def test_navigation_puts_full_guide_in_system_prompt(model_server, tmp_path):
     assert "你正在完成的业务" in system_text
     assert "三个终态" in system_text
     assert "就餐人数、堂食方式、桌号等选择页面" in system_text
+    # 职责划分：Agent 只判断菜单是否合格并交接，滚动采集与到底判断归下游程序。
+    assert "合格菜单界面的判断标准" in system_text
+    assert "不得为了验证菜单而额外进行滚动操作" in system_text
+    assert "不要为了验证滚动能力而滚动页面" in system_text
     user_text = "\n".join(str(m.get("content")) for m in messages if m.get("role") == "user")
     assert "当前具体页面和状态尚未确认" in user_text
     assert "实际页面证据优先" in user_text
