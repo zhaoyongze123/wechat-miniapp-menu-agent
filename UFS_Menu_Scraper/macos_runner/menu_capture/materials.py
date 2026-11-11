@@ -502,6 +502,7 @@ class MaterialService:
                 inspect,
                 circle_inspector,
                 skip_square_on_circle_hit=self.circle_priority,
+                circle_image_range=CIRCLE_IMAGE_RANGE,
             )
         finally:
             if detector is not None:

@@ -745,3 +745,22 @@ def test_circle_assist_mode_still_runs_square_round_and_prefers_decodable_code(t
     recommended = [candidate for candidate in candidates if candidate["recommendation"]]
     assert len(recommended) == 1
     assert recommended[0]["payload_sha256"], "有可解码方形码时圆形候选只作辅助，不抢推荐"
+
+
+def test_six_image_store_reanalysis_skips_circle_detection(tmp_path: Path) -> None:
+    circle_calls: list[Path] = []
+    service, _, _, input_root, _ = _setup(
+        tmp_path,
+        circle_inspector=lambda path: circle_calls.append(path),
+        circle_mode="priority",
+    )
+    for index in range(6):
+        _png(input_root / "Shop" / f"menu-{index}.png")
+
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["analysis_status"] == "selected"
+    assert circle_calls == []
+
+    service.reanalyze_store(batch["batch_id"], store["store_id"])
+    assert circle_calls == []
