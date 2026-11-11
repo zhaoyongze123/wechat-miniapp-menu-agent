@@ -55,13 +55,20 @@ def _detector(_path: Path) -> list[dict]:
 
 
 def _wait(service: MaterialService, batch_id: str) -> dict:
-    deadline = time.monotonic() + 5
+    """等待持久化 job 结束；批次状态只表示结果是否可用，不再承载运行态。"""
+    deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         batch = service.get_batch(batch_id)
-        if batch["status"] not in {"queued", "analyzing"}:
+        job = batch.get("job")
+        if job is None:
             return batch
-        time.sleep(0.01)
-    raise AssertionError("素材分析 worker 在 5 秒内未结束")
+        if job["status"] == "completed":
+            if batch["status"] == "completed":
+                return batch
+        elif job["status"] in {"failed", "cancelled", "paused", "interrupted"}:
+            return batch
+        time.sleep(0.02)
+    raise AssertionError("素材分析 job 在 20 秒内未结束")
 
 
 def _analyze(service: MaterialService, source: Path) -> dict:
@@ -280,7 +287,7 @@ def test_confirmed_decision_prevents_publish_after_source_root_path_escape(tmp_p
         service.get_store(batch["batch_id"], "../../outside")
 
 
-def test_interrupted_analysis_is_marked_and_never_automatically_restarted(tmp_path: Path) -> None:
+def test_legacy_running_batch_is_recovered_and_can_restart(tmp_path: Path) -> None:
     service, _, task_store, input_root, root = _setup(tmp_path)
     _png(input_root / "Shop" / "menu.png")
     batch = service.create_local_batch(input_root)
@@ -289,13 +296,14 @@ def test_interrupted_analysis_is_marked_and_never_automatically_restarted(tmp_pa
 
     restarted = MaterialService(root, service.configs, task_store, inspector=_detector)
     status = restarted.get_batch(batch["batch_id"])
-    assert status["status"] == "interrupted"
+    # 旧版本遗留的运行态：没有决策行就回到可分析，由用户显式重新开始，不再永久中断。
+    assert status["status"] == "ready_to_analyze"
     assert status["stores"] == []
-    with pytest.raises(ValueError, match="只有 ready_to_analyze"):
-        restarted.start_analysis(batch["batch_id"])
+    restarted.start_analysis(batch["batch_id"])
+    assert _wait(restarted, batch["batch_id"])["status"] == "completed"
 
 
-def test_only_one_analysis_worker_runs_and_decisions_are_locked_while_analyzing(tmp_path: Path) -> None:
+def test_only_one_analysis_job_runs_and_second_batch_is_queued(tmp_path: Path) -> None:
     entered, release = threading.Event(), threading.Event()
 
     def slow_inspector(path: Path) -> list[dict]:
@@ -311,16 +319,19 @@ def test_only_one_analysis_worker_runs_and_decisions_are_locked_while_analyzing(
     _png(input_root / "Second Shop" / "z-two.png", "black")
     first = service.create_local_batch(input_root / "First Shop")
     second = service.create_local_batch(input_root / "Second Shop")
-    service.start_analysis(first["batch_id"])
-    assert entered.wait(timeout=3)
-    with pytest.raises(RuntimeError, match="已有素材批次正在分析"):
-        service.start_analysis(second["batch_id"])
-    with pytest.raises(ValueError, match="分析未完成"):
-        service.decide_store(first["batch_id"], "unknown", "skip")
-    release.set()
-    assert _wait(service, first["batch_id"])["status"] == "completed"
-    service._worker.join(timeout=3)
-    assert _wait_after_start(service, second["batch_id"])["status"] == "completed"
+    service.job_runner.start()
+    try:
+        service.start_analysis(first["batch_id"])
+        assert entered.wait(timeout=3)
+        # 全局单通道：第二个批次不再 409，而是排队等待第一个结束。
+        assert service.start_analysis(second["batch_id"])["job"]["status"] == "queued"
+        with pytest.raises(ValueError, match="分析未完成"):
+            service.decide_store(first["batch_id"], "unknown", "skip")
+        release.set()
+        assert _wait(service, first["batch_id"])["status"] == "completed"
+        assert _wait(service, second["batch_id"])["status"] == "completed"
+    finally:
+        service.job_runner.stop()
 
 
 def test_local_ocr_selects_point_ordering_code_and_keeps_safe_fields(tmp_path: Path) -> None:
@@ -539,7 +550,6 @@ def test_batch_reanalysis_reruns_only_selected_pending_stores(tmp_path: Path) ->
     _png(input_root / "B" / "b.png")
     _png(input_root / "B" / "z-b.png", "gray")
     batch = _analyze(service, input_root)
-    service._worker.join(timeout=3)
     ids = {store["source_name"]: store["store_id"] for store in batch["stores"]}
     assert service.accept_recommendations(batch["batch_id"], [ids["A"]])["confirmed"] == 1
     with pytest.raises(ValueError, match="未知门店"):
@@ -663,7 +673,7 @@ def test_circle_mini_program_code_without_payload_is_recommended_confirmed_and_p
     store = batch["stores"][0]
 
     # 方形 + 圆形 + 分类共 2 图 × 3 个逻辑单位；方形先跑，圆形作兜底。
-    assert batch["progress"] == {"done": 6, "total": 6}
+    assert batch["progress"] == {"done": 1, "total": 1}
     assert len(square_calls) == 2
     assert batch["summary"]["detection_stats"]["circle_enabled"] is True
     assert batch["summary"]["detection_stats"]["circle"]["hit_stores"] == 1
@@ -766,7 +776,7 @@ def test_circle_assist_mode_still_runs_square_round_and_prefers_decodable_code(t
     batch = _analyze(service, input_root)
     store = batch["stores"][0]
     assert len(square_calls) == 2, "辅助模式必须保留原有方形码检测"
-    assert batch["progress"] == {"done": 6, "total": 6}
+    assert batch["progress"] == {"done": 1, "total": 1}
 
     detail = service.get_store(batch["batch_id"], store["store_id"])
     candidates = [candidate for image in detail["images"] for candidate in image["candidates"]]
@@ -854,3 +864,99 @@ def test_store_with_more_than_thirteen_images_skips_detection(tmp_path: Path) ->
     assert store["analysis_status"] == "needs_review"
     assert store["recommendation"] is False
     assert "超过 13 张" in store["reason"]
+
+
+def test_legacy_batch_only_completed_when_every_store_has_decision(tmp_path: Path) -> None:
+    service, _, task_store, input_root, root = _setup(tmp_path)
+    _png(input_root / "甲店" / "a.png")
+    _png(input_root / "乙店" / "b.png")
+    batch = service.create_local_batch(input_root)
+    assert _analyze(service, input_root)["status"] == "completed"
+    batch_id = batch["batch_id"]
+
+    # 只有部分门店有决策时，崩溃遗留的 analyzing 必须回到可分析，不能标记完成。
+    with task_store.connect() as db:
+        db.execute("DELETE FROM material_decisions WHERE batch_id=? AND source_name='乙店'", (batch_id,))
+        db.execute("UPDATE material_batches SET status='analyzing' WHERE id=?", (batch_id,))
+    recovered = MaterialService(root, service.configs, task_store, inspector=_detector)
+    assert recovered.get_batch(batch_id)["status"] == "ready_to_analyze"
+
+    # 全部门店都有决策时，才收敛为 completed。
+    recovered.start_analysis(batch_id)
+    assert _wait(recovered, batch_id)["status"] == "completed"
+    with task_store.connect() as db:
+        db.execute("UPDATE material_batches SET status='analyzing' WHERE id=?", (batch_id,))
+    again = MaterialService(root, service.configs, task_store, inspector=_detector)
+    assert again.get_batch(batch_id)["status"] == "completed"
+
+
+def test_interrupted_job_blocks_new_job_until_cancelled(tmp_path: Path) -> None:
+    from menu_capture.material_jobs import JobStore
+
+    service, _, _, _input_root, _root = _setup(tmp_path)
+    store = JobStore(service.task_store)
+    items = [{"store_id": "s1", "source_folder": "a"}]
+    job = store.create("batch-x", "analyze", items)
+    store.finish(job["id"], "interrupted", error="心跳超时")
+    with pytest.raises(ValueError, match="已中断"):
+        store.create("batch-x", "analyze", items)
+    assert store.cancel(job["id"])
+    assert store.create("batch-x", "retry_failed", items)["status"] == "queued"
+
+
+def test_batch_and_per_store_decisions_are_identical(tmp_path: Path) -> None:
+    """同一批样本：整批 build_materials 与逐店 job 产出的决策 JSON 必须一致。"""
+    from menu_capture.preprocess import (
+        MAX_STORE_IMAGES,
+        SQUARE_IMAGE_RANGE,
+        build_materials,
+        discover_stores,
+    )
+    from menu_capture.materials import CIRCLE_IMAGE_RANGE
+
+    service, _, _, input_root, _root = _setup(tmp_path)
+    _png(input_root / "品牌A" / "门店" / "a.png")
+    _png(input_root / "品牌A" / "门店" / "z-a.png", "gray")
+    _png(input_root / "品牌B" / "门店" / "b.png", "black")
+    _png(input_root / "品牌B" / "门店" / "z-b.png", "white")
+    _png(input_root / "单独店" / "only.png")
+
+    per_store_batch = _analyze(service, input_root)
+    assert per_store_batch["status"] == "completed"
+    with service.task_store.connect() as db:
+        per_store = {
+            row["source_folder"]: json.loads(row["store_json"])
+            for row in db.execute("SELECT source_folder,store_json FROM material_decisions WHERE batch_id=?",
+                                  (per_store_batch["batch_id"],))
+        }
+
+    output = tmp_path / "batch-analysis"
+    # 必须与逐店 job 使用完全相同的检测参数，否则 1 张图的“单独店”会一边跑方形检测、
+    # 一边按配置跳过检测，比较的就不是同一条链路的决策了。
+    manifest = build_materials(
+        input_root, output,
+        inspector=_detector,
+        circle_inspector=service.circle_inspector,
+        circle_priority=service.circle_priority,
+        circle_image_range=CIRCLE_IMAGE_RANGE,
+        square_image_range=SQUARE_IMAGE_RANGE,
+        max_images=MAX_STORE_IMAGES,
+    )
+    _stores, duplicates = discover_stores(input_root)
+    service._classify_and_select(manifest, input_root, output, duplicate_names=duplicates)
+    wholesale = {store["source_folder"]: store for store in manifest["stores"]}
+
+    assert set(per_store) == set(wholesale)
+
+    def decision(store: dict) -> dict:
+        return {
+            "status": store.get("status") or store.get("analysis_status"),
+            "reason": store.get("reason", ""),
+            "selected_source": store.get("selected_source"),
+            "selected_artifact": store.get("selected_artifact"),
+            "selected": [candidate.get("purpose") for image in store["images"]
+                         for candidate in image.get("candidates", []) if candidate.get("selected")],
+        }
+
+    for folder in sorted(per_store):
+        assert decision(per_store[folder]) == decision(wholesale[folder]), folder

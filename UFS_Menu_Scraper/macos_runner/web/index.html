@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>菜单采集 · 本地控制台</title>
+  <link rel="stylesheet" href="/assets/task-center.css">
   <link rel="stylesheet" href="/assets/materials.css">
   <style>
     :root{--ink:#182624;--muted:#74817e;--line:#e4eae7;--paper:#fff;--canvas:#f4f7f5;--teal:#168b78;--teal-dark:#0c6d5e;--teal-pale:#e8f5f1;--amber:#a96818;--amber-pale:#fff4e4;--red:#ba4d45;--red-pale:#fff0ee;--shadow:0 8px 28px rgba(24,52,45,.055);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",sans-serif}
@@ -224,7 +225,13 @@
             <div class="materials-analysis-track" id="materials-analysis-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="素材分析进度"><div id="materials-analysis-fill"></div></div>
             <div class="materials-analysis-meta"><span id="materials-analysis-count" role="status" aria-live="polite"></span><span id="materials-analysis-percent"></span></div>
             <p class="card-desc">分析全部在本机完成，关闭此窗口不会中断任务。</p>
-            <div class="materials-analysis-actions"><button class="btn" id="materials-analysis-hide" type="button">后台运行</button></div>
+            <div class="materials-analysis-actions">
+              <button class="btn" id="materials-analysis-pause" type="button" hidden>暂停</button>
+              <button class="btn" id="materials-analysis-resume" type="button" hidden>继续</button>
+              <button class="btn" id="materials-analysis-retry" type="button" hidden>重试失败门店</button>
+              <button class="btn" id="materials-analysis-cancel" type="button" hidden>取消任务</button>
+              <button class="btn" id="materials-analysis-hide" type="button">后台运行</button>
+            </div>
           </div>
         </dialog>
         <div class="card section-gap materials-batch-bar">
@@ -885,9 +892,11 @@
       $('environment-refresh').addEventListener('click',()=>state.serviceDisconnected?retryLocalService():connectConnections(true));
       renderUncheckedConnections();refreshConfig();api('/api/robot/profile').then(fillRobot).catch(err=>toast(err.message));poll();
       window.__materialsInit=(initialize)=>initialize({api,token:TOKEN});
+      window.__consoleBridge={api,toast,setPage};
     })();
   </script>
   <script src="/assets/materials.js"></script>
+  <script src="/assets/task-center.js"></script>
   <script src="/assets/model-usage.js"></script>
   <script src="/assets/annotation.js"></script>
 </body>

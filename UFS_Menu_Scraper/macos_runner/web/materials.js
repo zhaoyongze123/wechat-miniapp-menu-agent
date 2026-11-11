@@ -15,11 +15,18 @@
     function setBusy(value) { state.busy = value; document.querySelectorAll('#page-materials button, #page-materials select, #page-materials input, #page-materials textarea').forEach((el) => { if (!['materials-search', 'materials-files', 'materials-folder'].includes(el.id)) el.disabled = value || el.dataset.baseDisabled === 'true'; }); updateControls(); if ($('materials-manage-dialog')?.open) renderManagement(); }
     function readyToReview() { return !!state.batch && ['completed', 'ready'].includes(state.batch.status); }
     function canEditDetail() { const decision = normalizeDecision(state.detail?.decision || selectedStore()?.decision); return readyToReview() && !!state.detail && (decision === 'pending' || (decision === 'skipped' && state.repairMode)); }
+    const OPEN_JOB_STATUSES = ['queued', 'running', 'pause_requested', 'paused', 'interrupted'];
+    const ACTIVE_JOB_STATUSES = ['queued', 'running', 'pause_requested'];
+    function currentJob() { return state.batch?.job || null; }
+    function jobOpen() { return OPEN_JOB_STATUSES.includes(currentJob()?.status); }
+    function jobActive() { return ACTIVE_JOB_STATUSES.includes(currentJob()?.status); }
     function updateControls() {
       const ready = readyToReview(), hasDetail = !!state.detail, selected = state.selectedCandidate !== null;
-      const batchStatus = state.batch?.status, canAnalyze = batchStatus === 'ready_to_analyze', canReanalyze = batchStatus === 'completed';
-      $('materials-analyze').textContent = canReanalyze ? '重新分析' : '开始分析';
-      $('materials-analyze').disabled = state.busy || !state.batchId || !(canAnalyze || canReanalyze);
+      const batchStatus = state.batch?.status, running = jobActive();
+      // 运行态归 job：有未结束任务时按钮只用于查看进度，不再允许重复发起。
+      const canAnalyze = batchStatus === 'ready_to_analyze' && !jobOpen(), canReanalyze = batchStatus === 'completed' && !jobOpen();
+      $('materials-analyze').textContent = running || jobOpen() ? '查看进度' : canReanalyze ? '重新分析' : '开始分析';
+      $('materials-analyze').disabled = state.busy || !state.batchId || !(canAnalyze || canReanalyze || jobOpen());
       $('materials-accept-recommended').disabled = state.busy || !ready || !Number(state.batch?.summary?.pending_stores || 0);
       $('materials-publish').disabled = state.busy || !ready || !Number(state.batch?.summary?.confirmed_stores || 0);
       $('materials-batch').disabled = state.busy || !state.batches.length;
@@ -86,9 +93,10 @@
     }
     function scheduleBatchPoll() {
       clearTimeout(state.pollTimer); state.pollTimer = null;
-      if (!state.batchId || document.hidden || !['queued', 'analyzing', 'uploading'].includes(state.batch?.status)) return;
-      // 分析中加密轮询，进度弹窗更新更连续；其余状态维持 3 秒。
-      state.pollTimer = window.setTimeout(refreshCurrentBatch, ['queued', 'analyzing'].includes(state.batch?.status) ? 1000 : 3000);
+      if (!state.batchId || document.hidden) return;
+      // 有未结束 job（含暂停/中断）就持续轮询，便于任务中心与弹窗同步计数。
+      if (!jobOpen() && state.batch?.status !== 'uploading') return;
+      state.pollTimer = window.setTimeout(refreshCurrentBatch, jobActive() ? 1000 : 3000);
     }
     async function refreshBatch(fromPoll = true) {
       if (!state.batchId) return;
@@ -130,33 +138,85 @@
       ui.percent.textContent = count ? `${percent}%` : '';
       ui.action.textContent = action;
     }
+    function formatDuration(seconds) {
+      const value = Math.max(0, Number(seconds) || 0);
+      if (!value) return '';
+      if (value < 60) return `约 ${Math.max(1, Math.round(value))} 秒`;
+      if (value < 3600) return `约 ${Math.round(value / 60)} 分钟`;
+      return `约 ${(value / 3600).toFixed(1)} 小时`;
+    }
+    function syncAnalysisButtons(job) {
+      const status = job?.status || '';
+      $('materials-analysis-pause').hidden = status !== 'running';
+      $('materials-analysis-resume').hidden = !['paused', 'interrupted'].includes(status);
+      $('materials-analysis-cancel').hidden = !OPEN_JOB_STATUSES.includes(status);
+      $('materials-analysis-retry').hidden = !(Number(job?.failed_stores || job?.counts?.failed || 0) > 0 && ['completed', 'failed'].includes(status));
+    }
     function renderAnalysisDialog() {
       const ui = analysisDialogParts();
       if (!ui) return;
-      const status = state.batch?.status || '', { total, done, percent } = analysisProgress();
-      if (status === 'queued' || status === 'analyzing') {
-        const reanalyze = state.reanalyzeMode;
-        const stage = reanalyze ? '正在重跑所选门店的二维码检测与用途识别…' : status === 'queued' ? '等待分析线程启动…' : total && done < total / 2 ? '本地二维码检测' : '本地 OCR 用途筛选';
-        fillAnalysisDialog(percent, { title: reanalyze ? '正在重新分析门店' : '正在分析素材', stage, count: total ? (reanalyze ? `${done} / ${total} 家` : `${done} / ${total} 步`) : '', action: '后台运行' });
+      const job = currentJob(), status = job?.status || '', { total, done, percent } = analysisProgress();
+      syncAnalysisButtons(job);
+      if (ACTIVE_JOB_STATUSES.includes(status)) {
+        const stage = status === 'queued' ? '排队等待前一个任务结束…'
+          : status === 'pause_requested' ? '正在完成当前门店并暂停…'
+          : job?.stage || '本地二维码检测与用途识别';
+        const current = job?.current_store_name ? ` · 当前：${job.current_store_name}` : '';
+        const eta = formatDuration(job?.eta_seconds);
+        fillAnalysisDialog(percent, {
+          title: state.reanalyzeMode ? '正在重新分析门店' : '正在分析素材',
+          stage: `${stage}${current}${eta ? ` · 预计剩余${eta}` : ''}`,
+          count: total ? `${done} / ${total} 家` : '',
+          action: '后台运行',
+        });
         const otherOpen = [...document.querySelectorAll('#page-materials dialog[open]')].some((dialog) => dialog !== ui.dialog);
         if (!state.analysisDismissed && !ui.dialog.open && !otherOpen) ui.dialog.show();
         return;
       }
+      if (['paused', 'interrupted'].includes(status)) {
+        fillAnalysisDialog(percent, {
+          title: status === 'paused' ? '分析已暂停' : '分析已中断',
+          stage: '已处理完的门店结果已保留，点击“继续”从下一家接着跑。',
+          count: total ? `${done} / ${total} 家` : '',
+          action: '关闭',
+        });
+        if (!state.analysisDismissed && !ui.dialog.open
+          && ![...document.querySelectorAll('#page-materials dialog[open]')].some((dialog) => dialog !== ui.dialog)) ui.dialog.show();
+        return;
+      }
+      if (status === 'failed' && job) {
+        fillAnalysisDialog(percent, {
+          title: '分析未完成',
+          stage: job.error || job.message || '部分门店处理失败，可只重试失败门店。',
+          count: total ? `${done} / ${total} 家` : '',
+          action: '关闭',
+        });
+        if (!state.analysisDismissed && !ui.dialog.open
+          && ![...document.querySelectorAll('#page-materials dialog[open]')].some((dialog) => dialog !== ui.dialog)) ui.dialog.show();
+        return;
+      }
       clearTimeout(state.analysisCloseTimer); state.analysisCloseTimer = null;
-      if (status === 'completed' || status === 'ready') {
+      if (['completed', 'ready'].includes(state.batch?.status)) {
         state.analysisStarted = '';
-        fillAnalysisDialog(100, { title: state.reanalyzeMode ? '重新分析完成' : '分析完成', stage: '正在载入门店与二维码候选…', count: total ? (state.reanalyzeMode ? `${total} / ${total} 家` : `${total} / ${total} 步`) : '', action: '关闭' });
+        fillAnalysisDialog(100, { title: state.reanalyzeMode ? '重新分析完成' : '分析完成', stage: '正在载入门店与二维码候选…', count: total ? `${total} / ${total} 家` : '', action: '关闭' });
         state.reanalyzeMode = false;
         if (ui.dialog.open) state.analysisCloseTimer = window.setTimeout(() => ui.dialog.close(), 1600);
         return;
       }
-      if (['failed', 'error', 'interrupted'].includes(status)) {
-        fillAnalysisDialog(percent, { title: '分析未完成', stage: state.batch?.error || '分析失败，请检查批次后重试。', count: total ? `${done} / ${total} 步` : '', action: '关闭' });
+      if (['failed', 'error'].includes(state.batch?.status)) {
+        fillAnalysisDialog(percent, { title: '分析未完成', stage: state.batch?.error || '分析失败，请检查批次后重试。', count: total ? `${done} / ${total} 家` : '', action: '关闭' });
         if (state.analysisStarted && state.analysisStarted === state.batch?.batch_id && !state.analysisDismissed && !ui.dialog.open
           && ![...document.querySelectorAll('#page-materials dialog[open]')].some((dialog) => dialog !== ui.dialog)) ui.dialog.show();
         state.analysisStarted = '';
         state.reanalyzeMode = false;
       }
+    }
+    function openAnalysisDialog() {
+      const ui = analysisDialogParts();
+      if (!ui) return;
+      state.analysisDismissed = false;
+      renderAnalysisDialog();
+      if (!ui.dialog.open) ui.dialog.show();
     }
     function renderBatch() {
       const release=state.batch?.release;
@@ -170,7 +230,7 @@
       for (const item of stores) { const decision = normalizeDecision(item.decision); counts[decision]++; }
       for (const [key, count] of Object.entries(counts)) { const target = document.querySelector(`[data-filter-count="${key}"]`); if (target) target.textContent = String(count); }
       if(state.batch?.error)setError('materials-batch-error',`${state.batch.error}。请重新导入素材创建新批次。`);
-      const active = ['queued', 'analyzing', 'uploading'].includes(state.batch?.status);
+      const active = jobActive() || state.batch?.status === 'uploading';
       const step = !state.batch ? 0 : active ? 1 : state.batch.snapshot_id ? 3 : ['completed', 'ready'].includes(state.batch.status) ? 2 : state.batch.status === 'ready_to_analyze' ? 0 : 1;
       document.querySelectorAll('.materials-step').forEach((el, i) => { el.classList.toggle('active', i === step); el.classList.toggle('done', i < step); });
       const p = state.batch?.progress;
@@ -642,13 +702,33 @@
     });
     $('materials-analyze').addEventListener('click', async () => {
       if (state.busy || !state.batchId) return;
+      if (jobOpen()) { openAnalysisDialog(); return; }
       if (state.batch?.status === 'completed') { openReanalyzeDialog(); return; }
       setBusy(true); setError('materials-batch-error',''); state.analysisDismissed = false; state.analysisStarted = state.batchId; state.reanalyzeMode = false;
       const ui = analysisDialogParts();
-      if (ui) { fillAnalysisDialog(0, { title: '正在分析素材', stage: '正在启动本地分析…', count: '', action: '后台运行' }); if (!ui.dialog.open) ui.dialog.show(); }
+      if (ui) { fillAnalysisDialog(0, { title: '正在分析素材', stage: '正在创建分析任务…', count: '', action: '后台运行' }); if (!ui.dialog.open) ui.dialog.show(); }
       try { await api(url(`/batches/${encodeURIComponent(state.batchId)}/analyze`),{method:'POST',body:'{}'}); await refreshBatch(false); }
       catch(err) { state.analysisStarted = ''; ui?.dialog.close(); setError('materials-batch-error',err.message); }
       finally { setBusy(false); }
+    });
+    async function jobAction(action, confirmText='') {
+      const job = currentJob();
+      if (!job || (confirmText && !window.confirm(confirmText))) return;
+      try {
+        await api(`/materials/jobs/${encodeURIComponent(job.id)}/${action}`, { method: 'POST', body: '{}' });
+        state.analysisDismissed = false;
+        await refreshBatch(false);
+      } catch (err) { setError('materials-batch-error', err.message); }
+    }
+    $('materials-analysis-pause').addEventListener('click', () => jobAction('pause'));
+    $('materials-analysis-resume').addEventListener('click', () => jobAction('resume'));
+    $('materials-analysis-cancel').addEventListener('click', () => jobAction('cancel', '取消当前分析任务？已完成门店的结果会保留。'));
+    $('materials-analysis-retry').addEventListener('click', async () => {
+      try {
+        state.analysisDismissed = false;
+        await api(url(`/batches/${encodeURIComponent(state.batchId)}/retry-failed`), { method: 'POST', body: '{}' });
+        await refreshBatch(false);
+      } catch (err) { setError('materials-batch-error', err.message); }
     });
     $('materials-analysis-hide').addEventListener('click', () => $('materials-analysis-dialog').close());
     $('materials-analysis-dialog').addEventListener('close', () => { state.analysisDismissed = true; clearTimeout(state.analysisCloseTimer); state.analysisCloseTimer = null; });

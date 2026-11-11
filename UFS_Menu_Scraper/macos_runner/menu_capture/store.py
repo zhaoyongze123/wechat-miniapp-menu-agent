@@ -110,6 +110,9 @@ class TaskStore:
     def connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
+        # WAL 让并发 worker 的短事务读写互不阻塞；busy_timeout 缓解写-写瞬时冲突。
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=10000")
         return db
 
     @staticmethod

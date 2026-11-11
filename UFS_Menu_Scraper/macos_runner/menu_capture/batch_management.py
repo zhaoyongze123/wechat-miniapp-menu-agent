@@ -40,7 +40,7 @@ class BatchManager:
     def delete(self, batch_id: str) -> dict:
         # 活跃任务先快速拒绝，避免等 worker 完成后才意外删除刚结束的批次。
         initial = self.service._batch_row(batch_id)
-        if initial["status"] in _ACTIVE_BATCH_STATES:
+        if initial["status"] in _ACTIVE_BATCH_STATES or self.service.jobs.open_job(batch_id):
             raise ValueError("批次正在分析或上传")
         with self.service._publish_lock, self.service._worker_lock, self.service._lock:
             batch = self.service._batch_row(batch_id)
@@ -105,7 +105,7 @@ class BatchManager:
             batch = self.service._batch_row(batch_id, include_deleted=True)
             if not batch["deleted_at"]:
                 raise ValueError("只能彻底删除回收站中的批次")
-            if batch["status"] in _ACTIVE_BATCH_STATES:
+            if batch["status"] in _ACTIVE_BATCH_STATES or self.service.jobs.open_job(batch_id):
                 raise ValueError("批次正在分析或上传")
             state = self._state(batch)
             if state["versions_count"] or batch["snapshot_id"]:

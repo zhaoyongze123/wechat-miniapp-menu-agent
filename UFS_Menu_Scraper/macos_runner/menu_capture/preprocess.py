@@ -422,6 +422,87 @@ def _atomic_json(path: Path, value: dict) -> None:
     os.replace(temporary, path)
 
 
+def discover_stores(source: Path) -> tuple[list[dict], set[str]]:
+    """按图片直接父目录生成门店骨架，并返回跨父目录重名集合。
+
+    整批分析（build_materials）和逐店分析（job worker）必须共用这一函数，
+    否则两边对“哪些目录算同一家店”的判断会出现偏差。
+    """
+    images = _enumerate_images(source)
+    stores_by_folder: dict[str, dict] = {}
+    for image_path in images:
+        relative_path = image_path.relative_to(source).as_posix()
+        relative_folder = image_path.parent.relative_to(source).as_posix() or "."
+        source_name = image_path.parent.name or source.name
+        store = stores_by_folder.setdefault(relative_folder, {
+            "source_name": source_name,
+            "source_folder": relative_folder,
+            "status": "needs_review",
+            "reason": "等待二维码检查",
+            "selected_source": None,
+            "selected_artifact": None,
+            "images": [],
+        })
+        store["images"].append({"path": relative_path})
+    stores = [stores_by_folder[key] for key in sorted(stores_by_folder)]
+    folders_by_name: dict[str, list[dict]] = {}
+    for store in stores:
+        folders_by_name.setdefault(store["source_name"], []).append(store)
+    duplicate_names = {
+        name for name, group in folders_by_name.items()
+        if len({item["source_folder"] for item in group}) > 1
+    }
+    return stores, duplicate_names
+
+
+def analyze_store(
+    store: dict,
+    source_root: Path,
+    *,
+    inspector: Callable[[Path], list[dict]] | None = None,
+    circle_inspector: Callable[[Path], dict | None] | None = None,
+    circle_priority: bool = True,
+    circle_image_range: tuple[int, int] | None = None,
+    square_image_range: tuple[int, int] | None = None,
+    circle_gate: Callable[[list[dict]], bool] | None = None,
+    max_images: int | None = None,
+    on_unit: Callable[[], None] | None = None,
+    resolve_path: Callable[[dict], Path] | None = None,
+) -> dict:
+    """对单个门店执行图片准备与两轮检测，返回补充了统计字段的门店字典。
+
+    只做检测，不做“选哪张图”的语义决策；决策层（MaterialService）在整批和逐店
+    两条路径上都调用同一份 _classify_and_select，保证结果一致。
+    """
+    unit = on_unit or (lambda: None)
+    resolve = resolve_path or (lambda image: Path(source_root) / image["path"])
+    stats = inspect_store_images(
+        store["images"],
+        resolve,
+        inspector or _apple_vision_inspector,
+        circle_inspector,
+        unit,
+        skip_square_on_circle_hit=circle_priority,
+        circle_image_range=circle_image_range,
+        square_image_range=square_image_range,
+        circle_gate=circle_gate,
+        max_images=max_images,
+    )
+    if stats["circle_skipped_reason"] == "square_candidate_found":
+        # 圆形未跑时把预留的单元补齐，避免整批进度停在 90%。
+        for _image in store["images"]:
+            unit()
+    store["circle_hit"] = stats["circle_hit"]
+    store["circle_error"] = stats["circle_error"]
+    store["square_checked"] = stats["square_checked"]
+    store["circle_ms"] = stats["circle_ms"]
+    store["square_ms"] = stats["square_ms"]
+    store["circle_images"] = stats["circle_images"]
+    store["skipped_images"] = stats["skipped_images"]
+    store["circle_skipped"] = stats["circle_skipped_reason"]
+    return store
+
+
 def build_materials(
     input_root: Path,
     output_root: Path,
@@ -443,28 +524,8 @@ def build_materials(
     """
     source, target = _ensure_paths(Path(input_root), Path(output_root))
     inspect = inspector or _apple_vision_inspector
-    images = _enumerate_images(source)
-    stores_by_folder: dict[str, dict] = {}
-    for image_path in images:
-        relative_path = image_path.relative_to(source).as_posix()
-        relative_folder = image_path.parent.relative_to(source).as_posix() or "."
-        source_name = image_path.parent.name or source.name
-        store = stores_by_folder.setdefault(relative_folder, {
-            "source_name": source_name,
-            "source_folder": relative_folder,
-            "status": "needs_review",
-            "reason": "等待二维码检查",
-            "selected_source": None,
-            "selected_artifact": None,
-            "images": [],
-        })
-        store["images"].append({"path": relative_path})
-
-    stores = [stores_by_folder[key] for key in sorted(stores_by_folder)]
-    folders_by_name: dict[str, list[dict]] = {}
-    for store in stores:
-        folders_by_name.setdefault(store["source_name"], []).append(store)
-    duplicate_names = {name for name, group in folders_by_name.items() if len({item["source_folder"] for item in group}) > 1}
+    stores, duplicate_names = discover_stores(source)
+    total_images = sum(len(store["images"]) for store in stores)
 
     def store_units(store: dict) -> int:
         count = len(store["images"])
@@ -484,30 +545,17 @@ def build_materials(
         _safe_progress(progress, done_units, total_units)
 
     for store in stores:
-        store_stats = inspect_store_images(
-            store["images"],
-            lambda image: source / image["path"],
-            inspect,
-            circle_inspector,
-            unit,
-            skip_square_on_circle_hit=circle_priority,
+        analyze_store(
+            store, source,
+            inspector=inspect,
+            circle_inspector=circle_inspector,
+            circle_priority=circle_priority,
             circle_image_range=circle_image_range,
             square_image_range=square_image_range,
             circle_gate=circle_gate,
             max_images=max_images,
+            on_unit=unit,
         )
-        if store_stats["circle_skipped_reason"] == "square_candidate_found":
-            # 圆形未跑时把预留的单元补齐，避免进度停在 90%。
-            for _image in store["images"]:
-                unit()
-        store["circle_hit"] = store_stats["circle_hit"]
-        store["circle_error"] = store_stats["circle_error"]
-        store["square_checked"] = store_stats["square_checked"]
-        store["circle_ms"] = store_stats["circle_ms"]
-        store["square_ms"] = store_stats["square_ms"]
-        store["circle_images"] = store_stats["circle_images"]
-        store["skipped_images"] = store_stats["skipped_images"]
-        store["circle_skipped"] = store_stats["circle_skipped_reason"]
 
     stage = target.with_name(target.name + ".tmp-" + uuid.uuid4().hex)
     stage.mkdir(parents=True, mode=0o700, exist_ok=False)
@@ -582,7 +630,7 @@ def build_materials(
         ]
         summary = {
             "total_stores": len(stores),
-            "total_images": len(images),
+            "total_images": total_images,
             "selected_stores": sum(item["status"] == "selected" for item in stores),
             "review_stores": sum(item["status"] != "selected" for item in stores),
         }

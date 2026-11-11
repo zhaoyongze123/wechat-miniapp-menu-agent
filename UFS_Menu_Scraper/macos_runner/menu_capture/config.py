@@ -64,6 +64,8 @@ class MaterialsConfig(StrictModel):
     # off: 保持原有方形二维码链路；assist: 圆形码只作辅助候选，不跳过第二轮；
     # priority: 圆形码命中后整店跳过第二轮（需独立标注集验收通过后再开启）。
     circle_detection: Literal["off", "assist", "priority"] = "off"
+    # 批次内门店级并发；全局仍由 JobRunner 保证单通道，调大只影响单个任务。
+    analysis_concurrency: int = Field(default=2, ge=1, le=4)
 
 
 class Settings(StrictModel):

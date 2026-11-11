@@ -42,13 +42,14 @@ def _create(client: TestClient, headers: dict, source: Path, *, name="素材批�
 def _analyze(client: TestClient, headers: dict, batch_id: str) -> dict:
     response = client.post(f"/api/materials/batches/{batch_id}/analyze", json={}, headers=headers)
     assert response.status_code == 200, response.text
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         record = client.get(f"/api/materials/batches/{batch_id}").json()
-        if record["status"] not in {"queued", "analyzing"}:
+        job = record.get("job")
+        if job and job["status"] == "completed" and record["status"] == "completed":
             return record
         time.sleep(.01)
-    raise AssertionError("素材分析 worker 在 5 秒内未结束")
+    raise AssertionError("素材分析 job 在 15 秒内未结束")
 
 
 def _publish(client: TestClient, headers: dict, batch_id: str) -> dict:

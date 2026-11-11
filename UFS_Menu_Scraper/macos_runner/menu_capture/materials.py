@@ -20,9 +20,10 @@ from PIL import Image
 from .config import ConfigStore, atomic_json
 from .preprocess import (
     CROP_MARGIN_RATIO, MAX_STORE_IMAGES, SQUARE_IMAGE_RANGE, SUPPORTED_EXTENSIONS,
-    _apple_vision_inspector, _crop_candidate, _enumerate_images, build_materials, inspect_store_images,
+    _apple_vision_inspector, _crop_candidate, _enumerate_images, analyze_store, discover_stores,
 )
 from .image_tools import image_ocr
+from .material_jobs import JobRunner, JobStore, OPEN_STATUSES
 from .material_versions import MaterialVersions
 from .store import TaskStore
 
@@ -179,21 +180,72 @@ class MaterialService:
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             directory.chmod(0o700)
         self._lock = threading.RLock()
+        # 批次管理（删除/恢复/清空选择）与上传写入的互斥锁；分析运行态已归 job，不再由它承载 worker 单例。
         self._worker_lock = threading.Lock()
         self._publish_lock = threading.Lock()
-        self._worker: threading.Thread | None = None
-        self._ocr_cache: dict[Path, list[dict] | None] = {}
+        # OCR 引擎的线程安全性未知；只对 OCR 调用加锁，二维码检测仍可并发。
+        self._ocr_lock = threading.Lock()
+        self._ocr_local = threading.local()
+        # 并发 worker 的圆形码检测器按线程独立实例化，job 结束时统一 close。
+        self._detector_local = threading.local()
         self._init_schema()
+        self.jobs = JobStore(self.task_store)
+        self.job_runner = JobRunner(
+            self.jobs, self._run_job_item,
+            prepare=self._prepare_job, on_finish=self._job_finished,
+        )
         self.versions = MaterialVersions(self.task_store, self.published_root)
-        # 崩溃后不恢复半截分析或上传，避免悄悄重跑/发布不完整素材。
-        with self.task_store.connect() as db:
-            db.execute(
-                "UPDATE material_batches SET status='interrupted',error='进程中断；需显式重新创建批次',updated_at=? WHERE status IN ('uploading','queued','analyzing')",
-                (_now(),),
-            )
+        # 旧数据只做一次状态收敛：运行态按“是否所有门店都有决策”判定，不再无条件判死。
+        self._migrate_legacy_batches()
         # 服务接收请求前只恢复一次清理事务，避免并发首请求重复处理同一暂存目录。
         from .batch_management import BatchManager
         self._batch_management = BatchManager(self)
+
+    def _analysis_concurrency(self) -> int:
+        return max(1, min(4, int(self.configs.load().materials.analysis_concurrency)))
+
+    def start_job_runner(self) -> None:
+        self.job_runner.start()
+
+    def shutdown(self) -> None:
+        self.job_runner.stop()
+
+    def _migrate_legacy_batches(self) -> None:
+        """收敛历史批次状态与进度口径；新代码只使用 uploading/ready_to_analyze/completed。"""
+        with self.task_store.connect() as db:
+            rows = [dict(row) for row in db.execute(
+                "SELECT id,source_root FROM material_batches "
+                "WHERE status IN ('queued','analyzing','interrupted','failed','error')"
+            )]
+        for row in rows:
+            try:
+                stores, _duplicates = discover_stores(Path(row["source_root"]))
+                total = len(stores)
+            except Exception:
+                total = 0
+            with self.task_store.connect() as db:
+                done = int(db.execute(
+                    "SELECT COUNT(*) FROM material_decisions WHERE batch_id=?", (row["id"],)
+                ).fetchone()[0])
+                # 只有所有门店都有决策才算 completed；否则回到可分析状态，避免“完成了一半”。
+                status = "completed" if total > 0 and done >= total else "ready_to_analyze"
+                db.execute(
+                    "UPDATE material_batches SET status=?,progress_done=?,progress_total=?,error='',updated_at=? WHERE id=?",
+                    (status, done if status == "completed" else 0, total, _now(), row["id"]),
+                )
+        # 历史进度按“图片 × 单元”写入，这里统一重算为门店数，避免 5030/1122 两种口径并存。
+        with self.task_store.connect() as db:
+            db.execute(
+                "UPDATE material_batches SET progress_total=("
+                "SELECT COUNT(*) FROM material_decisions WHERE batch_id=material_batches.id"
+                ") WHERE progress_total<>("
+                "SELECT COUNT(*) FROM material_decisions WHERE batch_id=material_batches.id"
+                ") AND status='completed'"
+            )
+            db.execute(
+                "UPDATE material_batches SET progress_done=progress_total "
+                "WHERE status='completed' AND progress_done<>progress_total"
+            )
 
     def _init_schema(self) -> None:
         with self.task_store.connect() as db:
@@ -250,15 +302,20 @@ class MaterialService:
             db.execute("CREATE INDEX IF NOT EXISTS runs_material_batch ON runs(material_batch_id)")
 
     def _read_ocr(self, path: Path) -> list[dict] | None:
-        """按路径缓存本地 OCR 结果，避免方形判定与用途分类重复调用。"""
+        """按线程缓存本地 OCR 结果，避免方形判定与用途分类重复调用。"""
         key = Path(path)
-        if key not in self._ocr_cache:
+        cache = getattr(self._ocr_local, "cache", None)
+        if cache is None:
+            cache = self._ocr_local.cache = {}
+        if key not in cache:
             try:
-                items = self.ocr_reader(key)
-                self._ocr_cache[key] = items if isinstance(items, list) else None
+                # 注入的 OCR 引擎线程安全性未知，用独立锁串行化调用。
+                with self._ocr_lock:
+                    items = self.ocr_reader(key)
+                cache[key] = items if isinstance(items, list) else None
             except Exception:
-                self._ocr_cache[key] = None
-        return self._ocr_cache[key]
+                cache[key] = None
+        return cache[key]
 
     def _circle_gate(self, images: list[dict], resolve: Callable[[dict], Path]) -> bool:
         """方形检测后判断是否仍需补跑圆形：只有候选全被判为微信/企微用途时才补跑。"""
@@ -526,16 +583,16 @@ class MaterialService:
         circle_inspector, detector, _warning = self._open_circle_detector(analysis_dir / "circle-roi")
         try:
             # 单店重分析复用同一“圆形优先”的两轮检测，不能退回逐图方形检测。
-            self._ocr_cache = {}
-            stats = inspect_store_images(
-                store["images"],
-                lambda image: self._checked_source(batch, image),
-                inspect,
-                circle_inspector,
-                skip_square_on_circle_hit=self.circle_priority,
+            self._ocr_local.cache = {}
+            analyze_store(
+                store, Path(batch["source_root"]),
+                inspector=inspect,
+                circle_inspector=circle_inspector,
+                circle_priority=self.circle_priority,
                 circle_image_range=CIRCLE_IMAGE_RANGE,
                 square_image_range=SQUARE_IMAGE_RANGE,
                 max_images=MAX_STORE_IMAGES,
+                resolve_path=lambda image: self._checked_source(batch, image),
                 circle_gate=lambda images: self._circle_gate(
                     images, lambda image: self._checked_source(batch, image)
                 ),
@@ -543,19 +600,20 @@ class MaterialService:
         finally:
             if detector is not None:
                 detector.close()
-        store["circle_hit"] = stats["circle_hit"]
-        store["circle_error"] = stats["circle_error"]
-        store["square_checked"] = stats["square_checked"]
         manifest = {"stores": [store]}
         source_root = Path(batch["source_root"])
         self._classify_and_select(
             manifest, source_root, analysis_dir,
+            duplicate_names=self._decision_duplicate_names(batch_id),
             source_resolver=lambda image: self._checked_source(batch, image),
         )
         store = manifest["stores"][0]
         # 检测后再核一次源图 hash，避免分析期间文件被替换。
         for image in store["images"]:
             self._checked_source(batch, image)
+        store = self._sanitize_manifest(
+            {"input_root": batch["source_root"], "stores": [store]}
+        )["stores"][0]
         recommendation = any(
             candidate.get("selected") and (candidate.get("purpose") or "unknown") in _ACCEPTABLE_PURPOSES
             for image in store["images"] for candidate in image.get("candidates", [])
@@ -567,60 +625,276 @@ class MaterialService:
             )
             self._refresh_batch_summary(db, batch_id)
 
-    def start_reanalysis(self, batch_id: str, store_ids: list[str]) -> dict:
-        """对已完成批次里选中的门店重跑检测，其余门店保持不变。"""
-        with self._worker_lock:
-            if self._worker is not None and self._worker.is_alive():
-                raise RuntimeError("已有素材批次正在分析")
-            batch = self._batch_row(batch_id)
-            if batch["status"] != "completed":
-                raise ValueError("只有分析完成的批次可以重新分析")
-            ids = list(dict.fromkeys(store_ids))
-            if not ids:
-                raise ValueError("请选择要重新分析的门店")
-            with self.task_store.connect() as db:
-                rows = {row["store_id"]: dict(row) for row in db.execute(
-                    "SELECT store_id,decision FROM material_decisions WHERE batch_id=?", (batch_id,),
-                )}
-            if not set(ids) <= set(rows):
-                raise ValueError("重新分析列表含有未知门店")
-            pending = [store_id for store_id in ids if rows[store_id]["decision"] != "confirmed"]
-            if not pending:
-                raise ValueError("选中的门店都已确认；请先撤销确认再重新分析")
-            with self.task_store.connect() as db:
-                db.execute(
-                    "UPDATE material_batches SET status='analyzing',progress_done=0,progress_total=?,error='',updated_at=? WHERE id=?",
-                    (len(pending), _now(), batch_id),
-                )
-            worker = threading.Thread(target=self._reanalyze_worker, args=(batch_id, pending),
-                                      name=f"materials-recheck-{batch_id[:8]}", daemon=True)
-            self._worker = worker
-            worker.start()
-        return self.get_batch(batch_id)
+    def _decision_duplicate_names(self, batch_id: str) -> set[str]:
+        """跨父目录同名门店：只有同名目录分属不同父路径时才算冲突。"""
+        with self.task_store.connect() as db:
+            rows = db.execute(
+                "SELECT source_name FROM material_decisions WHERE batch_id=? "
+                "GROUP BY source_name HAVING COUNT(DISTINCT source_folder)>1",
+                (batch_id,),
+            ).fetchall()
+        return {row["source_name"] for row in rows}
 
-    def _reanalyze_worker(self, batch_id: str, store_ids: list[str]) -> None:
-        failed = 0
+    # ------------------------------------------------------------ 任务入口
+
+    def _store_items(self, stores: list[dict]) -> list[dict]:
+        return [{"store_id": _store_id(store["source_folder"]), "source_folder": store["source_folder"]}
+                for store in stores]
+
+    def start_analysis(self, batch_id: str) -> dict:
+        """把整批分析转成持久化 job；立即返回，前端通过任务中心观察进度。"""
+        batch = self._batch_row(batch_id)
+        if batch["status"] != "ready_to_analyze":
+            raise ValueError("只有 ready_to_analyze 批次可以开始分析")
+        source_root = Path(batch["source_root"])
+        files = _enumerate_images(source_root)
+        self._validate_local_limits(files)
+        if batch["source_kind"] == "upload" and len(files) != batch["upload_file_count"]:
+            raise ValueError("上传素材文件集合发生变化，拒绝分析")
+        stores, _duplicates = discover_stores(source_root)
+        if not stores:
+            raise ValueError("素材目录中没有可分析的图片")
+        items = self._store_items(stores)
+        concurrency = self._analysis_concurrency()
+        job = self.jobs.create(batch_id, "analyze", items, concurrency)
+        self.jobs.event(job["id"], "info", f"任务已创建：{len(items)} 家门店，并发 {concurrency}")
+        self.job_runner.wake()
+        return {**self.get_batch(batch_id), "job": self.jobs.get(job["id"])}
+
+    def start_reanalysis(self, batch_id: str, store_ids: list[str]) -> dict:
+        """对已完成批次里选中的门店重跑检测；已确认门店必须先撤销确认。"""
+        batch = self._batch_row(batch_id)
+        if batch["status"] != "completed":
+            raise ValueError("只有分析完成的批次可以重新分析")
+        ids = list(dict.fromkeys(store_ids))
+        if not ids:
+            raise ValueError("请选择要重新分析的门店")
+        with self.task_store.connect() as db:
+            rows = {row["store_id"]: dict(row) for row in db.execute(
+                "SELECT store_id,decision,source_folder FROM material_decisions WHERE batch_id=?", (batch_id,),
+            )}
+        if not set(ids) <= set(rows):
+            raise ValueError("重新分析列表含有未知门店")
+        pending = [store_id for store_id in ids if rows[store_id]["decision"] != "confirmed"]
+        if not pending:
+            raise ValueError("选中的门店都已确认；请先撤销确认再重新分析")
+        items = [{"store_id": store_id, "source_folder": rows[store_id]["source_folder"]} for store_id in pending]
+        concurrency = self._analysis_concurrency()
+        job = self.jobs.create(batch_id, "reanalyze", items, concurrency)
+        self.jobs.event(job["id"], "info", f"重新分析任务已创建：{len(items)} 家门店，并发 {concurrency}")
+        self.job_runner.wake()
+        return {**self.get_batch(batch_id), "job": self.jobs.get(job["id"])}
+
+    def retry_failed(self, batch_id: str) -> dict:
+        """只重跑上一次任务里失败且未确认的门店；会先取消旧任务再建新任务。"""
+        batch = self._batch_row(batch_id)
+        latest = self.jobs.latest(batch_id)
+        if latest is None:
+            raise ValueError("该批次还没有分析任务")
+        failed = self.jobs.failed_items(latest["id"])
+        with self.task_store.connect() as db:
+            confirmed = {row["store_id"] for row in db.execute(
+                "SELECT store_id FROM material_decisions WHERE batch_id=? AND decision='confirmed'", (batch_id,),
+            )}
+        items = [item for item in failed if item["store_id"] not in confirmed]
+        if not items:
+            raise ValueError("没有可重试的失败门店")
+        concurrency = self._analysis_concurrency()
+        job = self.jobs.create_replacing(batch_id, "retry_failed", items, concurrency)
+        self.jobs.event(job["id"], "info", f"重试任务已创建：{len(items)} 家失败门店")
+        self.job_runner.wake()
+        return {**self.get_batch(batch_id), "job": self.jobs.get(job["id"])}
+
+    def pause_job(self, job_id: str) -> dict:
+        if not self.jobs.request_pause(job_id):
+            raise ValueError("当前任务状态不支持暂停")
+        self.jobs.event(job_id, "info", "已请求暂停，将在当前门店处理完后停止")
+        return self.jobs.get(job_id) or {}
+
+    def resume_job(self, job_id: str) -> dict:
+        if not self.jobs.resume(job_id):
+            raise ValueError("只有已暂停或已中断的任务可以恢复")
+        self.jobs.event(job_id, "info", "任务已恢复并重新排队")
+        self.job_runner.wake()
+        return self.jobs.get(job_id) or {}
+
+    def cancel_job(self, job_id: str) -> dict:
+        if not self.jobs.cancel(job_id):
+            raise ValueError("当前任务状态无法取消")
+        self.jobs.event(job_id, "warn", "任务已取消，未完成门店保持待处理")
+        return self.jobs.get(job_id) or {}
+
+    def list_jobs(self, *, active: bool = True, batch_id: str = "", limit: int = 20) -> list[dict]:
+        if batch_id:
+            return self.jobs.for_batch(batch_id, limit)
+        if active:
+            return self.jobs.active(limit)
+        return self.jobs.for_batch(batch_id, limit) if batch_id else self.jobs.active(limit)
+
+    def job_detail(self, job_id: str, events: bool = True) -> dict:
+        job = self.jobs.get(job_id)
+        if job is None:
+            raise ValueError("任务不存在")
+        job["events"] = self.jobs.events(job_id, 50) if events else []
+        return job
+
+    # ------------------------------------------------------------ job 执行
+
+    def _prepare_job(self, job: dict) -> dict:
+        """每个 job 只枚举一次源目录；单店 worker 复用骨架与重名集合。"""
+        batch = self._batch_row(job["batch_id"])
+        source_root = Path(batch["source_root"])
+        stores, duplicates = discover_stores(source_root)
+        return {
+            "batch": batch,
+            "source_root": source_root,
+            "analysis_dir": self.batch_root / job["batch_id"] / "analysis",
+            "stores": {_store_id(store["source_folder"]): store for store in stores},
+            "duplicate_names": duplicates,
+            "detectors": [],
+            "lock": threading.Lock(),
+            "warnings": set(),
+        }
+
+    def _thread_detector(self, analysis_dir: Path, context: dict | None):
+        """每个 worker 线程独立持有圆形码检测器，避免并发共用引擎内部状态。"""
+        current = getattr(self._detector_local, "current", None)
+        if current is None:
+            inspector, detector, warning = self._open_circle_detector(analysis_dir / "circle-roi")
+            current = (inspector, detector)
+            self._detector_local.current = current
+            if context is not None:
+                if detector is not None:
+                    with context["lock"]:
+                        context["detectors"].append(detector)
+                if warning:
+                    context["warnings"].add(warning)
+        return current
+
+    def _run_job_item(self, job: dict, item: dict, context: dict | None) -> None:
+        """处理一家门店：检测 + 语义分类 + 写决策；任何异常由 JobRunner 记短码并重试。"""
+        context = context or self._prepare_job(job)
+        batch = context["batch"]
+        batch_id = job["batch_id"]
+        store_id = item["store_id"]
+        analysis_dir = context["analysis_dir"]
+        analysis_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
-            batch = self._batch_row(batch_id)
-            for done, store_id in enumerate(store_ids, 1):
+            row = self._decision_row(batch_id, store_id)
+        except ValueError:
+            row = None
+        if row is not None:
+            if row["decision"] == "confirmed":
+                raise ValueError("该门店已确认；请先撤销确认再重新分析")
+            store = json.loads(row["store_json"])
+            if not store.get("images"):
+                raise ValueError("当前门店没有图片，请先补充素材")
+        else:
+            store = context["stores"].get(store_id)
+            if store is None:
+                raise ValueError("素材目录中找不到该门店")
+        circle_inspector, _detector = self._thread_detector(analysis_dir, context)
+        self._ocr_local.cache = {}
+        # 检测阶段按相对路径定位源图；此时骨架还没有 sha256，校验放到检测完成之后。
+        resolve = lambda image: context["source_root"] / image["path"]  # noqa: E731 - 与整批 build_materials 同口径
+        analyze_store(
+            store, context["source_root"],
+            inspector=self.inspector or _apple_vision_inspector,
+            circle_inspector=circle_inspector,
+            circle_priority=self.circle_priority,
+            circle_image_range=CIRCLE_IMAGE_RANGE,
+            square_image_range=SQUARE_IMAGE_RANGE,
+            max_images=MAX_STORE_IMAGES,
+            resolve_path=resolve,
+            circle_gate=lambda images: self._circle_gate(images, resolve),
+        )
+        manifest = {"stores": [store]}
+        self._classify_and_select(
+            manifest, context["source_root"], analysis_dir,
+            duplicate_names=context["duplicate_names"],
+            source_resolver=lambda image: self._checked_source(batch, image),
+        )
+        store = manifest["stores"][0]
+        # 检测后再核一次源图 hash，避免分析期间文件被替换。
+        for image in store["images"]:
+            self._checked_source(batch, image)
+        # 与整批路径一致：落库前统一清洗，补齐圆形码的受控字段（detector 等）。
+        store = self._sanitize_manifest(
+            {"input_root": str(context["source_root"]), "stores": [store]}
+        )["stores"][0]
+        recommendation = any(
+            candidate.get("selected") and (candidate.get("purpose") or "unknown") in _ACCEPTABLE_PURPOSES
+            for image in store["images"] for candidate in image.get("candidates", [])
+        )
+        with self.task_store.connect() as db:
+            # 重跑只覆盖分析结果，保留人工决策与不合格原因。
+            db.execute(
+                "INSERT INTO material_decisions(batch_id,store_id,source_folder,source_name,analysis_status,recommendation,store_json,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(batch_id,store_id) DO UPDATE SET "
+                "analysis_status=excluded.analysis_status,recommendation=excluded.recommendation,"
+                "store_json=excluded.store_json,selected_json='{}',selected_source_hash='',updated_at=excluded.updated_at",
+                (batch_id, store_id, store["source_folder"], store["source_name"], store["status"],
+                 int(recommendation), json.dumps(store, ensure_ascii=False), _now()),
+            )
+
+    def _job_finished(self, job: dict | None, context: dict | None) -> None:
+        if job is None:
+            return
+        batch_id = job["batch_id"]
+        counts = job.get("counts") or self.jobs.counts(job["id"])
+        if context:
+            with context["lock"]:
+                detectors = list(context["detectors"])
+            for detector in detectors:
                 try:
-                    with self._lock:
-                        self._reanalyze_store_locked(batch, store_id)
-                except ValueError:
-                    failed += 1
-                with self.task_store.connect() as db:
-                    db.execute(
-                        "UPDATE material_batches SET progress_done=?,progress_total=?,updated_at=? WHERE id=? AND status='analyzing'",
-                        (done, len(store_ids), _now(), batch_id),
-                    )
-            with self.task_store.connect() as db:
+                    detector.close()
+                except Exception:
+                    pass
+        with self.task_store.connect() as db:
+            if job["status"] == "completed":
+                self._refresh_batch_summary(db, batch_id, extra={
+                    "circle_detector_error": next(iter(context["warnings"]), "") if context else "",
+                })
+                error = (f"部分门店未能分析（{counts['failed']} 家），可在任务详情重试"
+                         if counts["failed"] else "")
                 db.execute(
-                    "UPDATE material_batches SET status='completed',progress_done=progress_total,error=?,updated_at=? WHERE id=?",
-                    ("部分门店未能重新分析" if failed else "", _now(), batch_id),
+                    "UPDATE material_batches SET status='completed',error=?,progress_done=?,progress_total=?,updated_at=? WHERE id=?",
+                    (error, counts["total"], counts["total"], _now(), batch_id),
                 )
-                self._refresh_batch_summary(db, batch_id)
-        except Exception:
-            self._set_batch_error(batch_id, "failed", "素材重新分析失败")
+            else:
+                # 暂停/中断/取消不改变批次可用性，只镜像进度；已完成的门店决策照常保留。
+                message = job.get("message") or job.get("error") or ""
+                db.execute(
+                    "UPDATE material_batches SET progress_done=?,progress_total=?,error=?,updated_at=? WHERE id=?",
+                    (counts["done"] + counts["failed"], counts["total"], message, _now(), batch_id),
+                )
+        if job["status"] == "completed" and context:
+            self._write_analysis_artifacts(batch_id, context)
+
+    def _write_analysis_artifacts(self, batch_id: str, context: dict) -> None:
+        """任务结束后一次性落 manifest/metrics，供排查与历史兼容；发布仍以决策表为准。"""
+        row = self._batch_row(batch_id)
+        with self.task_store.connect() as db:
+            stores = [json.loads(item["store_json"]) for item in db.execute(
+                "SELECT store_json FROM material_decisions WHERE batch_id=? ORDER BY source_folder,store_id",
+                (batch_id,),
+            )]
+        try:
+            summary = json.loads(row["summary_json"])
+        except (TypeError, ValueError):
+            summary = {}
+        manifest = {
+            "input_root": row["source_root"],
+            "created_at": _now(),
+            "stores": stores,
+            "summary": summary,
+        }
+        analysis_dir = context["analysis_dir"]
+        analysis_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        atomic_json(analysis_dir / "manifest.json", self._sanitize_manifest(manifest))
+        if isinstance(summary.get("detection_stats"), dict):
+            atomic_json(analysis_dir / "analysis-metrics.json", summary["detection_stats"])
+
 
     def _supplement_dir(self, batch_id: str, store_id: str, upload_id: str) -> Path:
         if not _UPLOAD_ID_RE.fullmatch(batch_id) or not re.fullmatch(r"[0-9a-f]{24}", store_id) or not _UPLOAD_ID_RE.fullmatch(upload_id):
@@ -632,8 +906,8 @@ class MaterialService:
         folder = batch_root / "supplements" / store_id / upload_id
         return folder
 
-    @staticmethod
-    def _refresh_batch_summary(db, batch_id: str) -> None:
+    def _refresh_batch_summary(self, db, batch_id: str, extra: dict | None = None) -> None:
+        """按决策表一次性重算 summary 与门店口径进度，替换原先的全表逐店扫描。"""
         batch = db.execute("SELECT summary_json FROM material_batches WHERE id=?", (batch_id,)).fetchone()
         if batch is None:
             raise ValueError("素材批次不存在")
@@ -642,15 +916,27 @@ class MaterialService:
         except (TypeError, ValueError):
             summary = {}
         rows = db.execute("SELECT recommendation,store_json FROM material_decisions WHERE batch_id=?", (batch_id,)).fetchall()
-        summary["total_images"] = sum(len(json.loads(row["store_json"]).get("images", [])) for row in rows)
+        stores = [json.loads(row["store_json"]) for row in rows]
+        summary["total_images"] = sum(len(store.get("images", [])) for store in stores)
         summary["total_stores"] = len(rows)
         summary["selected_stores"] = sum(bool(row["recommendation"]) for row in rows)
         summary["review_stores"] = len(rows) - summary["selected_stores"]
-        # 圆形优先的两轮检测把总进度拆成 3 段（圆形/方形/用途分类），单店重分析也按同一口径。
-        units = 3 if summary.get("detection_rounds") == 2 else 2
+        if self.circle_enabled:
+            summary["detection_rounds"] = 2
+            summary["circle_hit_stores"] = sum(bool(store.get("circle_hit")) for store in stores)
+            summary["circle_error_stores"] = sum(
+                bool(store.get("circle_error")) and not store.get("circle_hit") for store in stores
+            )
+            summary["square_checked_stores"] = sum(bool(store.get("square_checked")) for store in stores)
+        total_ms = round(sum(float(store.get("circle_ms", 0.0)) + float(store.get("square_ms", 0.0))
+                             for store in stores), 1)
+        summary["detection_stats"] = self._detection_stats(stores, self.circle_enabled, total_ms)
+        for key, value in (extra or {}).items():
+            if value:
+                summary[key] = value
         db.execute(
             "UPDATE material_batches SET summary_json=?,progress_done=?,progress_total=?,updated_at=? WHERE id=?",
-            (json.dumps(summary, ensure_ascii=False), summary["total_images"] * units, summary["total_images"] * units, _now(), batch_id),
+            (json.dumps(summary, ensure_ascii=False), len(rows), len(rows), _now(), batch_id),
         )
 
     def create_upload_batch(self, files: Iterable[dict]) -> dict:
@@ -664,27 +950,6 @@ class MaterialService:
             self._set_batch_error(batch["batch_id"], "upload_error", "上传失败；未开始分析")
             shutil.rmtree(self.upload_root / batch["batch_id"], ignore_errors=True)
             raise
-
-    def start_analysis(self, batch_id: str) -> dict:
-        with self._worker_lock:
-            if self._worker is not None and self._worker.is_alive():
-                raise RuntimeError("已有素材批次正在分析")
-            row = self._batch_row(batch_id)
-            if row["status"] != "ready_to_analyze":
-                raise ValueError("只有 ready_to_analyze 批次可以开始分析")
-            with self.task_store.connect() as db:
-                db.execute(
-                    "UPDATE material_batches SET status='queued',progress_done=0,error='',updated_at=? WHERE id=?",
-                    (_now(), batch_id),
-                )
-            worker = threading.Thread(target=self._analyze_worker, args=(batch_id,), name=f"materials-{batch_id[:8]}", daemon=True)
-            self._worker = worker
-            try:
-                worker.start()
-            except Exception:
-                self._set_batch_error(batch_id, "failed", "无法启动素材分析线程")
-                raise
-        return self.get_batch(batch_id)
 
     def _open_circle_detector(self, work_dir: Path) -> tuple[Callable[[Path], dict | None] | None, object | None, str]:
         """解析圆形码检测器；关闭时不启动 worker，显式注入优先于配置。"""
@@ -729,90 +994,6 @@ class MaterialService:
             "total_ms": total_ms,
         }
 
-    def _analyze_worker(self, batch_id: str) -> None:
-        row = self._batch_row(batch_id)
-        source_root = Path(row["source_root"])
-        analysis_dir = self.batch_root / batch_id / "analysis"
-        analysis_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        detector = None
-        try:
-            with self.task_store.connect() as db:
-                db.execute("UPDATE material_batches SET status='analyzing',updated_at=? WHERE id=?", (_now(), batch_id))
-            current_files = _enumerate_images(source_root)
-            self._validate_local_limits(current_files)
-            if row["source_kind"] == "upload" and len(current_files) != row["upload_file_count"]:
-                raise ValueError("上传素材文件集合发生变化，拒绝分析")
-            circle_inspector, detector, circle_warning = self._open_circle_detector(analysis_dir / "circle-roi")
-            # 分流：只有 2–5 张门店跑圆形阶段；进度按“圆形 + 方形 + 用途分类”实际单元数统计。
-            store_counts: dict[Path, int] = {}
-            for path in current_files:
-                store_counts[path.parent] = store_counts.get(path.parent, 0) + 1
-            square_images = sum(
-                count for count in store_counts.values()
-                if SQUARE_IMAGE_RANGE[0] <= count <= SQUARE_IMAGE_RANGE[1]
-            )
-            circle_images = sum(
-                count for count in store_counts.values()
-                if circle_inspector is not None and CIRCLE_IMAGE_RANGE[0] <= count <= CIRCLE_IMAGE_RANGE[1]
-            )
-            units_before_classify = square_images + circle_images
-            unit_total = units_before_classify + len(current_files)
-            with self.task_store.connect() as db:
-                db.execute("UPDATE material_batches SET progress_total=?,updated_at=? WHERE id=?", (unit_total, _now(), batch_id))
-
-            def on_progress(value: dict) -> None:
-                with self.task_store.connect() as db:
-                    db.execute(
-                        "UPDATE material_batches SET progress_done=?,progress_total=?,updated_at=? WHERE id=? AND status='analyzing'",
-                        (value["done"], unit_total, _now(), batch_id),
-                    )
-
-            started = time.perf_counter()
-            self._ocr_cache = {}
-            manifest = build_materials(
-                source_root, analysis_dir,
-                inspector=self.inspector, progress=on_progress, circle_inspector=circle_inspector,
-                circle_priority=self.circle_priority, circle_image_range=CIRCLE_IMAGE_RANGE,
-                square_image_range=SQUARE_IMAGE_RANGE, max_images=MAX_STORE_IMAGES,
-                circle_gate=lambda images: self._circle_gate(images, lambda image: source_root / image["path"]),
-            )
-
-            def on_classified(done: int) -> None:
-                with self.task_store.connect() as db:
-                    db.execute("UPDATE material_batches SET progress_done=?,progress_total=?,updated_at=? WHERE id=? AND status='analyzing'",
-                               (units_before_classify + done, unit_total, _now(), batch_id))
-
-            self._classify_and_select(manifest, source_root, analysis_dir, on_classified)
-            after_files = _enumerate_images(source_root)
-            self._validate_local_limits(after_files)
-            if len(after_files) != len(current_files) or (row["source_kind"] == "upload" and len(after_files) != row["upload_file_count"]):
-                raise ValueError("分析期间素材文件集合发生变化，拒绝保存结果")
-            metrics = self._detection_stats(manifest["stores"], circle_inspector is not None, round((time.perf_counter() - started) * 1000, 1))
-            atomic_json(analysis_dir / "analysis-metrics.json", metrics)
-            safe_manifest = self._sanitize_manifest(manifest)
-            summary = {**safe_manifest["summary"], "detection_stats": metrics}
-            if circle_warning:
-                summary["circle_detector_error"] = circle_warning
-            atomic_json(analysis_dir / "manifest.json", safe_manifest)
-            with self.task_store.connect() as db:
-                for store in safe_manifest["stores"]:
-                    store_id = _store_id(store["source_folder"])
-                    recommendation = any(candidate.get("selected") for image in store["images"] for candidate in image["candidates"])
-                    db.execute(
-                        "INSERT INTO material_decisions(batch_id,store_id,source_folder,source_name,analysis_status,recommendation,store_json,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                        (batch_id, store_id, store["source_folder"], store["source_name"], store["status"], int(recommendation), json.dumps(store, ensure_ascii=False), _now()),
-                    )
-                db.execute(
-                    "UPDATE material_batches SET status='completed',progress_done=?,progress_total=?,summary_json=?,manifest_json=?,updated_at=? WHERE id=?",
-                    (unit_total, unit_total, json.dumps(summary, ensure_ascii=False), json.dumps(safe_manifest, ensure_ascii=False), _now(), batch_id),
-                )
-        except Exception as exc:
-            # 不把路径、图片内容或条码解码错误原文写进批次状态。
-            self._set_batch_error(batch_id, "failed", f"素材分析失败（{type(exc).__name__}）")
-        finally:
-            if detector is not None:
-                detector.close()
-
     def adopt_manifest(self, manifest_path: Path) -> dict:
         path = Path(manifest_path).expanduser().resolve(strict=True)
         if not path.is_file():
@@ -841,14 +1022,17 @@ class MaterialService:
                 )
         return self.get_batch(batch_id)
 
-    def _classify_and_select(self, manifest: dict, source_root: Path, analysis_dir: Path, progress=None, source_resolver=None) -> None:
+    def _classify_and_select(self, manifest: dict, source_root: Path, analysis_dir: Path, progress=None,
+                             source_resolver=None, duplicate_names: set[str] | None = None) -> None:
         """本地 OCR 关联二维码周边文字，再按可解码和清晰度为每店选一张。"""
         resolve_source = source_resolver or (lambda image: source_root / image["path"])
-        duplicate_names: set[str] = set()
-        names: dict[str, set[str]] = {}
-        for store in manifest["stores"]:
-            names.setdefault(store["source_name"], set()).add(store["source_folder"])
-        duplicate_names = {name for name, folders in names.items() if len(folders) > 1}
+        if duplicate_names is None:
+            # 整批调用时自行判定；逐店 job 必须由批次上下文传入，否则漏掉跨父目录同名冲突。
+            duplicate_names = set()
+            names: dict[str, set[str]] = {}
+            for store in manifest["stores"]:
+                names.setdefault(store["source_name"], set()).add(store["source_folder"])
+            duplicate_names = {name for name, folders in names.items() if len(folders) > 1}
         processed = 0
         for store in manifest["stores"]:
             # 清除 build_materials 的几何启发式预选；由语义分类单独决定建议。
@@ -1196,15 +1380,23 @@ class MaterialService:
         with self.task_store.connect() as db:
             stores = [dict(item) for item in db.execute("SELECT * FROM material_decisions WHERE batch_id=? ORDER BY source_folder,store_id", (batch_id,))]
         summary = self._summary_counts(row, stores)
+        job = self.jobs.latest(batch_id)
+        progress = {"done": row["progress_done"], "total": row["progress_total"]}
+        if job is not None and job["status"] in OPEN_STATUSES:
+            # 运行期间以 job 的门店计数为准，批次行只做结束后的镜像，避免两套进度互相覆盖。
+            counts = job.get("counts") or {}
+            progress = {"done": counts.get("done", 0) + counts.get("failed", 0),
+                        "total": counts.get("total", 0)}
         return {
             "batch_id": batch_id,
             "source_kind": row["source_kind"],
             "source_root": row["source_root"],
             "status": row["status"],
-            "progress": {"done": row["progress_done"], "total": row["progress_total"]},
+            "progress": progress,
             "summary": summary,
             "error": row["error"],
             "snapshot_id": row["snapshot_id"] or None,
+            "job": job,
             **self._version_summary(row),
             "stores": [self._store_summary(item) for item in stores],
         }
@@ -1569,6 +1761,12 @@ class MaterialService:
             raise ValueError("素材批次不存在")
         return dict(row)
 
+    def batch_name(self, batch_id: str) -> str:
+        try:
+            return str(self._batch_row(batch_id).get("name") or "")
+        except ValueError:
+            return ""
+
     def _decision_row(self, batch_id: str, store_id: str) -> dict:
         with self.task_store.connect() as db:
             row = db.execute("SELECT * FROM material_decisions WHERE batch_id=? AND store_id=?", (batch_id, store_id)).fetchone()
@@ -1584,7 +1782,7 @@ class MaterialService:
             summary = {}
         counts = {
             "total_stores": summary.get("total_stores", len(decisions)),
-            "total_images": summary.get("total_images", batch["progress_total"]),
+            "total_images": summary.get("total_images", 0),
             "selected_stores": summary.get("selected_stores", sum(row["recommendation"] for row in decisions)),
             "review_stores": summary.get("review_stores", sum(not row["recommendation"] for row in decisions)),
             "confirmed_stores": sum(row["decision"] == "confirmed" for row in decisions),

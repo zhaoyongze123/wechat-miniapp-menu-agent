@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 from urllib.parse import quote
@@ -89,9 +90,15 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app):
         threading.Thread(target=_warm_local_ocr, name="ocr-warmup", daemon=True).start()
+        # 常驻 1s 巡检：心跳回收 + 单通道调度；不依赖任何请求触发。
+        materials.start_job_runner()
         try:
             yield
         finally:
+            try:
+                materials.shutdown()
+            except Exception:
+                pass
             try:
                 annotations.shutdown()
             except Exception:
@@ -156,7 +163,7 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
     @app.get("/assets/{name}")
     def material_assets(name: str):
         if name not in {"materials.js", "materials.css", "workspace.css", "model-usage.js", "model-usage.css",
-                        "annotation.js", "annotation.css"}:
+                        "annotation.js", "annotation.css", "task-center.js", "task-center.css"}:
             raise HTTPException(404, "资源不存在")
         return FileResponse(ROOT / "web" / name)
 
@@ -368,8 +375,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
     def analyze_materials(batch_id: str):
         try:
             return materials.start_analysis(batch_id)
-        except RuntimeError:
-            raise HTTPException(409, "已有素材批次正在分析，请等待完成") from None
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
 
     @app.post("/api/materials/batches/{batch_id}/reanalyze")
     def reanalyze_materials(batch_id: str, payload: dict):
@@ -380,10 +387,106 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             raise HTTPException(422, "单次最多重新分析 2000 家门店") from None
         try:
             return materials.start_reanalysis(batch_id, store_ids)
-        except RuntimeError:
-            raise HTTPException(409, "已有素材批次正在分析，请等待完成") from None
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/materials/batches/{batch_id}/retry-failed")
+    def retry_failed_materials(batch_id: str):
+        try:
+            return materials.retry_failed(batch_id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    def _batch_name(batch_id: str) -> str:
+        return materials.batch_name(batch_id)
+
+    @app.get("/api/materials/jobs")
+    def material_jobs(active: bool = True, batch_id: str = "", limit: int = 20):
+        jobs = materials.list_jobs(active=active, batch_id=batch_id, limit=max(1, min(100, limit)))
+        return {"jobs": [{**job, "batch_name": job.get("batch_name") or _batch_name(job["batch_id"])}
+                         for job in jobs]}
+
+    @app.get("/api/materials/jobs/{job_id}")
+    def material_job(job_id: str, events: bool = True):
+        try:
+            return materials.job_detail(job_id, events=events)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+
+    @app.post("/api/materials/jobs/{job_id}/pause")
+    def pause_material_job(job_id: str):
+        try:
+            return materials.pause_job(job_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.post("/api/materials/jobs/{job_id}/resume")
+    def resume_material_job(job_id: str):
+        try:
+            return materials.resume_job(job_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.post("/api/materials/jobs/{job_id}/cancel")
+    def cancel_material_job(job_id: str):
+        try:
+            return materials.cancel_job(job_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.get("/api/tasks/active")
+    def active_tasks():
+        """任务中心唯一入口：把素材分析与采集运行统一成同一结构，前端不再自行合并两个接口。"""
+        items = []
+        jobs = materials.list_jobs(active=True, limit=20)
+        seen = {job["id"] for job in jobs}
+        jobs += [job for job in materials.jobs.recent_finished() if job["id"] not in seen]
+        for job in jobs:
+            items.append({
+                "source": "materials",
+                "id": job["id"],
+                "title": job.get("batch_name") or _batch_name(job["batch_id"]),
+                "kind": job["kind"],
+                "status": job["status"],
+                "progress": {"done": job["done_stores"], "total": job["total_stores"]},
+                "extra": {"batch_id": job["batch_id"], "queue_position": job.get("queue_position", 0),
+                          "eta_seconds": job.get("eta_seconds", 0), "stage": job.get("stage", ""),
+                          "current": job.get("current_store_name", ""), "failed": job["failed_stores"]},
+                "created_at": job["created_at"],
+                "updated_at": job["updated_at"],
+            })
+        run = store.latest_run()
+        status = ""
+        if run:
+            status = "running" if runner.running else {"completed": "completed", "failed": "failed",
+                                                       "stopped": "paused", "interrupted": "interrupted"}.get(run["status"], run["status"])
+            # 与素材任务一致：只展示运行态或最近结束的任务，历史批次不常驻任务中心。
+            cutoff = (datetime.now(timezone.utc).astimezone() - timedelta(minutes=10)).isoformat(timespec="seconds")
+            if status in {"completed", "failed"} and run["updated_at"] < cutoff:
+                run = None
+        if run:
+            setting = configs.load()
+            current_root = Path(setting.input_dir).expanduser().resolve() if setting.input_dir else None
+            tasks = [task for task in store.tasks()
+                     if current_root and current_root in Path(task["source_path"]).resolve().parents]
+            by_id = {task["id"]: task for task in tasks}
+            ids = run["task_ids"]
+            processed = min(max(run["current_index"], 0), len(ids))
+            items.append({
+                "source": "capture",
+                "id": run["id"],
+                "title": current_root.name if current_root else run["mode"],
+                "kind": run["mode"],
+                "status": status,
+                "progress": {"done": processed, "total": len(ids)},
+                "extra": {"run_id": run["id"], "current": by_id.get(ids[processed], {}).get("source_name", "")
+                          if processed < len(ids) else "", "next": by_id.get(ids[processed], {}).get("source_name", "")
+                          if processed < len(ids) else "", "mode": run["mode"],
+                          "stop_requested": runner.stop.is_set()},
+                "created_at": run["created_at"],
+                "updated_at": run["updated_at"],
+            })
+        return {"tasks": items}
 
     @app.get("/api/materials/batches/{batch_id}")
     def material_batch(batch_id: str):
