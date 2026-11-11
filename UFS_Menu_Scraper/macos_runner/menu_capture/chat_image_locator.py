@@ -282,23 +282,35 @@ def match_preview_source(preview_path: Path, source_path: Path) -> dict:
     scales = {fit * ratio for ratio in (0.6, 0.7, 0.8, 0.88, 0.93, 0.97, 1.0, 1.04)}
     scales.add(shrink)
     best = {"score": 0.0, "color_error": None, "matched": False}
-    for scale in sorted(scales):
+    best_scale = fit
+
+    def compare(scale: float) -> None:
+        nonlocal best, best_scale
         tw, th = round(source.shape[1] * scale), round(source.shape[0] * scale)
         if not (32 <= tw <= available_w and 32 <= th <= available_h):
-            continue
+            return
         template = cv2.resize(source, (tw, th), interpolation=cv2.INTER_AREA)
         template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
         if float(template_gray.std()) < 8:
-            continue
+            return
         response = cv2.matchTemplate(gray, template_gray, cv2.TM_CCOEFF_NORMED)
         _, score, _, (x, y) = cv2.minMaxLoc(response)
         if score <= best["score"]:
-            continue
+            return
         patch = canvas[y:y + th, x:x + tw]
         color_error = float(np.mean(cv2.absdiff(patch, template)))
+        best_scale = scale
         best = {
             "score": round(score, 4), "color_error": round(color_error, 2),
             "matched": score >= 0.89 and color_error <= 21,
             "center_image_px": {"x": (x + tw / 2) / shrink, "y": (y + th / 2) / shrink},
         }
+
+    for scale in sorted(scales):
+        compare(scale)
+    if not best["matched"] and best["score"] >= 0.60:
+        # 窗口边框与工具栏高度会改变实际缩放，尤其是贴满窗口的长图。只在接近时精搜尺度。
+        coarse_scale = best_scale
+        for step in (-1, 1, -2, 2, -3, 3, -4, 4, -5, 5):
+            compare(coarse_scale * (1 + step * .005))
     return best
