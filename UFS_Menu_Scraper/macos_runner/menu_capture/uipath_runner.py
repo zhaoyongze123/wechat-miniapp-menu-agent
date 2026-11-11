@@ -2142,17 +2142,18 @@ class UiPathRunner:
                                      desktop: bool) -> dict:
         """丢弃命中的同名微信浮窗截图并重拍。
 
-        微信会同时存在一个同名的 296×388 悬浮小窗，选择器匹配到它时截到的画面里没有聊天内容，
-        会让发送按钮状态和图片定位同时失真；主聊天窗口必定宽于高，且尺寸不会小到这个程度。
+        微信会同时存在一个同名的悬浮小窗，选择器匹配到它时截到的画面里没有聊天内容，
+        会让发送按钮状态和图片定位同时失真。主聊天窗口宽度远大于浮窗（本机 659×749，竖长），
+        浮窗只有 296 宽，因此只按宽度区分，不假设横竖比例。
         """
         if desktop or selector != self._configured_wechat_selector():
             return reply
         for attempt in range(3):
             width = float(reply.get("window_width") or 0)
-            height = float(reply.get("window_height") or 0)
-            if width >= 600 and width > height:
+            if width >= 480:
                 return reply
             task_id = (self.current_task or {}).get("id")
+            height = float(reply.get("window_height") or 0)
             self.store.event(f"截图命中微信同名小窗（{width:.0f}×{height:.0f}），丢弃重拍", "warn", task_id)
             time.sleep(1)
             reply = self._send(dict(command))
