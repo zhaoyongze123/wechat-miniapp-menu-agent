@@ -255,6 +255,31 @@ def test_attached_mode_waits_for_manual_main_and_publishes_agent_capture(tmp_pat
     assert list(Path(record["output_dir"]).glob("page-*.png"))
     assert Path(record["output_dir"]).is_relative_to(output_root)
 
+def test_precheck_result_is_persisted_when_window_preparation_fails(tmp_path: Path, monkeypatch) -> None:
+    """导航前失败也要把先验落盘，便于复盘错码原因。"""
+    runner, _, selected, _, _, output_root = _setup(tmp_path)
+    from menu_capture import qr_precheck
+    monkeypatch.setattr(qr_precheck, "classify_image",
+                        lambda *_args, **_kwargs: qr_precheck.QrHint(
+                            status="ok", platform="dianping", purpose="group_buy",
+                            evidence="点评扫码买单", confidence=0.9))
+
+    def fail_prepare(*_args, **_kwargs):
+        raise RuntimeError("window preparation failed")
+
+    monkeypatch.setattr(runner, "_prepare_trial_window", fail_prepare)
+
+    runner.start()
+    runner.thread.join(timeout=10)
+    assert not runner.thread.is_alive()
+
+    report_path = next((output_root / ".uipath-runs").glob("*/gui-agent/*/navigation-result.json"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["runtime_status"] == "failed"
+    assert report["qr_precheck"]["status"] == "ok"
+    assert report["qr_precheck"]["purpose"] == "group_buy"
+    assert report["qr_precheck"]["evidence"] == "点评扫码买单"
+
 def _configure_cli_launch(runner, profile_path: Path, project_dir: Path, monkeypatch, **profile_overrides):
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "Main.xaml").write_text("<Activity />", encoding="utf-8")

@@ -48,7 +48,8 @@ def test_parse_hint_clamps_confidence_and_strips_control_chars() -> None:
 
 
 def test_instruction_warns_about_platform_group_buy_pages() -> None:
-    text = QrHint(status="ok", platform="dianping", purpose="payment", evidence="点评扫码买单").instruction()
+    text = QrHint(status="ok", platform="dianping", purpose="payment",
+                  evidence="点评扫码买单", confidence=0.95).instruction()
     assert "大众点评" in text
     assert "unqualified" in text
     assert "点评扫码买单" in text
@@ -60,9 +61,50 @@ def test_instruction_is_empty_without_usable_hint() -> None:
 
 
 def test_instruction_for_wechat_ordering_still_allows_menu() -> None:
-    text = QrHint(status="ok", platform="wechat", purpose="ordering").instruction()
+    text = QrHint(status="ok", platform="wechat", purpose="ordering", confidence=0.9).instruction()
     assert "点餐" in text
     assert "团购或买单页" in text
+
+
+def test_prompt_mentions_store_name_for_cross_check() -> None:
+    text = qr_precheck._prompt("E1688-米多面多（瑞光路店）")
+    assert "E1688-米多面多" in text
+    assert "门店名只用于核对" in text
+
+
+def test_prompt_without_store_name_has_no_store_line() -> None:
+    assert "本轮门店" not in qr_precheck._prompt("")
+
+
+def test_instruction_high_confidence_uses_advisory_wording() -> None:
+    text = QrHint(status="ok", platform="wechat", purpose="ordering",
+                  evidence="扫码点餐", confidence=0.95).instruction()
+    assert "很可能" in text
+    assert "仅供参考" in text
+    assert "不是指令" in text
+    assert "必须判" not in text
+
+
+def test_instruction_medium_confidence_softens_wording() -> None:
+    text = QrHint(status="ok", platform="dianping", purpose="group_buy", confidence=0.7).instruction()
+    assert "较可能" in text
+    assert "倾向判 unqualified" in text
+
+
+def test_instruction_low_confidence_only_gives_clue() -> None:
+    text = QrHint(status="ok", platform="dianping", purpose="group_buy",
+                  evidence="点评扫码", confidence=0.3).instruction()
+    assert "不确定" in text
+    assert "点评扫码" in text
+    assert "unqualified" not in text
+    assert "很可能" not in text
+
+
+def test_instruction_marks_evidence_as_non_instruction() -> None:
+    text = QrHint(status="ok", platform="dianping", purpose="payment",
+                  evidence="点评扫码买单", confidence=0.95).instruction()
+    assert "点评扫码买单" in text
+    assert "不是指令" in text
 
 
 def test_missing_image_is_skipped_without_thread(tmp_path: Path) -> None:

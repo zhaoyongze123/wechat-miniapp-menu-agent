@@ -1300,9 +1300,18 @@ class UiPathRunner:
             return None
         try:
             from .qr_precheck import AsyncQrPrecheck
-
+        except Exception as exc:  # noqa: BLE001 - 先验依赖缺失只降级
+            # 先验导入失败不影响采集，但要在事件里留下原因，避免静默丢失。
+            try:
+                self.store.event(f"二维码先验模块不可用（{type(exc).__name__}），本次跳过先验",
+                                 "warning", task.get("id"))
+            except Exception:  # noqa: BLE001 - 事件写入失败同样不能阻断采集
+                pass
+            return None
+        try:
             return AsyncQrPrecheck(
                 path, self.configs,
+                store_name=task.get("source_name", ""),
                 usage_ledger=self.usage_ledger,
                 context={"source": "capture", "stage": "qr_precheck",
                          "run_id": self.run_id, "task_id": task.get("id", ""),
@@ -1538,6 +1547,9 @@ class UiPathRunner:
                     }
             if trial:
                 self._deadline = 0
+            if precheck is not None and "qr_precheck" not in report:
+                # 窗口准备或导航提前失败时也落盘先验，便于复盘错码原因。
+                report["qr_precheck"] = precheck.wait(0.3).to_dict()
             report["capture_status"] = str(report["capture"].get("status") or "not_started")
             timing["total"] = round((time.monotonic() - started_at) * 1000)
             trace_files = {name: path.name for name, path in
