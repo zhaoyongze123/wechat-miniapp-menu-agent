@@ -190,7 +190,8 @@ def _windows() -> list[dict]:
         name = ctypes.create_unicode_buffer(512)
         user32.GetClassNameW(hwnd, name, 512)
         left, top, width, height = _rect(hwnd)
-        items.append({"hwnd": hwnd, "app": app, "title": title.value, "cls": name.value,
+        items.append({"hwnd": hwnd, "window_id": f"{pid.value}:{hwnd}",
+                      "app": app, "title": title.value, "cls": name.value,
                       "visible": bool(user32.IsWindowVisible(hwnd)),
                       "rect": (left, top, width, height)})
         return True
@@ -237,7 +238,7 @@ class WindowsDesktop:
                 return self._capture_desktop(command)
             if action == "click_desktop_overlay":
                 return self._click_desktop_overlay(command)
-            window = self._resolve(str(command.get("selector") or ""))
+            window = self._resolve(str(command.get("selector") or ""), command.get("expected_window_id"))
             if action == "resize":
                 return self._resize(window, command)
             if action in {"screenshot", "scroll_capture"}:
@@ -261,15 +262,20 @@ class WindowsDesktop:
                 continue
             left, top, width, height = item["rect"]
             windows.append({"app": item["app"], "title": item["title"], "cls": item["cls"], "role": "",
+                            "window_id": item["window_id"],
                             "position": {"x": left, "y": top, "width": width, "height": height}})
         return windows
 
-    def _resolve(self, selector: str) -> dict:
+    def _resolve(self, selector: str, expected_window_id: str | None = None) -> dict:
         try:
             expected = ET.fromstring(selector).attrib
         except ET.ParseError:
             raise RuntimeError("目标窗口 selector 无法解析") from None
-        candidates = [item for item in _windows() if _matches(item, expected)]
+        def candidates_for_target():
+            return [item for item in _windows() if _matches(item, expected)
+                    and (not expected_window_id or item.get("window_id") == expected_window_id)]
+
+        candidates = candidates_for_target()
         sized = [item for item in candidates
                  if item["visible"] and item["rect"][2] > 200 and item["rect"][3] > 200]
         if not sized:
@@ -280,7 +286,7 @@ class WindowsDesktop:
                 user32.ShowWindow(item["hwnd"], SW_RESTORE)
                 time.sleep(0.2)
             if iconic:
-                candidates = [item for item in _windows() if _matches(item, expected)]
+                candidates = candidates_for_target()
                 sized = [item for item in candidates
                          if item["visible"] and item["rect"][2] > 200 and item["rect"][3] > 200]
         if not sized:
@@ -354,6 +360,9 @@ class WindowsDesktop:
         hwnd = window["hwnd"]
         foreground = self._activate(hwnd)
         if command["action"] == "scroll_capture":
+            if not foreground:
+                raise RuntimeError("目标窗口未置前；未执行滚动")
+            self._point(window, float(command["x"]), float(command["y"]), command)
             self._wheel(window, float(command["x"]), float(command["y"]), command["direction"],
                         int(command["units"]))
             # 只留最短渲染时间；页面没跟上时由 _capture_menu 比对差异后补拍。
@@ -365,6 +374,7 @@ class WindowsDesktop:
         image.save(path)
         return {"ok": True, "action": command["action"], "path": str(path.resolve()),
                 "width": image.width, "height": image.height,
+                "window_id": window.get("window_id"),
                 **self._geometry({"rect": (left, top, width, height)}),
                 "target_window": self._identity(window, foreground)}
 
@@ -442,8 +452,10 @@ class WindowsDesktop:
 
         return Image.frombuffer("RGBA", (width, height), buffer.raw, "raw", "BGRA", 0, 1).convert("RGB")
 
-    def _point(self, window: dict, x: float, y: float) -> tuple[int, int, int, int]:
+    def _point(self, window: dict, x: float, y: float, command: dict) -> tuple[int, int, int, int]:
         left, top, width, height = _rect(window["hwnd"])
+        if (command.get("expected_window_width", width), command.get("expected_window_height", height)) != (width, height):
+            raise RuntimeError("窗口尺寸已变化；未执行坐标动作")
         if not (0 <= x < width and 0 <= y < height):
             raise RuntimeError(f"坐标超出窗口范围：{x:.0f},{y:.0f} 不在 {width}x{height} 内")
         return left, top, width, height
@@ -464,9 +476,9 @@ class WindowsDesktop:
     def _click(self, window: dict, command: dict) -> dict:
         hwnd = window["hwnd"]
         x, y = float(command["x"]), float(command["y"])
-        left, top, width, height = self._point(window, x, y)
         if not self._activate(hwnd):
             raise RuntimeError("目标窗口未置前；未执行点击")
+        left, top, width, height = self._point(window, x, y, command)
         user32.SetCursorPos(left + int(round(x)), top + int(round(y)))
         time.sleep(0.05)
         action = command["action"]
@@ -482,9 +494,9 @@ class WindowsDesktop:
 
     def _scroll(self, window: dict, command: dict) -> dict:
         x, y = float(command["x"]), float(command["y"])
-        left, top, width, height = self._point(window, x, y)
         if not self._activate(window["hwnd"]):
             raise RuntimeError("目标窗口未置前；未执行滚动")
+        left, top, width, height = self._point(window, x, y, command)
         self._wheel(window, x, y, command["direction"], int(command["units"]))
         return {"ok": True, "action": "scroll", **self._geometry({"rect": (left, top, width, height)})}
 

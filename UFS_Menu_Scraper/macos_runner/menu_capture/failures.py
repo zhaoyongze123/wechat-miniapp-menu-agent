@@ -28,6 +28,7 @@ FAILURE_CODES: dict[str, tuple[str, str]] = {
     # 以下属于启动阶段的技术失败：只能说明本轮没能打开小程序，不能据此判定门店不合格。
     "startup_preview_unavailable": (MANUAL, "启动阶段未找到识别入口"),
     "startup_no_miniapp": (MANUAL, "启动阶段未观察到小程序窗口"),
+    "startup_qr_entry_unavailable": (STORE_UNAVAILABLE, "微信未提供二维码识别入口"),
     "login_required": (MANUAL, "需要登录或协议确认"),
     "payment_interface": (MANUAL, "交易或支付界面"),
     "wechat_context_lost": (MANUAL, "微信聊天上下文丢失"),

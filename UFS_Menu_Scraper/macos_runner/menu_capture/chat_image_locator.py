@@ -123,7 +123,8 @@ def _candidate_from_match(score: float, x: int, y: int, w: int, h: int,
     }
 
 
-def locate_sent_image(screenshot_path: Path, source_path: Path, anchor_bottom: float) -> dict:
+def locate_sent_image(screenshot_path: Path, source_path: Path, anchor_bottom: float,
+                      *, before_send: Path | None = None) -> dict:
     """Find ``source_path``'s sent thumbnail below ``anchor_bottom`` in the chat transcript.
 
     Coordinates in the return value are screenshot pixels. ``anchor_bottom`` is the
@@ -223,6 +224,19 @@ def locate_sent_image(screenshot_path: Path, source_path: Path, anchor_bottom: f
     # 缩略图带圆角/留白时，正确图片的分数会略低于硬阈值；只要明显领先第二名，
     # 仍可确认是本轮图片，避免把“已发送但缩略图有留白”误判成没发出去。
     relaxed = best is not None and best["score"] >= 0.62 and best["score"] - runner_up >= 0.10
+    if before_send is not None and best is not None:
+        previous = _read_image(before_send, "screenshot")
+        left, top, right, bottom = best["box"]
+        changed = False
+        if previous.shape == screenshot.shape:
+            before = previous[top:bottom, left:right]
+            after = screenshot[top:bottom, left:right]
+            changed = float(np.mean(np.max(cv2.absdiff(before, after), axis=2) >= 20)) >= 0.12
+        diagnostics["candidate_changed_after_send"] = changed
+        if not changed:
+            raise ChatImageNotFound("发送后未确认本轮新增图片气泡", diagnostics)
+        # 只有发送前后确有新内容、且候选唯一领先时才接纳临界分数。扫码前还要核对完整预览图。
+        relaxed = best["score"] >= 0.59 and best["score"] - runner_up >= 0.10
     if best is None or (best["score"] < _MIN_SCORE and not relaxed):
         raise ChatImageNotFound("本轮门店名称下方未匹配到来源图片，请查看图片匹配记录", diagnostics)
     if relaxed and best["score"] < _MIN_SCORE:
@@ -249,3 +263,42 @@ def locate_sent_image(screenshot_path: Path, source_path: Path, anchor_bottom: f
         "runner_up_score": runner_up,
         "search_region_px": [x1, y1, x2, y2],
     }
+
+
+def match_preview_source(preview_path: Path, source_path: Path) -> dict:
+    """按原图比例核对完整预览，允许留白和缩放，拒绝白帧及上一张图。"""
+    preview = _read_image(preview_path, "screenshot")
+    source = _read_image(source_path, "source")
+    height, width = preview.shape[:2]
+    shrink = min(1.0, 480 / max(width, height))
+    canvas = cv2.resize(preview, None, fx=shrink, fy=shrink, interpolation=cv2.INTER_AREA)
+    gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
+    h, w = source.shape[:2]
+    # 预览按比例缩放。略过原图外边缘，兼容窗口边框和预览底部的暗边。
+    inset_x, inset_y = round(w * 0.06), round(h * 0.06)
+    source = source[inset_y:h - inset_y, inset_x:w - inset_x]
+    available_h, available_w = gray.shape
+    fit = min(available_w / w, max(1, available_h - round(32 * shrink)) / h)
+    scales = {fit * ratio for ratio in (0.6, 0.7, 0.8, 0.88, 0.93, 0.97, 1.0, 1.04)}
+    scales.add(shrink)
+    best = {"score": 0.0, "color_error": None, "matched": False}
+    for scale in sorted(scales):
+        tw, th = round(source.shape[1] * scale), round(source.shape[0] * scale)
+        if not (32 <= tw <= available_w and 32 <= th <= available_h):
+            continue
+        template = cv2.resize(source, (tw, th), interpolation=cv2.INTER_AREA)
+        template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+        if float(template_gray.std()) < 8:
+            continue
+        response = cv2.matchTemplate(gray, template_gray, cv2.TM_CCOEFF_NORMED)
+        _, score, _, (x, y) = cv2.minMaxLoc(response)
+        if score <= best["score"]:
+            continue
+        patch = canvas[y:y + th, x:x + tw]
+        color_error = float(np.mean(cv2.absdiff(patch, template)))
+        best = {
+            "score": round(score, 4), "color_error": round(color_error, 2),
+            "matched": score >= 0.89 and color_error <= 21,
+            "center_image_px": {"x": (x + tw / 2) / shrink, "y": (y + th / 2) / shrink},
+        }
+    return best
