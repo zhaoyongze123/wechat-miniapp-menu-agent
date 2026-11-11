@@ -8,6 +8,10 @@ import cv2
 import numpy as np
 
 
+class ChatImageUnreadable(ValueError):
+    """聊天截图无法打开或解码，属于环境问题，应转人工而不是判业务失败。"""
+
+
 def find_sent_text_bubbles(path: Path) -> list[dict[str, int | str]]:
     """返回聊天区内发出文本气泡的像素 bbox，坐标为左闭右开。
 
@@ -15,9 +19,14 @@ def find_sent_text_bubbles(path: Path) -> list[dict[str, int | str]]:
     未识别到可靠气泡时返回空列表；调用方应按待复核处理，不退回到可能把
     照片 OCR 拼入消息的宽松分组。
     """
-    image = cv2.imread(str(Path(path)), cv2.IMREAD_COLOR)
+    # cv2.imread 在 Windows 上按 ANSI 打开路径，输出目录含中文时会读失败；先读字节再解码。
+    try:
+        buffer = np.frombuffer(Path(path).read_bytes(), dtype=np.uint8)
+    except OSError as exc:
+        raise ChatImageUnreadable(f"无法读取聊天截图：{path}") from exc
+    image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
     if image is None:
-        raise ValueError(f"无法读取聊天截图：{path}")
+        raise ChatImageUnreadable(f"无法读取聊天截图：{path}")
 
     height, width = image.shape[:2]
     if width <= 0 or height <= 0:

@@ -30,7 +30,7 @@ from .config import ConfigStore, atomic_json
 from .model import Region
 from .model_usage import usage_context
 from .chat_anchor import find_store_name_matches
-from .chat_layout import find_sent_text_bubbles
+from .chat_layout import ChatImageUnreadable, find_sent_text_bubbles
 from .failures import classify as classify_failure
 from .window_contract import is_windows_miniapp_app, is_windows_wechat_app, validate_target_window, window_selector, windows_selectors_overlap
 from .close_icon_locator import refine_close_icon, locate_close_icon, refine_back_arrow
@@ -2615,7 +2615,10 @@ class UiPathRunner:
                     raise NeedsReview("发送后文件传输助手上下文丢失，停止处理")
             # 用最后一条右侧文字气泡限定图片范围，再用本轮原图匹配确认身份；
             # 不识别气泡文字，也不要求 OCR 认出店名/编码。
-            bubbles = find_sent_text_bubbles(Path(sent["path"]))
+            try:
+                bubbles = find_sent_text_bubbles(Path(sent["path"]))
+            except ChatImageUnreadable as exc:
+                raise NeedsReview(f"聊天截图无法解析：{exc}") from exc
             latest = max(bubbles, key=lambda item: item["bottom"], default=None)
             anchor_bottom = latest["bottom"] if latest else 0
             with self._trace("wechat_image_match", source_name=task["source_name"],

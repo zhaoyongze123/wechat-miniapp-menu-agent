@@ -5,9 +5,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from menu_capture.chat_anchor import find_store_name_matches
-from menu_capture.chat_layout import find_sent_text_bubbles
+from menu_capture.chat_layout import ChatImageUnreadable, find_sent_text_bubbles
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -138,3 +139,29 @@ def test_large_green_photo_region_is_not_a_sent_text_bubble(tmp_path):
     assert cv2.imwrite(str(path), image)
 
     assert find_sent_text_bubbles(path) == []
+
+
+def test_reads_screenshot_under_chinese_output_path(tmp_path):
+    """采集输出目录可含中文，读图不能依赖 ANSI 路径。"""
+    image = np.full((400, 600, 3), (245, 245, 245), dtype=np.uint8)
+    cv2.rectangle(image, (300, 170), (570, 215), (95, 191, 95), thickness=-1)
+    chinese_dir = tmp_path / "输出" / "截图输出" / "清洗批次"
+    chinese_dir.mkdir(parents=True)
+    path = chinese_dir / "wechat-after-send.png"
+    ok, buffer = cv2.imencode(".png", image)
+    assert ok
+    buffer.tofile(str(path))
+
+    boxes = find_sent_text_bubbles(path)
+
+    assert len(boxes) == 1
+    assert _near_box(boxes[0], (300, 170, 571, 216))
+
+
+def test_unreadable_screenshot_raises_dedicated_error(tmp_path):
+    path = tmp_path / "broken.png"
+    path.write_bytes(b"not an image")
+
+    with pytest.raises(ChatImageUnreadable):
+        find_sent_text_bubbles(path)
+
