@@ -34,7 +34,7 @@ def test_profile_coordinates_are_explicit_and_private(tmp_path: Path):
     with pytest.raises(ValueError):
         RobotProfile(wechat_input_x_ratio=float("inf"))
     with pytest.raises(ValueError):
-        RobotProfile(max_tasks=11)
+        RobotProfile(max_tasks=101)
 
 
 def test_profile_load_migrates_legacy_recognition_fields_once(tmp_path: Path):

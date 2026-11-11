@@ -41,7 +41,7 @@ class RobotProfile(StrictModel):
         "[d(hk)][d(command)]w[u(command)][u(hk)]"
     ))
     scroll_units: int = Field(default=6, ge=1, le=10)
-    max_tasks: int = Field(default=1, ge=1, le=10)
+    max_tasks: int = Field(default=1, ge=1, le=100)
 
     @field_validator("wechat_selector", "miniapp_selector", "preview_selector")
     @classmethod
