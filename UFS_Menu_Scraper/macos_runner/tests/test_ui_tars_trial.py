@@ -411,10 +411,14 @@ def test_navigation_puts_full_guide_in_system_prompt(model_server, tmp_path):
     assert len(handler.requests) == 1
     messages = handler.requests[0]["body"]["messages"]
     system_text = "\n".join(str(m.get("content")) for m in messages if m.get("role") == "system")
-    # 业务经验只维护系统提示词一份：三个终态与人数选择页反例都必须常驻。
+    # 业务经验只维护系统提示词一份：业务背景、三个终态与正常前置页面都必须常驻。
     assert "点餐小程序导航经验" in system_text
+    assert "你正在完成的业务" in system_text
     assert "三个终态" in system_text
-    assert "人数选择页" in system_text
+    assert "就餐人数、堂食方式、桌号等选择页面" in system_text
+    user_text = "\n".join(str(m.get("content")) for m in messages if m.get("role") == "user")
+    assert "当前具体页面和状态尚未确认" in user_text
+    assert "实际页面证据优先" in user_text
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
