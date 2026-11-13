@@ -1,15 +1,19 @@
 {
-  "version": 5,
+  "version": 6,
   "scope": "动作的唯一来源：动作名、字段白名单、基础类型，以及到宿主方法的映射。doc 会原样进入模型可见的输出契约；菜单几何、胶囊保护区、滚轮换算等宿主专有逻辑仍由专用函数实现。",
   "coordinate_space": 1000,
   "actions": {
     "left_click": {
-      "doc": "left_click：必填 coordinate=[x,y] 与 reason（中文一句话，说明为什么点这里、期望发生什么）；不得有其他字段。reason 只用于执行留痕与反馈，不参与坐标换算。",
+      "doc": "left_click：coordinate=[x,y] 与 target_box=[x1,y1,x2,y2] 二选一（两者都给或都不给都算格式错误），并必填 reason（中文一句话，说明为什么点这里、期望发生什么）。target_box 表示控件范围，执行时取框中心。可选 target_name（控件名称，用于失败复盘）与 view_id（引用 zoom_region 返回的局部视图；填了就按该视图坐标解释 target_box）。coordinate 与 target_box 都用 0..1000。",
       "required": {
-        "coordinate": { "type": "point" },
         "reason": { "type": "string" }
       },
-      "optional": {},
+      "optional": {
+        "coordinate": { "type": "point" },
+        "target_box": { "type": "box" },
+        "target_name": { "type": "string" },
+        "view_id": { "type": "string" }
+      },
       "host": {
         "method": "click",
         "map": { "frame_id": "$frame", "x": "$x", "y": "$y" }
@@ -91,6 +95,15 @@
         "method": "switch_window",
         "map": { "frame_id": "$frame", "title": "title" }
       }
+    },
+    "zoom_region": {
+      "doc": "zoom_region：必填 box=[x1,y1,x2,y2]（0..1000 的全窗区域）与 reason（中文一句话，说明想看清什么）；不得有其他字段。只读动作：不点击、不滚动，返回该区域放大后的局部图与 view_id，下一轮可用 left_click 的 target_box + view_id 精确框选。适合小叉号、复选框、密集按钮。",
+      "required": {
+        "box": { "type": "box" },
+        "reason": { "type": "string" }
+      },
+      "optional": {},
+      "host": null
     },
     "noop": {
       "doc": "noop：只表示本轮不做动作、继续观察；只允许 action 字段。需要等待加载时优先用 wait 并说明原因。",

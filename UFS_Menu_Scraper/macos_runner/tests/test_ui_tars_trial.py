@@ -518,6 +518,7 @@ def test_missing_required_field_feedback_allows_correction(model_server, tmp_pat
     handler.responses = [
         _tool_call({"action": "wait"}),
         _terminal("needs_review", reason="按反馈补齐字段后核对完成"),
+        _terminal("needs_review", reason="按反馈补齐字段后核对完成"),
     ]
     observe, _frames = _frame_factory(tmp_path)
 
@@ -527,7 +528,8 @@ def test_missing_required_field_feedback_allows_correction(model_server, tmp_pat
     )
 
     assert result["outcome"] == "needs_review"
-    assert len(handler.requests) == 2
+    # needs_review 首帧会被要求再观察一次，因此终态要发两次、共 3 次请求。
+    assert len(handler.requests) == 3
     feedback = _all_text(handler.requests[1]["body"]["messages"])
     assert "不符合工具协议" in feedback and "time" in feedback
     assert result["metrics"]["format_failures"] == 1
@@ -543,12 +545,13 @@ def test_parse_failures_reset_after_valid_action(model_server, tmp_path):
         _tool_call({"action": "wait"}),
         _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击目标按钮"}),
         _terminal("needs_review", reason="修正后完成核对"),
+        _terminal("needs_review", reason="修正后完成核对"),
     ]
     observe, _frames = _frame_factory(tmp_path)
     actions = []
 
     result, _frame = run_navigation(
-        _model(server), "测试门店", 1, 6,
+        _model(server), "测试门店", 1, 8,
         observe=observe, execute=lambda command, frame_id: actions.append(command), check_stop=lambda: None,
     )
 
@@ -556,7 +559,7 @@ def test_parse_failures_reset_after_valid_action(model_server, tmp_path):
     assert result["outcome"] == "needs_review"
     assert result.get("source") != "runtime"
     assert len(actions) == 2
-    assert len(handler.requests) == 5
+    assert len(handler.requests) == 6
     assert result["metrics"]["format_failures"] == 2
     assert result["metrics"]["format_retries"] == 2
 
@@ -585,17 +588,21 @@ def test_navigation_puts_full_guide_in_system_prompt(model_server, tmp_path):
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 def test_needs_review_terminal_ignores_empty_menu_box(model_server, tmp_path):
     server, handler = model_server
-    handler.responses = [_terminal("needs_review", reason="门店身份仍无法确认", menu_box=[])]
+    handler.responses = [
+        _terminal("needs_review", reason="门店身份仍无法确认", menu_box=[]),
+        _terminal("needs_review", reason="门店身份仍无法确认", menu_box=[]),
+    ]
     observe, frames = _frame_factory(tmp_path)
 
     result, terminal_frame = run_navigation(
-        _model(server), "身份待确认门店", 1, 2,
+        _model(server), "身份待确认门店", 1, 4,
         observe=observe, execute=lambda *_: pytest.fail("终态不应执行动作"), check_stop=lambda: None,
     )
 
     assert result["outcome"] == "needs_review"
     assert "身份" in result["reason"]
-    assert terminal_frame == frames[0]
+    # 首帧终态会被要求再观察一次，取证帧是第二帧。
+    assert terminal_frame == frames[1]
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
@@ -604,6 +611,7 @@ def test_capsule_click_is_returned_to_agent_instead_of_ending_run(model_server, 
     # 胶囊区点击应被拒绝并把错误反馈给 Agent，下一次输出仍可正常结束本轮。
     handler.responses = [
         _tool_call({"action": "left_click", "coordinate": [800, 10], "reason": "点击右上角关闭"}),
+        _terminal("needs_review", reason="胶囊区被拒绝，重新观察后仍无法确认"),
         _terminal("needs_review", reason="胶囊区被拒绝，重新观察后仍无法确认"),
     ]
     observe, _frames = _frame_factory(tmp_path)
@@ -616,24 +624,28 @@ def test_capsule_click_is_returned_to_agent_instead_of_ending_run(model_server, 
 
     assert result["outcome"] == "needs_review"
     assert executed == []
-    assert len(handler.requests) == 2
+    # 胶囊区点击被退回一次；终态首帧又被要求再观察一次，共 3 次请求。
+    assert len(handler.requests) == 3
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 def test_needs_review_terminal_does_not_claim_menu_success(model_server, tmp_path):
     server, handler = model_server
-    handler.responses = [_terminal("needs_review", reason="门店身份仍无法确认")]
+    handler.responses = [
+        _terminal("needs_review", reason="门店身份仍无法确认"),
+        _terminal("needs_review", reason="门店身份仍无法确认"),
+    ]
     observe, frames = _frame_factory(tmp_path)
 
     result, terminal_frame = run_navigation(
-        _model(server), "身份待确认门店", 1, 2,
+        _model(server), "身份待确认门店", 1, 4,
         observe=observe, execute=lambda *_: pytest.fail("终态不应执行动作"), check_stop=lambda: None,
     )
 
     assert result["outcome"] == "needs_review"
     assert "身份" in result["reason"]
     assert "evidence" not in result
-    assert terminal_frame == frames[0]
+    assert terminal_frame == frames[1]
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
@@ -660,17 +672,18 @@ def test_terminal_without_action_field_is_accepted(model_server, tmp_path):
     server, handler = model_server
     handler.responses = [
         '<tool_call>{"name":"computer_use","arguments":{"outcome":"needs_review","reason":"门店身份无法确认"}}</tool_call>',
+        '<tool_call>{"name":"computer_use","arguments":{"outcome":"needs_review","reason":"门店身份无法确认"}}</tool_call>',
     ]
     observe, frames = _frame_factory(tmp_path)
 
     result, terminal_frame = run_navigation(
-        _model(server), "身份待确认门店", 1, 2,
+        _model(server), "身份待确认门店", 1, 4,
         observe=observe, execute=lambda *_: pytest.fail("终态不应执行动作"), check_stop=lambda: None,
     )
 
     assert result["outcome"] == "needs_review"
     assert result["reason"] == "门店身份无法确认"
-    assert terminal_frame == frames[0]
+    assert terminal_frame == frames[1]
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
@@ -678,6 +691,7 @@ def test_action_name_with_empty_parentheses_is_normalized(model_server, tmp_path
     server, handler = model_server
     handler.responses = [
         '<tool_call>{"name":"computer_use","arguments":{"action":"list_windows()"}}</tool_call>',
+        _terminal("needs_review", reason="仅有一个小程序窗口，身份待确认"),
         _terminal("needs_review", reason="仅有一个小程序窗口，身份待确认"),
     ]
     observe, _frames = _frame_factory(tmp_path)
@@ -691,7 +705,7 @@ def test_action_name_with_empty_parentheses_is_normalized(model_server, tmp_path
 
     assert result["outcome"] == "needs_review"
     assert actions[0][0]["action"] == "windows"
-    assert len(handler.requests) == 2
+    assert len(handler.requests) == 3
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
@@ -919,6 +933,10 @@ def test_runner_resizes_before_fresh_agent_frame_and_stages_capture(
     model_server, tmp_path, monkeypatch, resize_fails,
 ):
     server, handler = model_server
+    windows_mode = os.name == "nt"
+    if windows_mode and not resize_fails:
+        # Windows 在重排后会走原图匹配的截图等待，MockRobot 的纯色画面无法匹配，端到端场景待单独补桩。
+        pytest.skip("Windows 试验链路的原图匹配截图等待缺少可匹配的模拟画面")
     handler.responses = [
         _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击目标按钮"}),
         _terminal("success", menu_box=[100, 100, 900, 900]),
@@ -962,8 +980,11 @@ def test_runner_resizes_before_fresh_agent_frame_and_stages_capture(
             self.commands.append(dict(command))
             command_id = command.get("id", "mock")
             if command["action"] == "resize":
-                assert command["width"] == 240
-                assert command["height"] == 800
+                # 试验窗口收窄到 240 宽（高度按屏幕自适应）；Windows 批次开始前另有微信主窗口校准 999×749。
+                if command["width"] == 240:
+                    assert command["height"] >= 300
+                else:
+                    assert (command["width"], command["height"]) == (999, 749)
                 self.resized = True
                 self._window_selector = None
                 self._window_pixels = None
@@ -1016,14 +1037,12 @@ def test_runner_resizes_before_fresh_agent_frame_and_stages_capture(
     report_path = Path(started["result_file"])
     report = json.loads(report_path.read_text(encoding="utf-8"))
     commands = runner.transport.commands
-    windows_mode = sys.platform == "win32"
-    if resize_fails and windows_mode:
-        pytest.skip("Windows 使用当前捕获的窗口尺寸，不做窗口重排，resize 故障注入不适用")
     resize_index = next((i for i, command in enumerate(commands) if command["action"] == "resize"), None)
+    # Windows 批次开始前会校准微信窗口版面；macOS 沿用当前捕获尺寸，不重排。
     if windows_mode:
-        assert resize_index is None
-    else:
         assert resize_index is not None
+    else:
+        assert resize_index is None
     if resize_fails:
         assert report["navigation"] == {
             "outcome": "needs_review", "reason": "mock resize failure", "source": "runtime",
@@ -1037,10 +1056,10 @@ def test_runner_resizes_before_fresh_agent_frame_and_stages_capture(
         assert not any(command["action"] in {"screenshot", "click"} for command in commands)
         return
     first_screenshot_index = next(i for i, command in enumerate(commands) if command["action"] == "screenshot")
-    if not windows_mode:
+    if windows_mode:
         assert resize_index < first_screenshot_index
-    # Windows 不重排窗口，截图保持窗口原始白底；Mac 重排后应换成本轮底色。
-    expected_pixel = (255, 255, 255) if windows_mode else (12, 34, 56)
+    # 重排成功后截图换成本轮底色；macOS 不重排，保持窗口原始白底。
+    expected_pixel = (12, 34, 56) if windows_mode else (255, 255, 255)
     assert report["material"]["material_version_id"] == version_id
     assert report["material"]["material_batch_id"] == batch_id
     assert report["material"]["material_snapshot"] == snapshot_id
@@ -1559,7 +1578,7 @@ def test_zoom_reference_clamps_at_window_edge_and_rejects_invalid_click(tmp_path
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
-def test_first_no_change_click_sends_landing_zoom_reference_to_model(model_server, tmp_path):
+def test_first_no_change_click_sends_evidence_with_zoom(model_server, tmp_path):
     server, handler = model_server
     handler.responses = [
         _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击开始点餐"}),
@@ -1576,8 +1595,15 @@ def test_first_no_change_click_sends_landing_zoom_reference_to_model(model_serve
     assert result["outcome"] == "success"
     assert len(handler.requests) == 2
     later = handler.requests[1]["body"]["messages"]
-    assert "落点放大参考" in _all_text(later)
-    assert "不是当前可点击屏幕" in _all_text(later)
+    text = _all_text(later)
+    # 第一次无变化只给事实：实际落点、前后差异、放大图和附近文字框。
+    assert "实际落点 (375,450)" in text
+    assert "整页变化 0%" in text
+    assert "不是当前可点击屏幕" in text
+    assert "落点偏差" not in text
+    assert "不是目标选错" not in text
+    # 摘要每次请求只有一份最新版
+    assert text.count("【本店执行记录】") == 1
     sizes = []
     for raw in _image_data_items(later):
         with Image.open(io.BytesIO(raw)) as image:
@@ -1587,7 +1613,7 @@ def test_first_no_change_click_sends_landing_zoom_reference_to_model(model_serve
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
-def test_second_same_target_failure_switches_to_target_change_hint(model_server, tmp_path):
+def test_second_no_change_click_sends_attempt_history(model_server, tmp_path):
     server, handler = model_server
     click = _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击开始点餐"})
     handler.responses = [click, click, _terminal("success", menu_box=[100, 100, 900, 900])]
@@ -1602,7 +1628,40 @@ def test_second_same_target_failure_switches_to_target_change_hint(model_server,
     assert result["outcome"] == "success"
     assert len(handler.requests) == 3
     third = _all_text(handler.requests[2]["body"]["messages"])
-    # 第二次重试不再讲落点，而是明确要求换目标或入口。
-    assert "第 2 次点击仍无变化" in third
-    assert "不要再微调这个位置" in third
-    assert "重新判断目标" in third
+    # 第二次仍无变化时只补同一入口的历次位置与读数，是否换路由模型决定。
+    assert "已实际点击 2 次" in third
+    assert "位置 (375,450)、(375,450)" in third
+    assert "各次观察" in third
+    assert "不要再微调这个位置" not in third
+    assert "重新判断目标" not in third
+    assert third.count("【本店执行记录】") == 1
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_stale_view_click_is_rejected_and_not_counted(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        _tool_call({"action": "zoom_region", "box": [300, 400, 500, 520], "reason": "放大查看按钮"}),
+        _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击开始点餐"}),
+        _tool_call({"action": "left_click", "target_box": [330, 430, 430, 470], "view_id": "f2-z1",
+                    "reason": "点击局部图中的按钮"}),
+        _terminal("success", menu_box=[100, 100, 900, 900]),
+    ]
+    steady = _png_frame(tmp_path, "steady-stale.png", size=(320, 200))
+    executed = []
+
+    result, _ = run_navigation(
+        _model(server), "测试门店", 2, 8,
+        observe=lambda _sequence: steady,
+        execute=lambda command, frame_id: executed.append(command), check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "success"
+    # 过期视图的点击不执行，也不算一次实际点击（zoom_region 只下发 noop，不是点击）。
+    clicks = [command for command in executed if command.get("action") == "click"]
+    assert len(clicks) == 1
+    fourth = _all_text(handler.requests[3]["body"]["messages"])
+    assert "早于当前画面" in fourth
+    assert "本次未执行" in fourth
+    assert "已实际点击 1 次" in fourth
+    assert fourth.count("【本店执行记录】") == 1

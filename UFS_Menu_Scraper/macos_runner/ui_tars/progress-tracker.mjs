@@ -10,18 +10,23 @@ export const CHANGE_DELTA = 3;
 export const ROI_CHANGE_DELTA = 1;
 // 邻域低于该值才认为控件本身没有动。
 export const NO_CHANGE_ROI = 0.4;
-// 连续无变化的操作次数达到该值时，提示换入口/换策略。
-export const NO_STRATEGY_STREAK = 3;
+// 64 位 dHash 的汉明距离阈值：只用于“是否回到相似画面”的候选，不做像素级相等判断。
+const SIMILAR_HAMMING = 8;
+
+function hamming(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string' || left.length !== right.length) return 64;
+  let distance = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    let value = parseInt(left[index], 16) ^ parseInt(right[index], 16);
+    while (value) { distance += value & 1; value >>= 1; }
+  }
+  return distance;
+}
 
 // 会产生局部响应的动作：只在落点附近验证。
 const LOCAL_METHODS = new Set(['click']);
 // 会产生整页位移的动作：按全局 delta 验证。
 const PAGE_METHODS = new Set(['scroll']);
-
-const NO_STRATEGY_NOTICE = `执行反馈：已有连续 ${NO_STRATEGY_STREAK} 次操作后落点附近和整页都没有明显变化。当前入口可能无效，请停止重复操作，`
-  + '尝试返回、切换窗口或其他菜单入口；若多种合理尝试仍无进展，请说明已尝试方式和当前阻碍并返回 needs_review。';
-const SLIGHT_CHANGE_NOTICE = '执行反馈：上一步已执行，画面只有轻微变化，可能仍在加载或只是光标/动画。'
-  + '请先确认页面是否已经响应；不要重复点击同一位置。';
 
 const LABELS = { click: 'left_click' };
 // 与模型输出保持同一坐标空间：证据行先给 0..1000 归一化值，像素只作附注。
@@ -52,6 +57,10 @@ export class NoProgressTracker {
     this.noChangeStreak = 0;
     this.sameTargetStreak = 0;
     this.lastSummary = '';
+    // 最近一步的结构化事实：随工具回执发给模型，不做任何“该不该换目标”的判断。
+    this.lastStep = null;
+    // 本店路线：每次动作后记录“从哪一帧、做了什么、到了哪一帧”，供摘要检索。
+    this.route = [];
   }
 
   reset() {
@@ -62,8 +71,10 @@ export class NoProgressTracker {
   // 会改变界面的动作发出后调用；frameHash 是这次决策所依据的截图。
   // point 是模型输出的 0..1000 归一化坐标，pixel 是实际窗口像素坐标（仅供证据行与标记使用）。
   // reason 是模型对这次点击的中文说明，用于失败重试时回述其意图。
-  actionSent(frameHash, { method = 'action', point = null, pixel = null, reason = '' } = {}) {
-    this.pending = { frameHash, method, point, pixel, reason, previousPoint: this.lastPoint };
+  actionSent(frameHash, { method = 'action', point = null, pixel = null, reason = '',
+    frameId = null, targetName = '', box = null } = {}) {
+    this.pending = { frameHash, method, point, pixel, reason, frameId, targetName, box,
+      previousPoint: this.lastPoint };
     if (point) this.lastPoint = point;
   }
 
@@ -87,11 +98,12 @@ export class NoProgressTracker {
   }
 
   // 每次新截图后调用。delta 是整页差异，roiDelta 是上一次点击落点附近的差异，均为百分比。
-  observe(frameHash, { delta, roiDelta } = {}) {
+  observe(frameHash, { delta, roiDelta, frameId = null, signature = '' } = {}) {
     const pending = this.pending;
     this.pending = null;
     if (!pending) {
       this.lastSummary = '';
+      this.lastStep = null;
       return '';
     }
     const pageDelta = reading(delta);
@@ -100,6 +112,33 @@ export class NoProgressTracker {
     const name = label(pending.method, pending.point, pending.pixel);
     const facts = `全局变化 ${pageDelta === null ? '未知' : pageDelta}%`
       + (roi === null ? '' : `，局部变化 ${roi}%`);
+    // 只记录“做了什么、到了哪、变了多少”，不记录结论。
+    this.lastStep = {
+      from_frame: pending.frameId,
+      to_frame: frameId,
+      method: LABELS[pending.method] || pending.method,
+      target_name: pending.targetName || '',
+      point: pending.point ? [Math.round(pending.point.x), Math.round(pending.point.y)] : null,
+      box: pending.box || null,
+      pixel: pending.pixel ? [Math.round(pending.pixel.x), Math.round(pending.pixel.y)] : null,
+      delta: pageDelta,
+      roi_delta: roi,
+      page_identical: identical,
+    };
+    if (frameId !== null) {
+      this.route.push({
+        fromFrame: pending.frameId,
+        toFrame: frameId,
+        signature,
+        method: pending.method,
+        targetName: pending.targetName || '',
+        point: pending.point ? [Math.round(pending.point.x), Math.round(pending.point.y)] : null,
+        delta: pageDelta,
+        roi,
+        identical,
+      });
+      if (this.route.length > 60) this.route.shift();
+    }
 
     // 输入、按键、切窗口在语义上不保证画面变化：只留证据，不累计无进展。
     if (!LOCAL_METHODS.has(pending.method) && !PAGE_METHODS.has(pending.method)) {
@@ -125,10 +164,10 @@ export class NoProgressTracker {
     const slight = (!identical && pageDelta !== null && pageDelta >= NO_CHANGE_DELTA)
       || roi >= NO_CHANGE_ROI;
     if (slight) {
-      // 有变化但不明显：不累计无进展次数，只提醒确认页面是否响应。
+      // 有变化但不明显：不计入连续无变化，只在证据行保留读数。
       this.reset();
       this.lastSummary = `上一步：${name}，${facts}，轻微变化，不计连续无变化`;
-      return SLIGHT_CHANGE_NOTICE;
+      return '';
     }
 
     this.noChangeStreak += 1;
@@ -138,14 +177,56 @@ export class NoProgressTracker {
         ? this.sameTargetStreak + 1 : 1)
       : 0;
     this.lastSummary = `上一步：${name}，${facts}，连续无变化 ${this.noChangeStreak} 次`;
-    // 同一目标的无变化提示由适配层按“第一次修落点、第二次换目标”分阶段给出，
-    // 这里只负责累计事实，避免两套文案互相冲突。
-    if (this.noChangeStreak === NO_STRATEGY_STREAK) return NO_STRATEGY_NOTICE;
+    // 只保留累计事实；是否换入口由模型结合尝试记录自行判断。
     return '';
   }
 
   // 随每帧观测包一起交给 Agent 的客观证据行；没有待比较动作时为空。
   evidence() {
     return this.lastSummary;
+  }
+
+  // 同一入口在本屏的已执行尝试：只给位置和各次观察读数，不含任何建议。
+  attemptsOnScreen(signature, targetName = '') {
+    if (!signature) return [];
+    return this.route.filter((item) => item.method === 'click' && item.point
+      && hamming(item.signature, signature) <= SIMILAR_HAMMING
+      && (!targetName || item.targetName === targetName));
+  }
+
+  // 是否回到过相似画面：返回最近一次相似帧号，没有则为 null。
+  revisitFrame(currentFrame, signature) {
+    if (!signature) return null;
+    const hit = [...this.route].reverse().find((item) => item.signature
+      && hamming(item.signature, signature) <= SIMILAR_HAMMING
+      && item.toFrame !== currentFrame && currentFrame - item.toFrame > 2);
+    return hit ? hit.toFrame : null;
+  }
+
+  // 本店执行摘要：只给可以核对的事实——回到哪一帧、这一屏试过哪些位置、各次前后有没有变化。
+  // 是否换入口、是否放弃，由模型自己根据这些事实判断。
+  digest(currentFrame, currentSignature) {
+    if (!currentSignature || this.route.length === 0) return '';
+    const similar = (item) => hamming(item.signature, currentSignature) <= SIMILAR_HAMMING;
+    const lines = [];
+    const revisit = this.revisitFrame(currentFrame, currentSignature);
+    if (revisit !== null) lines.push(`当前画面与第 ${revisit} 帧相似。`);
+    const screenClicks = this.route.filter((item) => item.method === 'click' && item.point && similar(item));
+    if (screenClicks.length) {
+      const seen = new Set();
+      const items = [];
+      for (const item of screenClicks) {
+        const key = `${item.targetName}|${item.point[0]},${item.point[1]}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const readout = item.identical ? '前后像素完全相同'
+          : item.delta === null ? '缺少变化读数'
+            : item.delta < NO_CHANGE_DELTA && (item.roi === null || item.roi < NO_CHANGE_ROI)
+              ? '前后未观察到变化' : '前后观察到变化';
+        items.push(`${item.targetName ? `「${item.targetName}」` : 'left_click'}(${item.point[0]},${item.point[1]}) ${readout}`);
+      }
+      lines.push(`这一屏已实际点击 ${screenClicks.length} 次：${items.slice(-6).join('；')}。`);
+    }
+    return lines.join('\n');
   }
 }

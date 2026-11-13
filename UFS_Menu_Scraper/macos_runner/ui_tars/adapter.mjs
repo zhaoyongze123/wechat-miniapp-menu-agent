@@ -51,25 +51,28 @@ let screenshotCount = 0;
 let firstObservationAt = 0;
 let observationDeferrals = 0;
 let currentFrameHash = '';
+// 当前帧的 64 位 dHash：只用于和本店历史帧比较“是否回到相似画面”。
+let currentSignature = '';
 let noProgressNotices = 0;
 const progress = new NoProgressTracker();
 const frameHashes = new Map();
 const terminalMarker = 'UFS_UI_TARS_TERMINAL_COMPLETE';
-// 两次重试分工：
-// 第一次解决“点不准”：回述模型的点击意图，附落点放大参考图和附近 OCR 框，要求微调同一目标；
-// 第二次解决“点错目标”：停止微调，给更大范围的文字候选，要求换可点击区域或入口。
+// 两段式反馈只按证据补信息，不替模型判断原因：
+// 第一次无变化给实际落点、前后差异、放大图和附近文字框；之后给同一入口的历次位置、读数与回访事实。
 const REASON_ECHO_MAX = 80;
 const OCR_PRECISION_RADIUS = 120;
 const OCR_TARGET_RADIUS = 240;
-// 滚动没有“落点偏差/目标选错”两阶段提示，用一句阈值 + 候选原因补足可归因信息。
-const SCROLL_NO_CHANGE_HINT = '执行反馈：上一步滚动后，落点邻域和整页变化都低于未响应阈值（局部<0.4%、整页<1%）。'
-  + '可能原因：页面仍在加载、内容不足一屏、或已到列表边界。建议先 wait 1-2 秒再观察，或换方向/换入口；'
-  + '同一方向连续 3 次无变化时换策略。';
 // 连续空参数说明模型在“只给参数位”的协议里找不到出口；第二次起明确给出三种出口，而不是继续静默等待。
 const NOOP_NOTICE = '上一轮没有给出动作，已按等待 1 秒处理。若仍在判断，请输出 wait(时间, 原因)；'
   + '若确认无法推进，请输出 terminate 并说明具体阻碍；若是格式问题，请按协议输出一个合法动作。';
 let activeAgent = null;
+// 宿主生成的落点放大图（data URL），用于“第一次落点无变化”的参考，不参与坐标换算。
 let pendingZoom = '';
+// 模型主动请求的局部视图：截图后按 box 裁剪，登记 view_id，并在本轮工具回执里附图。
+let pendingZoomRequest = null;
+let pendingView = null;
+const views = new Map();
+let viewSeq = 0;
 const { GUIAgent } = await import('@gui-agent/agent-sdk');
 const { Operator } = await import('@gui-agent/shared/base');
 
@@ -247,25 +250,49 @@ function ocrBody(ocrContext) {
   return JSON.stringify({ click_point: ocrContext.click_point, items: ocrContext.items });
 }
 
-// 第一次重试：只修正落点，明确不让模型换目标。
-function precisionFeedback(reason, ocrContext) {
+// 第一次无变化：只回传这一步的事实，让模型自己判断有没有点偏、按钮是否可用。
+function clickEvidence(reason, step, ocrContext) {
   const why = reason ? `你给出的点击原因：「${reason}」。` : '';
   const body = ocrBody(ocrContext);
-  return '执行反馈：上一步点击后画面没有变化，先按“落点偏差”处理，不是目标选错。' + why
-    + '下面附一张本次截图的落点放大参考（2 倍，红叉=实际落点，绿框=识别到的文字），'
-    + '它不是当前可点击屏幕，坐标仍用整屏 0..1000。'
-    + (body ? `附近文字框（0..1000，center 可作落点参考，但不是可点击区域）：${body}。` : '')
-    + '请对照参考图把落点微调到目标中心后，再次点击同一目标；不要因为这次无变化就换目标。';
+  const point = step?.point ? `实际落点 (${step.point[0]},${step.point[1]})（0..1000）` : '实际落点未知';
+  const pixel = step?.pixel ? `，窗口像素 (${step.pixel[0]},${step.pixel[1]})` : '';
+  const change = `整页变化 ${step?.delta === null || step?.delta === undefined ? '未知' : step.delta}%`
+    + (step?.roi_delta === null || step?.roi_delta === undefined ? '' : `，落点邻域变化 ${step.roi_delta}%`);
+  return '执行反馈（事实）：上一次 left_click ' + point + pixel + `；${change}。` + why
+    + '随附本次落点放大图（2 倍，红叉=实际落点，绿框=识别到的文字框），它不是当前可点击屏幕，坐标仍用整屏 0..1000。'
+    + (body ? `附近文字框（0..1000，center 只是文字框中心，不保证是按钮热区）：${body}。` : '')
+    + '重试前先检查有什么新证据。';
 }
 
-// 第二次重试：不再微调，要求重新选择目标或入口。
-function targetFeedback(reason, ocrContext) {
+// 之后仍无变化：回传同一入口的历次位置与观察读数，以及是否回到过相似画面。
+function clickHistoryEvidence({ reason, targetName, attempts, ocrContext, revisitFrame }) {
   const why = reason ? `你给出的点击原因：「${reason}」。` : '';
-  const body = ocrBody(ocrContext);
-  return '执行反馈：同一目标附近连续第 2 次点击仍无变化，落点偏差已不是主要问题。' + why
-    + '不要再微调这个位置，请重新判断目标：检查是否有其他可点击区域或入口'
-    + '（其他按钮、返回上一级、滚动、切换窗口）。'
-    + (body ? `附近更大范围的文字区域（仅作候选参考，不是可点击区域）：${body}。` : '');
+  const name = targetName ? `「${targetName}」` : 'left_click';
+  const positions = attempts.map((item) => `(${item.point[0]},${item.point[1]})`).join('、');
+  const readings = attempts.map((item, index) => {
+    const change = item.identical ? '前后像素完全相同'
+      : `整页 ${item.delta === null ? '未知' : item.delta}%` + (item.roi === null ? '' : ` / 局部 ${item.roi}%`);
+    return `第 ${index + 1} 次${change}`;
+  }).join('；');
+  const revisit = revisitFrame === null || revisitFrame === undefined
+    ? '' : `当前画面与第 ${revisitFrame} 帧相似，说明中途离开后又回到过相似画面。`;
+  const outside = containmentNote(attempts.map((item) => item.point), ocrContext, targetName);
+  return `执行反馈（事实）：本屏${name}已实际点击 ${attempts.length} 次，位置 ${positions}；各次观察：${readings}。`
+    + revisit + outside + why + '重试前先检查有什么新证据。';
+}
+
+// 只有拿到可信文字框、并逐个核对过坐标，才补一句“落点在框外”。
+function containmentNote(points, ocrContext, targetName) {
+  if (!targetName || !points.length || !ocrContext?.items?.length) return '';
+  const item = ocrContext.items.find((entry) => {
+    const text = String(entry?.text || '');
+    return text && (text.includes(targetName) || targetName.includes(text));
+  });
+  if (!item || !Array.isArray(item.bbox) || item.bbox.length !== 4) return '';
+  const [x1, y1, x2, y2] = item.bbox;
+  const external = points.every(([x, y]) => x < x1 || x > x2 || y < y1 || y > y2);
+  if (!external) return '';
+  return `识别到的「${item.text}」文字框为 [${x1},${y1},${x2},${y2}]，以上 ${points.length} 个落点都在框外。`;
 }
 
 const NORMALIZED_SCREEN_SIZE = COORDINATE_SPACE;
@@ -319,6 +346,25 @@ function normalizedArguments(value) {
   return args;
 }
 
+// 局部视图 → 全窗坐标：模型框的是放大图上的范围，这里按裁剪框线性映射回全窗 0..1000。
+// 视图只影响坐标解释，不改变“取框中心”的落点规则。
+function resolveViewBox(args) {
+  if (args.target_box === undefined || !args.view_id) return args;
+  const view = views.get(args.view_id);
+  if (!view) throw new ShapeError('invalid_action', 'view_id', 'value');
+  const [x1, y1, x2, y2] = view.crop_box;
+  const map = (x, y) => [x1 + x / COORDINATE_SPACE * (x2 - x1), y1 + y / COORDINATE_SPACE * (y2 - y1)];
+  const [bx1, by1, bx2, by2] = args.target_box;
+  const [sx1, sy1] = map(bx1, by1);
+  const [sx2, sy2] = map(bx2, by2);
+  const { view_id, ...rest } = args;
+  trace({ type: 'view_resolve', at: now(), frame_id: currentFrame, view_id,
+          view_frame: view.frameId, crop_box: view.crop_box,
+          local_box: args.target_box.slice(), screen_box: [sx1, sy1, sx2, sy2],
+          stale: view.frameId !== currentFrame });
+  return { args: { ...rest, target_box: [sx1, sy1, sx2, sy2] }, view: { id: args.view_id, frameId: view.frameId } };
+}
+
 function parseModelAction(rawArgs) {
   const args = normalizedArguments(rawArgs);
   if (!args || typeof args !== 'object' || Array.isArray(args) || typeof args.action !== 'string') throw new Error('invalid_action');
@@ -330,6 +376,12 @@ function parseModelAction(rawArgs) {
     noopCount += 1;
     if (noopCount >= 2) pendingNotice = [pendingNotice, NOOP_NOTICE].filter(Boolean).join(' ');
     return { type: 'wait', inputs: { params: { seconds: 1 } } };
+  }
+  if (args.action === 'zoom_region') {
+    // 只读观察：不点击不滚动，转成一次短暂等待；截图后按 box 裁剪并登记 view_id。
+    validateArgs('zoom_region', args);
+    pendingZoomRequest = { box: args.box.slice(), reason: text(args.reason, 120) };
+    return { type: 'wait', inputs: { params: { seconds: 0.2 } } };
   }
   const spec = ACTIONS[args.action];
   if (!spec) throw new Error('disallowed_action');
@@ -360,13 +412,38 @@ function parseModelAction(rawArgs) {
   if (!spec.host?.method) throw new Error('disallowed_action');
   // 动作名、字段白名单与宿主方法映射全部来自 action-schema.json，不再逐动作写分支。
   validateArgs(args.action, args);
-  const { method, params, point } = buildHostParams(args.action, args, {
+  // 局部视图只影响 target_box 的解释方式：先换算成全窗框，再走原有取中心与点击链路。
+  let hostArgs = args;
+  let viewMeta = null;
+  if (args.action === 'left_click' && args.view_id) {
+    const view = views.get(args.view_id);
+    if (!view) throw new ShapeError('invalid_action', 'view_id', 'value');
+    if (view.frameId !== currentFrame) {
+      // 局部图已过期：不复用旧帧的裁剪范围换算坐标，本次不执行，下一轮拿最新画面重新框选。
+      trace({ type: 'view_stale', at: now(), frame_id: currentFrame, view_id: args.view_id,
+              view_frame: view.frameId, stale: true });
+      pendingNotice = `局部图 ${args.view_id} 来自第 ${view.frameId} 帧，早于当前画面（第 ${currentFrame} 帧），本次未执行。`
+        + '已更新当前画面，请基于最新截图重新框选，或直接给 coordinate。';
+      return { type: 'notice', inputs: { message: pendingNotice.slice(0, 300) } };
+    }
+    const resolved = resolveViewBox(args);
+    hostArgs = resolved.args;
+    viewMeta = resolved.view;
+  }
+  const { method, params, point } = buildHostParams(args.action, hostArgs, {
     frameId: currentFrame, width: screenWidth, height: screenHeight,
   });
   // point 必须保留：SDK 会据此做坐标归一化，并在执行后用 convertToAgentUIAction 读 point.normalized。
   const inputs = { params, point: point && { raw: point, referenceSystem: 'screen' } };
   // reason 不进入宿主参数，只带给执行层做留痕和失败重试时的意图回述。
-  if (args.action === 'left_click') inputs.reason = text(args.reason, 120);
+  if (args.action === 'left_click') {
+    inputs.reason = text(args.reason, 120);
+    const targetName = text(args.target_name, 80);
+    if (targetName) inputs.target_name = targetName;
+    // 框选保留两条事实：模型圈的框、换算后实际执行的落点，回执里要能对照“框在哪、点在哪”。
+    if (hostArgs.target_box) inputs.target_box = hostArgs.target_box.slice();
+    if (viewMeta) inputs.view = viewMeta;
+  }
   return { type: method, inputs };
 }
 
@@ -501,9 +578,29 @@ class HostOperator extends Operator {
     currentFrameHash = hash;
     frameHashes.set(hash, currentFrame);
     if (frameHashes.size > 64) frameHashes.delete(frameHashes.keys().next().value);
+    // 模型请求的局部视图：复用本次截图裁剪，登记 view_id；只改变框选坐标的解释，不改变窗口状态。
+    if (pendingZoomRequest) {
+      const request = pendingZoomRequest;
+      pendingZoomRequest = null;
+      try {
+        const crop = await rpc('crop_region', { frame_id: currentFrame, box: request.box });
+        if (crop && typeof crop.base64 === 'string') {
+          viewSeq += 1;
+          const viewId = `f${currentFrame}-z${viewSeq}`;
+          views.set(viewId, { frameId: currentFrame, crop_box: request.box.slice() });
+          if (views.size > 16) views.delete(views.keys().next().value);
+          pendingView = { base64: crop.base64, view_id: viewId, crop_box: request.box.slice(),
+                          crop: crop.crop ?? null, scale: crop.scale ?? null, reason: request.reason };
+        }
+      } catch (error) {
+        pendingNotice = [pendingNotice, `局部图获取失败：${text(error?.message, 160)}`].filter(Boolean).join('\n');
+      }
+    }
     // 对比动作前后的截图：delta 是整页差异，roi_delta 是落点邻域差异，hash 只用于识别“字节完全相同”。
     const notice = progress.observe(hash,
-      { delta: result.facts?.delta, roiDelta: result.facts?.roi_delta });
+      { delta: result.facts?.delta, roiDelta: result.facts?.roi_delta,
+        frameId: currentFrame, signature: text(result.facts?.signature, 32) });
+    currentSignature = text(result.facts?.signature, 32);
     const evidence = progress.evidence();
     const envelope = frameEnvelope(result.facts);
     const status = statusSummary();
@@ -511,26 +608,27 @@ class HostOperator extends Operator {
       pendingNotice = [pendingNotice, envelope, status, evidence, notice].filter(Boolean).join(' ');
       if (notice && !envelope) noProgressNotices += 1;
     }
-    // 按“落点偏差 → 目标选错”分阶段反馈：
-    // 第 1 次同目标无变化给放大参考图 + 小范围文字框；第 2 次给更大范围候选并明确要求换目标。
+    // 两段式只按证据补信息：第一次给落点/差异/放大图/附近文字框；之后给同一入口的历次读数与回访事实。
     let ocrContext = null;
     let retryHint = '';
     let stage = 0;
+    const step = progress.lastStep;
     if (clicked && progress.sameTargetStreak === 1 && progress.noChangeStreak >= 1) {
       stage = 1;
       ocrContext = await nearbyOcrContext(clicked, OCR_PRECISION_RADIUS);
-      retryHint = precisionFeedback(clickedReason, ocrContext);
+      retryHint = clickEvidence(clickedReason, step, ocrContext);
     } else if (clicked && progress.sameTargetStreak === 2) {
       stage = 2;
       ocrContext = await nearbyOcrContext(clicked, OCR_TARGET_RADIUS);
-      retryHint = targetFeedback(clickedReason, ocrContext);
+      retryHint = clickHistoryEvidence({
+        reason: clickedReason,
+        targetName: step?.target_name || '',
+        attempts: progress.attemptsOnScreen(currentSignature, step?.target_name || ''),
+        ocrContext,
+        revisitFrame: progress.revisitFrame(currentFrame, currentSignature),
+      });
     }
     if (retryHint) pendingNotice = [pendingNotice, retryHint].filter(Boolean).join('\n');
-    // 滚动没有 stage1/2 的落点/换目标提示；这里补一句可归因的说明，避免模型只看到数字。
-    // 连续 3 次无变化时 progress 已给出换策略提示，不再重复。
-    if (!notice && !retryHint && sentMethod === 'scroll' && progress.noChangeStreak >= 1) {
-      pendingNotice = [pendingNotice, SCROLL_NO_CHANGE_HINT].filter(Boolean).join('\n');
-    }
     // 放大图只在第一次重试时随文字一起发给模型；第二次不再强调落点。
     const zoom = stage === 1 && typeof result.zoom === 'string' ? result.zoom : '';
     pendingZoom = zoom;
@@ -566,8 +664,7 @@ class HostOperator extends Operator {
         return { status: 'success' };
       }
       actionCount += 1;
-      // 只统计模型真正下发的动作类型，供每轮“已尝试”摘要使用；notice 不算动作。
-      if (Object.prototype.hasOwnProperty.call(attempts, action.type)) attempts[action.type] += 1;
+      // 动作类型计数放到执行成功后（见下方 trace 前），未执行的动作只留痕、不计入“已尝试”。
       // 宿主参数由 schema 的 host.map 生成；这里只保留各方法的回执处理。
       const params = { ...(action.inputs.params || {}), frame_id: currentFrame };
       if (action.type === 'click') {
@@ -580,6 +677,9 @@ class HostOperator extends Operator {
           point: normalizedPoint(point),
           pixel: { x: point.x, y: point.y },
           reason: text(action.inputs.reason, 120),
+          frameId: currentFrame,
+          targetName: text(action.inputs.target_name, 80),
+          box: Array.isArray(action.inputs.target_box) ? action.inputs.target_box.slice() : null,
         });
         if (clicked?.window_switch?.switched) {
           const switchedTitle = text(clicked.window_switch.title) || '新窗口';
@@ -628,6 +728,8 @@ class HostOperator extends Operator {
       } else {
         throw new Error('disallowed_action');
       }
+      // 只有真正执行成功的动作才计入“已尝试”；过期视图、宿主拒绝和格式错误都不算。
+      if (Object.prototype.hasOwnProperty.call(attempts, action.type)) attempts[action.type] += 1;
       trace({ type: 'tool', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame, method,
               inputs: sanitized(inputs), ok: true, duration_ms: Date.now() - started, reply,
               feedback: pendingNotice });
@@ -684,6 +786,20 @@ function emitRuntimeReview(reason, diagnostic = {}) {
   emitResult('needs_review', reason, { source: 'runtime', diagnostic: { code: 'runtime', ...diagnostic } });
 }
 
+// 整店执行摘要只在本次请求里放一份最新版：先清掉历史残留，再追加当前摘要。
+function injectDigest(messages) {
+  const marker = '【本店执行记录】';
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const content = messages[index]?.content;
+    const head = typeof content === 'string' ? content : content?.[0]?.text;
+    if (typeof head === 'string' && head.startsWith(marker)) messages.splice(index, 1);
+  }
+  const digest = progress.digest(currentFrame, currentSignature);
+  if (!digest) return;
+  messages.push({ role: 'user', content: `${marker}\n${digest}` });
+  trace({ type: 'digest', at: now(), frame_id: currentFrame, digest });
+}
+
 async function main() {
   try {
     const config = await readObject();
@@ -726,6 +842,7 @@ async function main() {
         request.enable_thinking = false;
         request.stream_options = { ...(request.stream_options || {}), include_usage: true };
         if (Array.isArray(request.messages)) {
+          try { injectDigest(request.messages); } catch { /* 摘要失败不影响主链路 */ }
           for (const message of request.messages) {
             if (message?.role === 'user' && typeof message.content === 'string') {
               message.content = [{ type: 'text', text: message.content }];
@@ -757,13 +874,15 @@ async function main() {
 
       async onAfterToolCall(id, toolCall, result) {
         const output = await super.onAfterToolCall(id, toolCall, result);
-        if (pendingNotice || pendingZoom) {
-          const notice = pendingNotice;
-          const zoom = pendingZoom;
-          pendingNotice = '';
-          pendingZoom = '';
+        const notice = pendingNotice;
+        const zoom = pendingZoom;
+        const view = pendingView;
+        pendingNotice = '';
+        pendingZoom = '';
+        pendingView = null;
+        if (notice || zoom || view) {
           try {
-            // 文字先说明参考图的性质，再附图；附图只用于核对落点，不参与坐标换算。
+            // 文字先说明参考图的性质，再附图；两张图都只用于观察，不参与坐标换算。
             const content = [];
             if (notice) content.push({ type: 'text', text: notice });
             if (zoom) {
@@ -772,15 +891,36 @@ async function main() {
                 image_url: { url: `data:image/png;base64,${zoom}` },
               });
             }
+            if (view) {
+              content.push({
+                type: 'text',
+                text: `局部图 view_id=${view.view_id}（全窗裁剪框 [${view.crop_box.join(',')}]）。`
+                  + `在这张图上框选后，用 left_click 的 target_box + view_id="${view.view_id}" 点击。`,
+              });
+              content.push({
+                type: 'image_url',
+                image_url: { url: `data:image/png;base64,${view.base64}` },
+              });
+            }
             const stream = this.getEventStream();
             stream.sendEvent(stream.createEvent('environment_input', {
               description: 'Host feedback',
               content,
-              metadata: { type: zoom ? 'text+image' : 'text' },
+              metadata: { type: content.some((item) => item.type === 'image_url') ? 'text+image' : 'text' },
             }));
           } catch { /* notice is advisory; the screenshot still drives the next decision */ }
         }
-        return output;
+        // 这一步的结构化事实随工具回执返回：做了什么、到了哪一帧、变了多少。不含任何结论。
+        const step = progress.lastStep;
+        if (!step) return output;
+        return {
+          ...output,
+          observation: {
+            ...step,
+            no_change_streak: progress.noChangeStreak,
+            same_target_streak: progress.sameTargetStreak,
+          },
+        };
       }
     }({
       operator,

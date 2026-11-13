@@ -7,11 +7,11 @@ import {
 
 const CTX = { frameId: 'frame-1', width: 1000, height: 500 };
 
-test('schema 里每个动作都有模型可见的 doc；除 terminate/noop 外都有宿主映射', () => {
+test('schema 里每个动作都有模型可见的 doc；除 terminate/noop/zoom_region 外都有宿主映射', () => {
   for (const [name, spec] of Object.entries(ACTIONS)) {
     assert.equal(typeof spec.doc, 'string', name);
     assert.ok(spec.doc.length > 0, name);
-    if (name === 'terminate' || name === 'noop') assert.equal(spec.host, null, name);
+    if (name === 'terminate' || name === 'noop' || name === 'zoom_region') assert.equal(spec.host, null, name);
     else assert.ok(spec.host?.method, name);
   }
 });
@@ -77,6 +77,10 @@ test('wait/scroll/key/type_text 都必须带 reason，但 reason 不进入宿主
 test('必填字段缺失、字段多余、取值非法都给出精确字段名', () => {
   assert.throws(
     () => validateArgs('left_click', { action: 'left_click' }),
+    (error) => error instanceof ShapeError && error.field === 'reason' && error.reason === 'missing',
+  );
+  assert.throws(
+    () => buildHostParams('left_click', { action: 'left_click', reason: '点击按钮' }, CTX),
     (error) => error instanceof ShapeError && error.field === 'coordinate' && error.reason === 'missing',
   );
   assert.throws(
@@ -90,6 +94,42 @@ test('必填字段缺失、字段多余、取值非法都给出精确字段名',
   assert.throws(
     () => validateArgs('wait', { action: 'wait', time: 9 }),
     (error) => error instanceof ShapeError && error.field === 'time' && error.reason === 'value',
+  );
+});
+
+test('left_click 支持 target_box，执行时取框中心', () => {
+  const args = { action: 'left_click', target_box: [534, 949, 918, 981], reason: '点击同意并继续' };
+  validateArgs('left_click', args);
+  const call = buildHostParams('left_click', args, CTX);
+  assert.equal(call.method, 'click');
+  // CTX 是 1000x500：框中心 (726, 965) → 截图坐标 (726, 482.5)。
+  assert.deepEqual(call.params, { frame_id: 'frame-1', x: 726, y: 482.5 });
+  assert.deepEqual(call.point, { x: 726, y: 482.5 });
+});
+
+test('coordinate 与 target_box 互斥，非法框按字段报错', () => {
+  assert.throws(
+    () => buildHostParams('left_click',
+      { action: 'left_click', coordinate: [1, 2], target_box: [4, 5, 60, 70], reason: 'x' }, CTX),
+    (error) => error instanceof ShapeError && error.field === 'target_box',
+  );
+  assert.throws(
+    () => buildHostParams('left_click',
+      { action: 'left_click', target_box: [50, 10, 50, 40], reason: 'x' }, CTX),
+    (error) => error instanceof ShapeError && error.field === 'target_box',
+  );
+});
+
+test('zoom_region 是只读动作，只接受 box 与 reason', () => {
+  assert.equal(ACTIONS.zoom_region.host, null);
+  validateArgs('zoom_region', { action: 'zoom_region', box: [300, 700, 800, 1000], reason: '看清按钮' });
+  assert.throws(
+    () => validateArgs('zoom_region', { action: 'zoom_region', box: [1, 2, 3], reason: 'x' }),
+    (error) => error instanceof ShapeError && error.field === 'box',
+  );
+  assert.throws(
+    () => validateArgs('zoom_region', { action: 'zoom_region', box: [300, 700, 800, 1000] }),
+    (error) => error instanceof ShapeError && error.field === 'reason' && error.reason === 'missing',
   );
 });
 

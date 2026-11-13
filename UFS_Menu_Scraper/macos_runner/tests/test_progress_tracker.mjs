@@ -5,6 +5,23 @@ import { NoProgressTracker } from '../ui_tars/progress-tracker.mjs';
 
 const A = { x: 500, y: 300 };
 
+test('摘要只给事实：逐点读数与相似画面回访', () => {
+  const tracker = new NoProgressTracker();
+  const signature = '0f0f0f0f0f0f0f0f';
+  tracker.actionSent('h1', { method: 'click', point: { x: 100, y: 200 }, frameId: 1, targetName: '点餐' });
+  tracker.observe('h2', { delta: 0, roiDelta: 0, frameId: 2, signature });
+  tracker.actionSent('h3', { method: 'click', point: { x: 300, y: 400 }, frameId: 2, targetName: '点餐' });
+  tracker.observe('h3', { delta: 0, roiDelta: 0, frameId: 3, signature });
+
+  const text = tracker.digest(9, signature);
+  assert.match(text, /与第 3 帧相似/);
+  assert.match(text, /「点餐」\(100,200\) 前后未观察到变化/);
+  // 前后帧哈希相同即像素完全相同，与 delta 读数分开表述。
+  assert.match(text, /「点餐」\(300,400\) 前后像素完全相同/);
+  assert.match(text, /已实际点击 2 次/);
+  assert.doesNotMatch(text, /换入口|换目标|建议/);
+});
+
 test('证据行先给模型坐标，像素只作附注', () => {
   const tracker = new NoProgressTracker();
   tracker.actionSent('frame-1', {
@@ -64,17 +81,16 @@ test('同一目标连续两次点击无变化时只累计，由适配层分阶�
   assert.equal(tracker.sameTargetStreak, 2);
 });
 
-test('不同位置连续无变化到 3 次时提示换策略', () => {
+test('不同位置连续无变化只累计事实，不替模型下结论', () => {
   const tracker = new NoProgressTracker();
   const points = [{ x: 100, y: 100 }, { x: 700, y: 700 }, { x: 200, y: 800 }];
   const notices = points.map((point) => {
     tracker.actionSent('frame-1', { method: 'click', point });
     return tracker.observe('frame-1', { delta: 0, roiDelta: 0 });
   });
-  assert.equal(notices[0], '');
-  assert.equal(notices[1], '');
-  assert.match(notices[2], /连续 3 次操作/);
-  assert.match(notices[2], /needs_review/);
+  assert.deepEqual(notices, ['', '', '']);
+  assert.equal(tracker.noChangeStreak, 3);
+  assert.match(tracker.lastSummary, /连续无变化 3 次/);
 });
 
 test('全局与落点都低于阈值时才算无变化', () => {
@@ -86,11 +102,12 @@ test('全局与落点都低于阈值时才算无变化', () => {
   assert.match(tracker.evidence(), /局部变化 0.2%/);
 });
 
-test('轻微变化只提示确认，不计连续无变化', () => {
+test('轻微变化只保留读数，不计连续无变化', () => {
   const tracker = new NoProgressTracker();
   tracker.actionSent('frame-2', { method: 'click', point: A });
   const notice = tracker.observe('frame-3', { delta: 1.8, roiDelta: 0.8 });
-  assert.match(notice, /轻微变化/);
+  assert.equal(notice, '');
+  assert.match(tracker.lastSummary, /轻微变化/);
   assert.equal(tracker.noChangeStreak, 0);
   assert.equal(tracker.sameTargetStreak, 0);
 });

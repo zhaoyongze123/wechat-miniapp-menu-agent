@@ -60,9 +60,25 @@ export function validateArgs(name, args, code = 'invalid_action') {
   return spec;
 }
 
-function pointOf(args, ctx) {
+function pointOf(args, ctx, required) {
+  // 点与框是互斥的两种表达，同时出现说明模型对落点没有把握，交回格式重试而不是猜一个。
+  if (args.coordinate !== undefined && args.target_box !== undefined) {
+    throw new ShapeError('invalid_action', 'target_box', 'value');
+  }
+  if (args.target_box !== undefined) {
+    const [x1, y1, x2, y2] = args.target_box;
+    if (x2 <= x1 || y2 <= y1
+        || [x1, y1, x2, y2].some((n) => n < 0 || n > COORDINATE_SPACE)) {
+      throw new ShapeError('invalid_action', 'target_box', 'value');
+    }
+    // 模型只圈出控件范围，落点由框中心决定：不再要求它猜一个精确像素。
+    const cx = (x1 + x2) / 2;
+    const cy = (y1 + y2) / 2;
+    return { x: cx * ctx.width / COORDINATE_SPACE, y: cy * ctx.height / COORDINATE_SPACE };
+  }
   const raw = args.coordinate;
   if (raw === undefined) {
+    if (required) throw new ShapeError('invalid_action', 'coordinate', 'missing');
     // scroll 允许不给坐标：原地滚动，用当前截图中心。
     return { x: Math.floor(ctx.width / 2), y: Math.floor(ctx.height / 2) };
   }
@@ -92,7 +108,8 @@ function valueOf(expression, args, ctx, point) {
 export function buildHostParams(name, args, ctx) {
   const spec = ACTIONS[name];
   if (!spec?.host) throw new ShapeError('invalid_action', 'action', 'value');
-  const point = name === 'left_click' || name === 'scroll' ? pointOf(args, ctx) : null;
+  const point = name === 'left_click' ? pointOf(args, ctx, true)
+    : name === 'scroll' ? pointOf(args, ctx, false) : null;
   const params = {};
   for (const [param, expression] of Object.entries(spec.host.map || {})) {
     params[param] = valueOf(expression, args, ctx, point);

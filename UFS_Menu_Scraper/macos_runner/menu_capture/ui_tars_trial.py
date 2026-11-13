@@ -355,6 +355,11 @@ def _exchange_protocol(child, config, observe, execute, check_stop, pipe_reader=
                 raise TrialProtocolError("OCR 参考需要同轮截图")
             result = _ocr_context(frame, image_size, params,
                                   _frame_ocr_rows(ocr_cache, frame_id, frame))
+        elif method == "crop_region":
+            # 只读观察：按模型给的 0..1000 区域裁当前帧，供局部框选使用，不改变窗口状态。
+            if frame is None or params.get("frame_id") != frame_id:
+                raise TrialProtocolError("局部图需要同轮截图")
+            result = _crop_region(frame, image_size, params)
         else:
             if frame is None or params.get("frame_id") != frame_id or action_sent:
                 raise TrialProtocolError("GUI Agent 动作需要同轮新鲜截图")
@@ -413,6 +418,8 @@ def _frame_facts(frame: dict, image_data: bytes, image_size: tuple[int, int],
         # ROI 先在原图上裁、再缩放：整图先缩到 192 会把 24px 控件压成几个像素。
         roi = _roi_crop(gray, focus, frame, image_size)
     delta = _thumb_delta(previous_thumb, thumb)
+    # 跨帧识别“回到相似画面”用 64 位 dHash；精确 sha 对光标/动画太敏感，不能用于回访判断。
+    signature = _frame_signature(gray)
     # ROI 是点击之后才能确定的区域，因此从上一帧灰度图里回裁，而不是复用上一帧的 ROI。
     roi_delta = None
     if focus is not None and previous_gray is not None and previous_image_size == image_size:
@@ -430,11 +437,23 @@ def _frame_facts(frame: dict, image_data: bytes, image_size: tuple[int, int],
         "image": {"width": image_size[0], "height": image_size[1]},
         "delta": delta,
         "roi_delta": roi_delta,
+        "signature": signature,
         "windows": windows,
         "new_windows": [title for title in titles if title not in previous_titles],
         "closed_windows": sorted(previous_titles - set(titles)),
     }
     return facts, thumb, gray
+
+
+def _frame_signature(image) -> str:
+    """64 位 dHash：只用于跨多帧判断“是否回到相似画面”，不做像素级相等判断。"""
+    small = image.resize((9, 8), Image.Resampling.LANCZOS)
+    pixels = list(small.getdata())
+    bits = 0
+    for row in range(8):
+        for col in range(8):
+            bits = (bits << 1) | (1 if pixels[row * 9 + col] > pixels[row * 9 + col + 1] else 0)
+    return f"{bits:016x}"
 
 
 def _thumb_delta(before, after):
@@ -546,6 +565,48 @@ def _frame_ocr_rows(cache: dict, frame_id: str, frame: dict) -> list:
     cache.clear()
     cache.update({"frame_id": frame_id, "rows": rows})
     return rows
+
+
+def _crop_region(frame: dict, image_size: tuple[int, int], params: dict) -> dict:
+    """按 0..1000 全窗区域裁剪当前帧并放大，供模型看清小控件。
+
+    坐标以送模图（image_size）为基准，裁剪时再等比映射回原图，保证“框到的位置”
+    和模型在截图里看到的位置一致。返回的 crop 是原图像素，仅用于留痕与回执。
+    """
+    box = params.get("box")
+    if not isinstance(box, (list, tuple)) or len(box) != 4:
+        raise TrialActionRejected("局部图区域必须是 [x1,y1,x2,y2]")
+    try:
+        x1, y1, x2, y2 = (float(value) for value in box)
+    except (TypeError, ValueError):
+        raise TrialActionRejected("局部图区域必须是 4 个数字") from None
+    if not (0 <= x1 < x2 <= 1000 and 0 <= y1 < y2 <= 1000):
+        raise TrialActionRejected("局部图区域越界或宽高为 0")
+    model_width, model_height = image_size
+    frame_width, frame_height = frame["width"], frame["height"]
+    left = max(0, round(x1 / 1000 * model_width))
+    right = min(model_width, round(x2 / 1000 * model_width))
+    top = max(0, round(y1 / 1000 * model_height))
+    bottom = min(model_height, round(y2 / 1000 * model_height))
+    if right - left < 4 or bottom - top < 4:
+        raise TrialActionRejected("局部图区域太小，请扩大 box")
+    scale_x, scale_y = frame_width / model_width, frame_height / model_height
+    source_box = (round(left * scale_x), round(top * scale_y),
+                  round(right * scale_x), round(bottom * scale_y))
+    with Image.open(Path(frame["path"])) as source:
+        image = source.convert("RGB")
+        if image.size != (frame_width, frame_height):
+            image = image.resize((frame_width, frame_height), Image.Resampling.LANCZOS)
+        crop = image.crop(source_box)
+        # 小区域多放大，保证 1–2 像素的控件也看得清；上限 6 倍，避免局部图过大。
+        longest = max(1, max(crop.size))
+        scale = max(1, min(6, round(480 / longest)))
+        if scale > 1:
+            crop = crop.resize((crop.width * scale, crop.height * scale), Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        crop.save(buffer, format="PNG")
+    return {"base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+            "crop": list(source_box), "scale": scale, "model_size": list(image_size)}
 
 
 def _zoom_reference(frame: dict, click, rows) -> tuple[str | None, dict | None]:
