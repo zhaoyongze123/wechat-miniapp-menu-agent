@@ -12,13 +12,16 @@ test('摘要只给事实：逐点读数与相似画面回访', () => {
   tracker.observe('h2', { delta: 0, roiDelta: 0, frameId: 2, signature });
   tracker.actionSent('h3', { method: 'click', point: { x: 300, y: 400 }, frameId: 2, targetName: '点餐' });
   tracker.observe('h3', { delta: 0, roiDelta: 0, frameId: 3, signature });
+  // 回到相似画面后又点了同一位置一次：合并成一条，但要标出重复次数。
+  tracker.actionSent('h4', { method: 'click', point: { x: 100, y: 200 }, frameId: 3, targetName: '点餐' });
+  tracker.observe('h5', { delta: 0, roiDelta: 0, frameId: 9, signature });
 
   const text = tracker.digest(9, signature);
   assert.match(text, /与第 3 帧相似/);
-  assert.match(text, /「点餐」\(100,200\) 前后未观察到变化/);
+  assert.match(text, /「点餐」\(100,200\) 前后未观察到变化（同一位置重复 1 次）/);
   // 前后帧哈希相同即像素完全相同，与 delta 读数分开表述。
   assert.match(text, /「点餐」\(300,400\) 前后像素完全相同/);
-  assert.match(text, /已实际点击 2 次/);
+  assert.match(text, /已实际点击 3 次/);
   assert.doesNotMatch(text, /换入口|换目标|建议/);
 });
 

@@ -213,18 +213,25 @@ export class NoProgressTracker {
     if (revisit !== null) lines.push(`当前画面与第 ${revisit} 帧相似。`);
     const screenClicks = this.route.filter((item) => item.method === 'click' && item.point && similar(item));
     if (screenClicks.length) {
-      const seen = new Set();
-      const items = [];
+      // 同一位置重复点击合并成一条，但必须标出重复次数，否则“总次数”与“列出的位置数”对不上。
+      const byPoint = new Map();
       for (const item of screenClicks) {
-        const key = `${item.targetName}|${item.point[0]},${item.point[1]}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
         const readout = item.identical ? '前后像素完全相同'
           : item.delta === null ? '缺少变化读数'
             : item.delta < NO_CHANGE_DELTA && (item.roi === null || item.roi < NO_CHANGE_ROI)
               ? '前后未观察到变化' : '前后观察到变化';
-        items.push(`${item.targetName ? `「${item.targetName}」` : 'left_click'}(${item.point[0]},${item.point[1]}) ${readout}`);
+        const key = `${item.targetName}|${item.point[0]},${item.point[1]}`;
+        const entry = byPoint.get(key);
+        if (entry) entry.times += 1;
+        else byPoint.set(key, { item, times: 1, readout });
+        // 读数可能随重试变化，以最后一次为准。
+        byPoint.get(key).readout = readout;
       }
+      const items = [...byPoint.values()].map(({ item, times, readout }) => {
+        const name = item.targetName ? `「${item.targetName}」` : 'left_click';
+        const repeat = times > 1 ? `（同一位置重复 ${times - 1} 次）` : '';
+        return `${name}(${item.point[0]},${item.point[1]}) ${readout}${repeat}`;
+      });
       lines.push(`这一屏已实际点击 ${screenClicks.length} 次：${items.slice(-6).join('；')}。`);
     }
     return lines.join('\n');
