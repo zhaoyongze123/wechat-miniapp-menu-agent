@@ -88,9 +88,8 @@ export function parseActionPayload(payload) {
   if (!parsed || parsed.name !== 'computer_use' || !parsed.arguments || typeof parsed.arguments !== 'object' || Array.isArray(parsed.arguments)) {
     throw new Error('invalid_action');
   }
-  // 实测 gui-plus 在连续点击无变化后会输出 arguments:{} 表示“先不做动作、继续观察”。
-  // 空对象没有动作语义，归一化为 noop，由 adapter 转成一次短暂等待，避免整店被判格式失败。
-  if (Object.keys(parsed.arguments).length === 0) return { action: 'noop' };
+  // 实测 gui-plus 在连续点击无变化后会输出 arguments:{}；空对象没有任何动作语义，不能当成
+  // “有意等待”，否则会连续静默等待耗光步数。原样返回，由 adapter 按格式错误回执并要求补齐动作。
   return parsed.arguments;
 }
 

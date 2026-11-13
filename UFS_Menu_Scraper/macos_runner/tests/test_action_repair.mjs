@@ -68,8 +68,8 @@ test('裸键与已带引号的字段混用时分别修复', () => {
   });
 });
 
-test('空 arguments 归一化为 noop，表示继续观察而不是格式失败', () => {
-  assert.deepEqual(parseActionPayload('{"name":"computer_use","arguments":{}}'), { action: 'noop' });
+test('空 arguments 不做归一化，交给 adapter 按格式错误要求补齐 action', () => {
+  assert.deepEqual(parseActionPayload('{"name":"computer_use","arguments":{}}'), {});
 });
 
 test('闭合标签被流式截断（</to）时，完整动作对象仍可解析', () => {

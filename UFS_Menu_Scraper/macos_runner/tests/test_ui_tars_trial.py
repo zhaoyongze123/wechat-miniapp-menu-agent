@@ -442,7 +442,7 @@ def test_scroll_magnitude_reaches_host_operator(model_server, tmp_path, pixels, 
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
-def test_empty_arguments_waits_instead_of_failing_run(model_server, tmp_path):
+def test_empty_arguments_is_a_format_error_without_execution(model_server, tmp_path):
     server, handler = model_server
     handler.responses = [
         _tool_call({}),
@@ -458,13 +458,15 @@ def test_empty_arguments_waits_instead_of_failing_run(model_server, tmp_path):
 
     assert result["outcome"] == "success"
     assert len(handler.requests) == 2
-    assert result["metrics"]["format_failures"] == 0
-    # 空 arguments 归一化为 noop，由宿主转成一次 1 秒等待，而不是被当成不支持的动作直接终止。
-    assert actions and actions[0]["action"] == "noop" and actions[0]["seconds"] == 1
+    assert result["metrics"]["format_failures"] == 1
+    # 空 arguments 没有动作语义：本次不执行任何动作，回执要求补齐 action，而不是静默等待。
+    assert not actions
+    later_text = _all_text(handler.requests[1]["body"]["messages"])
+    assert "arguments 为空或缺少 action" in later_text
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
-def test_consecutive_empty_arguments_get_explicit_exits(model_server, tmp_path):
+def test_consecutive_empty_arguments_are_format_errors(model_server, tmp_path):
     server, handler = model_server
     handler.responses = [
         _tool_call({}),
@@ -475,18 +477,15 @@ def test_consecutive_empty_arguments_get_explicit_exits(model_server, tmp_path):
     actions = []
 
     result, _ = run_navigation(
-        _model(server), "测试门店", 2, 4,
+        _model(server), "测试门店", 3, 4,
         observe=observe, execute=lambda command, frame_id: actions.append(command), check_stop=lambda: None,
     )
 
     assert result["outcome"] == "success"
     assert len(handler.requests) == 3
-    assert result["metrics"]["format_failures"] == 0
-    # 连续两次空参数后，第三次请求要明确给出 wait / terminate / 合法动作三种出口。
-    third_text = _all_text(handler.requests[2]["body"]["messages"])
-    assert "上一轮没有给出动作" in third_text
-    assert "wait" in third_text and "terminate" in third_text
-    assert [item["action"] for item in actions] == ["noop", "noop"]
+    # 两次空参数都计入格式失败；不接受空对象当“继续观察”，避免把步数耗在等待上。
+    assert result["metrics"]["format_failures"] == 2
+    assert not actions
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
