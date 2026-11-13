@@ -184,6 +184,13 @@ def _frame_factory(tmp_path: Path, *, width=320, height=200, window_width=None, 
         frame = {
             "path": str(path), "width": width, "height": height,
             "window_width": window_width or width, "window_height": window_height or height,
+            "target_window": {"title": "测试门店", "app": "weixin.exe",
+                              "class": "Chrome_WidgetWin_0", "foreground": True},
+            "windows": [
+                {"title": "测试门店", "app": "weixin.exe", "width": window_width or width,
+                 "height": window_height or height, "foreground": True},
+                {"title": "微信", "app": "weixin.exe", "width": 999, "height": 749, "foreground": False},
+            ],
         }
         frames.append(frame)
         return frame
@@ -192,10 +199,40 @@ def _frame_factory(tmp_path: Path, *, width=320, height=200, window_width=None, 
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_host_observation_envelope_reaches_model_on_every_screenshot(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击目标按钮"}),
+        _terminal("success", menu_box=[100, 100, 900, 900]),
+    ]
+    observe, frames = _frame_factory(tmp_path)
+
+    result, _ = run_navigation(
+        _model(server), "测试门店", 2, 4,
+        observe=observe, execute=lambda command, frame_id: {}, check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "success"
+    first_text = _all_text(handler.requests[0]["body"]["messages"])
+    later_text = _all_text(handler.requests[1]["body"]["messages"])
+    # 首帧就把“不是浏览器 / 窗口清单”交代清楚。
+    assert "不是浏览器" in first_text
+    assert "当前窗口：测试门店(" in first_text and "微信(999x749)" in first_text
+    # 每步截图都带观测包：窗口身份、前台、画面变化、新窗口。
+    assert "窗口「测试门店」" in later_text
+    assert "前台=是" in later_text
+    assert "画面变化" in later_text
+    assert "新窗口：无" in later_text
+    # 每轮还带“可判断状态”：步数预算与已尝试的动作类型。
+    assert "进度 1/4 步" in later_text
+    assert "已尝试 点击 1" in later_text
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 def test_real_agent_sdk_sse_clicks_then_observes_fresh_frame_before_success(model_server, tmp_path):
     server, handler = model_server
     handler.responses = [
-        _tool_call({"action": "left_click", "coordinate": [375, 450]}),
+        _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击目标按钮"}),
         _terminal("success", menu_box=[100, 100, 900, 900]),
     ]
     observe, frames = _frame_factory(tmp_path)
@@ -241,7 +278,7 @@ def test_large_model_image_maps_normalized_click_back_to_original_window_points(
         dimensions = _image_data_dimensions(body["messages"])
         assert dimensions is not None
         model_dimensions.append(dimensions)
-        return _tool_call({"action": "left_click", "coordinate": [650, 500]})
+        return _tool_call({"action": "left_click", "coordinate": [650, 500], "reason": "点击目标按钮"})
 
     def finish_full_model_box(body):
         dimensions = _image_data_dimensions(body["messages"])
@@ -324,12 +361,69 @@ def test_scroll_pixels_map_to_direction_and_bounded_units():
         _action_command("scroll", {"x": 50, "y": 50, "pixels": 0}, frame, (200, 400))
 
 
+def _png_frame(tmp_path: Path, name: str, *, size=(1000, 1000), block=None) -> dict:
+    image = Image.new("RGB", size, "white")
+    if block:
+        x, y, side = block
+        ImageDraw.Draw(image).rectangle((x, y, x + side - 1, y + side - 1), fill="black")
+    path = tmp_path / name
+    image.save(path)
+    return {"path": str(path), "width": size[0], "height": size[1],
+            "window_width": size[0], "window_height": size[1],
+            "target_window": {"title": "测试门店", "app": "weixin.exe", "foreground": True},
+            "windows": []}
+
+
+def test_click_roi_delta_sees_small_control_change_that_global_delta_misses(tmp_path):
+    from menu_capture.ui_tars_trial import _frame_facts
+
+    before = _png_frame(tmp_path, "before.png")
+    after = _png_frame(tmp_path, "after.png", block=(470, 470, 60))
+    first, prev_thumb, prev_gray = _frame_facts(
+        before, Path(before["path"]).read_bytes(), (1000, 1000), None, None, None, set(), None)
+    assert first["delta"] is None and first["roi_delta"] is None
+    facts, _, _ = _frame_facts(
+        after, Path(after["path"]).read_bytes(), (1000, 1000), prev_thumb, prev_gray,
+        (1000, 1000), set(), {"x": 500, "y": 500, "width": 1000, "height": 1000})
+    assert facts["delta"] < 1       # 整页几乎不动
+    assert facts["roi_delta"] >= 3  # 落点附近明确变化
+
+
+def test_roi_crop_keeps_native_resolution_for_small_controls(tmp_path):
+    from menu_capture.ui_tars_trial import _frame_facts
+
+    # 24px 是“选人数”圆点的常见尺寸；先缩整图再裁只剩几个像素，原图裁剪才看得见。
+    before = _png_frame(tmp_path, "before-small.png")
+    after = _png_frame(tmp_path, "after-small.png", block=(488, 488, 24))
+    _first, prev_thumb, prev_gray = _frame_facts(
+        before, Path(before["path"]).read_bytes(), (1000, 1000), None, None, None, set(), None)
+    facts, _, _ = _frame_facts(
+        after, Path(after["path"]).read_bytes(), (1000, 1000), prev_thumb, prev_gray,
+        (1000, 1000), set(), {"x": 500, "y": 500, "width": 1000, "height": 1000})
+    assert facts["delta"] < 1
+    assert 0.5 <= facts["roi_delta"] < 3
+
+
+def test_roi_delta_is_skipped_when_window_size_changes(tmp_path):
+    from menu_capture.ui_tars_trial import _frame_facts
+
+    before = _png_frame(tmp_path, "before.png")
+    after = _png_frame(tmp_path, "after.png", block=(470, 470, 60))
+    after["window_width"], after["window_height"] = 800, 800
+    _first, prev_thumb, prev_gray = _frame_facts(
+        before, Path(before["path"]).read_bytes(), (1000, 1000), None, None, None, set(), None)
+    facts, _, _ = _frame_facts(
+        after, Path(after["path"]).read_bytes(), (1000, 1000), prev_thumb, prev_gray,
+        (1000, 1000), set(), {"x": 500, "y": 500, "width": 1000, "height": 1000})
+    assert facts["roi_delta"] is None
+
+
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 @pytest.mark.parametrize("pixels,units", [(-100, 1), (-800, 5)])
 def test_scroll_magnitude_reaches_host_operator(model_server, tmp_path, pixels, units):
     server, handler = model_server
     handler.responses = [
-        _tool_call({"action": "scroll", "pixels": pixels}),
+        _tool_call({"action": "scroll", "pixels": pixels, "reason": "向下滚动查看后面的菜品"}),
         _terminal("needs_review", reason="滚动后重新核对页面"),
     ]
     observe, _frames = _frame_factory(tmp_path)
@@ -345,6 +439,77 @@ def test_scroll_magnitude_reaches_host_operator(model_server, tmp_path, pixels, 
     assert actions[0]["action"] == "scroll"
     assert actions[0]["direction"] == "Down"
     assert actions[0]["units"] == units
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_empty_arguments_waits_instead_of_failing_run(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        _tool_call({}),
+        _terminal("success", menu_box=[100, 100, 900, 900]),
+    ]
+    observe, _frames = _frame_factory(tmp_path)
+    actions = []
+
+    result, _ = run_navigation(
+        _model(server), "测试门店", 2, 4,
+        observe=observe, execute=lambda command, frame_id: actions.append(command), check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "success"
+    assert len(handler.requests) == 2
+    assert result["metrics"]["format_failures"] == 0
+    # 空 arguments 归一化为 noop，由宿主转成一次 1 秒等待，而不是被当成不支持的动作直接终止。
+    assert actions and actions[0]["action"] == "noop" and actions[0]["seconds"] == 1
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_consecutive_empty_arguments_get_explicit_exits(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        _tool_call({}),
+        _tool_call({}),
+        _terminal("success", menu_box=[100, 100, 900, 900]),
+    ]
+    observe, _frames = _frame_factory(tmp_path)
+    actions = []
+
+    result, _ = run_navigation(
+        _model(server), "测试门店", 2, 4,
+        observe=observe, execute=lambda command, frame_id: actions.append(command), check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "success"
+    assert len(handler.requests) == 3
+    assert result["metrics"]["format_failures"] == 0
+    # 连续两次空参数后，第三次请求要明确给出 wait / terminate / 合法动作三种出口。
+    third_text = _all_text(handler.requests[2]["body"]["messages"])
+    assert "上一轮没有给出动作" in third_text
+    assert "wait" in third_text and "terminate" in third_text
+    assert [item["action"] for item in actions] == ["noop", "noop"]
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_disallowed_action_is_a_format_error_not_a_crash(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        _tool_call({"action": "click"}),
+        _terminal("success", menu_box=[100, 100, 900, 900]),
+    ]
+    observe, _frames = _frame_factory(tmp_path)
+
+    result, _ = run_navigation(
+        _model(server), "测试门店", 2, 4,
+        observe=observe, execute=lambda *args: pytest.fail("不支持的动作不应执行"),
+        check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "success"
+    assert len(handler.requests) == 2
+    assert result["metrics"]["format_failures"] == 1
+    later_text = _all_text(handler.requests[1]["body"]["messages"])
+    assert "不支持的动作" in later_text
+    assert "noop" in later_text
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
@@ -374,9 +539,9 @@ def test_parse_failures_reset_after_valid_action(model_server, tmp_path):
     server, handler = model_server
     handler.responses = [
         _tool_call({"action": "wait"}),
-        _tool_call({"action": "left_click", "coordinate": [375, 450]}),
+        _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击目标按钮"}),
         _tool_call({"action": "wait"}),
-        _tool_call({"action": "left_click", "coordinate": [375, 450]}),
+        _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击目标按钮"}),
         _terminal("needs_review", reason="修正后完成核对"),
     ]
     observe, _frames = _frame_factory(tmp_path)
@@ -438,7 +603,7 @@ def test_capsule_click_is_returned_to_agent_instead_of_ending_run(model_server, 
     server, handler = model_server
     # 胶囊区点击应被拒绝并把错误反馈给 Agent，下一次输出仍可正常结束本轮。
     handler.responses = [
-        _tool_call({"action": "left_click", "coordinate": [800, 10]}),
+        _tool_call({"action": "left_click", "coordinate": [800, 10], "reason": "点击右上角关闭"}),
         _terminal("needs_review", reason="胶囊区被拒绝，重新观察后仍无法确认"),
     ]
     observe, _frames = _frame_factory(tmp_path)
@@ -554,7 +719,7 @@ def test_old_action_syntax_is_not_executed(model_server, tmp_path):
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 def test_normalized_point_upper_bound_is_rejected_before_execution(model_server, tmp_path):
     server, handler = model_server
-    handler.responses = [_tool_call({"action": "left_click", "coordinate": [1000, 500]})] * 3
+    handler.responses = [_tool_call({"action": "left_click", "coordinate": [1000, 500], "reason": "点击目标按钮"})] * 3
     observe, _frames = _frame_factory(tmp_path)
     actions = []
 
@@ -570,12 +735,13 @@ def test_normalized_point_upper_bound_is_rejected_before_execution(model_server,
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
-@pytest.mark.parametrize("extra,expected", [("", 1), (',"extra":true', 0)])
-def test_gui_plus_missing_click_bracket_requires_exact_known_shape(model_server, tmp_path, extra, expected):
+@pytest.mark.parametrize("extra,expected", [("", 0), (',"extra":true', 0)])
+def test_gui_plus_missing_click_bracket_is_rejected_when_reason_present(model_server, tmp_path, extra, expected):
     server, handler = model_server
+    # reason 成为必填字段后，只修方括号会把 reason 丢掉；这种变体必须整条拒绝，不能猜测后执行。
     handler.responses = [
-        '<tool_call>{"name":"computer_use","arguments":{"action":"left_click","coordinate":375,450]'
-        + extra + '}}</tool_call>',
+        '<tool_call>{"name":"computer_use","arguments":{"action":"left_click","coordinate":375,450],'
+        '"reason":"点击目标按钮"' + extra + '}}</tool_call>',
         _terminal("needs_review"),
     ]
     observe, _frames = _frame_factory(tmp_path)
@@ -588,8 +754,6 @@ def test_gui_plus_missing_click_bracket_requires_exact_known_shape(model_server,
 
     assert result["outcome"] == "needs_review"
     assert len(actions) == expected
-    if expected:
-        assert actions[0] == {"action": "click", "x": 120, "y": 90}
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
@@ -725,7 +889,7 @@ def test_windows_pipe_transport_keeps_existing_message_size_limit():
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
 def test_stop_check_interrupts_live_sdk_loop(model_server, tmp_path):
     server, handler = model_server
-    handler.responses = [_tool_call({"action": "left_click", "coordinate": [375, 450]})]
+    handler.responses = [_tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击目标按钮"})]
     handler.delay_seconds = 0.3
     observe, _frames = _frame_factory(tmp_path)
     started = time.monotonic()
@@ -756,7 +920,7 @@ def test_runner_resizes_before_fresh_agent_frame_and_stages_capture(
 ):
     server, handler = model_server
     handler.responses = [
-        _tool_call({"action": "left_click", "coordinate": [375, 450]}),
+        _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击目标按钮"}),
         _terminal("success", menu_box=[100, 100, 900, 900]),
     ]
     input_dir, output_dir = tmp_path / "inbox", tmp_path / "official-output"
@@ -945,7 +1109,7 @@ def _image_refs(value: object) -> list[dict]:
 def test_model_call_trace_keeps_raw_text_but_references_images(model_server, tmp_path):
     server, handler = model_server
     handler.responses = [
-        _tool_call({"action": "left_click", "coordinate": [375, 450]}),
+        _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击目标按钮"}),
         _terminal("success", menu_box=[100, 100, 900, 900]),
     ]
     observe, _frames = _frame_factory(tmp_path)
@@ -1103,7 +1267,7 @@ def test_trial_window_calibration_checks_both_axes(tmp_path):
 def test_stream_usage_tail_chunk_reaches_trace_with_exact_tokens(model_server, tmp_path):
     server, handler = model_server
     handler.responses = [
-        {"content": _tool_call({"action": "left_click", "coordinate": [375, 450]}),
+        {"content": _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击目标按钮"}),
          "usage": {"prompt_tokens": 1200, "completion_tokens": 20, "total_tokens": 1220}},
         {"content": _terminal("success", menu_box=[100, 100, 900, 900]),
          "usage": {"prompt_tokens": 1531, "completion_tokens": 47, "total_tokens": 1578}},
@@ -1129,7 +1293,7 @@ def test_window_tools_feed_titles_back_and_reobserve_after_switch(model_server, 
     server, handler = model_server
     handler.responses = [
         _tool_call({"action": "list_windows"}),
-        _tool_call({"action": "switch_window", "title": "门店B"}),
+        _tool_call({"action": "switch_window", "title": "门店B", "reason": "切到门店B核对菜单"}),
         _terminal("success", menu_box=[100, 100, 900, 900]),
     ]
     base_observe, _frames = _frame_factory(tmp_path)
@@ -1312,3 +1476,133 @@ def test_source_image_is_sent_as_reference_context(model_server, tmp_path):
                for item in message["content"]]
     assert len([item for item in content if item.get("type") == "image_url"]) == 2
     assert any("二维码原图" in item.get("text", "") for item in content)
+
+def test_click_marker_keeps_target_visible_and_image_size(tmp_path):
+    from menu_capture.ui_tars_trial import _mark_click
+
+    frame = _png_frame(tmp_path, "mark.png", size=(292, 980))
+    raw = Path(frame["path"]).read_bytes()
+    marked = _mark_click(raw, (292, 980), frame, {"x": 143, "y": 922})
+
+    assert marked != raw
+    with Image.open(io.BytesIO(marked)) as image:
+        assert image.size == (292, 980)
+        # 中心留空：标记不能遮住被点的目标本身
+        assert image.getpixel((143, 922)) == (255, 255, 255)
+        # 环与十字落在目标外侧
+        assert image.getpixel((143 + 8, 922))[0] > 200
+        assert image.getpixel((143, 922 - 8))[0] > 200
+
+
+def test_click_marker_skipped_for_invalid_point(tmp_path):
+    from menu_capture.ui_tars_trial import _mark_click
+
+    frame = _png_frame(tmp_path, "mark-invalid.png", size=(292, 980))
+    raw = Path(frame["path"]).read_bytes()
+
+    assert _mark_click(raw, (292, 980), frame, None) == raw
+    assert _mark_click(raw, (292, 980), frame, {"x": 999, "y": 10}) == raw
+
+
+def test_ocr_near_puts_containing_box_first_and_normalizes_coordinates():
+    from menu_capture.ui_tars_trial import _ocr_near
+
+    rows = [
+        {"text": "关闭", "x": 160, "y": 900, "width": 40, "height": 30, "confidence": .9},
+        {"text": "开始点餐", "x": 100, "y": 910, "width": 90, "height": 40, "confidence": .95},
+        {"text": "无关", "x": 10, "y": 10, "width": 30, "height": 20, "confidence": .9},
+        {"text": "模糊", "x": 140, "y": 918, "width": 30, "height": 20, "confidence": .3},
+        {"text": "开始点餐", "x": 104, "y": 912, "width": 88, "height": 36, "confidence": .8},
+    ]
+    extent = {"left": 0.0, "top": 800.0, "right": 292.0, "bottom": 980.0}
+
+    items = _ocr_near(rows, (143.0, 922.0), (292, 980), extent)
+
+    assert [item["text"] for item in items] == ["开始点餐", "关闭"]
+    assert items[0]["relation"] == "点击点位于该文字框内"
+    assert items[1]["relation"].startswith("在点击点右方")
+    assert items[0]["center"] == [496, 949]
+    assert all(0 <= value <= 1000 for item in items for value in item["bbox"])
+
+
+def test_zoom_reference_scales_click_and_nearby_ocr_boxes(tmp_path):
+    from menu_capture.ui_tars_trial import _zoom_reference
+
+    frame = _png_frame(tmp_path, "zoom.png", size=(292, 980))
+    rows = [{"text": "开始点餐", "x": 100, "y": 470, "width": 90, "height": 40, "confidence": .95}]
+
+    zoom, meta = _zoom_reference(frame, {"x": 143, "y": 500}, rows)
+
+    assert meta == {"crop": [23, 380, 240, 240], "scale": 2, "click": [143, 500]}
+    with Image.open(io.BytesIO(base64.b64decode(zoom))) as image:
+        assert image.size == (480, 480)
+        # 红叉中心就是实际落点
+        assert image.getpixel((240, 240))[0] > 200 and image.getpixel((240, 240))[1] < 120
+        # 附近文字框被画成绿框：左上角由窗口坐标换算到放大图坐标
+        left = image.getpixel((154, 180))
+        assert left[1] > 120 and left[0] < 100
+
+
+def test_zoom_reference_clamps_at_window_edge_and_rejects_invalid_click(tmp_path):
+    from menu_capture.ui_tars_trial import _zoom_reference
+
+    frame = _png_frame(tmp_path, "zoom-edge.png", size=(292, 980))
+    # 底部落点：裁剪框必须整体留在窗口内，红叉随裁剪偏移
+    zoom, meta = _zoom_reference(frame, {"x": 143, "y": 922}, [])
+    assert meta["crop"] == [23, 740, 240, 240]
+    with Image.open(io.BytesIO(base64.b64decode(zoom))) as image:
+        assert image.size == (480, 480)
+        assert image.getpixel((240, 364))[0] > 200
+        assert image.getpixel((240, 364))[1] < 120
+    assert _zoom_reference(frame, {"x": 999, "y": 5}, []) == (None, None)
+    assert _zoom_reference(frame, None, []) == (None, None)
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_first_no_change_click_sends_landing_zoom_reference_to_model(model_server, tmp_path):
+    server, handler = model_server
+    handler.responses = [
+        _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击开始点餐"}),
+        _terminal("success", menu_box=[100, 100, 900, 900]),
+    ]
+    steady = _png_frame(tmp_path, "steady.png", size=(320, 200))
+
+    result, _ = run_navigation(
+        _model(server), "测试门店", 2, 4,
+        observe=lambda _sequence: steady,
+        execute=lambda command, frame_id: {}, check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "success"
+    assert len(handler.requests) == 2
+    later = handler.requests[1]["body"]["messages"]
+    assert "落点放大参考" in _all_text(later)
+    assert "不是当前可点击屏幕" in _all_text(later)
+    sizes = []
+    for raw in _image_data_items(later):
+        with Image.open(io.BytesIO(raw)) as image:
+            sizes.append(image.size)
+    # 全窗截图之外多一张 2 倍落点放大图
+    assert (480, 400) in sizes
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_second_same_target_failure_switches_to_target_change_hint(model_server, tmp_path):
+    server, handler = model_server
+    click = _tool_call({"action": "left_click", "coordinate": [375, 450], "reason": "点击开始点餐"})
+    handler.responses = [click, click, _terminal("success", menu_box=[100, 100, 900, 900])]
+    steady = _png_frame(tmp_path, "steady-twice.png", size=(320, 200))
+
+    result, _ = run_navigation(
+        _model(server), "测试门店", 2, 6,
+        observe=lambda _sequence: steady,
+        execute=lambda command, frame_id: {}, check_stop=lambda: None,
+    )
+
+    assert result["outcome"] == "success"
+    assert len(handler.requests) == 3
+    third = _all_text(handler.requests[2]["body"]["messages"])
+    # 第二次重试不再讲落点，而是明确要求换目标或入口。
+    assert "第 2 次点击仍无变化" in third
+    assert "不要再微调这个位置" in third
+    assert "重新判断目标" in third

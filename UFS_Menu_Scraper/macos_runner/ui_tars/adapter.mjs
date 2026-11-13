@@ -1,8 +1,11 @@
 import { createInterface } from 'node:readline';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { parseActionPayload } from './action-repair.mjs';
+import { extractActionPayload } from './action-repair.mjs';
 import { NoProgressTracker } from './progress-tracker.mjs';
+import { ACTIONS, COORDINATE_SPACE, ShapeError, buildHostParams, hostMethods, validateArgs } from './action-spec.mjs';
+import { PROMPT_VERSION, buildBasePrompt } from './prompts/base.mjs';
+import { BUSINESS_PROMPT, BUSINESS_PROMPT_VERSION } from './prompts/business.mjs';
 
 // SDK 日志可能包含提示词、模型返回值或请求信息。协议输出使用启动时保存的原始写口，SDK 日志静默丢弃。
 const protocolWrite = process.stdout.write.bind(process.stdout);
@@ -22,6 +25,10 @@ let faulted = false;
 const CONSECUTIVE_PARSE_FAILURE_LIMIT = 2;
 const TOTAL_PARSE_FAILURE_LIMIT = 4;
 const REASON_MAX_CHARS = 500;
+// 白屏/加载中/前置页的“最小观察预算”：至少 3 帧、累计 10 秒，避免模型只看一眼就判待检查。
+const MIN_REVIEW_SCREENSHOTS = 3;
+const MIN_REVIEW_OBSERVATION_MS = 10000;
+const MAX_OBSERVATION_DEFERRALS = 1;
 let parseFailures = 0;
 let parseFailuresTotal = 0;
 let resultEmitted = false;
@@ -32,17 +39,37 @@ let tracePath = '';
 let callSeq = 0;
 let currentCall = null;
 let actionCount = 0;
+// 连续空参数次数：只用于提醒模型给动作，不参与失败判定。
+let noopCount = 0;
+// 每类动作的执行次数：只用于给模型“已尝试什么”的摘要，不参与任何判定。
+const attempts = { click: 0, scroll: 0, wait: 0, key: 0, type_text: 0 };
+// 步数预算来自启动配置，用于每轮告诉模型还剩多少步。
+let maxSteps = 0;
 let formatRetries = 0;
 let toolRejections = 0;
 let screenshotCount = 0;
+let firstObservationAt = 0;
+let observationDeferrals = 0;
 let currentFrameHash = '';
 let noProgressNotices = 0;
 const progress = new NoProgressTracker();
 const frameHashes = new Map();
-// 动作名称、必填/选填字段与基础类型只有这一份定义，Python 侧从同一文件生成输出契约。
-const actionSchema = JSON.parse(readFileSync(new URL('./action-schema.json', import.meta.url), 'utf8'));
 const terminalMarker = 'UFS_UI_TARS_TERMINAL_COMPLETE';
+// 两次重试分工：
+// 第一次解决“点不准”：回述模型的点击意图，附落点放大参考图和附近 OCR 框，要求微调同一目标；
+// 第二次解决“点错目标”：停止微调，给更大范围的文字候选，要求换可点击区域或入口。
+const REASON_ECHO_MAX = 80;
+const OCR_PRECISION_RADIUS = 120;
+const OCR_TARGET_RADIUS = 240;
+// 滚动没有“落点偏差/目标选错”两阶段提示，用一句阈值 + 候选原因补足可归因信息。
+const SCROLL_NO_CHANGE_HINT = '执行反馈：上一步滚动后，落点邻域和整页变化都低于未响应阈值（局部<0.4%、整页<1%）。'
+  + '可能原因：页面仍在加载、内容不足一屏、或已到列表边界。建议先 wait 1-2 秒再观察，或换方向/换入口；'
+  + '同一方向连续 3 次无变化时换策略。';
+// 连续空参数说明模型在“只给参数位”的协议里找不到出口；第二次起明确给出三种出口，而不是继续静默等待。
+const NOOP_NOTICE = '上一轮没有给出动作，已按等待 1 秒处理。若仍在判断，请输出 wait(时间, 原因)；'
+  + '若确认无法推进，请输出 terminate 并说明具体阻碍；若是格式问题，请按协议输出一个合法动作。';
 let activeAgent = null;
+let pendingZoom = '';
 const { GUIAgent } = await import('@gui-agent/agent-sdk');
 const { Operator } = await import('@gui-agent/shared/base');
 
@@ -153,75 +180,102 @@ function text(value, max = 1000) {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
 }
 
+// 观测包：把宿主已知的窗口身份、画面变化、窗口增减压成一行，随每步截图交给 Agent。
+// 只整理已有事实，不新增动作或工具。
+function frameEnvelope(facts) {
+  if (!facts || !facts.window) return '';
+  const win = facts.window;
+  const parts = [`[Host] ${win.title ? `窗口「${win.title}」` : '当前窗口'} ${win.width}x${win.height}`,
+    win.foreground ? '前台=是' : '前台=否'];
+  if (facts.image && (facts.image.width !== win.width || facts.image.height !== win.height)) {
+    parts.push(`图像 ${facts.image.width}x${facts.image.height}`);
+  }
+  if (typeof facts.delta === 'number') parts.push(`画面变化 ${facts.delta}%`);
+  const created = (facts.new_windows || []).filter(Boolean);
+  parts.push(`新窗口：${created.length ? created.join('、') : '无'}`);
+  const closed = (facts.closed_windows || []).filter(Boolean);
+  if (closed.length) parts.push(`已关闭：${closed.join('、')}`);
+  return parts.join(' | ');
+}
+
+// 每轮随截图交给模型的“可判断状态”：走到第几步、做过哪些动作、同目标卡了几次。
+// 只汇总宿主已经掌握的事实，不预测页面，也不替模型做决定。
+function statusSummary() {
+  const parts = [];
+  if (maxSteps > 0) parts.push(`进度 ${Math.min(actionCount, maxSteps)}/${maxSteps} 步`);
+  const tried = [];
+  if (attempts.click) tried.push(`点击 ${attempts.click}`);
+  if (attempts.scroll) tried.push(`滚动 ${attempts.scroll}`);
+  if (attempts.wait) tried.push(`等待 ${attempts.wait}`);
+  if (attempts.key) tried.push(`按键 ${attempts.key}`);
+  if (attempts.type_text) tried.push(`输入 ${attempts.type_text}`);
+  parts.push(tried.length ? `已尝试 ${tried.join('、')}` : '已尝试 无');
+  if (progress.sameTargetStreak >= 2) parts.push(`同目标连续无变化 ${progress.sameTargetStreak} 次`);
+  return parts.join('；');
+}
+
+function windowLabel(item) {
+  if (!item || !item.title) return '';
+  const size = item.width && item.height ? `(${item.width}x${item.height}${item.foreground ? ', 前台' : ''})` : '';
+  return `${item.title}${size}`;
+}
+
 function extractAction(raw) {
-  const tags = [...raw.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/gi)];
-  if (tags.length !== 1) throw new Error('invalid_action');
-  return parseActionPayload(tags[0][1]);
+  return extractActionPayload(raw);
 }
 
 function stopAgent() {
   try { activeAgent?.abort(); } catch { /* fail closed; host owns process deadlines */ }
 }
 
-const NORMALIZED_SCREEN_SIZE = Number(actionSchema.coordinate_space) || 1000;
-
-function matchesRule(rule, value) {
-  switch (rule?.type) {
-    case 'point':
-      return Array.isArray(value) && value.length === 2 && value.every((n) => Number.isFinite(n));
-    case 'box':
-      return Array.isArray(value)
-        && ((value.length === 4 && value.every((n) => Number.isFinite(n)))
-          || (rule.allow_empty === true && value.length === 0));
-    case 'number':
-      if (!Number.isFinite(value)) return false;
-      if (rule.non_zero && value === 0) return false;
-      if (Number.isFinite(rule.min) && value < rule.min) return false;
-      if (Number.isFinite(rule.exclusive_min) && value <= rule.exclusive_min) return false;
-      if (Number.isFinite(rule.max) && value > rule.max) return false;
-      return true;
-    case 'string':
-      return typeof value === 'string' && value.trim().length > 0;
-    case 'enum':
-      return Array.isArray(rule.values) && rule.values.includes(value);
-    default:
-      return false;
+// OCR 只是可选参考：宿主侧失败时返回空结果，不能让导航因此中断。
+async function nearbyOcrContext(pixel, radius = OCR_PRECISION_RADIUS) {
+  try {
+    const result = await rpc('ocr_context', {
+      frame_id: currentFrame, x: pixel.x, y: pixel.y, radius,
+    }, true);
+    if (!result || result.__rejected || !Array.isArray(result.items)) return null;
+    return result;
+  } catch {
+    return null;
   }
 }
 
-// 带字段名的格式错误：反馈里明确指出缺哪个字段，但不替 Agent 判断页面。
-class ShapeError extends Error {
-  constructor(code, field, reason) {
-    super(code);
-    this.field = field;
-    this.reason = reason;
-  }
+function ocrBody(ocrContext) {
+  if (!ocrContext) return '';
+  if (!ocrContext.items.length) return '附近未识别到可用文字。';
+  return JSON.stringify({ click_point: ocrContext.click_point, items: ocrContext.items });
 }
 
-// 只校验字段白名单、必填项和基础类型；菜单矩形等几何关系仍由专用函数判断。
-function checkShape(name, args, code = 'invalid_action') {
-  const spec = actionSchema.actions?.[name];
-  if (!spec) throw new ShapeError(code, 'action', 'value');
-  const required = spec.required || {};
-  const optional = spec.optional || {};
-  const allowed = new Set(['action', ...Object.keys(required), ...Object.keys(optional)]);
-  for (const key of Object.keys(args)) {
-    if (!allowed.has(key)) throw new ShapeError(code, key, 'unexpected');
-  }
-  for (const [field, rule] of Object.entries(required)) {
-    if (args[field] === undefined) throw new ShapeError(code, field, 'missing');
-    if (!matchesRule(rule, args[field])) throw new ShapeError(code, field, 'value');
-  }
-  for (const [field, rule] of Object.entries(optional)) {
-    if (args[field] !== undefined && !matchesRule(rule, args[field])) throw new ShapeError(code, field, 'value');
-  }
+// 第一次重试：只修正落点，明确不让模型换目标。
+function precisionFeedback(reason, ocrContext) {
+  const why = reason ? `你给出的点击原因：「${reason}」。` : '';
+  const body = ocrBody(ocrContext);
+  return '执行反馈：上一步点击后画面没有变化，先按“落点偏差”处理，不是目标选错。' + why
+    + '下面附一张本次截图的落点放大参考（2 倍，红叉=实际落点，绿框=识别到的文字），'
+    + '它不是当前可点击屏幕，坐标仍用整屏 0..1000。'
+    + (body ? `附近文字框（0..1000，center 可作落点参考，但不是可点击区域）：${body}。` : '')
+    + '请对照参考图把落点微调到目标中心后，再次点击同一目标；不要因为这次无变化就换目标。';
 }
 
-function normalizedPoint(value) {
-  if (!Array.isArray(value) || value.length !== 2 || value.some((n) => !Number.isFinite(n))) throw new ShapeError('invalid_action', 'coordinate', 'value');
-  const [x, y] = value;
-  if (x < 0 || y < 0 || x >= NORMALIZED_SCREEN_SIZE || y >= NORMALIZED_SCREEN_SIZE) throw new ShapeError('invalid_action', 'coordinate', 'value');
-  return { x: x * screenWidth / NORMALIZED_SCREEN_SIZE, y: y * screenHeight / NORMALIZED_SCREEN_SIZE };
+// 第二次重试：不再微调，要求重新选择目标或入口。
+function targetFeedback(reason, ocrContext) {
+  const why = reason ? `你给出的点击原因：「${reason}」。` : '';
+  const body = ocrBody(ocrContext);
+  return '执行反馈：同一目标附近连续第 2 次点击仍无变化，落点偏差已不是主要问题。' + why
+    + '不要再微调这个位置，请重新判断目标：检查是否有其他可点击区域或入口'
+    + '（其他按钮、返回上一级、滚动、切换窗口）。'
+    + (body ? `附近更大范围的文字区域（仅作候选参考，不是可点击区域）：${body}。` : '');
+}
+
+const NORMALIZED_SCREEN_SIZE = COORDINATE_SPACE;
+
+// 宿主坐标 → 模型坐标：证据行里的位置必须和模型输出的 0..1000 空间一致。
+function normalizedPoint(point) {
+  return {
+    x: point.x * NORMALIZED_SCREEN_SIZE / screenWidth,
+    y: point.y * NORMALIZED_SCREEN_SIZE / screenHeight,
+  };
 }
 
 // 模型偶尔把截图像素当归一化坐标，允许真实 ±5% 越界（-50..1050）后钳制到 0..1000；
@@ -268,51 +322,52 @@ function normalizedArguments(value) {
 function parseModelAction(rawArgs) {
   const args = normalizedArguments(rawArgs);
   if (!args || typeof args !== 'object' || Array.isArray(args) || typeof args.action !== 'string') throw new Error('invalid_action');
-  switch (args.action) {
-    case 'left_click': {
-      checkShape('left_click', args);
-      const point = normalizedPoint(args.coordinate);
-      return { type: 'click', inputs: { point: { raw: point, referenceSystem: 'screen' } } };
-    }
-    case 'scroll': {
-      checkShape('scroll', args);
-      const point = args.coordinate === undefined
-        ? { x: Math.floor(screenWidth / 2), y: Math.floor(screenHeight / 2) }
-        : normalizedPoint(args.coordinate);
-      // 同时保留方向和有符号幅度：幅度由 Python 换算成有界滚轮格数，避免 -100 与 -800 执行结果相同。
-      return { type: 'scroll', inputs: { point: { raw: point, referenceSystem: 'screen' }, direction: args.pixels > 0 ? 'up' : 'down', pixels: args.pixels } };
-    }
-    case 'wait': {
-      checkShape('wait', args);
-      return { type: 'wait', inputs: { time: args.time } };
-    }
-    case 'list_windows': {
-      checkShape('list_windows', args);
-      return { type: 'windows', inputs: {} };
-    }
-    case 'switch_window': {
-      checkShape('switch_window', args);
-      return { type: 'switch_window', inputs: { title: text(args.title) } };
-    }
-    case 'terminate': {
-      // 业务只收一个状态、一条理由；success 额外要求菜品区域。字段白名单之外一律视为格式违规。
-      checkShape('terminate', args, 'invalid_terminal');
-      const next = { kind: 'terminate', outcome: args.outcome, reason: text(args.reason, REASON_MAX_CHARS) };
-      if (args.outcome === 'success') {
-        const menu = menuRegion(args.menu_box);
-        next.menu_region = menu.region;
-        // 只进 trace，不作为模型字段，也不改变终态 payload。
-        next.menu_meta = menu.meta;
-      } else if (args.menu_box !== undefined && !(Array.isArray(args.menu_box) && args.menu_box.length === 0)) {
-        // 非 success 带空数组是模板残留，视同未提供；带真实区域仍判非法。
-        throw new Error('invalid_terminal');
-      }
-      terminal = next;
-      return { type: 'finished', inputs: { content: terminalMarker } };
-    }
-    default:
-      throw new Error('disallowed_action');
+  // noop 必须在 schema 查找之前处理：它是“先不动作”的合法出口，schema 里没有对应的宿主方法。
+  // 空 arguments 会被 action-repair 归一化成 noop，如果先查 schema 就会误判成 disallowed_action 并直接终止。
+  if (args.action === 'noop') {
+    // 模型用空 arguments 表示“先不动、继续观察”；转成一次短暂等待，下一轮重新截图。
+    // 连续空参数不是格式错误，但也不能一直静默：第二次起把合法出口直接说出来。
+    noopCount += 1;
+    if (noopCount >= 2) pendingNotice = [pendingNotice, NOOP_NOTICE].filter(Boolean).join(' ');
+    return { type: 'wait', inputs: { params: { seconds: 1 } } };
   }
+  const spec = ACTIONS[args.action];
+  if (!spec) throw new Error('disallowed_action');
+  if (args.action === 'terminate') {
+    // 业务只收一个状态、一条理由；success 额外要求菜品区域。字段白名单之外一律视为格式违规。
+    validateArgs('terminate', args, 'invalid_terminal');
+    // 白屏/加载中/前置页只看一眼就结束是真实存在的“早退”。这里只校验观察过程是否充分，
+    // 不替模型判断页面性质；最多退回 3 次，避免异常页面无限循环。
+    if (args.outcome === 'needs_review' && observationDeferrals < MAX_OBSERVATION_DEFERRALS
+        && (screenshotCount < MIN_REVIEW_SCREENSHOTS
+            || Date.now() - firstObservationAt < MIN_REVIEW_OBSERVATION_MS)) {
+      observationDeferrals += 1;
+      throw new Error('insufficient_observation');
+    }
+    const next = { kind: 'terminate', outcome: args.outcome, reason: text(args.reason, REASON_MAX_CHARS) };
+    if (args.outcome === 'success') {
+      const menu = menuRegion(args.menu_box);
+      next.menu_region = menu.region;
+      // 只进 trace，不作为模型字段，也不改变终态 payload。
+      next.menu_meta = menu.meta;
+    } else if (args.menu_box !== undefined && !(Array.isArray(args.menu_box) && args.menu_box.length === 0)) {
+      // 非 success 带空数组是模板残留，视同未提供；带真实区域仍判非法。
+      throw new Error('invalid_terminal');
+    }
+    terminal = next;
+    return { type: 'finished', inputs: { content: terminalMarker } };
+  }
+  if (!spec.host?.method) throw new Error('disallowed_action');
+  // 动作名、字段白名单与宿主方法映射全部来自 action-schema.json，不再逐动作写分支。
+  validateArgs(args.action, args);
+  const { method, params, point } = buildHostParams(args.action, args, {
+    frameId: currentFrame, width: screenWidth, height: screenHeight,
+  });
+  // point 必须保留：SDK 会据此做坐标归一化，并在执行后用 convertToAgentUIAction 读 point.normalized。
+  const inputs = { params, point: point && { raw: point, referenceSystem: 'screen' } };
+  // reason 不进入宿主参数，只带给执行层做留痕和失败重试时的意图回述。
+  if (args.action === 'left_click') inputs.reason = text(args.reason, 120);
+  return { type: method, inputs };
 }
 
 function reject(code, rawContent) {
@@ -339,9 +394,19 @@ function describeFormatError(code, args) {
     return '终态字段不完整，或 menu_box 越界/无法形成有效矩形';
   }
   if (code === 'disallowed_action') {
-    return args?.action ? `不支持的动作「${text(args.action, 40)}」` : '不支持的动作';
+    return (args?.action ? `不支持的动作「${text(args.action, 40)}」. ` : '不支持的动作. ')
+      + '可用 left_click / scroll / type_text / key / wait / list_windows / switch_window / terminate / noop。';
   }
   if (code === 'no_observation') return '当前没有可用截图';
+  if (args && typeof args === 'object' && !Array.isArray(args) && typeof args.action !== 'string') {
+    // 实测模型会连续输出 arguments:{}；把“缺什么”和“无动作/结束怎么写”一起说清楚，让它照着最小结构改。
+    return 'arguments 为空或缺少 action：需要动作时给出 action 与参数，例如 '
+      + '{"name":"computer_use","arguments":{"action":"left_click","coordinate":[500,500]}}；'
+      + '当前不需要动作时输出 {"name":"computer_use","arguments":{"action":"noop"}}；'
+      + '要结束时输出 {"name":"computer_use","arguments":{"action":"terminate",'
+      + '"outcome":"success|needs_review|unqualified","reason":"...","menu_box":[x1,y1,x2,y2]}}'
+      + '（success 才需要 menu_box）。';
+  }
   return '这不是一个合法的 computer_use JSON，或字段缺失、有多余字段、类型不对';
 }
 
@@ -356,16 +421,30 @@ function makeCustomActionParser() {
       const parsed = parseModelAction(args);
       // 合法输出后重置连续错误计数，让 Agent 在任务后段仍有修正机会；总上限仍保留。
       parseFailures = 0;
+      // noop 不是“正常动作”，不能在这里清零，否则连续空参数的提醒永远触发不了。
+      if (args?.action !== 'noop') noopCount = 0;
       trace({ type: 'action', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
-              ok: true, action: parsed, ...rawRecord(rawContent) });
-      return { rawContent, reasoningContent: '', actions: [parsed] };
+              ok: true, action: parsed, ...(args?.action === 'noop' ? { source: 'noop' } : {}),
+              ...rawRecord(rawContent) });
+      // reason 是模型这一步的判断依据：回填给 SDK 的 reasoningContent，供 UI 与 trace 留痕；
+      // 不参与任何判定，也不改变模型下一轮看到的历史（历史用的是 rawContent）。
+      return { rawContent, reasoningContent: text(args?.reason, REASON_MAX_CHARS), actions: [parsed] };
     } catch (error) {
-      const code = ['invalid_action', 'invalid_terminal', 'disallowed_action', 'no_observation'].includes(error?.message)
+      const code = ['invalid_action', 'invalid_terminal', 'disallowed_action', 'no_observation',
+        'insufficient_observation'].includes(error?.message)
         ? error.message
         : 'invalid_action';
       trace({ type: 'action', at: now(), call_id: currentCall?.id ?? null, frame_id: currentFrame,
               ok: false, error: code, ...rawRecord(rawContent) });
-      const formatError = code === 'invalid_action' || code === 'invalid_terminal';
+      if (code === 'insufficient_observation') {
+        // 不计入格式失败预算；只补一次观察机会。
+        pendingNotice = `结束判定过早：目前只观察到 ${screenshotCount} 帧、累计不足 10 秒。`
+          + '请再等待 3-5 秒观察一帧；白屏、加载中或前置页在画面仍无变化前不要返回 needs_review。';
+        trace({ type: 'observation_deferred', at: now(), call_id: currentCall?.id ?? null,
+                frame_id: currentFrame, screenshots: screenshotCount, deferrals: observationDeferrals });
+        return { rawContent, reasoningContent: '', actions: [{ type: 'notice', inputs: { message: pendingNotice.slice(0, 300) } }] };
+      }
+      const formatError = ['invalid_action', 'invalid_terminal', 'disallowed_action'].includes(code);
       if (formatError) {
         // 先记发生次数：即使这次超出修正上限直接终止，也会计入 format_failures。
         parseFailures += 1;
@@ -391,67 +470,12 @@ function makeCustomActionParser() {
   };
 }
 
-// 点餐小程序导航经验只维护这一份，作为系统提示词常驻；不再提供按需读取的 Skill。
-const navigationGuide = `点餐小程序导航经验
-
-目标是浏览本轮门店的菜单并交接。根据截图自主选择动作。浏览期间避免登录、入会、储值、加购、下单、支付或发起外部联系。
-
-一、三个终态怎么分
-
-success：已经出现可直接截图和滚动浏览的真实菜品菜单，通常能看到对应价格，且 \`menu_box\` 能框住当前可见的菜品列表。滚动采集由程序完成。
-可以判 success：
-- 一两道菜也算，不要求菜品很多。
-- 截图里没有显示店名时，如果开窗和导航过程能对应本轮门店，仍可交接。
-- 页面显示的是其他分店时，只要已经出现可截图、可滚动的真实菜品菜单，就照常交接。
-- 门店打烊、暂停接单，但菜单仍能浏览，也算 success。
-- 顶部横幅、分类导航、底部购物车或角落提示未挡住菜品列表和滚动时，可以交接。
-- 覆盖在菜品列表上的广告、会员、储值或活动浮层必须先关闭再交接。
-不要判 success：
-- 只有欢迎页、“立即点餐”按钮、门店介绍、广告。
-- 只有分类名或搜索框，还没有菜品和价格。
-- 购物车、订单确认、订单详情、历史订单、已下单成功页、支付页、开票页。
-- 页面正在加载或白屏。
-- 模态弹窗盖住菜品区域或拦住列表滚动。
-- 人数选择页（“选择人数”“开始点餐”“欢迎来到…”）不是菜单页；应先选中人数并进入点餐，再进行判定。
-
-unqualified：要有清楚、可见的证据表明本轮拿不到菜单，而不是“暂时没成功”。
-常见证据：明确提示扫码点餐已关闭且无菜单入口；要求到店后再扫码；二维码失效、小程序停止服务或门店未配置菜单；明确写暂无菜单/暂无菜品且重试后仍一样。
-不算 unqualified：打烊但菜单可见→success；提示暂时无法下单但有“查看菜单/进入点餐”入口→继续；白屏、加载慢、一般网络异常→有限恢复或观察等待，持续失败返回 needs_review；点击没反应、弹窗关不掉、需要登录、页面归属不明→needs_review；菜品很少、店名不全→不影响 success。
-
-needs_review：合理尝试后仍无法确定——强制手机号+验证码；持续白屏或一直加载；打开的页面与本轮二维码关系不明；工具连续失败或窗口反复被拒绝；弹窗无法消除；停在人数选择、欢迎页等前置页且找不到进入菜单的入口。
-
-二、常见页面怎么处理
-
-- 欢迎页或广告页优先找能直接通向菜品菜单的入口；同时有点餐、会员中心、储值、外卖或商城时，结合按钮与内容选择菜单路径。误入无关页面后优先退出、返回或切回原窗口。
-- 全屏广告、会员礼遇、储值海报等有叉号、关闭、跳过入口时先关闭再观察；不要未关闭遮挡就反复点底部导航。
-- 门店首页是海报加人数选择时，先按任务人数选中对应数字，确认选中状态，再点底部“开始点餐/去点餐”一次；没有页面变化时先核对按钮位置和选中状态，再决定是否重试，不要连续点海报或空白区域。
-- 扫码后直接进入已有订单、订单详情或当前餐桌的点餐记录时，可用返回、关闭、左上角返回箭头离开，或切换底部“菜单/点餐/首页”导航，或找“继续点餐/加菜/再来一单”入口进入菜品列表；全程只浏览，不勾选菜品、不修改订单、不提交、不支付；都无法回到可浏览菜单时返回 needs_review。
-- 订单详情、历史订单或下单成功页中的菜名与价格，不是菜单成功交接的充分证据；必须真正回到可滚动的菜品列表才判 success。
-- 遇到隐私或授权弹窗时，优先使用可跳过、关闭或拒绝的入口；若只能通过手机号、登录或未授权的个人信息请求，返回 needs_review。
-- 系统通知弹窗优先拒绝或关闭。
-- 等待应有可见依据，例如加载提示、转场或刚触发的页面变化。等待后重新观察。有稳定的非目标页面时，转向返回或其他入口。
-- 点击没反应时，对照动作前后的截图，看按钮是否可用、有没有前置条件、点击是否落在目标上。只有新证据支持时才重试同一位置。
-- 点击点餐后，如果原窗口停在加载页、浏览器跳转页或没有明显变化，先用 \`list_windows\` 核对是否另开了微信小程序，再决定是否待检查；窗口标题只是线索，可用 \`switch_window\` 查看合理候选的新截图。
-
-三、操作没有进展时
-
-- 每次操作后先对照新截图，确认页面是否出现预期变化；工具执行成功不代表页面已经响应。
-- 没有变化时，先检查是否仍在加载、按钮是否被遮挡、是否缺少前置步骤。只有发现新的依据，才重新点击原目标。
-- 同一目标连续两次点击都没有响应时，放弃当前点击方式：可改点按钮中心或其他有效位置，也可尝试其他菜单入口、返回路径或窗口切换。不要反复点击同一区域直到耗尽步数。
-- 如果执行反馈指出画面没有变化，把它作为判断依据，而不是必须终止的信号；延迟生效或不可见的变化仍可继续观察。
-- 多个合理入口都没有进展时，停止机械重试，说明已经尝试的方式和当前阻碍，返回 needs_review。
-
-四、交接时的注意事项
-
-- \`menu_box\` 只框菜品列表区域，不要包含顶部状态栏、底部购物车栏；不要用接近整窗的框代替菜品区域。
-- 只框当前截图中可见的部分，不推测滚动后的区域。
-- 理由写实际观察到的内容，例如“已进入菜单，可见菜品与价格”，不要写推测或截图中不存在的内容。`;
-
 class HostOperator extends Operator {
   async initialize() {}
 
   supportedActions() {
-    return ['click', 'scroll', 'wait', 'windows', 'switch_window', 'finished', 'notice'];
+    // 从 schema 的 host.method 派生，新增动作不需要再改这里。
+    return [...hostMethods(), 'finished', 'notice'];
   }
 
   screenContext() {
@@ -459,27 +483,67 @@ class HostOperator extends Operator {
   }
 
   async screenshot() {
-    const result = await rpc('screenshot', {});
+    // observe() 会清空 pending，所以在截图前保存本次待观测动作的类型。
+    const sentMethod = progress.pendingMethod;
+    const clicked = sentMethod === 'click' ? progress.pendingPixel : null;
+    const clickedReason = text(progress.pendingReason, REASON_ECHO_MAX);
+    // 把落点交给宿主：宿主在未标记原帧上算完 delta/roi 后，只有这次点击确实无变化时
+    // 才在回传副本上标记落点，并附一张落点放大参考图。标记不改变坐标空间。
+    const result = await rpc('screenshot', clicked ? { mark: clicked } : {});
     if (!result || typeof result.base64 !== 'string' || typeof result.frame_id !== 'string' || !result.frame_id) throw new Error('protocol');
     const info = pngInfo(result.base64);
     ({ width: screenWidth, height: screenHeight } = info);
     currentFrame = result.frame_id;
     actionUsedOnFrame = false;
     screenshotCount += 1;
+    if (!firstObservationAt) firstObservationAt = Date.now();
     const hash = sha256(info.bytes);
     currentFrameHash = hash;
     frameHashes.set(hash, currentFrame);
     if (frameHashes.size > 64) frameHashes.delete(frameHashes.keys().next().value);
-    // 对比动作前后的截图：只提示“画面是否变化”，是否换策略仍由 Agent 决定。
-    const notice = progress.observe(hash, info.width, info.height);
-    if (notice && !pendingNotice) {
-      pendingNotice = notice;
-      noProgressNotices += 1;
+    // 对比动作前后的截图：delta 是整页差异，roi_delta 是落点邻域差异，hash 只用于识别“字节完全相同”。
+    const notice = progress.observe(hash,
+      { delta: result.facts?.delta, roiDelta: result.facts?.roi_delta });
+    const evidence = progress.evidence();
+    const envelope = frameEnvelope(result.facts);
+    const status = statusSummary();
+    if (envelope || notice || evidence || status) {
+      pendingNotice = [pendingNotice, envelope, status, evidence, notice].filter(Boolean).join(' ');
+      if (notice && !envelope) noProgressNotices += 1;
     }
+    // 按“落点偏差 → 目标选错”分阶段反馈：
+    // 第 1 次同目标无变化给放大参考图 + 小范围文字框；第 2 次给更大范围候选并明确要求换目标。
+    let ocrContext = null;
+    let retryHint = '';
+    let stage = 0;
+    if (clicked && progress.sameTargetStreak === 1 && progress.noChangeStreak >= 1) {
+      stage = 1;
+      ocrContext = await nearbyOcrContext(clicked, OCR_PRECISION_RADIUS);
+      retryHint = precisionFeedback(clickedReason, ocrContext);
+    } else if (clicked && progress.sameTargetStreak === 2) {
+      stage = 2;
+      ocrContext = await nearbyOcrContext(clicked, OCR_TARGET_RADIUS);
+      retryHint = targetFeedback(clickedReason, ocrContext);
+    }
+    if (retryHint) pendingNotice = [pendingNotice, retryHint].filter(Boolean).join('\n');
+    // 滚动没有 stage1/2 的落点/换目标提示；这里补一句可归因的说明，避免模型只看到数字。
+    // 连续 3 次无变化时 progress 已给出换策略提示，不再重复。
+    if (!notice && !retryHint && sentMethod === 'scroll' && progress.noChangeStreak >= 1) {
+      pendingNotice = [pendingNotice, SCROLL_NO_CHANGE_HINT].filter(Boolean).join('\n');
+    }
+    // 放大图只在第一次重试时随文字一起发给模型；第二次不再强调落点。
+    const zoom = stage === 1 && typeof result.zoom === 'string' ? result.zoom : '';
+    pendingZoom = zoom;
     trace({ type: 'screenshot', at: now(), frame_id: currentFrame, width: info.width, height: info.height,
             bytes: info.bytes.length, sha256: hash,
-            no_change_streak: progress.noChangeStreak, same_target_streak: progress.sameTargetStreak });
-    return { base64: result.base64, status: 'success' };
+            window: result.facts?.window ?? null, delta: result.facts?.delta ?? null,
+            roi_delta: result.facts?.roi_delta ?? null,
+            new_windows: result.facts?.new_windows ?? [],
+            retry_stage: stage, zoom_meta: result.zoom_meta ?? null, zoom_sent: Boolean(zoom),
+            ocr_context: ocrContext,
+            no_change_streak: progress.noChangeStreak, same_target_streak: progress.sameTargetStreak,
+            evidence });
+    return { base64: result.base64, status: 'success', facts: result.facts ?? null };
   }
 
   async execute({ actions }) {
@@ -502,27 +566,49 @@ class HostOperator extends Operator {
         return { status: 'success' };
       }
       actionCount += 1;
+      // 只统计模型真正下发的动作类型，供每轮“已尝试”摘要使用；notice 不算动作。
+      if (Object.prototype.hasOwnProperty.call(attempts, action.type)) attempts[action.type] += 1;
+      // 宿主参数由 schema 的 host.map 生成；这里只保留各方法的回执处理。
+      const params = { ...(action.inputs.params || {}), frame_id: currentFrame };
       if (action.type === 'click') {
         const point = action.inputs.point?.raw;
         if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error('invalid_action');
-        await callHost('click', { frame_id: currentFrame, x: point.x, y: point.y });
-        progress.clickSent(currentFrameHash, { x: point.x, y: point.y });
+        const clicked = await callHost('click', params);
+        // 证据行与模型输出使用同一坐标空间：0..1000 在前，像素只作附注。
+        progress.actionSent(currentFrameHash, {
+          method: 'click',
+          point: normalizedPoint(point),
+          pixel: { x: point.x, y: point.y },
+          reason: text(action.inputs.reason, 120),
+        });
+        if (clicked?.window_switch?.switched) {
+          const switchedTitle = text(clicked.window_switch.title) || '新窗口';
+          reply = { window_switch: { title: switchedTitle } };
+          // 新窗口是宿主枚举到的确定事实：告诉 Agent 下一帧来自哪里，避免把“原窗口没变化”当成没响应。
+          pendingNotice = `点击后另开了小程序窗口「${switchedTitle}」，宿主已切换过去；下一张截图来自新窗口。`;
+        }
       } else if (action.type === 'scroll') {
         const point = action.inputs.point?.raw;
-        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || !['up', 'down'].includes(action.inputs.direction)) throw new Error('invalid_action');
-        if (!Number.isFinite(action.inputs.pixels) || action.inputs.pixels === 0) throw new Error('invalid_action');
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error('invalid_action');
         // pixels 保持模型给出的符号与绝对值，由宿主换算成有界滚轮格数。
-        await callHost('scroll', {
-          frame_id: currentFrame, x: point.x, y: point.y,
-          direction: action.inputs.direction === 'up' ? 'Up' : 'Down',
-          pixels: action.inputs.pixels,
-        });
+        await callHost('scroll', params);
+        progress.actionSent(currentFrameHash, { method: 'scroll', point: normalizedPoint(point) });
+      } else if (action.type === 'type_text') {
+        const value = text(params.text, 200);
+        if (!value) throw new Error('invalid_action');
+        await callHost('type_text', { ...params, text: value });
+        progress.actionSent(currentFrameHash, { method: 'type_text' });
+      } else if (action.type === 'key') {
+        const key = text(params.key, 40);
+        if (!key) throw new Error('invalid_action');
+        await callHost('key', { ...params, key });
+        progress.actionSent(currentFrameHash, { method: 'key' });
       } else if (action.type === 'wait') {
-        const seconds = action.inputs.time;
+        const seconds = params.seconds;
         if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 5) throw new Error('invalid_action');
-        await callHost('wait', { frame_id: currentFrame, seconds });
+        await callHost('wait', params);
       } else if (action.type === 'windows') {
-        const result = await rpc('windows', { frame_id: currentFrame });
+        const result = await rpc('windows', params);
         const titles = Array.isArray(result?.windows)
           ? result.windows.map((item) => text(item?.title)).filter(Boolean)
           : [];
@@ -531,9 +617,10 @@ class HostOperator extends Operator {
           ? `可切换的小程序窗口：${titles.join('、')}。如需切换，请调用 switch_window(title="窗口名称")。`
           : '当前没有可切换的小程序窗口。';
       } else if (action.type === 'switch_window') {
-        const title = text(action.inputs.title);
+        const title = text(params.title);
         if (!title) throw new Error('invalid_action');
-        const result = await callHost('switch_window', { frame_id: currentFrame, title });
+        const result = await callHost('switch_window', { ...params, title });
+        progress.actionSent(currentFrameHash, { method: 'switch_window' });
         reply = { switched: Boolean(result?.switched), error: text(result?.error), titles: result?.titles || [] };
         pendingNotice = result?.switched
           ? `已切换到窗口「${title}」；下一张截图来自该窗口，请重新核对门店。`
@@ -612,20 +699,25 @@ async function main() {
     }
 
     const operator = new HostOperator();
+    maxSteps = config.max_steps;
     if (typeof config.trace_path === 'string' && config.trace_path.trim()) tracePath = config.trace_path.trim();
+    // 提示词分两段：稳定段（协议 + 动作表）在前，业务段在后；两段 hash 一并留痕，便于区分版本问题与门店问题。
+    const basePrompt = buildBasePrompt({ outputContract: config.output_contract || '' });
+    const systemPrompt = [basePrompt, BUSINESS_PROMPT].join('\n\n');
+    const promptMeta = {
+      version: PROMPT_VERSION,
+      business_version: BUSINESS_PROMPT_VERSION,
+      base_sha256: sha256(Buffer.from(basePrompt)),
+      business_sha256: sha256(Buffer.from(BUSINESS_PROMPT)),
+      base_chars: basePrompt.length,
+      business_chars: BUSINESS_PROMPT.length,
+    };
     trace({ type: 'session', at: now(), node: process.version, model: model.model, max_steps: config.max_steps,
             reference: reference ? { mime: reference.mime, width: reference.width || null,
                                      height: reference.height || null,
                                      bytes: Buffer.byteLength(reference.base64, 'base64') } : null,
+            prompt: promptMeta,
             ...sanitized(typeof config.trace === 'object' && config.trace ? config.trace : {}) });
-    const systemPrompt = [
-      '每一轮只做一次观察和一个动作。',
-      '只输出一个 tool_call：<tool_call>{"name":"computer_use","arguments":{...}}</tool_call>。坐标与 menu_box 使用当前截图的 1000x1000 归一化空间，左上角为原点。',
-      '终态示例：<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"success","reason":"已进入菜单","menu_box":[50,150,950,950]}}</tool_call>；<tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"needs_review","reason":"..."}}</tool_call>。',
-      '安全边界：不要下单、支付、加购物车、领券、登录或切换门店；不要编造坐标，也不要声称截图里没有出现的内容。',
-      config.output_contract,
-      navigationGuide,
-    ].join('\n');
     const agent = new class extends GUIAgent {
       async onLLMRequest(_id, payload) {
         const request = payload?.request;
@@ -665,15 +757,26 @@ async function main() {
 
       async onAfterToolCall(id, toolCall, result) {
         const output = await super.onAfterToolCall(id, toolCall, result);
-        if (pendingNotice) {
+        if (pendingNotice || pendingZoom) {
           const notice = pendingNotice;
+          const zoom = pendingZoom;
           pendingNotice = '';
+          pendingZoom = '';
           try {
+            // 文字先说明参考图的性质，再附图；附图只用于核对落点，不参与坐标换算。
+            const content = [];
+            if (notice) content.push({ type: 'text', text: notice });
+            if (zoom) {
+              content.push({
+                type: 'image_url',
+                image_url: { url: `data:image/png;base64,${zoom}` },
+              });
+            }
             const stream = this.getEventStream();
             stream.sendEvent(stream.createEvent('environment_input', {
               description: 'Host feedback',
-              content: [{ type: 'text', text: notice }],
-              metadata: { type: 'text' },
+              content,
+              metadata: { type: zoom ? 'text+image' : 'text' },
             }));
           } catch { /* notice is advisory; the screenshot still drives the next decision */ }
         }
@@ -700,7 +803,14 @@ async function main() {
     activeAgent = agent;
     const first = await operator.doScreenshot();
     if (first.status !== 'success' || !first.base64) throw new Error('screenshot');
-    const observationMeta = `First attached PNG dimensions: ${screenWidth}x${screenHeight} pixels. Coordinates use the normalized 1000x1000 screen space.`;
+    const observationMeta = `First attached PNG dimensions: ${screenWidth}x${screenHeight} pixels. `
+      + 'Coordinates use the normalized 1000x1000 screen space.';
+    // 首帧就把窗口清单交给 Agent：省掉“先花几步确认自己看的是哪个窗口”。
+    const firstFacts = first.facts ?? null;
+    const windowList = (firstFacts?.windows || []).map(windowLabel).filter(Boolean);
+    const hostHint = '[Host] 这是桌面窗口截图，不是浏览器。'
+      + (windowList.length ? `当前窗口：${windowList.join('、')}。` : '')
+      + (firstFacts?.window?.title ? `本图来自「${firstFacts.window.title}」。` : '');
     // 第一张图是当前屏幕，也是唯一可点击的坐标依据；参考图只用于理解任务来源。
     const initialContent = [{ type: 'image_url', image_url: { url: `data:image/png;base64,${first.base64}` } }];
     if (reference) {
@@ -714,7 +824,7 @@ async function main() {
       });
     }
     const event = await agent.run({
-      input: `${observationMeta}\n\nTask: ${config.instruction}`,
+      input: `${hostHint}\n${observationMeta}\n\nTask: ${config.instruction}`,
       environmentInput: {
         content: initialContent,
         description: 'Initial desktop screenshot',

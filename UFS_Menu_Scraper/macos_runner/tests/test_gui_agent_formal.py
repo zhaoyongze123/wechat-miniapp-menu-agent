@@ -104,7 +104,7 @@ def test_formal_needs_review_does_not_turn_reason_text_into_rejection(tmp_path: 
     assert result["status"] == "needs_review"
     assert result["error_code"] == "agent_needs_review"
     assert result["reject_reason"] == ""
-    assert store.get_run(runner.run_id)["status"] == "blocked"
+    assert store.get_run(runner.run_id)["status"] == "completed"
 
 
 def test_formal_agent_unqualified_is_the_only_agent_outcome_marked_unqualified(tmp_path: Path, monkeypatch):
@@ -121,7 +121,7 @@ def test_formal_agent_unqualified_is_the_only_agent_outcome_marked_unqualified(t
     assert result["reject_reason"] == "other"
 
 
-def test_formal_timeout_blocks_run_without_publishing_partial_pages(tmp_path: Path, monkeypatch):
+def test_formal_timeout_marks_task_needs_review_and_finishes_run(tmp_path: Path, monkeypatch):
     runner, store, task, settings, profile, staging, model = _setup(tmp_path, monkeypatch)
 
     def timeout(*args, **kwargs):
@@ -133,7 +133,7 @@ def test_formal_timeout_blocks_run_without_publishing_partial_pages(tmp_path: Pa
     result = store.get(task["id"])
     assert result["status"] == "needs_review"
     assert result["error_code"] == "uipath_timeout"
-    assert store.get_run(runner.run_id)["status"] == "blocked"
+    assert store.get_run(runner.run_id)["status"] == "completed"
     assert not (Path(settings.output_dir) / "Shop A").exists()
 
 

@@ -46,11 +46,16 @@ SM_XVIRTUALSCREEN = 76
 SM_YVIRTUALSCREEN = 77
 SM_CXVIRTUALSCREEN = 78
 SM_CYVIRTUALSCREEN = 79
+GA_ROOT = 2
 
 
 class RECT(ctypes.Structure):
     _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
                 ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
 
 class BITMAPINFOHEADER(ctypes.Structure):
@@ -83,11 +88,18 @@ def _declare() -> None:
     user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
                                     ctypes.c_int, ctypes.c_int, wintypes.UINT]
     user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+    user32.IsWindow.argtypes = [wintypes.HWND]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
     user32.GetDC.argtypes = [wintypes.HWND]
     user32.GetDC.restype = wintypes.HDC
     user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
     user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+    # 落点命中校验：注入点击前必须确认该屏幕坐标仍属于目标顶层窗口。
+    user32.WindowFromPoint.argtypes = [POINT]
+    user32.WindowFromPoint.restype = wintypes.HWND
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetAncestor.restype = wintypes.HWND
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.GetSystemMetrics.restype = ctypes.c_int
     user32.mouse_event.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
@@ -174,6 +186,19 @@ def _rect(hwnd) -> tuple[int, int, int, int]:
     return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
 
 
+def _ensure_hit_target(hwnd, x: float, y: float) -> None:
+    """确认屏幕坐标的落点属于目标窗口顶层窗口，否则不执行注入点击。
+
+    目标窗口可能被置顶的其它窗口（Agent 面板、输入法候选、残留弹窗）遮挡，
+    注入的点击会打到遮挡窗口上：日志里动作“成功”，微信实际没收到，表现为
+    “点了没反应”。这里按 GA_ROOT 取落点所属顶层窗口做严格比对。
+    """
+    hit = user32.WindowFromPoint(POINT(int(round(x)), int(round(y))))
+    root = user32.GetAncestor(hit, GA_ROOT) if hit else 0
+    if not root or int(root) != int(hwnd):
+        raise RuntimeError("点击落点被其它窗口遮挡；未执行点击")
+
+
 def _windows() -> list[dict]:
     items: list[dict] = []
     proto = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -190,7 +215,8 @@ def _windows() -> list[dict]:
         name = ctypes.create_unicode_buffer(512)
         user32.GetClassNameW(hwnd, name, 512)
         left, top, width, height = _rect(hwnd)
-        items.append({"hwnd": hwnd, "app": app, "title": title.value, "cls": name.value,
+        items.append({"hwnd": hwnd, "window_id": f"{pid.value}:{hwnd}",
+                      "app": app, "title": title.value, "cls": name.value,
                       "visible": bool(user32.IsWindowVisible(hwnd)),
                       "rect": (left, top, width, height)})
         return True
@@ -218,7 +244,8 @@ class WindowsDesktop:
     """实现 FileRobotTransport 会下发的窗口级动作；失败时回 ok=False 由上层转成命令错误。"""
 
     actions = frozenset({"screenshot", "screenshot_desktop", "scroll_capture", "click", "click_desktop_overlay",
-                         "right_click", "double_click", "scroll", "type_text", "key", "resize", "discover", "noop"})
+                         "right_click", "double_click", "scroll", "type_text", "key", "resize", "discover", "noop",
+                         "restore_window", "close_window"})
 
     def __init__(self) -> None:
         _enable_dpi_awareness()
@@ -237,7 +264,10 @@ class WindowsDesktop:
                 return self._capture_desktop(command)
             if action == "click_desktop_overlay":
                 return self._click_desktop_overlay(command)
-            window = self._resolve(str(command.get("selector") or ""))
+            if action in {"restore_window", "close_window"}:
+                # 隐藏窗口没有可操作矩形，不能先走 _resolve；两种动作都按 selector 直接找候选。
+                return self._restore_window(command) if action == "restore_window" else self._close_window(command)
+            window = self._resolve(str(command.get("selector") or ""), command.get("expected_window_id"))
             if action == "resize":
                 return self._resize(window, command)
             if action in {"screenshot", "scroll_capture"}:
@@ -261,15 +291,20 @@ class WindowsDesktop:
                 continue
             left, top, width, height = item["rect"]
             windows.append({"app": item["app"], "title": item["title"], "cls": item["cls"], "role": "",
+                            "window_id": item["window_id"],
                             "position": {"x": left, "y": top, "width": width, "height": height}})
         return windows
 
-    def _resolve(self, selector: str) -> dict:
+    def _resolve(self, selector: str, expected_window_id: str | None = None) -> dict:
         try:
             expected = ET.fromstring(selector).attrib
         except ET.ParseError:
             raise RuntimeError("目标窗口 selector 无法解析") from None
-        candidates = [item for item in _windows() if _matches(item, expected)]
+        def candidates_for_target():
+            return [item for item in _windows() if _matches(item, expected)
+                    and (not expected_window_id or item.get("window_id") == expected_window_id)]
+
+        candidates = candidates_for_target()
         sized = [item for item in candidates
                  if item["visible"] and item["rect"][2] > 200 and item["rect"][3] > 200]
         if not sized:
@@ -280,7 +315,7 @@ class WindowsDesktop:
                 user32.ShowWindow(item["hwnd"], SW_RESTORE)
                 time.sleep(0.2)
             if iconic:
-                candidates = [item for item in _windows() if _matches(item, expected)]
+                candidates = candidates_for_target()
                 sized = [item for item in candidates
                          if item["visible"] and item["rect"][2] > 200 and item["rect"][3] > 200]
         if not sized:
@@ -333,10 +368,20 @@ class WindowsDesktop:
         left, top, width, height = window["rect"]
         return {"window_x": left, "window_y": top, "window_width": width, "window_height": height}
 
+    def _visible_windows(self) -> list[dict]:
+        """当前可见顶层窗口快照，随截图一起回传；Agent 靠它感知新窗口出现。"""
+        foreground = user32.GetForegroundWindow()
+        return [{"title": item["title"], "app": item["app"],
+                 "width": item["rect"][2], "height": item["rect"][3],
+                 "foreground": item["hwnd"] == foreground}
+                for item in _windows() if item.get("visible") and item["title"]]
+
     def _resize(self, window: dict, command: dict) -> dict:
         """把窗口拉到目标尺寸与位置；系统仍会按窗口最小尺寸约束自动收敛。"""
         hwnd = window["hwnd"]
-        if user32.IsIconic(hwnd):
+        if user32.IsIconic(hwnd) or user32.IsZoomed(hwnd):
+            # 最小化/最大化时 SetWindowPos 都改不了当前矩形（最大化只会改还原尺寸），
+            # 采集会按全屏点位点空；先还原再按目标尺寸摆放。
             user32.ShowWindow(hwnd, SW_RESTORE)
             time.sleep(0.15)
         left, top, _, _ = _rect(hwnd)
@@ -350,14 +395,70 @@ class WindowsDesktop:
         return {"ok": True, "action": "resize", "window_x": left, "window_y": top,
                 "window_width": width, "window_height": height}
 
+    def _selector_attributes(self, command: dict) -> dict:
+        try:
+            return ET.fromstring(str(command.get("selector") or "")).attrib
+        except ET.ParseError:
+            raise RuntimeError("目标窗口 selector 无法解析") from None
+
+    def _selector_candidates(self, expected: dict, expected_window_id: str | None) -> list[dict]:
+        return [item for item in _windows() if _matches(item, expected)
+                and (not expected_window_id or item.get("window_id") == expected_window_id)]
+
+    def _restore_window(self, command: dict) -> dict:
+        """把被隐藏或最小化的目标窗口恢复出来。
+
+        实测微信主窗口会被隐藏却仍在进程里存活（IsWindowVisible=False、IsIconic=False），
+        而 discover 只返回可见窗口，上层就会以为“微信没有了”。这里按 selector 连隐藏窗口
+        一起枚举，ShowWindow 恢复后再回报真实矩形。
+        """
+        candidates = self._selector_candidates(self._selector_attributes(command),
+                                               command.get("expected_window_id"))
+        if not candidates:
+            raise RuntimeError("未找到目标窗口（可能进程已退出）")
+        window = max(candidates, key=lambda item: item["rect"][2] * item["rect"][3])
+        hwnd = window["hwnd"]
+        # _activate 内部已对最小化/隐藏窗口做 SW_RESTORE + SW_SHOW。
+        self._activate(hwnd)
+        left, top, width, height = _rect(hwnd)
+        return {"ok": True, "action": "restore_window", "window_id": window["window_id"],
+                "visible": bool(user32.IsWindowVisible(hwnd)),
+                "window_x": left, "window_y": top, "window_width": width, "window_height": height}
+
+    def _close_window(self, command: dict) -> dict:
+        """按 WM_CLOSE 关闭目标顶层窗口，并确认它真的从枚举里消失。
+
+        实测微信“图片和视频”预览窗只认这一条：一次 WM_CLOSE 即关（3/3），
+        窗口不置前也能关，不像键盘快捷键那样受焦点影响。
+        """
+        candidates = self._selector_candidates(self._selector_attributes(command),
+                                               command.get("expected_window_id"))
+        if not candidates:
+            return {"ok": True, "action": "close_window", "closed": True, "already_closed": True}
+        window = max(candidates, key=lambda item: item["rect"][2] * item["rect"][3])
+        hwnd = window["hwnd"]
+        if not user32.PostMessageW(hwnd, WM_CLOSE, 0, 0):
+            raise RuntimeError("关闭指令投递失败")
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if not user32.IsWindow(hwnd) or not any(item["hwnd"] == hwnd for item in _windows()):
+                return {"ok": True, "action": "close_window", "closed": True, "window_id": window["window_id"]}
+            time.sleep(0.1)
+        raise RuntimeError("目标窗口未响应关闭指令")
+
     def _capture_command(self, window: dict, command: dict) -> dict:
         hwnd = window["hwnd"]
         foreground = self._activate(hwnd)
         if command["action"] == "scroll_capture":
+            if not foreground:
+                raise RuntimeError("目标窗口未置前；未执行滚动")
+            self._point(window, float(command["x"]), float(command["y"]), command)
             self._wheel(window, float(command["x"]), float(command["y"]), command["direction"],
                         int(command["units"]))
-            # 只留最短渲染时间；页面没跟上时由 _capture_menu 比对差异后补拍。
-            time.sleep(0.12)
+            # 滚动后渲染等待由调用方指定：前几帧放慢以便核对弹窗，之后用快速节奏。
+            settle = command.get("settle_seconds")
+            settle = 0.12 if settle is None else max(0.0, min(float(settle), 5.0))
+            time.sleep(settle)
         left, top, width, height = _rect(hwnd)
         image = self._print_window(hwnd, width, height)
         path = Path(command["path"])
@@ -365,8 +466,10 @@ class WindowsDesktop:
         image.save(path)
         return {"ok": True, "action": command["action"], "path": str(path.resolve()),
                 "width": image.width, "height": image.height,
+                "window_id": window.get("window_id"),
                 **self._geometry({"rect": (left, top, width, height)}),
-                "target_window": self._identity(window, foreground)}
+                "target_window": self._identity(window, foreground),
+                "windows": self._visible_windows()}
 
     def _capture_desktop(self, command: dict) -> dict:
         """整屏取图：右键菜单等系统弹窗是独立窗口，只有屏幕内容才抓得到。"""
@@ -442,8 +545,10 @@ class WindowsDesktop:
 
         return Image.frombuffer("RGBA", (width, height), buffer.raw, "raw", "BGRA", 0, 1).convert("RGB")
 
-    def _point(self, window: dict, x: float, y: float) -> tuple[int, int, int, int]:
+    def _point(self, window: dict, x: float, y: float, command: dict) -> tuple[int, int, int, int]:
         left, top, width, height = _rect(window["hwnd"])
+        if (command.get("expected_window_width", width), command.get("expected_window_height", height)) != (width, height):
+            raise RuntimeError("窗口尺寸已变化；未执行坐标动作")
         if not (0 <= x < width and 0 <= y < height):
             raise RuntimeError(f"坐标超出窗口范围：{x:.0f},{y:.0f} 不在 {width}x{height} 内")
         return left, top, width, height
@@ -464,9 +569,10 @@ class WindowsDesktop:
     def _click(self, window: dict, command: dict) -> dict:
         hwnd = window["hwnd"]
         x, y = float(command["x"]), float(command["y"])
-        left, top, width, height = self._point(window, x, y)
         if not self._activate(hwnd):
             raise RuntimeError("目标窗口未置前；未执行点击")
+        left, top, width, height = self._point(window, x, y, command)
+        _ensure_hit_target(hwnd, left + x, top + y)
         user32.SetCursorPos(left + int(round(x)), top + int(round(y)))
         time.sleep(0.05)
         action = command["action"]
@@ -482,9 +588,9 @@ class WindowsDesktop:
 
     def _scroll(self, window: dict, command: dict) -> dict:
         x, y = float(command["x"]), float(command["y"])
-        left, top, width, height = self._point(window, x, y)
         if not self._activate(window["hwnd"]):
             raise RuntimeError("目标窗口未置前；未执行滚动")
+        left, top, width, height = self._point(window, x, y, command)
         self._wheel(window, x, y, command["direction"], int(command["units"]))
         return {"ok": True, "action": "scroll", **self._geometry({"rect": (left, top, width, height)})}
 

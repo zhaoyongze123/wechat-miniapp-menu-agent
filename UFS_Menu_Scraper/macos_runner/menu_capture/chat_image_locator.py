@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 import cv2
@@ -16,10 +17,18 @@ class ChatImageNotFound(ValueError):
         self.diagnostics = diagnostics
 
 
-_MIN_SCORE = 0.70
+# 实测：真实二维码缩略图（带圆角/留白）最高分只有 0.4047，黑框测试图 0.8998。
+# 原 0.70 硬阈值必然把已发出的图片判成“未匹配”，故按实测下探到 0.35。
+_MIN_SCORE = 0.35
 _AMBIGUITY_GAP = 0.025
+# 判“两个候选不相上下”时用的噪声地板：0.35 的接受线会把大量弱候选算进来，
+# 若沿用 _MIN_SCORE 做地板，正确图片（实测 0.4047）会被噪声候选连累成“多个难以区分”。
+_AMBIGUITY_FLOOR = 0.45
 _MAX_TEMPLATE_EDGE = 440
 _MIN_TEMPLATE_EDGE = 72
+# 微信主窗口被规范到 999×749 后，聊天输入框上沿实测在 597px（79.7% 屏高）。
+# 搜索区一旦越过这条线，就会把输入框里的文字/图标当成聊天消息参与匹配。
+_TRANSCRIPT_BOTTOM = 0.80
 _COARSE_EDGES = (80, 112, 144, 176, 224, 288, 352, 416)
 
 
@@ -123,7 +132,8 @@ def _candidate_from_match(score: float, x: int, y: int, w: int, h: int,
     }
 
 
-def locate_sent_image(screenshot_path: Path, source_path: Path, anchor_bottom: float) -> dict:
+def locate_sent_image(screenshot_path: Path, source_path: Path, anchor_bottom: float,
+                      *, before_send: Path | None = None) -> dict:
     """Find ``source_path``'s sent thumbnail below ``anchor_bottom`` in the chat transcript.
 
     Coordinates in the return value are screenshot pixels. ``anchor_bottom`` is the
@@ -142,7 +152,7 @@ def locate_sent_image(screenshot_path: Path, source_path: Path, anchor_bottom: f
     # 右边界避开发送者头像栏，底边避开固定输入框；按截图尺寸缩放以兼容不同分辨率。
     x1, x2 = round(screen_w * 0.58), round(screen_w * 0.92)
     y1 = max(0, round(anchor_bottom))
-    y2 = min(round(screen_h * 0.85), round(anchor_bottom + screen_h * 0.42))
+    y2 = min(round(screen_h * _TRANSCRIPT_BOTTOM), round(anchor_bottom + screen_h * 0.42))
     diagnostics = {
         "reason": "no_confident_match",
         "source_path": str(source_path),
@@ -222,12 +232,25 @@ def locate_sent_image(screenshot_path: Path, source_path: Path, anchor_bottom: f
     })
     # 缩略图带圆角/留白时，正确图片的分数会略低于硬阈值；只要明显领先第二名，
     # 仍可确认是本轮图片，避免把“已发送但缩略图有留白”误判成没发出去。
-    relaxed = best is not None and best["score"] >= 0.62 and best["score"] - runner_up >= 0.10
+    relaxed = best is not None and best["score"] >= 0.30 and best["score"] - runner_up >= 0.10
+    if before_send is not None and best is not None:
+        previous = _read_image(before_send, "screenshot")
+        left, top, right, bottom = best["box"]
+        changed = False
+        if previous.shape == screenshot.shape:
+            before = previous[top:bottom, left:right]
+            after = screenshot[top:bottom, left:right]
+            changed = float(np.mean(np.max(cv2.absdiff(before, after), axis=2) >= 20)) >= 0.12
+        diagnostics["candidate_changed_after_send"] = changed
+        if not changed:
+            raise ChatImageNotFound("发送后未确认本轮新增图片气泡", diagnostics)
+        # 只有发送前后确有新内容、且候选唯一领先时才接纳临界分数。扫码前还要核对完整预览图。
+        relaxed = best["score"] >= 0.28 and best["score"] - runner_up >= 0.10
     if best is None or (best["score"] < _MIN_SCORE and not relaxed):
         raise ChatImageNotFound("本轮门店名称下方未匹配到来源图片，请查看图片匹配记录", diagnostics)
     if relaxed and best["score"] < _MIN_SCORE:
         diagnostics["relaxed_match"] = True
-    if runner_up >= _MIN_SCORE and best["score"] - runner_up < _AMBIGUITY_GAP:
+    if runner_up >= _AMBIGUITY_FLOOR and best["score"] - runner_up < _AMBIGUITY_GAP:
         diagnostics["reason"] = "ambiguous_matches"
         raise ChatImageNotFound("本轮门店名称下方存在多个难以区分的图片匹配，请查看匹配记录", diagnostics)
 
@@ -249,3 +272,124 @@ def locate_sent_image(screenshot_path: Path, source_path: Path, anchor_bottom: f
         "runner_up_score": runner_up,
         "search_region_px": [x1, y1, x2, y2],
     }
+
+
+def locate_chat_image_bubble(screenshot_path: Path, anchor_bottom: float) -> dict:
+    """找出门店名称气泡下方最新的一块图片气泡，不比对原图内容。
+
+    图片发到聊天区后立刻就能双击打开，此时缩略图可能仍在解码（灰块/模糊帧），
+    原图模板匹配要等渲染完成才有分数，会让整批卡在“未匹配到来源图片”。
+    这里只按聊天背景上的连续非背景块定位：最新消息永远在最下方，取底边最靠下的
+    候选即可；图片身份由打开后的预览核对负责，不在这一步做内容比对。
+    """
+    screenshot = _read_image(Path(screenshot_path), "screenshot")
+    height, width = screenshot.shape[:2]
+    if not isinstance(anchor_bottom, (int, float)) or not np.isfinite(anchor_bottom):
+        raise ChatImageNotFound(
+            "门店名称锚点坐标无效",
+            {"reason": "invalid_anchor", "anchor_bottom": repr(anchor_bottom)},
+        )
+    # 右边界避开发送者头像栏；下边界取聊天区底部（输入框上沿之上），不把输入框算进来。
+    x1, x2 = round(width * 0.58), round(width * 0.92)
+    y1 = max(0, round(anchor_bottom))
+    y2 = min(round(height * _TRANSCRIPT_BOTTOM), round(anchor_bottom + height * 0.42))
+    diagnostics = {
+        "reason": "no_bubble_appeared",
+        "anchor_bottom": float(anchor_bottom),
+        "search_region_px": [x1, y1, x2, y2],
+    }
+    if y2 <= y1 or x2 <= x1:
+        diagnostics["reason"] = "empty_search_region"
+        raise ChatImageNotFound("门店名称下方没有可搜索的聊天图片区域", diagnostics)
+
+    region = screenshot[y1:y2, x1:x2]
+    # 背景色取整个聊天窗格的众数，而不是搜索区域自身的众数：图片气泡可能占满搜索区域，
+    # 用区域众数会把气泡颜色当背景，反而把四周背景判成“新气泡”。聊天窗格中背景始终占多数。
+    pane_x1, pane_x2 = round(width * 0.26), round(width * 0.95)
+    pane_y1, pane_y2 = round(height * 0.10), round(height * 0.78)
+    pane = screenshot[pane_y1:pane_y2, pane_x1:pane_x2]
+    sample = pane.reshape(-1, 3)[::11].tolist()
+    background = np.array(Counter(map(tuple, sample)).most_common(1)[0][0], dtype=np.int16)
+    delta = np.abs(region.astype(np.int16) - background).max(axis=2)
+    mask = (delta >= 12).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+
+    count, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    region_area = region.shape[0] * region.shape[1]
+    min_height = max(40, round(height * 0.05))
+    min_width = max(60, round(width * 0.06))
+    candidates: list[dict] = []
+    for index in range(1, count):
+        x, y, box_width, box_height, area = (int(value) for value in stats[index])
+        if area < region_area * 0.02 or box_height < min_height or box_width < min_width:
+            continue
+        candidates.append({
+            "box": [x1 + x, y1 + y, x1 + x + box_width, y1 + y + box_height],
+            "bottom": y1 + y + box_height,
+            "area": area,
+        })
+    diagnostics.update(bubble_candidates=len(candidates), background_rgb=background.tolist())
+    if not candidates:
+        raise ChatImageNotFound("发送后门店名称下方未出现图片气泡", diagnostics)
+
+    # 新消息总在最下方：底边最靠下的一块就是本轮图片，面积只用于同底边时打破平局。
+    best = max(candidates, key=lambda item: (item["bottom"], item["area"]))
+    left, top, right, bottom = best["box"]
+    return {
+        "box_image_px": [left, top, right, bottom],
+        "center_image_px": {"x": (left + right) // 2, "y": (top + bottom) // 2},
+        "method": "chat_bubble_background_diff",
+        "source": "bubble_appearance",
+        "bubble_candidates": len(candidates),
+    }
+
+
+def match_preview_source(preview_path: Path, source_path: Path) -> dict:
+    """按原图比例核对完整预览，允许留白和缩放，拒绝白帧及上一张图。"""
+    preview = _read_image(preview_path, "screenshot")
+    source = _read_image(source_path, "source")
+    height, width = preview.shape[:2]
+    shrink = min(1.0, 480 / max(width, height))
+    canvas = cv2.resize(preview, None, fx=shrink, fy=shrink, interpolation=cv2.INTER_AREA)
+    gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
+    h, w = source.shape[:2]
+    # 预览按比例缩放。略过原图外边缘，兼容窗口边框和预览底部的暗边。
+    inset_x, inset_y = round(w * 0.06), round(h * 0.06)
+    source = source[inset_y:h - inset_y, inset_x:w - inset_x]
+    available_h, available_w = gray.shape
+    fit = min(available_w / w, max(1, available_h - round(32 * shrink)) / h)
+    scales = {fit * ratio for ratio in (0.6, 0.7, 0.8, 0.88, 0.93, 0.97, 1.0, 1.04)}
+    scales.add(shrink)
+    best = {"score": 0.0, "color_error": None, "matched": False}
+    best_scale = fit
+
+    def compare(scale: float) -> None:
+        nonlocal best, best_scale
+        tw, th = round(source.shape[1] * scale), round(source.shape[0] * scale)
+        if not (32 <= tw <= available_w and 32 <= th <= available_h):
+            return
+        template = cv2.resize(source, (tw, th), interpolation=cv2.INTER_AREA)
+        template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+        if float(template_gray.std()) < 8:
+            return
+        response = cv2.matchTemplate(gray, template_gray, cv2.TM_CCOEFF_NORMED)
+        _, score, _, (x, y) = cv2.minMaxLoc(response)
+        if score <= best["score"]:
+            return
+        patch = canvas[y:y + th, x:x + tw]
+        color_error = float(np.mean(cv2.absdiff(patch, template)))
+        best_scale = scale
+        best = {
+            "score": round(score, 4), "color_error": round(color_error, 2),
+            "matched": score >= 0.89 and color_error <= 21,
+            "center_image_px": {"x": (x + tw / 2) / shrink, "y": (y + th / 2) / shrink},
+        }
+
+    for scale in sorted(scales):
+        compare(scale)
+    if not best["matched"] and best["score"] >= 0.60:
+        # 窗口边框与工具栏高度会改变实际缩放，尤其是贴满窗口的长图。只在接近时精搜尺度。
+        coarse_scale = best_scale
+        for step in (-1, 1, -2, 2, -3, 3, -4, 4, -5, 5):
+            compare(coarse_scale * (1 + step * .005))
+    return best

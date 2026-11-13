@@ -1,42 +1,102 @@
 {
-  "version": 1,
-  "scope": "只定义动作名称、字段白名单与基础类型；菜单区域几何、终态条件和窄容错仍由 adapter.mjs 的专用函数实现，不在此文件内。",
+  "version": 5,
+  "scope": "动作的唯一来源：动作名、字段白名单、基础类型，以及到宿主方法的映射。doc 会原样进入模型可见的输出契约；菜单几何、胶囊保护区、滚轮换算等宿主专有逻辑仍由专用函数实现。",
   "coordinate_space": 1000,
   "actions": {
     "left_click": {
-      "doc": "left_click：必填 coordinate=[x,y]；不得有其他字段。",
+      "doc": "left_click：必填 coordinate=[x,y] 与 reason（中文一句话，说明为什么点这里、期望发生什么）；不得有其他字段。reason 只用于执行留痕与反馈，不参与坐标换算。",
       "required": {
-        "coordinate": { "type": "point" }
+        "coordinate": { "type": "point" },
+        "reason": { "type": "string" }
       },
-      "optional": {}
+      "optional": {},
+      "host": {
+        "method": "click",
+        "map": { "frame_id": "$frame", "x": "$x", "y": "$y" }
+      }
     },
     "scroll": {
-      "doc": "scroll：必填 pixels（非零数字，正数向上、负数向下，绝对值决定滚动幅度）；选填 coordinate=[x,y]。",
+      "doc": "scroll：必填 pixels（非零数字，正数向上、负数向下，绝对值决定滚动幅度）与 reason（中文一句话，说明为什么滚动、期望看到什么）；选填 coordinate=[x,y]。",
       "required": {
-        "pixels": { "type": "number", "non_zero": true }
+        "pixels": { "type": "number", "non_zero": true },
+        "reason": { "type": "string" }
       },
       "optional": {
         "coordinate": { "type": "point" }
+      },
+      "host": {
+        "method": "scroll",
+        "map": {
+          "frame_id": "$frame",
+          "x": "$x",
+          "y": "$y",
+          "direction": "$direction",
+          "pixels": "pixels"
+        }
+      }
+    },
+    "type_text": {
+      "doc": "type_text：必填 text（非空字符串，最多 200 字，整段一次性输入）与 reason（中文一句话，说明为什么输入、期望页面发生什么）；不得有其他字段。用于向搜索框、输入框填写关键词，输入后需要重新截图确认结果。",
+      "required": {
+        "text": { "type": "string" },
+        "reason": { "type": "string" }
+      },
+      "optional": {},
+      "host": {
+        "method": "type_text",
+        "map": { "frame_id": "$frame", "text": "text" }
+      }
+    },
+    "key": {
+      "doc": "key：必填 key（按键或组合键，如 enter、esc、ctrl+v、alt+left）与 reason（中文一句话，说明为什么按键、期望页面发生什么）；不得有其他字段。用于提交搜索、回车确认或返回上一页。",
+      "required": {
+        "key": { "type": "string" },
+        "reason": { "type": "string" }
+      },
+      "optional": {},
+      "host": {
+        "method": "key",
+        "map": { "frame_id": "$frame", "key": "key" }
       }
     },
     "wait": {
-      "doc": "wait：必填 time（秒，0 < time <= 5）；不得有其他字段。",
+      "doc": "wait：必填 time（秒，0 < time <= 5）与 reason（中文一句话，说明在等什么、期望看到什么变化）；不得有其他字段。页面加载、转场或刚触发的动作还没生效时优先用它，不要输出空 arguments。",
       "required": {
-        "time": { "type": "number", "exclusive_min": 0, "max": 5 }
+        "time": { "type": "number", "exclusive_min": 0, "max": 5 },
+        "reason": { "type": "string" }
       },
-      "optional": {}
+      "optional": {},
+      "host": {
+        "method": "wait",
+        "map": { "frame_id": "$frame", "seconds": "time" }
+      }
     },
     "list_windows": {
       "doc": "list_windows：只有 action，不得有其他字段。",
       "required": {},
-      "optional": {}
+      "optional": {},
+      "host": {
+        "method": "windows",
+        "map": { "frame_id": "$frame" }
+      }
     },
     "switch_window": {
-      "doc": "switch_window：必填 title（窗口标题原文，非空字符串）；不得有其他字段。",
+      "doc": "switch_window：必填 title（窗口标题原文，非空字符串）与 reason（中文一句话，说明为什么切窗口、期望看到什么）；不得有其他字段。",
       "required": {
-        "title": { "type": "string" }
+        "title": { "type": "string" },
+        "reason": { "type": "string" }
       },
-      "optional": {}
+      "optional": {},
+      "host": {
+        "method": "switch_window",
+        "map": { "frame_id": "$frame", "title": "title" }
+      }
+    },
+    "noop": {
+      "doc": "noop：只表示本轮不做动作、继续观察；只允许 action 字段。需要等待加载时优先用 wait 并说明原因。",
+      "required": {},
+      "optional": {},
+      "host": null
     },
     "terminate": {
       "doc": "terminate：必填 outcome（success / unqualified / needs_review）和 reason（中文，说明实际观察到的结果，尽量简洁，建议不超过 300 字）；menu_box 只在 success 时必填，为 4 个 0..1000 的数字 [x1,y1,x2,y2]，且 x1<x2、y1<y2；非 success 不得提供非空 menu_box。",
@@ -46,7 +106,8 @@
       },
       "optional": {
         "menu_box": { "type": "box", "allow_empty": true }
-      }
+      },
+      "host": null
     }
   }
 }

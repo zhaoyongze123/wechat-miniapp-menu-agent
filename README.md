@@ -59,6 +59,7 @@ Windows 验收先用单屏 100% 缩放完成单店，再测 125% 或 150% 缩放
 | [运行时导航 Skill](UFS_Menu_Scraper/macos_runner/ui_tars/skills/menu-navigation.md) | Agent 实际读取的通用菜单导航经验。 |
 | [UiPath Main.xaml](UFS_Menu_Capture_CrossPlatform/Main.xaml) | 执行窗口发现、截图、点击和滚动等桌面操作。 |
 | [长期开发与优化规范](docs/gui-agent-development.md) | 后续设计、代码审查和验收的依据。 |
+| [菜单采集问题与回归台账](docs/menu-capture-regression.md) | 按链路记录实跑问题、复测证据及版本对照。 |
 | [首版 PRD](<文档/微信小程序菜单导航 Agent PRD.md>) | 早期试验的范围、背景与设计记录。 |
 
 ## 验证与优化

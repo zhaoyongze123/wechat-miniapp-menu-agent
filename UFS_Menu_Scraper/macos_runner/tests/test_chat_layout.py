@@ -119,16 +119,14 @@ def test_explicitly_unknown_segmentation_fails_closed_but_omitted_boxes_keep_leg
     assert find_store_name_matches(rows, source, 864, 958, message_boxes=[]) == []
 
 
-def test_tolerates_dark_green_bubble_fill(tmp_path):
+def test_ignores_non_light_theme_green_fill(tmp_path):
+    """只支持浅色主题：暗绿色填充属于其它皮肤或照片内容，不当作文本气泡。"""
     image = np.full((400, 600, 3), (45, 45, 45), dtype=np.uint8)
     cv2.rectangle(image, (300, 170), (570, 215), (38, 92, 58), thickness=-1)
     path = tmp_path / "dark-chat.png"
     assert cv2.imwrite(str(path), image)
 
-    boxes = find_sent_text_bubbles(path)
-
-    assert len(boxes) == 1
-    assert _near_box(boxes[0], (300, 170, 571, 216))
+    assert find_sent_text_bubbles(path) == []
 
 
 def test_large_green_photo_region_is_not_a_sent_text_bubble(tmp_path):

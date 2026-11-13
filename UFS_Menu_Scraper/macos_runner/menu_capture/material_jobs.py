@@ -593,7 +593,7 @@ class JobRunner:
         if job is None:
             return
         if job["status"] == "cancelled":
-            # 取消也要走收尾回调：释放圆形码检测器等资源，只跳过状态改写。
+            # 取消也要走收尾回调：释放任务资源，只跳过状态改写。
             self._notify(job_id, context)
             return
         counts = job["counts"]

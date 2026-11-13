@@ -548,7 +548,7 @@
       function hasRobotSelection(){return $('robot-mode').value==='automatic'?state.queueIds.length>0:!!$('robot-task').value;}
       function promptRobotTaskSelection(){setPage('overview');toast('请先从门店列表勾选要执行的门店');window.requestAnimationFrame(()=>$('task-search').focus({preventScroll:true}));}
       function syncStartButton(){const disabled=!!state.status?.running||!hasRobotSelection();$('start-btn').disabled=disabled;$('start-btn').setAttribute('aria-disabled',String(disabled));}
-      const RUN_LABELS={running:'运行中',pause_requested:'暂停中',resuming:'恢复检查中',paused:'已暂停',blocked:'无法继续',interrupted:'需要检查',terminating:'正在终止',terminated:'已终止',completed:'已完成'};
+      const RUN_LABELS={running:'运行中',pause_requested:'暂停中',resuming:'恢复检查中',paused:'已暂停',blocked:'无法继续',failed:'已失败',interrupted:'需要检查',terminating:'正在终止',terminated:'已终止',completed:'已完成'};
       function renderStatus(s){
         state.status=s||{};const running=!!s?.running,tasks=Array.isArray(s?.tasks)?s.tasks:[],run=s?.run||null;
         $('connection-dot').className=`status-dot ${running?'busy':'live'}`;$('connection-label').textContent=running?'采集中':'服务已连接';$('poll-clock').textContent=`同步于 ${new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;

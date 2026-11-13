@@ -19,11 +19,12 @@ from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
+from fnmatch import fnmatchcase
 from pathlib import Path
 from statistics import median
 from typing import Any, Callable
 
-from PIL import Image, ImageChops, ImageStat
+from PIL import Image, ImageChops, ImageFilter, ImageStat
 from pydantic import ValidationError
 
 from .config import ConfigStore, atomic_json
@@ -32,14 +33,15 @@ from .model_usage import usage_context
 from .chat_anchor import find_store_name_matches
 from .chat_layout import ChatImageUnreadable, find_sent_text_bubbles
 from .failures import classify as classify_failure
-from .window_contract import is_windows_miniapp_app, is_windows_wechat_app, validate_target_window, window_selector, windows_selectors_overlap
+from .window_contract import is_windows_miniapp_app, is_windows_wechat_app, validate_target_window, window_selector, windows_app_name, windows_selectors_overlap
 from .close_icon_locator import refine_close_icon, locate_close_icon, refine_back_arrow
 from .checkbox_locator import refine_consent_checkbox
 from .scene_agent import SceneDecision
 from .target_candidates import build_text_candidates
 from .store import TaskStore
 from .preview_locator import PreviewIconNotFound, locate_preview_recognize
-from .chat_image_locator import ChatImageNotFound, locate_sent_image
+from .chat_image_locator import (ChatImageNotFound, locate_chat_image_bubble, locate_sent_image,
+                                 match_preview_source)
 from .ui_tars_trial import GUI_PLUS_MODEL, TrialModel, TrialProtocolError, run_navigation, trial_model_from_env
 from .capture_outputs import store_output_dir
 from .uipath_cli import cli_entry
@@ -48,10 +50,52 @@ from .uipath_cli import cli_entry
 _PREVIEW_ICON_POLL_INTERVAL = 0.35
 _PREVIEW_ICON_POLL_TIMEOUT = 6.0
 _MINIAPP_POLL_INTERVAL = 0.2
-_MINIAPP_POLL_TIMEOUT = 6.0
+_WINDOWS_MINIAPP_POLL_TIMEOUT = 13.0
 # 批次开始前把微信主窗口固定成三家测试通过时的版面。最新图片缩略图的固定点位与
 # 模板匹配阈值都是按这个尺寸标定的：窗口变窄后点位落到图片下方、匹配分跌破阈值，整批会稳定点空。
 _BATCH_WECHAT_FRAME = (999, 749)
+# 微信输入区裁剪比例（按 999×749 实测版面）：左边界必须覆盖输入框左端——短店名从约
+# 17% 处起排，取 26% 会整段落在裁剪区外，粘贴成功也会被判成空；右侧避开发送按钮，
+# 底部避开工具栏图标行（约 694px），工具栏图标会随悬停闪烁，落进框内会被误判成文本。
+_INPUT_REGION_RATIO = (0.17, 0.80, 0.905, 0.925)
+# 输入区差分阈值：低于 24 的像素变化视为抗锯齿/焦点描边噪声。
+_INPUT_DIFF_THRESHOLD = 24
+# 空输入框允许的残余变化比例（光标、抗锯齿），超过即认为框内还有内容。
+_INPUT_EMPTY_RATIO = .0015
+# 粘贴前清空输入框的固定按键：Ctrl+A 全选、Delete 删除。语法与 profile 的快捷键一致。
+_SELECT_ALL_SHORTCUT = "[d(hk)][d(ctrl)]a[u(ctrl)][u(hk)]"
+_DELETE_SHORTCUT = "[d(hk)][k(delete)][u(hk)]"
+# Agent 判定成功后菜单页仍可能在加载/轮播：先给 2 秒稳定期，再取交接帧，
+# 避免把过渡画面当菜单交给截图环节（E01519 类“少截一屏”）。
+_HANDOFF_SETTLE_SECONDS = 2.0
+# 交接后滚动验证发现页面根本不可滚动时，把这一确定事实退回 Agent 继续找入口；
+# 只允许退回 1 次，避免在打不开的小程序里反复消耗步数。
+_MAX_AGENT_RETURNS = 1
+# 滚动后渲染等待：只等 0.12 秒常截到未渲染完成的旧帧，进而把“没加载出来”误判成已到底。
+_SCROLL_RECHECK_WAITS = (1.0, 1.5)
+# 滚动截图节奏：前 3 帧放慢，留出弹窗浮现/渲染时间供复核；之后恢复原先的快速滚动。
+_SCROLL_SLOW_PAGES = 3
+_SCROLL_SETTLE_SLOW_SECONDS = 1.2
+_SCROLL_SETTLE_FAST_SECONDS = 0.12
+# 菜单语义门：加载中文案允许重拍一次再降级；空白页直接转待检查。
+_MENU_GATE_RETRY_SECONDS = 3.0
+_MENU_LOADING_WORDS = ("加载中", "加载失败", "正在加载", "请稍候", "网络异常", "网络错误",
+                       "暂无数据", "页面不存在", "重试", "刷新中")
+# 空白页判定：96×96 灰度里近白像素占比。E0039 真实菜单约 30%，E0097 未加载页约 93%。
+_MENU_BLANK_WHITE_RATIO = 0.85
+# click_guarded 影子模式：只量化“动作对应的画面是否已过期”，阈值按 256×256 平均差分。
+_CLICK_GUARD_DELTA = 1.0
+# 点击后可能新开一个独立小程序窗口（网页点“点餐”的常见路径）；短轮询窗口清单，
+# 发现新增窗口就跟随过去，否则 Agent 只能看到一张没变化的旧窗口截图。
+_NEW_WINDOW_WAIT_SECONDS = 3.0
+_NEW_WINDOW_POLL_SECONDS = 0.4
+
+
+def _near_white_ratio(image: Image.Image) -> float:
+    """近白像素占比，用于识别“还没渲染出内容”的空白页。"""
+    gray = image.convert("L").resize((96, 96))
+    pixels = gray.tobytes()
+    return sum(1 for value in pixels if value >= 244) / max(len(pixels), 1)
 
 
 class RobotProtocolError(RuntimeError):
@@ -84,6 +128,12 @@ class AgentUnqualified(NeedsReview):
     """Agent 给出了带理由的明确不合格终态。"""
 
 
+class QrEntryUnavailable(NeedsReview):
+    """本轮图片已核实，微信预览和图片菜单均未提供二维码识别入口。"""
+
+    code = "startup_qr_entry_unavailable"
+
+
 class RunnerPaused(RuntimeError):
     pass
 
@@ -92,14 +142,15 @@ class RunnerTerminated(RuntimeError):
     pass
 
 
-_ACTIONS = {"screenshot", "screenshot_desktop", "capture_rect", "click", "click_desktop_overlay", "right_click", "double_click", "scroll", "scroll_capture", "type_text", "key", "resize", "discover", "noop", "stop"}
-# 微信窗口位置与尺寸固定时，本轮最新图片消息所在的缩略图中心可直接双击打开。
-# 缩略图右对齐、贴输入框上方，布局不随窗口等比缩放，因此按距窗口右/下边缘的固定点距计算。
-# 取自实机成功样本（窗口 432×479 points，点在 347,365；等价 865×958 px 下的 695,729）。
+_ACTIONS = {"screenshot", "screenshot_desktop", "capture_rect", "click", "click_desktop_overlay", "right_click", "double_click", "scroll", "scroll_capture", "type_text", "key", "resize", "discover", "noop", "stop", "restore_window", "close_window"}
+# 固定点位只服务于 macOS 那条“双击固定中心”的快捷路径（实测窗口 432×479 points，点 347,365）。
+# Windows 已改走 _wait_for_sent_image 的原图匹配：批次版面 999×749 下实测最新缩略图中心在 (832,485)，
+# 距右下角 (167,264)，旧的 (85,115) 会落到缩略图框 [754,407,911,564] 外，不能拿来当 Windows 兜底。
 _LATEST_IMAGE_POINT_OFFSET = (85.0, 115.0)
 _COMMAND_FIELDS = {
     "id", "action", "selector", "x", "y", "text", "path", "direction", "units", "key", "seconds",
-    "expected_window_width", "expected_window_height", "width", "height",
+    "settle_seconds",
+    "expected_window_width", "expected_window_height", "expected_window_id", "width", "height",
 }
 _PROFILE_FIELDS = {
     "mode", "launch_mode", "wechat_selector", "miniapp_selector", "preview_selector",
@@ -232,13 +283,12 @@ class FileRobotTransport:
                 payload["expected_window_width"], payload["expected_window_height"] = self._desktop_bounds
             elif payload.get("action") in {"click", "click_desktop_overlay", "right_click", "double_click", "scroll", "scroll_capture"} and payload.get("x") is not None:
                 selector = payload.get("selector")
-                geometry = self._geometry.get(selector) if selector else None
-                if geometry is None and selector and selector == self._window_selector:
-                    # 兼容只设置单槽几何的调用方（测试与旧调用路径）。
-                    geometry = {"bounds": self._window_bounds}
+                geometry = self._target_geometry(selector)
                 if not selector or not geometry or not geometry.get("bounds"):
                     raise RobotProtocolError("坐标动作必须使用最近一次同 selector 截图确认的窗口")
                 payload["expected_window_width"], payload["expected_window_height"] = geometry["bounds"]
+                if self.local is not None and geometry.get("window_id"):
+                    payload["expected_window_id"] = geometry["window_id"]
             self._validate_command(payload)
             if timeout <= 0 or not math.isfinite(float(timeout)):
                 raise ValueError("timeout 必须是正数")
@@ -296,6 +346,15 @@ class FileRobotTransport:
         finally:
             self._lock.release()
 
+    def _target_geometry(self, selector: str | None) -> dict | None:
+        if not selector:
+            return None
+        geometry = self._geometry.get(selector)
+        if geometry is None and selector == self._window_selector:
+            # 兼容仅记录单窗口的旧调用路径。
+            return {"bounds": self._window_bounds}
+        return geometry
+
     def _apply_reply(self, payload: dict, reply: dict) -> None:
         """登记回复里实测到的窗口几何；后续坐标动作只认最近一次实测。"""
         if payload["action"] in {"screenshot", "scroll_capture"}:
@@ -308,6 +367,7 @@ class FileRobotTransport:
                 "bounds": self._window_bounds,
                 "pixels": self._window_pixels,
                 "origin": self._window_origin,
+                "window_id": reply.get("window_id"),
             }
         elif payload["action"] == "resize":
             # 窗口被移动/改尺寸后，旧矩形立即失效；下一次截图必须重新确认。
@@ -329,14 +389,18 @@ class FileRobotTransport:
                 and "window_x" in reply and "window_y" in reply:
             # 点击时 UiPath 已校验过窗口尺寸，这里拿到的是刚确认过的窗口矩形，
             # 可用于点击后立即按矩形取图，不必再等一次窗口截图。
-            self._window_origin = (reply["window_x"], reply["window_y"])
-            if reply.get("window_width") and reply.get("window_height"):
-                self._window_bounds = (reply["window_width"], reply["window_height"])
+            origin = (reply["window_x"], reply["window_y"])
+            bounds = ((reply["window_width"], reply["window_height"])
+                      if reply.get("window_width") and reply.get("window_height") else None)
+            if payload.get("selector") == self._window_selector:
+                self._window_origin = origin
+                if bounds:
+                    self._window_bounds = bounds
             cached = self._geometry.get(payload.get("selector"))
             if cached is not None:
-                cached["origin"] = self._window_origin
-                if reply.get("window_width") and reply.get("window_height"):
-                    cached["bounds"] = self._window_bounds
+                cached["origin"] = origin
+                if bounds:
+                    cached["bounds"] = bounds
 
     def request_stop(self) -> None:
         """替换仍排队的动作，通知手动运行的 Main 尽快退出；不等待、不重发原动作。"""
@@ -378,7 +442,8 @@ class FileRobotTransport:
         if action in {"click", "click_desktop_overlay", "right_click", "double_click", "scroll", "scroll_capture"}:
             x, y = command.get("x"), command.get("y")
             # 系统弹窗（如识别二维码右键菜单）会超出预览窗口，按整屏坐标校验；其余动作仍以窗口矩形为边界。
-            bounds = self._desktop_bounds if action == "click_desktop_overlay" else self._window_bounds
+            geometry = self._target_geometry(selector) or {}
+            bounds = self._desktop_bounds if action == "click_desktop_overlay" else geometry.get("bounds")
             if action in {"click", "right_click", "double_click"} and x is None and y is None and selector:
                 pass  # 仅供用户录入的控件 selector 定位，不猜坐标。
             elif not self._valid_pair(x, y):
@@ -400,6 +465,11 @@ class FileRobotTransport:
             units = command.get("units")
             if isinstance(units, bool) or not isinstance(units, int) or not 1 <= units <= 100:
                 raise RobotProtocolError("scroll units 必须在 1 到 100 之间")
+            if "settle_seconds" in command:
+                settle = command["settle_seconds"]
+                if isinstance(settle, bool) or not isinstance(settle, (int, float)) \
+                        or not math.isfinite(settle) or not 0 <= settle <= 5:
+                    raise RobotProtocolError("scroll settle_seconds 必须在 0 到 5 之间")
         if action == "type_text" and not isinstance(command.get("text"), str):
             raise RobotProtocolError("type_text 必须包含 text")
         if action == "key" and (not isinstance(command.get("key"), str) or not command["key"].strip()):
@@ -1094,7 +1164,10 @@ class UiPathRunner:
                 yield details
             return
         started_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
-        compact = {"debug_enabled": bool(self.debug_log), "debug_state": "pending" if self.debug_log else "expired"}
+        # 与归档 trace 共用同一主键，run_actions 用 details 记录即可，无需改表结构。
+        details["trace_id"] = f"{self.run_id}:{task['id']}"
+        compact = {"debug_enabled": bool(self.debug_log), "debug_state": "pending" if self.debug_log else "expired",
+                   "trace_id": details["trace_id"]}
         target = details.get("target") or details.get("target_label")
         if target:
             compact["target"] = self._sanitize_target_label(str(target))
@@ -1179,11 +1252,12 @@ class UiPathRunner:
                 reply = self.transport.run(command, **kwargs)
                 self._ipc_commands += 1
                 summary = {key: reply.get(key) for key in (
-                    "ok", "action", "error", "width", "height", "window_width", "window_height", "exit_code", "target_window"
+                    "ok", "action", "error", "width", "height", "window_width", "window_height",
+                    "window_id", "exit_code", "target_window"
                 ) if key in reply}
                 if isinstance(reply.get("windows"), list):
                     summary["windows"] = [
-                        {key: item.get(key) for key in ("app", "title", "role", "position") if key in item}
+                        {key: item.get(key) for key in ("app", "title", "cls", "role", "position", "window_id") if key in item}
                         for item in reply["windows"] if isinstance(item, dict)
                     ][:100]
                 elif isinstance(reply.get("windows"), str):
@@ -1299,41 +1373,16 @@ class UiPathRunner:
         return self._run_gui_agent_case(task, settings, profile, output_dir, model,
                                         automatic=automatic, capture_dir=output_dir, trial=True)
 
-    def _start_qr_precheck(self, task: dict):
-        """任务开始即异步判断二维码用途；失败或超时都不影响主流程。"""
-        path = task.get("source_path")
-        if not path:
-            return None
-        try:
-            from .qr_precheck import AsyncQrPrecheck
-        except Exception as exc:  # noqa: BLE001 - 先验依赖缺失只降级
-            # 先验导入失败不影响采集，但要在事件里留下原因，避免静默丢失。
-            try:
-                self.store.event(f"二维码先验模块不可用（{type(exc).__name__}），本次跳过先验",
-                                 "warning", task.get("id"))
-            except Exception:  # noqa: BLE001 - 事件写入失败同样不能阻断采集
-                pass
-            return None
-        try:
-            return AsyncQrPrecheck(
-                path, self.configs,
-                store_name=task.get("source_name", ""),
-                usage_ledger=self.usage_ledger,
-                context={"source": "capture", "stage": "qr_precheck",
-                         "run_id": self.run_id, "task_id": task.get("id", ""),
-                         "source_name": task.get("source_name", "")},
-            ).start()
-        except Exception:
-            return None
-
     def _run_gui_agent_case(self, task: dict, settings, profile: dict, output_dir: Path,
                             model: TrialModel, *, automatic: bool, capture_dir: Path, trial: bool = False) -> dict:
         """正式任务与试验共用窗口准备、Agent 工具和菜单截图交接。"""
         self._trace_step = None
         self._trace_click = {}
+        # click_guarded 影子模式需要“模型当前帧”和本次任务的输出目录。
+        self._guard_frame = None
+        self._guard_dir = None
         self._debug_frame_refs.clear()
         active = None
-        precheck = None
         safe_to_reset = True
         report = {
             "task_id": task["id"], "run_id": self.run_id, "source_name": task["source_name"],
@@ -1372,27 +1421,11 @@ class UiPathRunner:
             report["material"] = self._trace_material.copy()
             self._guard()
             self._validate_source(task, settings.input_dir)
-            # 二维码用途预判与后面的发图、点图、识别小程序并行；导航前只等一小段时间。
-            precheck = self._start_qr_precheck(task)
             if trial and not automatic:
                 with self._trace("uipath_startup"):
                     self._await_cli_startup()
             self._deadline = time.monotonic() + settings.capture.max_task_seconds
             if automatic:
-                # 打开微信前先取素材判断结果：画面里明确没有二维码时，扫码流程不可能成功，
-                # 直接判该店不合格并写原因，不再开小程序、不再跑导航。失败或超时按无判断继续。
-                if precheck is not None:
-                    material_hint = precheck.wait()
-                    report["qr_precheck"] = material_hint.to_dict()
-                    reason = material_hint.intercept_reason()
-                    if reason:
-                        report["agent_outcome"] = "unqualified"
-                        report["agent_reason"] = reason
-                        report["navigation"] = {"outcome": "unqualified", "reason": reason,
-                                                "source": "qr_precheck"}
-                        report["runtime_status"] = "ok"
-                        self._set_stage(task, "done", "素材中没有二维码，已直接判不合格")
-                        return report
                 self._startup_timing = timing
                 self._open_source_automatic(task, profile, output_dir, settings.capture.settle_seconds)
                 selector = profile["miniapp_selector"]
@@ -1412,12 +1445,20 @@ class UiPathRunner:
             evidence_dir.mkdir(mode=0o700, exist_ok=True)
             self._prepare_trial_window(selector, evidence_dir, host_trace)
 
+            # 退回重试时给证据文件加前缀，保证第一轮截图仍可复盘。
+            round_tag = [""]
+
             def observe(sequence):
                 nonlocal last_frame
                 self._trace_step = sequence
-                path = evidence_dir / f"ui-tars-{sequence:03}.png"
+                path = evidence_dir / f"ui-tars-{round_tag[0]}{sequence:03}.png"
                 # 每次观察使用当前窗口实测截图，后续动作与这一帧绑定。
-                last_frame = self._send({"action": "screenshot", "selector": active["selector"], "path": str(path)})
+                command = {"action": "screenshot", "selector": active["selector"], "path": str(path)}
+                if sequence == 1 and automatic and profile.get("_startup_window_id"):
+                    command["expected_window_id"] = profile["_startup_window_id"]
+                last_frame = self._send(command)
+                self._guard_frame = last_frame
+                self._guard_dir = output_dir
                 host_trace("frame", sequence=sequence, frame_id=str(sequence),
                            path=str(Path(last_frame["path"]).relative_to(output_dir)),
                            width=last_frame.get("width"), height=last_frame.get("height"),
@@ -1431,73 +1472,131 @@ class UiPathRunner:
             def execute(command, frame_id):
                 return self._execute_trial_action(active, command, frame_id, host_trace)
 
-            navigation_started = time.monotonic()
-            timing["startup"] = round((navigation_started - started_at) * 1000)
-            # 先验通常已经跑完；没跑完只再等 0.6s，超时按“无先验”继续导航。
-            hint = precheck.wait(0.6) if precheck is not None else None
-            if hint is not None:
-                report["qr_precheck"] = hint.to_dict()
-            with self._trace("ui_tars_navigation", model=GUI_PLUS_MODEL) as trace:
-                decision, frame = run_navigation(
-                    model, task["source_name"], settings.people_count, settings.capture.max_agent_steps,
-                    observe=observe, execute=execute, check_stop=self._guard,
-                    log_path=output_dir / "adapter.log",
-                    trace_path=trace_path,
-                    trace_meta={"run_id": self.run_id, "task_id": task["id"],
-                                "store_name": task["source_name"],
-                                "batch": self._trace_material.get("material_batch_id", "")},
-                    # 原始二维码照片提供品牌、桌号等背景，只作参考，不能当成可点击屏幕。
-                    source_image=task.get("source_path"),
-                )
-                timing["navigation"] = round((time.monotonic() - navigation_started) * 1000)
-                for field in ("reason",):
-                    if field in decision:
-                        decision[field] = decision[field].replace(model.api_key, "[已隐藏]")
-                if isinstance(decision.get("diagnostic"), dict):
-                    for field in ("code", "raw", "detail"):
-                        value = decision["diagnostic"].get(field)
-                        if isinstance(value, str):
-                            decision["diagnostic"][field] = value.replace(model.api_key, "[已隐藏]")
-                # 先留存 Agent 自己的判断：交接校验失败时仍能复盘原始决策，业务终态始终由 Agent 决定。
-                raw_decision = {"outcome": decision["outcome"], "reason": decision["reason"]}
-                # source=runtime 表示 Agent 没有作出有效业务终态；只有 Agent 自己给出的终态才写入顶层字段。
-                agent_terminal = raw_decision if decision.get("source") != "runtime" else None
-                if agent_terminal:
-                    report["agent_outcome"] = agent_terminal["outcome"]
-                    report["agent_reason"] = agent_terminal["reason"]
-                if isinstance(decision.get("metrics"), dict):
-                    report["metrics"] = decision["metrics"]
-                if decision["outcome"] == "success":
-                    # 校验必须发生在写入 navigation 之前：窗口/截图/区域不一致时整条结果降级为待检查。
-                    self._validate_trial_handoff(decision, frame, active["selector"])
-                report["navigation"] = decision
-                if decision.get("source") == "runtime":
-                    report["runtime_status"] = "failed"
-                    report["runtime_code"] = str((decision.get("diagnostic") or {}).get("code") or "runtime")
-                    report["runtime_error"] = decision["reason"]
-                else:
-                    report["runtime_status"] = "ok"
-                if frame:
-                    report["navigation"]["frame"] = str(Path(frame["path"]).relative_to(output_dir))
-                    trace["frame_evidence"] = self._debug_frame_ref(Path(frame["path"]))
-                if active["title"]:
-                    report["navigation"]["window"] = active["title"]
-                trace["outcome"] = decision["outcome"]
-                if decision.get("diagnostic"):
-                    trace["diagnostic"] = decision["diagnostic"]
+            feedback = ""
+            agent_rounds = 0
 
-            if decision["outcome"] == "success":
+            def navigate(message: str = "") -> tuple[dict, dict | None]:
+                """跑一轮 Agent 导航；message 只在宿主把结果退回重试时携带。"""
+                nonlocal last_frame, navigation_started, raw_decision, agent_terminal
+                navigation_started = time.monotonic()
+                timing["startup"] = round((navigation_started - started_at) * 1000)
+                with self._trace("ui_tars_navigation", model=GUI_PLUS_MODEL) as trace:
+                    outcome, current = run_navigation(
+                        model, task["source_name"], settings.people_count, settings.capture.max_agent_steps,
+                        observe=observe, execute=execute, check_stop=self._guard,
+                        log_path=output_dir / "adapter.log",
+                        trace_path=trace_path,
+                        trace_meta={"run_id": self.run_id, "task_id": task["id"],
+                                    "store_name": task["source_name"],
+                                    "batch": self._trace_material.get("material_batch_id", "")},
+                        # 原始二维码照片提供品牌、桌号等背景，只作参考，不能当成可点击屏幕。
+                        source_image=task.get("source_path"),
+                        feedback=message,
+                    )
+                    timing["navigation"] = round((time.monotonic() - navigation_started) * 1000)
+                    for field in ("reason",):
+                        if field in outcome:
+                            outcome[field] = outcome[field].replace(model.api_key, "[已隐藏]")
+                    if isinstance(outcome.get("diagnostic"), dict):
+                        for field in ("code", "raw", "detail"):
+                            value = outcome["diagnostic"].get(field)
+                            if isinstance(value, str):
+                                outcome["diagnostic"][field] = value.replace(model.api_key, "[已隐藏]")
+                    # 先留存 Agent 自己的判断：交接校验失败时仍能复盘原始决策，业务终态始终由 Agent 决定。
+                    raw_decision = {"outcome": outcome["outcome"], "reason": outcome["reason"]}
+                    # source=runtime 表示 Agent 没有作出有效业务终态；只有 Agent 自己给出的终态才写入顶层字段。
+                    agent_terminal = raw_decision if outcome.get("source") != "runtime" else None
+                    if agent_terminal:
+                        report["agent_outcome"] = agent_terminal["outcome"]
+                        report["agent_reason"] = agent_terminal["reason"]
+                    if isinstance(outcome.get("metrics"), dict):
+                        report["metrics"] = outcome["metrics"]
+                    if outcome["outcome"] == "success":
+                        # 菜单页在 Agent 判定成功后仍可能处于加载/轮播动画中：等一个稳定期后重拍，
+                        # 用最新画面作为交接帧；尺寸/窗口校验仍然照做，不能拿旧帧通过校验。
+                        time.sleep(_HANDOFF_SETTLE_SECONDS)
+                        self._guard()
+                        settled = self._screenshot(output_dir, active["selector"], "handoff-settle.png")
+                        if settled.get("path"):
+                            current = settled
+                            last_frame = settled
+                            host_trace("handoff_settle", frame_id="settle",
+                                       path=str(Path(settled["path"]).relative_to(output_dir)),
+                                       width=settled.get("width"), height=settled.get("height"))
+                        # 校验必须发生在写入 navigation 之前：窗口/截图/区域不一致时整条结果降级为待检查。
+                        self._validate_trial_handoff(outcome, current, active["selector"])
+                    report["navigation"] = outcome
+                    if outcome.get("source") == "runtime":
+                        report["runtime_status"] = "failed"
+                        report["runtime_code"] = str((outcome.get("diagnostic") or {}).get("code") or "runtime")
+                        report["runtime_error"] = outcome["reason"]
+                    else:
+                        report["runtime_status"] = "ok"
+                    if current:
+                        report["navigation"]["frame"] = str(Path(current["path"]).relative_to(output_dir))
+                        trace["frame_evidence"] = self._debug_frame_ref(Path(current["path"]))
+                    if active["title"]:
+                        report["navigation"]["window"] = active["title"]
+                    trace["outcome"] = outcome["outcome"]
+                    if outcome.get("diagnostic"):
+                        trace["diagnostic"] = outcome["diagnostic"]
+                return outcome, current
+
+            while True:
+                decision, frame = navigate(feedback)
+                if decision["outcome"] != "success":
+                    break
                 self._set_stage(task, "capturing", "正在滚动截图；完整覆盖率留待复核")
                 capture_started = time.monotonic()
                 (capture_dir / "evidence").mkdir(mode=0o700, exist_ok=True)
                 pages = self._capture_menu(active["selector"], frame, Region(**decision["menu_region"]),
                                            settings, profile, capture_dir)
-                # 正常菜单滚动一次就会产生第二屏；只有 1–2 张多半是停在前置页（欢迎页/人数选择）的假成功。
-                if len(pages) <= 2:
+                # 语义门只回答“成功是否成立”：首屏必须能读到菜品与价格锚点；加载中先给一次重拍机会。
+                gate = self._menu_gate(capture_dir / pages[0], str(task["source_name"]))
+                if not gate["passed"] and gate.get("loading"):
+                    time.sleep(_MENU_GATE_RETRY_SECONDS)
+                    self._guard()
+                    retry = self._screenshot(capture_dir, active["selector"], "menu-gate-retry.png")
+                    if retry.get("path"):
+                        with Image.open(retry["path"]) as image_file:
+                            image_file.save(capture_dir / pages[0])
+                        gate = self._menu_gate(capture_dir / pages[0], str(task["source_name"]))
+                with self._trace("menu_gate") as gate_trace:
+                    gate_trace.update(gate)
+                if not gate["passed"]:
+                    detail = (gate.get("loading") or gate.get("reason")
+                              or "首屏没有可识别的菜品与价格锚点")
                     raise NeedsReview(
-                        f"滚动截图只得到 {len(pages)} 张，疑似尚未进入可滚动的菜品菜单；已转人工复核",
-                        "menu_too_few_pages")
-                report["capture"] = {"status": "staged", "pages": pages}
+                        f"菜单语义门未通过：{detail}；疑似空白/加载中页面，已保留截图转人工复核", "menu_gate")
+                # 正常菜单滚动一次就会产生第二屏；只有 1–2 张多半是停在前置页（欢迎页/人数选择）的假成功。
+                if len(pages) > 2:
+                    report["capture"] = {"status": "staged", "pages": pages}
+                    break
+                # 只拍到 1 张说明这一页再滚也没有画面变化，即根本不可滚动，不是菜品菜单。
+                # 不直接转人工：把“页面不可滚动”这一确定事实退回 Agent，让它继续找入口。
+                if len(pages) == 1 and agent_rounds < _MAX_AGENT_RETURNS:
+                    agent_rounds += 1
+                    report.setdefault("navigation_retries", []).append({
+                        "round": agent_rounds, "code": "menu_not_scrollable", "pages": len(pages),
+                        "agent_outcome": (raw_decision or {}).get("outcome", ""),
+                        "agent_reason": (raw_decision or {}).get("reason", ""),
+                    })
+                    feedback = ("当前页面滚动后画面完全没有变化，说明它不可滚动、不是菜品菜单。"
+                                "如果是人数选择页，先选中人数再点“开始点餐/去点餐”；"
+                                "如果还停在欢迎页、广告页或门店首页，换其他入口进入菜单。")
+                    # 第二轮证据另起前缀，避免覆盖第一轮的截图与帧号追踪。
+                    round_tag[0] = "retry-"
+                    continue
+                raise NeedsReview(
+                    f"滚动截图只得到 {len(pages)} 张，疑似尚未进入可滚动的菜品菜单；已转人工复核",
+                    "menu_too_few_pages")
+        except QrEntryUnavailable as exc:
+            reason = str(exc)
+            report["agent_outcome"] = "unqualified"
+            report["agent_reason"] = reason
+            report["rejection_code"] = exc.code
+            report["navigation"] = {"outcome": "unqualified", "reason": reason, "source": "wechat_preview"}
+            report["runtime_status"] = "ok"
         except (TrialProtocolError, NeedsReview, RunnerTerminated, RunnerPaused, RobotProtocolError,
                 RobotCommandError, RobotTimeout) as exc:
             safe_to_reset = not isinstance(exc, (RobotTimeout, RunnerTerminated, RunnerPaused))
@@ -1516,7 +1615,7 @@ class UiPathRunner:
                                                 agent_reason=agent_terminal["reason"])
                 if last_frame:
                     report["navigation"]["frame"] = str(Path(last_frame["path"]).relative_to(output_dir))
-                report["runtime_code"] = report["runtime_code"] or "runtime"
+                report["runtime_code"] = report["runtime_code"] or getattr(exc, "code", "") or "runtime"
             if not trial:
                 raise
         except Exception as exc:
@@ -1555,9 +1654,6 @@ class UiPathRunner:
                     }
             if trial:
                 self._deadline = 0
-            if precheck is not None and "qr_precheck" not in report:
-                # 窗口准备或导航提前失败时也落盘先验，便于复盘错码原因。
-                report["qr_precheck"] = precheck.wait(0.3).to_dict()
             report["capture_status"] = str(report["capture"].get("status") or "not_started")
             timing["total"] = round((time.monotonic() - started_at) * 1000)
             trace_files = {name: path.name for name, path in
@@ -1590,7 +1686,7 @@ class UiPathRunner:
         self._trace_material = {key: run_binding.get(key, "") for key in (
             "material_batch_id", "material_version_id", "material_version", "material_snapshot"
         )}
-        run_status = "blocked"
+        run_status = "failed"
         run_message = "批次启动失败；请检查错误详情"
         try:
             self._set_stage(task, "connecting", "等待 UiPath Main 响应 IPC noop 命令")
@@ -1606,11 +1702,9 @@ class UiPathRunner:
                 try:
                     self._ensure_file_assistant(profile, output_dir, settings.capture.settle_seconds)
                 except Exception as exc:
-                    run_message = f"恢复前未能确认微信已回到文件传输助手（{type(exc).__name__}）；批次保持阻塞"
-                    self._guard()
-                    self._persist_task_result(task, output_dir, "needs_review", "resume_check", run_message)
-                    self.store.update_run(self.run_id, status="blocked", message=run_message)
-                    return
+                    # 不阻塞批次：按门店逐条尝试，失败的店自然落到待检查。
+                    message = f"恢复前未能确认微信已回到文件传输助手（{type(exc).__name__}）；继续按门店逐条尝试"
+                    self.store.event(message, "warning", task["id"])
             if resumed:
                 self._guard()
                 if not self.pause_event.is_set():
@@ -1648,7 +1742,8 @@ class UiPathRunner:
                         raise RunnerTerminated("用户已终止批次；当前门店结果不发布")
                     status, stage, message, failure_code = "captured", "captured", "已保存菜单截图；覆盖完整性待复核", ""
                 except AgentUnqualified as exc:
-                    stage, message, failure_code = "agent_unqualified", str(exc)[:500], "agent_unqualified"
+                    failure_code = exc.code or "agent_unqualified"
+                    stage, message = failure_code, str(exc)[:500]
                 except RunnerTerminated as exc:
                     stage, message, terminated, failure_code = "terminated", str(exc), True, "terminated"
                 except RunnerPaused as exc:
@@ -1689,19 +1784,27 @@ class UiPathRunner:
                         except Exception as exc:
                             if resume_safe:
                                 stage = "blocked_not_safe"
-                                message = f"{message}；微信安全起点确认失败（{type(exc).__name__}），批次已阻塞"
+                                message = f"{message}；未能确认微信已回到文件传输助手（{type(exc).__name__}），本店记为待检查，继续下一家"
                                 self._persist_task_result(task, output_dir, status, stage, message, failure_code)
-                                run_status, run_message = "blocked", message
+                                self.store.event(message, "warning", task["id"])
+                try:
+                    # 归档到门店产物目录；运行目录随后会被清理，trace 是唯一可长期复盘的过程证据。
+                    self._archive_trace(
+                        task, self.run_directory / "gui-agent" / output_dir.name,
+                        self._store_output_dir(settings.output_dir, task,
+                                               run_binding.get("material_batch_id", "")),
+                        status=status, stage=stage, message=message, code=failure_code,
+                        capture_dir=output_dir)
+                except Exception as exc:
+                    self.store.event(f"轨迹归档失败（{type(exc).__name__}）：{str(exc)[:200]}",
+                                     "warning", task["id"])
                 with self._trace("task_result", status=status if stage not in {"paused", "terminated"} else stage,
                                  stage=stage, message=message):
                     pass
                 self._deadline = 0
-                if status == "captured" or safe_to_continue:
-                    next_index = absolute_index + 1
-                    self.store.update_run(self.run_id, current_index=next_index,
-                                          current_task_id=task_ids[batch_index + 1] if batch_index + 1 < len(task_ids) else "")
-                else:
-                    self.store.update_run(self.run_id, current_index=absolute_index, current_task_id=task["id"])
+                next_index = absolute_index + 1
+                self.store.update_run(self.run_id, current_index=next_index,
+                                      current_task_id=task_ids[batch_index + 1] if batch_index + 1 < len(task_ids) else "")
                 if output_dir.exists():
                     shutil.rmtree(output_dir, ignore_errors=True)
                 if terminated:
@@ -1710,11 +1813,9 @@ class UiPathRunner:
                                           current_task_id=task["id"], message=run_message)
                     break
                 if status != "captured" and not safe_to_continue:
-                    if run_status != "blocked":
-                        run_status, run_message = "blocked", "当前门店未能安全完成；批次已阻塞"
-                        self.store.update_run(self.run_id, status=run_status, current_index=absolute_index,
-                                              current_task_id=task["id"], message=run_message)
-                    break
+                    # 不阻塞整批：本店已落到待检查/不合格，继续下一家。
+                    self.store.event("当前门店未完成且未能确认安全回到文件传输助手；已记为待检查，继续下一家",
+                                     "warning", task["id"])
                 if self.pause_event.is_set() and absolute_index + 1 < start_index + len(task_ids):
                     run_status, run_message = "paused", "当前门店已处理，下一家尚未开始"
                     self.store.update_run(self.run_id, status=run_status, current_index=absolute_index + 1,
@@ -1727,22 +1828,22 @@ class UiPathRunner:
             run_status, run_message = "terminated", "批次已终止，后续门店未执行"
         except RunnerPaused as exc:
             self._persist_task_result(task, output_dir, "needs_review", "paused", str(exc))
-            run_status, run_message = "blocked", "自动化在门店边界外停止；当前门店需检查后再继续"
+            run_status, run_message = "paused", "批次已暂停"
         except RobotTimeout as exc:
             self._persist_task_result(task, output_dir, "needs_review", "uipath_timeout", str(exc))
-            run_status, run_message = "blocked", "UiPath 命令结果未知；批次已阻塞"
+            run_status, run_message = "failed", "UiPath 命令超时，批次已停止；当前门店记为待检查"
         except RobotCommandError as exc:
             self._persist_task_result(task, output_dir, "needs_review", "uipath_error", str(exc)[:500])
-            run_status, run_message = "blocked", "UiPath 执行失败；批次已阻塞"
+            run_status, run_message = "failed", "UiPath 执行失败，批次已停止；当前门店记为待检查"
         except NeedsReview as exc:
             # 批次入口检查（如微信窗口版面校准）失败时保留原始原因，不能只说“启动失败”。
             message = str(exc)[:500]
             self._persist_task_result(task, output_dir, "needs_review", "needs_review", message,
                                       getattr(exc, "code", ""))
-            run_status, run_message = "blocked", f"批次启动检查未通过：{message}"
+            run_status, run_message = "failed", f"批次启动检查未通过：{message}"
         except Exception as exc:
             self._persist_task_result(task, output_dir, "needs_review", "uipath_error", f"{type(exc).__name__}；结果待人工检查")
-            run_status, run_message = "blocked", "批次启动或执行失败；请查看当前门店详情"
+            run_status, run_message = "failed", "批次启动或执行失败；请查看当前门店详情"
         finally:
             if self.run_id:
                 current = self.store.get_run(self.run_id)
@@ -1771,9 +1872,9 @@ class UiPathRunner:
                 pass
             self._deadline = 0
 
-    def _ensure_wechat_window(self) -> bool:
-        """微信主窗口被关掉后，所有 selector 都会报“找不到目标应用程序”；
-        先用系统命令把主窗口唤回，避免整批被环境问题卡死。"""
+    def _ensure_wechat_window(self, selector: str | None = None) -> bool:
+        """微信主窗口被关掉或隐藏后，所有 selector 都会报“找不到目标应用程序”；
+        先按 selector 把主窗口恢复出来（Windows）/用系统命令唤回（macOS），避免整批被卡死。"""
         def has_main(windows: Any) -> bool:
             titles = {"微信", "wechat", "weixin"} if sys.platform == "win32" else {"微信", "wechat"}
             return any(str(item.get("title") or "").strip().casefold() in titles
@@ -1783,7 +1884,15 @@ class UiPathRunner:
             if has_main(self._send({"action": "discover"}).get("windows")):
                 return True
             if sys.platform == "win32":
-                return False
+                # discover 只返回可见窗口；实测主窗口会被隐藏但进程仍在，按 selector 强制恢复一次。
+                selector = selector or self._configured_wechat_selector()
+                if not selector:
+                    return False
+                try:
+                    self._send({"action": "restore_window", "selector": selector})
+                except RobotCommandError:
+                    return False
+                return has_main(self._send({"action": "discover"}).get("windows"))
             subprocess.run(["open", "-a", "WeChat"], check=False, timeout=15)
             time.sleep(2.5)
             return has_main(self._send({"action": "discover"}).get("windows"))
@@ -1792,33 +1901,38 @@ class UiPathRunner:
         except Exception:
             return False
 
-    def _prepare_batch_wechat_frame(self, profile: dict) -> None:
-        """批次开始前把微信主窗口调到采集版面；调不到就拒绝开跑。
+    def _normalize_wechat_frame(self, profile: dict, *, purpose: str = "wechat_window_frame") -> None:
+        """把微信主窗口校准到采集版面（999×749），保证每次执行从同一几何开始。
 
-        图片定位依赖 999×749 下的固定点位与模板匹配阈值，窗口尺寸不对时每店都会点空，
-        与其跑完一整批再回滚，不如在批次入口直接暴露环境问题。
+        图片定位依赖 999×749 下的固定点位与模板比例阈值；窗口被改尺寸或最大化后，
+        固定点距和搜索边界全部失效，会连续点空/误判。每次执行前都重设一次，
+        由驱动回读实际矩形，不信任缓存里的旧几何。
         """
         if sys.platform != "win32":
             return
         selector = profile.get("wechat_selector") or self._configured_wechat_selector()
         if not selector:
-            raise NeedsReview("未配置微信主窗口 selector，无法校准批次版面", "batch_window_frame")
+            raise NeedsReview("未配置微信主窗口 selector，无法校准窗口版面", purpose)
         width, height = _BATCH_WECHAT_FRAME
         reply = self._send({"action": "resize", "selector": selector,
                             "width": width, "height": height})
-        # 真实本机驱动会回读窗口矩形；驱动不回报尺寸时只能信任命令本身，不凭空阻断批次。
+        # 真实本机驱动会回读窗口矩形；驱动不回报尺寸时只能信任命令本身，不凭空阻断。
         actual_width, actual_height = reply.get("window_width"), reply.get("window_height")
         if actual_width is None or actual_height is None:
             return
         if abs(float(actual_width) - width) > 2 or abs(float(actual_height) - height) > 2:
             raise NeedsReview(
-                f"微信主窗口未调整到 {width}×{height}（实际 {int(actual_width)}×{int(actual_height)}），批次未开始",
-                "batch_window_frame")
+                f"微信主窗口未调整到 {width}×{height}（实际 {int(actual_width)}×{int(actual_height)}），未开始处理",
+                purpose)
+
+    def _prepare_batch_wechat_frame(self, profile: dict) -> None:
+        """批次开始前先校准一次版面；调不到就在开跑前暴露环境问题。"""
+        self._normalize_wechat_frame(profile, purpose="batch_window_frame")
 
     def _ensure_file_assistant(self, profile: dict, output_dir: Path, settle_seconds: float) -> None:
         """恢复或失败续跑前用微信当前画面确认安全起点，不依赖进程存在状态。"""
         self._guard()
-        self._ensure_wechat_window()
+        self._ensure_wechat_window(profile.get("wechat_selector"))
         if profile.get("miniapp_selector"):
             self._close_to_file_assistant(profile, output_dir, settle_seconds)
             return
@@ -1876,7 +1990,7 @@ class UiPathRunner:
         if report["runtime_status"] != "ok":
             raise NeedsReview(report["runtime_error"], "agent_runtime")
         if report["agent_outcome"] == "unqualified":
-            raise AgentUnqualified(report["agent_reason"])
+            raise AgentUnqualified(report["agent_reason"], report.get("rejection_code", ""))
         if report["agent_outcome"] == "needs_review":
             raise NeedsReview(report["agent_reason"], "agent_needs_review")
         if report["capture_status"] != "staged":
@@ -1971,6 +2085,8 @@ class UiPathRunner:
                 total -= size
 
     def _return_to_wechat(self, profile: dict, output_dir: Path, settle_seconds: float) -> None:
+        if sys.platform == "win32" and profile.get("preview_selector"):
+            self._close_windows_preview(profile["preview_selector"])
         self._ensure_file_assistant(profile, output_dir, settle_seconds)
         self._close_miniapp_windows(profile, output_dir)
         if self._miniapp_candidates(self._send({"action": "discover"}).get("windows")):
@@ -1981,7 +2097,7 @@ class UiPathRunner:
         code = code or classify_failure(stage, message)
         # Agent 的原因是给人阅读的证据；只在收到明确业务终态时创建不合格记录。
         reject = {}
-        reject_reason = "other" if code == "agent_unqualified" else ""
+        reject_reason = {"agent_unqualified": "other", QrEntryUnavailable.code: "invalid_qr"}.get(code, "")
         if reject_reason:
             reject = {
                 "reject_reason": reject_reason,
@@ -1997,6 +2113,181 @@ class UiPathRunner:
             self.store.event(message, "warning" if status != "captured" else "info", task["id"])
         except Exception:
             self.store.event("无法持久化 UiPath 运行结果；请检查当前任务输出目录", "error", task["id"])
+
+    @staticmethod
+    def _read_trace_lines(path: Path) -> list[dict]:
+        """容错读取 JSONL；单行损坏只跳过该行，不让归档失败。"""
+        if not path.is_file():
+            return []
+        records: list[dict] = []
+        try:
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict):
+                    records.append(record)
+        except OSError:
+            return []
+        return records
+
+    @staticmethod
+    def _write_trace_lines(path: Path, records: list[dict]) -> None:
+        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        with path.open("w", encoding="utf-8") as stream:
+            for record in records:
+                stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    @staticmethod
+    def _trace_step_of(record: dict) -> int | None:
+        raw = record.get("frame_id", record.get("sequence"))
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value >= 0 else None
+
+    def _archive_trace(self, task: dict, evidence_dir: Path, destination: Path, *, status: str,
+                       stage: str, message: str, code: str = "", capture_dir: Path | None = None) -> Path | None:
+        """把门店轨迹归档到产物目录，避免 .uipath-runs 清理后无法复盘。
+
+        trace_id 固定为 run_id:task_id；step_id 统一取 observe 的序号（截图 frame_id），
+        与 run_actions.step、model_calls.step 保持一致。截图按 sha256 去重后落盘。
+        """
+        trace_id = f"{self.run_id}:{task['id']}"
+        calls_path = evidence_dir / "agent-calls.jsonl"
+        host_path = evidence_dir / "agent-host.jsonl"
+        result_path = evidence_dir / "navigation-result.json"
+        if not calls_path.is_file() and not host_path.is_file() and not result_path.is_file():
+            return None
+        try:
+            report = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            report = {}
+        trace_dir = destination / "trace"
+        if trace_dir.exists():
+            shutil.rmtree(trace_dir)
+        frames_dir = trace_dir / "frames"
+        frames_dir.mkdir(parents=True, mode=0o700)
+
+        host_records = self._read_trace_lines(host_path)
+        frame_paths = {str(record.get("sequence") or record.get("frame_id")): str(record.get("path"))
+                       for record in host_records
+                       if record.get("kind") == "frame" and record.get("path")}
+        # 事件本身没有 frame_id 时沿用上一帧序号，保证每条事件都能对上同一轮观察。
+        last_step = None
+        enriched_calls: list[dict] = []
+        for record in self._read_trace_lines(calls_path):
+            step = self._trace_step_of(record)
+            if step is not None:
+                last_step = step
+            record["trace_id"] = trace_id
+            record["step_id"] = step if step is not None else last_step
+            if record.get("type") == "screenshot" and record.get("sha256"):
+                self._archive_trace_frame(evidence_dir, frames_dir,
+                                          frame_paths.get(str(step)), str(record["sha256"]))
+            enriched_calls.append(record)
+        if not enriched_calls or enriched_calls[-1].get("type") not in {"result", "error", "final"}:
+            # 进程异常或取消时补一条收尾事件，trace 不允许没有结尾。
+            enriched_calls.append({
+                "type": "error" if status != "captured" else "final",
+                "at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                "trace_id": trace_id,
+                "step_id": last_step,
+                "status": status,
+                "code": code or stage or "runtime",
+                "detail": str(message)[:500],
+            })
+        self._write_trace_lines(trace_dir / "agent-calls.jsonl", enriched_calls)
+
+        last_step = None
+        enriched_host: list[dict] = []
+        for record in host_records:
+            step = self._trace_step_of(record)
+            if step is not None:
+                last_step = step
+            record["trace_id"] = trace_id
+            record["step_id"] = step if step is not None else last_step
+            enriched_host.append(record)
+        self._write_trace_lines(trace_dir / "agent-host.jsonl", enriched_host)
+
+        navigation = report.get("navigation") or {}
+        capture = report.get("capture") or {}
+        recovery = self._archive_trace_recovery(capture_dir, trace_dir)
+        stamps = [record["at"] for record in enriched_calls if isinstance(record.get("at"), str)]
+        pages = sorted(path.name for path in destination.glob("page-*.png"))
+        summary = {
+            "trace_id": trace_id,
+            "run_id": self.run_id,
+            "task_id": task["id"],
+            "store": task["source_name"],
+            "status": status,
+            "stage": stage,
+            "message": str(message)[:500],
+            "error_code": code,
+            "agent": {"outcome": report.get("agent_outcome") or navigation.get("outcome", ""),
+                      "reason": report.get("agent_reason") or navigation.get("reason", "")},
+            "menu_gate": report.get("menu_gate") or {},
+            "capture": {"status": capture.get("status", ""), "pages": len(pages)},
+            "steps": max((record.get("step_id") or 0 for record in enriched_calls), default=0),
+            "model_calls": sum(1 for record in enriched_calls if record.get("type") == "request"),
+            "screenshots": sum(1 for record in enriched_calls if record.get("type") == "screenshot"),
+            "tool_calls": sum(1 for record in enriched_calls if record.get("type") == "tool"),
+            "artifacts": pages,
+            "recovery": recovery,
+            "frames": len(list(frames_dir.glob("*.png"))),
+            "started_at": min(stamps) if stamps else "",
+            "finished_at": max(stamps) if stamps else "",
+        }
+        atomic_json(trace_dir / "trace_summary.json", summary)
+        if result_path.is_file():
+            try:
+                shutil.copyfile(result_path, trace_dir / "navigation-result.json")
+            except OSError:
+                pass
+        return trace_dir
+
+    # 安全恢复截图以前只留在临时目录、随任务结束被删，判断 blocked_not_safe 是误报还是真残留时无据可查。
+    TRACE_RECOVERY_FILES = ("wechat-after-close.png", "wechat-safe-start.png",
+                            "miniapp-before-close.png", "window-prepare.png")
+
+    def _archive_trace_recovery(self, capture_dir: Path | None, trace_dir: Path) -> list[str]:
+        if capture_dir is None or not capture_dir.is_dir():
+            return []
+        target_dir = trace_dir / "recovery"
+        copied = []
+        for name in self.TRACE_RECOVERY_FILES:
+            source = capture_dir / name
+            if not source.is_file():
+                continue
+            try:
+                target_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+                shutil.copyfile(source, target_dir / name)
+                copied.append(f"recovery/{name}")
+            except OSError:
+                continue
+        return copied
+
+    @staticmethod
+    def _archive_trace_frame(evidence_dir: Path, frames_dir: Path, relative: str | None, digest: str) -> None:
+        """按 sha256 命名归档截图；同一门店重复帧只落一份。"""
+        if not relative or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            return
+        target = frames_dir / f"{digest}.png"
+        if target.exists():
+            return
+        try:
+            root = evidence_dir.resolve()
+            source = (evidence_dir / relative).resolve()
+            if not source.is_file() or root not in source.parents:
+                return
+            shutil.copyfile(source, target)
+        except OSError:
+            pass
 
     def _set_stage(self, task: dict, stage: str, message: str) -> None:
         if self._ui_tars_trial_active:
@@ -2136,12 +2427,12 @@ class UiPathRunner:
                 self.store.event(f"截图发布恢复失败（{type(exc).__name__}）；保留旧结果和恢复记录", "error", task_id)
 
     def _screenshot(self, output_dir: Path, selector: str, name: str, *, desktop: bool = False,
-                    allow_fast: bool = True) -> dict:
+                    allow_fast: bool = True, expected_window_id: str | None = None) -> dict:
         path = (output_dir / "evidence" / name).resolve()
         if not _inside(path, output_dir):
             raise RobotProtocolError("截图路径超出本任务目录")
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if not desktop and allow_fast:
+        if not desktop and allow_fast and not expected_window_id:
             # 同一个窗口刚截过、尺寸已确认时，按矩形直取比再走一次 UiPath 窗口截图快数秒。
             fast = self._fast_window_capture(output_dir, selector, name)
             if fast is not None:
@@ -2151,6 +2442,8 @@ class UiPathRunner:
             "selector": selector,
             "path": str(path),
         }
+        if expected_window_id:
+            command["expected_window_id"] = expected_window_id
         try:
             reply = self._send(command)
         except RobotCommandError as exc:
@@ -2311,11 +2604,14 @@ class UiPathRunner:
             candidates = narrow
         result = []
         for item, title, _, _ in candidates:
-            result.append({
+            candidate = {
                 "selector": window_selector(item, title),
                 "title": title,
                 "position": item.get("position"),
-            })
+            }
+            if item.get("window_id"):
+                candidate["window_id"] = item["window_id"]
+            result.append(candidate)
         return result
 
     @classmethod
@@ -2353,11 +2649,24 @@ class UiPathRunner:
                 result = self._switch_trial_window(active, str(command.get("title") or ""))
             else:
                 self._trace_click = {"frame_id": frame_id, "source": "gui_agent"}
+                before_windows = None
                 try:
+                    if action == "click":
+                        self._shadow_click_guard(active, command, frame_id, host_trace)
+                        try:
+                            before_windows = self._miniapp_candidates(
+                                self._send({"action": "discover"}).get("windows"))
+                        except Exception:
+                            # 窗口枚举只是附加观测，失败不能拦住模型本来要做的点击。
+                            before_windows = None
                     self._send({**command, "selector": active["selector"]})
                 finally:
                     self._trace_click = {}
                 result = {}
+                if before_windows is not None:
+                    switched = self._follow_new_miniapp_window(active, before_windows, frame_id, host_trace)
+                    if switched:
+                        result["window_switch"] = switched
         except Exception as exc:
             host_trace("tool", frame_id=frame_id, action=action, params=params, ok=False,
                        error=f"{type(exc).__name__}: {str(exc)[:300]}",
@@ -2366,6 +2675,68 @@ class UiPathRunner:
         host_trace("tool", frame_id=frame_id, action=action, params=params, ok=True,
                    result=result, duration_ms=round((time.monotonic() - started) * 1000))
         return result
+
+    def _follow_new_miniapp_window(self, active: dict, before: list[dict], frame_id: str,
+                                   host_trace) -> dict:
+        """点击后若新开了小程序窗口，就把操作目标切过去并重新校准。
+
+        典型场景：二维码落在公众号/网页上，点“点餐”后小程序在独立窗口打开，原窗口画面
+        完全不变；不跟随新窗口时 Agent 只会看到一张一模一样的截图，误判成“点击没反应”。
+        这里只处理“窗口集合新增”这一确定事实，是否已进入菜单仍由 Agent 观察后自行判断。
+        """
+        previous = {item.get("window_id") or item["selector"] for item in before}
+        deadline = time.monotonic() + _NEW_WINDOW_WAIT_SECONDS
+        while True:
+            try:
+                after = self._miniapp_candidates(self._send({"action": "discover"}).get("windows"))
+            except Exception:
+                after = []
+            fresh = [item for item in after
+                     if (item.get("window_id") or item["selector"]) not in previous]
+            if fresh:
+                break
+            if time.monotonic() >= deadline:
+                return {}
+            time.sleep(_NEW_WINDOW_POLL_SECONDS)
+        # 同一轮可能同时冒出多个新窗口（小程序 + 加载占位），取面积最大的那个。
+        target = max(fresh, key=lambda item: (
+            int((item.get("position") or {}).get("width") or 0)
+            * int((item.get("position") or {}).get("height") or 0)))
+        active["selector"] = target["selector"]
+        active["title"] = target["title"]
+        detail = {"frame_id": frame_id, "switched": True, "title": target["title"],
+                  "window_id": target.get("window_id"),
+                  "candidates": [item["title"] for item in fresh]}
+        try:
+            # 新窗口可能停在屏幕外且版面不同：按采集布局归位并重新校准截图比例。
+            output_dir = getattr(self, "_guard_dir", None)
+            self._prepare_trial_window(target["selector"], Path(str(output_dir)) / "evidence",
+                                       host_trace)
+        except Exception as exc:
+            detail["prepare_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        host_trace("window_switch", **detail)
+        return detail
+
+    def _shadow_click_guard(self, active: dict, command: dict, frame_id: str, host_trace) -> None:
+        """click_guarded 影子模式：点击前再截一帧，量化“模型看到的画面”是否已经过期。
+
+        只记录不拦截：先积累 stale 率，再决定是否升级为硬校验；截图失败同样留痕但不影响动作。
+        """
+        frame = getattr(self, "_guard_frame", None)
+        output_dir = getattr(self, "_guard_dir", None)
+        if not frame or output_dir is None or not Path(str(frame.get("path") or "")).is_file():
+            return
+        try:
+            probe = self._screenshot(output_dir, active["selector"], f"click-guard-{frame_id}.png")
+            with Image.open(frame["path"]) as left, Image.open(probe["path"]) as right:
+                delta = self._image_difference_images(left.convert("RGB"), right.convert("RGB"))
+        except Exception as exc:
+            host_trace("click_guarded", frame_id=frame_id, stale=None, shadow=True,
+                       error=f"{type(exc).__name__}: {str(exc)[:160]}")
+            return
+        host_trace("click_guarded", frame_id=frame_id, stale=delta >= _CLICK_GUARD_DELTA,
+                   delta=round(delta, 4), threshold=_CLICK_GUARD_DELTA, shadow=True,
+                   x=command.get("x"), y=command.get("y"))
 
     def _prepare_trial_window(self, selector: str, evidence_dir: Path, host_trace=None) -> None:
         """Agent 启动前先归位窗口，再用一次实测截图校准截图像素与窗口坐标的比例。"""
@@ -2534,7 +2905,11 @@ class UiPathRunner:
             self._trace_click = {}
 
     def _double_click_latest_image(self, profile: dict, frame: dict) -> None:
-        """窗口位置固定时直接双击最新图片消息中心，不再截图、OCR、原图匹配。"""
+        """窗口位置固定时直接双击最新图片消息中心，不再截图、OCR、原图匹配。
+
+        这是 macOS 的快捷路径；Windows 已改走原图匹配，实测旧的 999×749 固定点位落在缩略图框外。
+        """
+        # Windows 不走这条路径（见 _open_source_automatic 的 windows 分支），固定点距仅供 macOS。
         default_x, default_y = _LATEST_IMAGE_POINT_OFFSET
         offset_x = float(profile.get("latest_image_offset_x") or default_x)
         offset_y = float(profile.get("latest_image_offset_y") or default_y)
@@ -2553,7 +2928,7 @@ class UiPathRunner:
 
     def _open_source_automatic(self, task: dict, profile: dict, output_dir: Path, settle_seconds: float,
                                timing: dict | None = None) -> dict:
-        """正常路径只保留发送和固定点位打开；OCR、原图匹配、窗口发现只在失败时恢复一次。"""
+        """发送本轮素材，并把新打开的小程序窗口交给导航。"""
         if not all((self.clipboard_preparer, self.clipboard_text_preparer)):
             raise NeedsReview("automatic 模式依赖尚未接入")
         # 不能写成 `getattr(...) or {}`：空字典是调用方刚建好的同一个计时容器，
@@ -2572,10 +2947,19 @@ class UiPathRunner:
         with self._trace("close_stale_miniapp") as trace:
             trace["closed"] = self._close_miniapp_windows(profile, output_dir)
         mark("close_stale")
+        windows = sys.platform == "win32"
+        if windows and profile.get("preview_selector"):
+            self._close_windows_preview(profile["preview_selector"])
+        if windows:
+            # 每家开始前重整窗口：截图取几何之前先校尺寸，避免沿用上一轮/人工留下的
+            # 最大化或改过尺寸的窗口，让固定点位和搜索边界继续按 999×749 生效。
+            with self._trace("wechat_frame_normalize"):
+                self._normalize_wechat_frame(profile)
         profile["miniapp_selector"] = ""
+        profile.pop("_startup_window_id", None)
         self._set_stage(task, "verifying_wechat", "发送门店名与二维码；批次首店核对聊天上下文")
         # 批次起点保护：每个 run 的首个任务保留一次截图 + OCR；其余任务复用已确认的窗口几何。
-        guard_needed = self._startup_guard_run_id != (self.run_id or "")
+        guard_needed = windows or self._startup_guard_run_id != (self.run_id or "")
         wechat = self._startup_wechat_frame(profile, output_dir, guarded=guard_needed)
         if guard_needed:
             with self._trace("wechat_ocr", purpose="batch_start",
@@ -2602,24 +2986,69 @@ class UiPathRunner:
             self._click_wechat_input(profile, wechat)
         mark("input_click")
         source_name = str(task["source_name"])
-        # 多条快捷键可拼在同一次 key 命令里（UiPath 会按 DelayBetweenShortcuts 依次发送），
-        # 把“粘贴 + 发送”合并成一次 IPC，单店少两次往返。
-        paste_send = profile["paste_shortcut"] + profile["send_key"]
+        if windows:
+            # 上一家失败可能把店名或图片留在输入框；先清空再取空基线，否则本轮粘贴会串名。
+            probe = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-probe.png")
+            if self._send_button_active(Path(probe["path"])):
+                with self._trace("clear_stale_input") as trace:
+                    self._send({"action": "key", "selector": profile["wechat_selector"],
+                                "key": _SELECT_ALL_SHORTCUT})
+                    self._send({"action": "key", "selector": profile["wechat_selector"],
+                                "key": _DELETE_SHORTCUT})
+                    cleared = self._screenshot(output_dir, profile["wechat_selector"],
+                                               "wechat-input-cleared.png")
+                    trace.update(cleared=not self._send_button_active(Path(cleared["path"])))
+                if self._send_button_active(Path(cleared["path"])):
+                    raise NeedsReview("输入框残留内容无法清空；未发送，避免串店名")
         # 粘贴完整来源文件夹名，避免英文、数字经过中文输入法组合转换。
         with self._trace("prepare_store_name_clipboard", char_count=len(source_name)):
             self.clipboard_text_preparer(source_name)
-        self._send({"action": "key", "selector": profile["wechat_selector"], "key": paste_send})
+        if windows:
+            # 粘贴与回车必须分开：合并成一条快捷键时回车会被吞掉，店名残留在输入框里，
+            # 下一次粘贴接在后面，后面整批都匹配不到来源图片。每步都用输入区截图核对。
+            # 空白基线取点击输入框之后、粘贴之前的截图，焦点描边和光标已包含在基线里。
+            baseline = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-empty.png")
+            self._send({"action": "key", "selector": profile["wechat_selector"],
+                        "key": profile["paste_shortcut"]})
+            self._await_input_text(profile, output_dir, baseline)
+            self._send({"action": "key", "selector": profile["wechat_selector"],
+                        "key": profile["send_key"]})
+            empty_input = self._press_send_until_cleared(profile, output_dir, baseline)
+        else:
+            # macOS 仍沿用一条合并快捷键：Points 坐标下输入区裁剪无法跨机型稳定标定。
+            self._send({"action": "key", "selector": profile["wechat_selector"],
+                        "key": profile["paste_shortcut"] + profile["send_key"]})
+            empty_input = None
         mark("store_name_sent")
         self._guard()
         with self._trace("prepare_image_clipboard", source_file=Path(task["source_path"]).name):
             self.clipboard_preparer(Path(task["source_path"]))
-        # 图片粘贴与发送仍分开两条命令：拼在一起回车会被吞掉。
-        # 文字粘贴可以立刻回车；图片要先等微信把 DIB 解码附着，等待上限按像素量动态放大。
+        # 店名回车发送后焦点可能被聊天区接管，此时直接粘贴图片会被微信吞掉，
+        # 表现为输入框一直空白、整批门店连锁失败。粘图前必须把焦点点回输入框；
+        # 点击失败不再静默，否则后续会连续报“未附着”。
+        self._click_wechat_input(profile, wechat)
+        # 图片粘贴与发送仍分开两条命令：图片要先等微信把 DIB 解码附着，等待上限按像素量动态放大。
         self._send({"action": "key", "selector": profile["wechat_selector"],
                     "key": profile["paste_shortcut"]})
-        self._await_image_attached(profile, output_dir, Path(task["source_path"]))
-        self._press_send_until_cleared(profile, output_dir)
+        attached = self._await_image_attached(profile, output_dir, Path(task["source_path"]),
+                                              baseline=empty_input)
+        sent_frame = self._press_send_until_cleared(profile, output_dir, empty_input)
         mark("image_sent")
+        if windows:
+            # 每次发送后先把聊天滚到最新再截图：上一次运行可能停在聊天中部，
+            # 新图片不完整落在可视区时匹配会失败。
+            sent_frame = self._settle_chat_after_send(profile, output_dir, sent_frame)
+            sent, match = self._wait_for_sent_image(task, profile, output_dir,
+                                                    first_frame=sent_frame, before_send=attached)
+            mark("image_match")
+            source = Path(task["source_path"])
+            preview = self._open_verified_windows_preview(task, profile, output_dir, sent, match, attached)
+            mark("open_image")
+            result = self._recognize_preview(profile, output_dir, None, settle_seconds,
+                                             verified_preview=preview, source_path=source)
+            mark("preview_recognize")
+            timing["startup_ipc"] = self._ipc_commands - ipc_before
+            return result
         try:
             self._double_click_latest_image(profile, wechat)
         except RobotCommandError:
@@ -2653,7 +3082,19 @@ class UiPathRunner:
         timing["startup_ipc"] = self._ipc_commands - ipc_before
         return result
 
-    def _wait_for_sent_image(self, task: dict, profile: dict, output_dir: Path) -> tuple[dict, dict]:
+    def _settle_chat_after_send(self, profile: dict, output_dir: Path, frame: dict) -> dict:
+        """发送后把聊天滚到最新，再重新截图，保证每次匹配都从同一状态开始。"""
+        try:
+            self._send({"action": "scroll", "selector": profile["wechat_selector"],
+                        "x": frame["window_width"] * 0.7, "y": frame["window_height"] * 0.55,
+                        "direction": "Down", "units": 3})
+            self._send({"action": "noop", "seconds": .3})
+        except RobotCommandError:
+            return frame
+        return self._screenshot(output_dir, profile["wechat_selector"], "wechat-after-send.png")
+
+    def _wait_for_sent_image(self, task: dict, profile: dict, output_dir: Path, *,
+                             first_frame: dict | None = None, before_send: dict | None = None) -> tuple[dict, dict]:
         """快速路径只用现有发送后截图；只有加载中或图片未出现时才有限观察，不重复发送。"""
         last_reason = "发送后尚未看到本轮图片消息"
         deadline = time.monotonic() + 12
@@ -2664,88 +3105,133 @@ class UiPathRunner:
                     break
                 self._send({"action": "noop", "seconds": .3})
             basename = "wechat-after-send.png" if observation == 1 else f"wechat-after-send-{observation}.png"
-            sent = self._screenshot(output_dir, profile["wechat_selector"], basename)
+            sent = (first_frame if observation == 1 and first_frame is not None
+                    else self._screenshot(output_dir, profile["wechat_selector"], basename))
             frame_ref = self._debug_frame_ref(Path(sent["path"]))
             # OCR 只用于确认仍停留在文件传输助手；不可用时不再阻断启动。
             if self.ocr_reader is not None:
                 with self._trace("wechat_ocr", frame_evidence=frame_ref, observation=observation,
                                  image_size={"width": sent["width"], "height": sent["height"]}) as trace:
                     started = time.monotonic()
-                    ocr = self.ocr_reader(Path(sent["path"]))
+                    ocr = (self._ocr_title_strip(Path(sent["path"])) if before_send
+                           else self.ocr_reader(Path(sent["path"])))
                     trace.update(ocr_rows=ocr, ocr_engine=self._ocr_engine_name(),
                                  ocr_elapsed_ms=round((time.monotonic() - started) * 1000))
                 if not self._assistant_active(ocr, sent["width"], sent["height"]):
                     raise NeedsReview("发送后文件传输助手上下文丢失，停止处理")
-            # 用最后一条右侧文字气泡限定图片范围，再用本轮原图匹配确认身份；
-            # 不识别气泡文字，也不要求 OCR 认出店名/编码。
+            # 用最后一条右侧文字气泡限定图片范围。图片气泡一出现在聊天区就能双击打开，
+            # 不等缩略图解码完成：先用“门店名下方新出现的图片气泡”定位，失败才退回原图模板匹配。
+            # 图片身份由打开后的预览核对负责，这一步只保证点的是本轮新增的那一块。
             try:
                 bubbles = find_sent_text_bubbles(Path(sent["path"]))
             except ChatImageUnreadable as exc:
                 raise NeedsReview(f"聊天截图无法解析：{exc}") from exc
             latest = max(bubbles, key=lambda item: item["bottom"], default=None)
+            if before_send and latest is None:
+                last_reason = "未看到本轮图片上方的发送文本气泡"
+                continue
             anchor_bottom = latest["bottom"] if latest else 0
             with self._trace("wechat_image_match", source_name=task["source_name"],
                              observation=observation, anchor_bottom=anchor_bottom,
                              bubble_count=len(bubbles), frame_evidence=frame_ref) as trace:
                 try:
-                    match = locate_sent_image(Path(sent["path"]), Path(task["source_path"]), anchor_bottom)
-                except ChatImageNotFound as exc:
-                    last_reason = str(exc)
-                    trace.update(diagnostics=exc.diagnostics, observation_result="thumbnail_not_visible", retry=observation < 3)
-                    if observation < 3:
-                        # 新发的大图可能有一部分落在输入框下方；往下滚一点让整张缩略图露出再匹配。
-                        try:
-                            self._send({"action": "scroll", "selector": profile["wechat_selector"],
-                                        "x": sent["width"] * 0.7, "y": sent["height"] * 0.6,
-                                        "direction": "Down", "units": 1})
-                            self._send({"action": "noop", "seconds": .4})
-                        except Exception:
-                            pass
-                    continue
-                trace.update(target_resolution=match)
-            # 只发到文件传输助手，缩略图出现即可继续；不校验上传徽标，避免把图片内容误判为发送失败。
+                    match = locate_chat_image_bubble(Path(sent["path"]), anchor_bottom)
+                    trace.update(target_resolution=match, match_layer="bubble_appearance")
+                except ChatImageNotFound as bubble_exc:
+                    # 聊天背景不是纯色或气泡被遮挡时，退回原图模板匹配兜底。
+                    trace.update(bubble_diagnostics=bubble_exc.diagnostics)
+                    try:
+                        options = {"before_send": Path(before_send["path"])} if before_send else {}
+                        match = locate_sent_image(Path(sent["path"]), Path(task["source_path"]),
+                                                  anchor_bottom, **options)
+                        trace.update(target_resolution=match, match_layer="source_template")
+                    except ChatImageNotFound as exc:
+                        last_reason = str(exc)
+                        trace.update(diagnostics=exc.diagnostics, observation_result="bubble_not_visible",
+                                     retry=observation < 3)
+                        if observation < 3:
+                            # 新发的大图可能有一部分落在输入框下方；往下滚一点让整张缩略图露出再匹配。
+                            try:
+                                self._send({"action": "scroll", "selector": profile["wechat_selector"],
+                                            "x": sent["window_width"] * 0.7, "y": sent["window_height"] * 0.6,
+                                            "direction": "Down", "units": 1})
+                                self._send({"action": "noop", "seconds": .4})
+                            except Exception:
+                                pass
+                        continue
+            # 气泡已出现即可继续；此时图片可能仍在加载，预览打开后再核对内容。
             return sent, match
         raise NeedsReview(last_reason + "；未打开历史二维码")
 
+    def _await_input_text(self, profile: dict, output_dir: Path, baseline: dict,
+                          timeout: float = 4.0) -> dict:
+        """确认门店名真的进了输入框再按回车。
+
+        空输入框直接回车会把上一条消息重发一遍，店名也不会出现，后续整批错位。
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            self._guard()
+            frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-text.png")
+            state = self._input_content(Path(frame["path"]), Path(baseline["path"]))
+            if state["kind"] == "text":
+                frame["input_state"] = state
+                return frame
+            if time.monotonic() >= deadline:
+                raise NeedsReview(
+                    f"门店名称未进入微信输入框（输入区状态：{state['kind']}）；未按回车，避免重发上一条消息")
+            time.sleep(.2)
+
     def _await_image_attached(self, profile: dict, output_dir: Path,
-                              source_path: Path | None = None) -> None:
+                              source_path: Path | None = None, *, baseline: dict | None = None) -> dict:
         """等二维码缩略图真正附着到输入框后再回车。
 
-        微信发送按钮只在输入框有内容时变绿，用它作为“图片已附着”的唯一判据；
-        等待上限按图片像素量放大：手机原图（12MP 级）DIB 可达 48MB，解码要十几秒。
-        超时说明这次粘贴被吞了（失焦、剪贴板延迟），补贴一次；仍不行转人工。
-        此时还没有按过回车，不会产生重复消息。
+        主判据是输入区（相对空基线）出现一块填充密实的缩略图；发送按钮变绿只说明
+        “有内容”，会把文本残留误判成图片已附着。等待上限按图片像素量放大：
+        手机原图 DIB 可达 48MB，解码要十几秒。超时说明这次粘贴被吞了（失焦、剪贴板延迟），
+        补贴一次；仍不行转人工。此时还没有按过回车，不会产生重复消息。
         """
         pixels = self._image_pixels(source_path)
         timeout = self._image_attach_timeout(pixels)
         started = time.monotonic()
+        frame = None
+        state: dict = {"kind": "unknown"}
         with self._trace("image_attach", source_file=(source_path.name if source_path else ""),
                          pixel_size={"width": pixels[0], "height": pixels[1]},
-                         timeout_seconds=timeout) as trace:
+                         timeout_seconds=timeout, has_baseline=baseline is not None) as trace:
             for attempt in range(2):
                 deadline = time.monotonic() + timeout
                 while True:
                     self._guard()
-                    frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-state.png")
-                    if self._send_button_active(Path(frame["path"])):
-                        trace.update(attempts=attempt + 1,
+                    frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-image-attached.png")
+                    state = self._input_content(Path(frame["path"]),
+                                                Path(baseline["path"]) if baseline else None)
+                    if state["kind"] == "image":
+                        trace.update(attempts=attempt + 1, input_state=state,
                                      elapsed_ms=round((time.monotonic() - started) * 1000))
-                        return
+                        return frame
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(.5)
                 if attempt == 0:
+                    # 第一次粘贴可能已被吞掉（焦点不在输入框），补贴前先点回输入框。
+                    self._click_wechat_input(profile, frame)
                     self._send({"action": "key", "selector": profile["wechat_selector"],
                                 "key": profile["paste_shortcut"]})
-            trace.update(attempts=2, elapsed_ms=round((time.monotonic() - started) * 1000))
+            # 缩略图判据失败但发送按钮已变绿：内容确实进了输入框，交给回车后的清空校验兜底。
+            if frame is not None and self._send_button_active(Path(frame["path"])):
+                trace.update(attempts=2, input_state=state, fallback="send_button_active",
+                             elapsed_ms=round((time.monotonic() - started) * 1000))
+                return frame
+            trace.update(attempts=2, input_state=state, elapsed_ms=round((time.monotonic() - started) * 1000))
         raise NeedsReview("二维码图片未附着到微信输入框；未发送空消息")
 
-    def _press_send_until_cleared(self, profile: dict, output_dir: Path,
-                                  attempts: int = 5, interval: float = 1.5) -> None:
+    def _press_send_until_cleared(self, profile: dict, output_dir: Path, baseline: dict | None = None,
+                                  attempts: int = 5, interval: float = 1.5) -> dict:
         """回车发送，并确认输入框已清空。
 
         发送按钮变绿只代表微信已接收到粘贴，大图仍在后台解码时回车不会生效；
-        所以以“输入框清空（按钮变灰）”为发送成功的判据，未清空就再按一次回车。
+        给了空基线时以“输入区回到空基线”为发送成功判据，未清空就再按一次回车。
         输入框仍有附件说明消息没发出去，重复回车不会产生重复消息。
         """
         for _ in range(attempts):
@@ -2755,12 +3241,66 @@ class UiPathRunner:
             while True:
                 self._guard()
                 frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-state.png")
-                if not self._send_button_active(Path(frame["path"])):
-                    return
+                if baseline is None:
+                    if not self._send_button_active(Path(frame["path"])):
+                        return frame
+                else:
+                    state = self._input_content(Path(frame["path"]), Path(baseline["path"]))
+                    if state["kind"] == "empty":
+                        return frame
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(.3)
         raise NeedsReview("二维码图片已附着但回车未能发送；大图可能仍在解码")
+
+    @classmethod
+    def _input_content(cls, image_path: Path, baseline_path: Path | None = None) -> dict:
+        """比较输入区当前帧与空基线，判断里面是空的、文本还是图片缩略图。
+
+        发送按钮颜色只能说明“有内容”，既区分不了文本残留和图片，也看不出回车后
+        是否真的清空。这里用点击输入框后的空白基线做像素差分，再用变化区域的
+        包围盒高度和填充率区分单行文本与图片缩略图；光标和抗锯齿噪点用中值滤波剔除。
+        """
+        if baseline_path is None:
+            return {"kind": "unknown", "changed_ratio": 0.0, "box": None}
+        try:
+            with Image.open(image_path) as raw:
+                current = raw.convert("RGB")
+            with Image.open(baseline_path) as raw:
+                baseline = raw.convert("RGB")
+        except (OSError, ValueError):
+            return {"kind": "unknown", "changed_ratio": 0.0, "box": None}
+        if current.size != baseline.size:
+            # 窗口尺寸变了，基线失效；返回 unknown 让调用方重拍或转人工，不做误判。
+            return {"kind": "unknown", "changed_ratio": 1.0, "box": None}
+        width, height = current.size
+        ratio = _INPUT_REGION_RATIO
+        left, top = round(width * ratio[0]), round(height * ratio[1])
+        right, bottom = round(width * ratio[2]), round(height * ratio[3])
+        current = current.crop((left, top, right, bottom))
+        baseline = baseline.crop((left, top, right, bottom))
+        diff = ImageChops.difference(current, baseline).convert("L")
+        mask = diff.point(lambda value: 255 if value >= _INPUT_DIFF_THRESHOLD else 0)
+        # 中值滤波去掉 1px 光标和抗锯齿边缘，保留成块的内容。
+        mask = mask.filter(ImageFilter.MedianFilter(3))
+        area = max(1, current.width * current.height)
+        changed = mask.histogram()[255] / area
+        box = mask.getbbox()
+        if box is None or changed < _INPUT_EMPTY_RATIO:
+            return {"kind": "empty", "changed_ratio": round(changed, 5), "box": None}
+        box_width, box_height = box[2] - box[0], box[3] - box[1]
+        filled = mask.crop(box).histogram()[255] / max(1, box_width * box_height)
+        kind = "text"
+        # 图片缩略图是输入区里一块高且填充密的矩形；单行店名在 1443×749 窗口里只有约 11px 高。
+        if (box_height >= max(44, round(current.height * .38))
+                and box_width >= max(60, round(current.width * .08)) and filled >= .30):
+            kind = "image"
+        elif box_height < 8 or box_width < 8:
+            # 光标（1~2px 竖线，已被中值滤波削掉）和抗锯齿噪点都不算内容；
+            # 真实店名在 1443×749 窗口里只有约 11px 高，阈值不能按 13px 设。
+            kind = "empty"
+        return {"kind": kind, "changed_ratio": round(changed, 5), "fill_ratio": round(filled, 3),
+                "box": [left + box[0], top + box[1], left + box[2], top + box[3]]}
 
     @staticmethod
     def _image_pixels(source_path: Path | None) -> tuple[int, int]:
@@ -2815,12 +3355,48 @@ class UiPathRunner:
             time.sleep(1.0)
         return False
 
+    def _open_verified_windows_preview(self, task: dict, profile: dict, output_dir: Path,
+                                       sent: dict, match: dict, attached: dict) -> dict:
+        selector = profile["preview_selector"]
+        source = Path(task["source_path"])
+        # 气泡出现即可双击，此时预览可能还在加载；内容不符就关窗重开，
+        # 后两次给更长核对时间，等价于等图片渲染完成。
+        for attempt in range(1, 4):
+            center = match["center_image_px"]
+            x = center["x"] * sent["window_width"] / sent["width"]
+            y = center["y"] * sent["window_height"] / sent["height"]
+            with self._trace("open_current_image", attempt=attempt, thumbnail=match,
+                             chat_frame=self._debug_frame_ref(Path(sent["path"]))) as trace:
+                self._send({"action": "double_click", "selector": profile["wechat_selector"], "x": x, "y": y})
+                deadline = time.monotonic() + (3.0 if attempt == 1 else 6.0)
+                while True:
+                    self._guard()
+                    try:
+                        frame = self._screenshot(output_dir, selector, "image-preview.png", allow_fast=False)
+                    except RobotCommandError:
+                        frame = None
+                    if frame is not None:
+                        verification = match_preview_source(Path(frame["path"]), source)
+                        trace.update(source_match=verification,
+                                     frame_evidence=self._debug_frame_ref(Path(frame["path"])))
+                        if verification["matched"]:
+                            frame["source_match"] = verification
+                            return frame
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(.18)
+            self._close_windows_preview(selector)
+            if attempt < 3:
+                sent, match = self._wait_for_sent_image(task, profile, output_dir, before_send=attached)
+        raise NeedsReview("未确认预览显示本轮二维码图片，未点击识别", "startup_preview_unavailable")
+
     def _recognize_preview(self, profile: dict, output_dir: Path, before_windows: list[dict] | None,
-                           settle_seconds: float) -> dict:
+                           settle_seconds: float, *, verified_preview: dict | None = None,
+                           source_path: Path | None = None) -> dict:
         """每轮依据当前预览图标定位，只点击一次；后续仅等待和观察识别结果。"""
         selector = profile["preview_selector"]
         # 预览窗口宽高每轮都可能不同，必须重新取窗口矩形，不能复用上一轮。
-        preview = self._screenshot(output_dir, selector, "image-preview.png", allow_fast=False)
+        preview = verified_preview or self._screenshot(output_dir, selector, "image-preview.png", allow_fast=False)
         icon_poll: dict = {}
         if sys.platform == "win32":
             # Windows 微信 4.x 在预览工具栏“用 AI 处理”左侧有固定的二维码按钮，
@@ -2844,7 +3420,12 @@ class UiPathRunner:
                 self._send({"action": "noop",
                             "seconds": min(_PREVIEW_ICON_POLL_INTERVAL, _PREVIEW_ICON_POLL_TIMEOUT - elapsed)})
                 preview = self._screenshot(output_dir, selector, f"image-preview-{attempt + 1}.png",
-                                           allow_fast=False)
+                                            allow_fast=False, expected_window_id=preview.get("window_id"))
+                if source_path is not None:
+                    verification = match_preview_source(Path(preview["path"]), source_path)
+                    if not verification["matched"]:
+                        raise NeedsReview("识别入口出现前预览内容已变化，未点击识别", "startup_preview_unavailable")
+                    preview["source_match"] = verification
             icon_poll = {
                 "icon_poll_attempts": len(attempt_times),
                 "icon_poll_match_ms": attempt_times,
@@ -2867,28 +3448,29 @@ class UiPathRunner:
                     },
                 }
                 try:
+                    if verified_preview is not None:
+                        before_windows = self._window_list(self._send({"action": "discover"}).get("windows"))
                     self._send({"action": "click", "selector": selector, "x": x, "y": y})
                 finally:
                     self._trace_click = {}
                 with self._trace("preview_recognition_result", **icon_poll) as trace:
                     result = self._await_miniapp_window(profile, output_dir, before_windows, trace)
-                self._close_preview_window(selector)
+                self._close_windows_preview(selector)
                 return result
             # 图标没出现时退回右键菜单；两条路都在微信完成二维码分析后才可用。
-            match = self._windows_preview_menu_match(selector, preview, output_dir)
+            match, menu_observed = self._windows_preview_menu_match(selector, preview, output_dir)
             if match is None:
-                self._send({"action": "key", "selector": selector, "key": "escape"})
-                external_prompt = self._preview_external_link(profile, output_dir)
-                raise NeedsReview(
-                    ("预览中出现“在浏览器打开”提示；" if external_prompt else "")
-                    + "图片预览右键菜单未找到“识别图中二维码”，未进入小程序",
-                    "startup_preview_unavailable")
+                if verified_preview is not None and menu_observed:
+                    raise QrEntryUnavailable("微信未提供二维码识别入口：本轮图片已核实，工具栏和图片右键菜单均无识别项")
+                raise NeedsReview("未确认图片右键菜单的识别入口", "startup_preview_unavailable")
             self._trace_click = {
                 "source": "local_preview_context_menu", "target": "识别图中二维码菜单项",
                 "target_resolution": match,
                 "frame_evidence": self._debug_frame_ref(Path(output_dir / "evidence" / "preview-context-menu.png")),
             }
             try:
+                if verified_preview is not None:
+                    before_windows = self._window_list(self._send({"action": "discover"}).get("windows"))
                 self._send({"action": "click_desktop_overlay",
                             "x": match["desktop_points"]["x"], "y": match["desktop_points"]["y"]})
             finally:
@@ -2896,7 +3478,7 @@ class UiPathRunner:
             with self._trace("preview_recognition_result", **icon_poll) as trace:
                 result = self._await_miniapp_window(profile, output_dir, before_windows, trace)
             # Windows 的图片预览不会自动关闭；留着会挡住微信主窗口，也会让下一轮 selector 不唯一。
-            self._close_preview_window(selector)
+            self._close_windows_preview(selector)
             return result
         with self._trace("preview_icon_match", frame_evidence=self._debug_frame_ref(Path(preview["path"]))) as trace:
             try:
@@ -2931,48 +3513,73 @@ class UiPathRunner:
         with self._trace("preview_recognition_result") as trace:
             return self._await_miniapp_window(profile, output_dir, before_windows, trace)
 
-    def _close_preview_window(self, selector: str) -> None:
-        """预览不关会留下额外的“图片和视频”窗口，下一轮取图会因目标不唯一失败。"""
+    def _send_close_window(self, selector: str, window_id: str | None = None) -> bool:
+        """Windows 上用 WM_CLOSE 关闭目标窗口；返回是否确认关闭，失败时由调用方走旧路径。"""
+        command = {"action": "close_window", "selector": selector}
+        if window_id:
+            command["expected_window_id"] = window_id
         try:
-            self._send({"action": "key", "selector": selector, "key": "escape"})
-        except (RobotTimeout, RunnerPaused, RunnerTerminated):
-            raise
-        except Exception:
-            return
-        if sys.platform == "win32":
-            # Esc 之后按“窗口是否还在”轮询，通常几十毫秒就能确认关闭，不必固定等 0.3 秒。
-            deadline = time.monotonic() + 1.2
-            while time.monotonic() < deadline:
-                try:
-                    if not self._window_present(selector):
-                        return
-                except (RobotTimeout, RunnerPaused, RunnerTerminated):
-                    raise
-                except Exception:
-                    return
-                time.sleep(0.1)
-            return
-        try:
-            self._send({"action": "noop", "seconds": .3})
-        except (RobotTimeout, RunnerPaused, RunnerTerminated):
-            raise
-        except Exception:
-            pass
+            self._send(command)
+        except RobotCommandError:
+            return False
+        return True
 
-    def _window_present(self, selector: str) -> bool:
-        """用本机窗口枚举确认 selector 对应的窗口是否仍存在；解析不了的 selector 视为不存在。"""
-        if not selector.lstrip().startswith("<wnd"):
-            return False
-        expected = ET.fromstring(f"<root>{selector}</root>").find("wnd")
-        if expected is None:
-            return False
-        windows = self._window_list(self._send({"action": "discover"}).get("windows"))
-        for item in windows:
-            # 关闭确认必须严格匹配标题/类名：宽松匹配会把别的微信窗口当成还没关掉。
-            if all(not expected.get(key) or str(item.get(key) or "").casefold() == expected.get(key, "").casefold()
-                   for key in ("title", "cls")):
-                return True
-        return False
+    def _close_windows_preview(self, selector: str) -> None:
+        """只关闭已确认的微信图片预览。
+
+        微信 4.x 的“图片和视频”是独立顶层窗口。实测 WM_CLOSE 一次即关（3/3），
+        不依赖焦点也不受“窗口未置前”影响，因此 Windows 先用它；Ctrl+W、Esc 留作旧版兜底
+        （Esc 对新版预览窗完全无效，会把窗口永久留在前台）。
+        预览窗残留会连锁污染后续每一家的安全起点校验。
+        """
+        expected = ET.fromstring(selector).attrib
+
+        def observe():
+            windows = self._window_list(self._send({"action": "discover"}).get("windows"))
+            return [window for window in windows
+                    if windows_app_name(str(window.get("app") or "")) == windows_app_name(expected.get("app", ""))
+                    and all(fnmatchcase(str(window.get(key) or "").casefold(), expected[key].casefold())
+                            for key in ("title", "cls") if expected.get(key))]
+
+        remaining = observe()
+        if sys.platform == "win32":
+            # 实测 WM_CLOSE 一次即关（3/3），且不受焦点影响；快捷键只留作兜底。
+            for _ in range(2):
+                if not remaining:
+                    return
+                if len(remaining) != 1:
+                    break
+                if not self._send_close_window(selector, remaining[0].get("window_id")):
+                    break
+                deadline = time.monotonic() + .9
+                while True:
+                    remaining = observe()
+                    if not remaining:
+                        return
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(.12)
+        for key in ("ctrl+w", "escape"):
+            for _ in range(2):
+                if not remaining:
+                    return
+                if len(remaining) != 1:
+                    break
+                window = remaining[0]
+                command = {"action": "key", "selector": selector, "key": key}
+                if window.get("window_id"):
+                    command["expected_window_id"] = window["window_id"]
+                self._send(command)
+                # 预览窗有关闭动画，确认窗口比单次按键节奏放宽一点。
+                deadline = time.monotonic() + .9
+                while True:
+                    remaining = observe()
+                    if not remaining:
+                        return
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(.12)
+        raise NeedsReview("未确认微信图片预览已关闭；暂停推进队列", "startup_preview_unavailable")
 
     def _await_miniapp_window(self, profile: dict, output_dir: Path, before_windows: list[dict] | None,
                               trace) -> dict:
@@ -2997,13 +3604,17 @@ class UiPathRunner:
                 # Agent 可用 list_windows / switch_window 自行判断该操作哪个页面。
                 if len(candidates) > 1:
                     trace["candidate_count"] = len(candidates)
+                    if sys.platform == "win32":
+                        raise NeedsReview("识别后出现多个小程序窗口，未确认本轮目标", "startup_no_miniapp")
                 profile["miniapp_selector"] = candidates[0]["selector"]
+                if candidates[0].get("window_id"):
+                    profile["_startup_window_id"] = candidates[0]["window_id"]
                 # 小程序一出现就调整到窄高布局，后续所有截图都在同一版面上进行。
                 self._resize_miniapp_window(candidates[0]["selector"], candidates[0], trace)
                 trace.update(result="miniapp_opened", selector=candidates[0]["selector"])
                 return {"miniapp_selector": candidates[0]["selector"]}
             if sys.platform == "win32":
-                if time.monotonic() - started >= _MINIAPP_POLL_TIMEOUT:
+                if time.monotonic() - started >= _WINDOWS_MINIAPP_POLL_TIMEOUT:
                     break
                 self._send({"action": "noop", "seconds": _MINIAPP_POLL_INTERVAL})
             elif attempts >= 3:
@@ -3025,73 +3636,97 @@ class UiPathRunner:
         raise NeedsReview("已点击识别二维码，但尚未观察到新的小程序窗口；未重复点击，未进入小程序",
                           "startup_no_miniapp")
 
-    def _windows_preview_menu_match(self, selector: str, preview: dict, output_dir: Path) -> dict | None:
-        """右键预览图片，在整屏截图里 OCR 出“识别图中二维码”，并换算成窗口坐标。
-
-        微信 4.x 打开预览后要过一会儿才在右键菜单里给出“识别图中二维码”；
-        菜单里没有该项时先按 Esc 收起，等识别完成后再试，不重复点图片本身。
-        """
+    def _windows_preview_menu_match(self, selector: str, preview: dict,
+                                    output_dir: Path) -> tuple[dict | None, bool]:
+        """确认右键菜单及其识别项；截图或 OCR 证据不足时保留待检查。"""
         if self.ocr_reader is None:
-            return None
-        click_x = float(preview["window_width"]) * 0.5
-        click_y = float(preview["window_height"]) * 0.5
-        window_x, window_y = float(preview.get("window_x") or 0), float(preview.get("window_y") or 0)
+            return None, False
+        center = preview.get("source_match", {}).get("center_image_px") or {
+            "x": preview["width"] / 2, "y": preview["height"] / 2,
+        }
+        click_x = center["x"] * preview["window_width"] / preview["width"]
+        click_y = center["y"] * preview["window_height"] / preview["height"]
+        window_x, window_y = float(preview["window_x"]), float(preview["window_y"])
         point = (window_x + click_x, window_y + click_y)
-        for attempt, wait_seconds in enumerate((1.0, 1.5, 2.0), start=1):
-            self._send({"action": "noop", "seconds": wait_seconds})
+        for attempt in range(1, 3):
             self._send({"action": "right_click", "selector": selector, "x": click_x, "y": click_y})
-            self._send({"action": "noop", "seconds": .8})
+            self._send({"action": "noop", "seconds": .25})
             name = "preview-context-menu.png" if attempt == 1 else f"preview-context-menu-{attempt}.png"
             desktop = self._screenshot(output_dir, selector, name, desktop=True)
-            origin_x, origin_y = float(desktop.get("window_x") or 0), float(desktop.get("window_y") or 0)
-            # 菜单贴着右击点展开；先裁紧一点，识别不到再放宽，避免整屏 OCR 过慢。
-            for radius_x, radius_y in ((560, 700), (1100, 900)):
-                box = (int(point[0] - radius_x), int(point[1] - radius_y),
-                       int(point[0] + radius_x), int(point[1] + radius_y))
-                found = self._ocr_preview_menu(Path(desktop["path"]), box, (origin_x, origin_y))
-                if found:
-                    return {"text": found["text"],
-                            "screen_points": {"x": found["x"], "y": found["y"]},
-                            "desktop_points": {"x": found["x"] - origin_x, "y": found["y"] - origin_y},
-                            "window_points": {"x": found["x"] - window_x, "y": found["y"] - window_y},
-                            "screenshot_size_px": {"width": desktop["width"], "height": desktop["height"]}}
-            self._send({"action": "key", "selector": selector, "key": "escape"})
-        return None
+            origin = (float(desktop["window_x"]), float(desktop["window_y"]))
+            with self._trace("preview_context_menu", attempt=attempt,
+                             frame_evidence=self._debug_frame_ref(Path(desktop["path"]))) as trace:
+                found, visible = self._ocr_preview_menu(Path(desktop["path"]), point, origin)
+                trace.update(menu_observed=visible, qr_action=found)
+            if found:
+                return {"text": found["text"],
+                        "screen_points": {"x": found["x"], "y": found["y"]},
+                        "desktop_points": {"x": found["x"] - origin[0], "y": found["y"] - origin[1]}}, True
+            if visible:
+                # 收起已观察到的菜单；预览窗口由门店收尾统一复核关闭。
+                command = {"action": "key", "selector": selector, "key": "escape"}
+                if preview.get("window_id"):
+                    command["expected_window_id"] = preview["window_id"]
+                self._send(command)
+                return None, True
+        return None, False
 
-    def _ocr_preview_menu(self, shot_path: Path, box: tuple[int, int, int, int],
-                          origin: tuple[float, float]) -> dict | None:
-        """对整屏截图的指定区域做 2 倍 OCR，返回菜单项中心的屏幕坐标。"""
+    def _ocr_preview_menu(self, shot_path: Path, point: tuple[float, float],
+                          origin: tuple[float, float]) -> tuple[dict | None, bool]:
+        """只读取右键点附近的菜单。多项对齐的微信菜单文字是缺项判定的证据。"""
+        cx, cy = point[0] - origin[0], point[1] - origin[1]
         with Image.open(shot_path) as shot:
-            left = max(0, box[0] - int(origin[0]))
-            top = max(0, box[1] - int(origin[1]))
-            right = min(shot.width, box[2] - int(origin[0]))
-            bottom = min(shot.height, box[3] - int(origin[1]))
+            left, top = max(0, int(cx - 275)), max(0, int(cy - 460))
+            right, bottom = min(shot.width, int(cx + 275)), min(shot.height, int(cy + 460))
             if right - left < 60 or bottom - top < 60:
-                return None
+                return None, False
             crop = shot.convert("RGB").crop((left, top, right, bottom))
-            crop = crop.resize((crop.width * 2, crop.height * 2), Image.Resampling.LANCZOS)
+        scale = 1.35
+        crop = crop.resize((round(crop.width * scale), round(crop.height * scale)), Image.Resampling.LANCZOS)
         fd, name = tempfile.mkstemp(prefix="preview-menu-", suffix=".png", dir=str(shot_path.parent))
         os.close(fd)
         temporary = Path(name)
-        temporary.chmod(0o600)
         try:
             crop.save(temporary, format="PNG")
             rows = self.ocr_reader(temporary)
-        except OSError:
-            return None
+        except (OSError, RuntimeError):
+            return None, False
         finally:
             temporary.unlink(missing_ok=True)
+        labels = ("复制", "打印", "转发", "收藏", "定位到聊天位置", "提取文字", "翻译",
+                  "修改图片", "另存为", "使用系统默认方式打开")
+        menu = []
+        qr = []
+        uncertain = False
         for row in rows or []:
-            text = re.sub(r"\s+", "", str(row.get("text", "")))
-            if "识别" not in text or ("二维码" not in text and "维" not in text):
-                continue
+            text = re.sub(r"\s+", "", str(row.get("text", ""))).strip(".。…·")
             try:
-                x = float(row["x"]) + float(row["width"]) / 2
-                y = float(row["y"]) + float(row["height"]) / 2
+                x = left + float(row["x"]) / scale
+                y = top + float(row["y"]) / scale
+                width = float(row["width"]) / scale
+                height = float(row["height"]) / scale
             except (KeyError, TypeError, ValueError):
                 continue
-            return {"text": text, "x": origin[0] + left + x / 2, "y": origin[1] + top + y / 2}
-        return None
+            if abs(x - cx) > 240 or abs(y - cy) > 440:
+                continue
+            if text in labels:
+                menu.append((text, x, y))
+            if re.fullmatch(r"识别(?:图中|图片中的?)?二维码", text):
+                qr.append((text, x, y, width, height))
+            elif "识别" in text or "二维码" in text:
+                uncertain = True
+        for _, column, _ in menu:
+            aligned = {text for text, x, _ in menu if abs(column - x) <= 25}
+            if len(aligned) < 3:
+                continue
+            matches = [item for item in qr if abs(column - item[1]) <= 25]
+            if len(matches) == 1:
+                text, x, y, width, height = matches[0]
+                return {"text": text, "x": origin[0] + x + width / 2,
+                        "y": origin[1] + y + height / 2}, True
+            if not qr and not uncertain:
+                return None, True
+        return None, False
 
     @staticmethod
     def _window_list(windows: Any) -> list[dict]:
@@ -3104,6 +3739,8 @@ class UiPathRunner:
 
     @staticmethod
     def _window_identity(item: dict) -> tuple:
+        if item.get("window_id"):
+            return (item["window_id"],)
         position = item.get("position") or {}
         return (
             str(item.get("app") or "").casefold(), str(item.get("title") or "").strip().casefold(),
@@ -3172,43 +3809,59 @@ class UiPathRunner:
                 break
             if not candidates:
                 break
-            for index, candidate in enumerate(candidates):
-                try:
-                    shot = self._screenshot(
-                        output_dir, candidate["selector"], f"close-miniapp-{index}.png")
-                    width = float(shot.get("window_width") or 0)
-                    height = float(shot.get("window_height") or 0)
-                    if width and height:
-                        # 小程序页面会吞掉 Cmd+W；右上角胶囊里的“关闭”才是可靠出口。
-                        # 窗口可能被上一家拖到屏幕外，先挪回主屏再点，否则会报超出边界。
-                        try:
-                            self._send({"action": "click", "selector": candidate["selector"],
-                                        "x": width - 21, "y": 30})
-                        except RobotCommandError:
-                            self._move_window_on_screen(candidate["selector"])
-                            moved = self._screenshot(output_dir, candidate["selector"],
-                                                     f"close-miniapp-{index}-moved.png")
-                            width = float(moved.get("window_width") or width)
-                            self._send({"action": "click", "selector": candidate["selector"],
-                                        "x": width - 21, "y": 30})
-                        self._wait_title_gone(candidate["title"], 1.0)
-                        remaining = self._miniapp_candidates(
-                            self._window_list(self._send({"action": "discover"}).get("windows")))
-                        if any(item["title"] == candidate["title"] for item in remaining):
-                            # 胶囊未命中时退回“点标题栏聚焦 + Cmd+W”的老路径。
-                            self._send({"action": "click", "selector": candidate["selector"],
-                                        "x": width / 2, "y": 18})
-                            self._send({"action": "key", "selector": candidate["selector"],
-                                        "key": close_key})
-                            self._wait_title_gone(candidate["title"], 0.8)
+            # 关窗失败时留下窗口标题，事后才能区分“真残留”与“不可见窗口误报”。
+            with self._trace("close_miniapp",
+                             candidates=[{"title": item["title"], "selector": item["selector"]}
+                                         for item in candidates]) as round_trace:
+                for index, candidate in enumerate(candidates):
+                    try:
+                        # WeChatAppEx 关掉小程序后可能留一个标题为“微信”的空宿主窗，它会悬在
+                        # 微信主窗口上方，挡住输入区和发送按钮，而胶囊点击与 Alt+F4 都可能被吞掉
+                        # （实测 closed=0）。WM_CLOSE 不依赖焦点，预览窗已验证可靠，先试它。
+                        if sys.platform == "win32" and self._send_close_window(
+                                candidate["selector"], candidate.get("window_id")):
+                            self._wait_title_gone(candidate["title"], 1.0)
                             remaining = self._miniapp_candidates(
                                 self._window_list(self._send({"action": "discover"}).get("windows")))
-                        if not any(item["title"] == candidate["title"] for item in remaining):
-                            closed += 1
-                except (RobotTimeout, RunnerPaused, RunnerTerminated):
-                    raise
-                except Exception:
-                    continue
+                            if not any(item["title"] == candidate["title"] for item in remaining):
+                                closed += 1
+                                continue
+                        shot = self._screenshot(
+                            output_dir, candidate["selector"], f"close-miniapp-{index}.png")
+                        width = float(shot.get("window_width") or 0)
+                        height = float(shot.get("window_height") or 0)
+                        if width and height:
+                            # 小程序页面会吞掉 Cmd+W；右上角胶囊里的“关闭”才是可靠出口。
+                            # 窗口可能被上一家拖到屏幕外，先挪回主屏再点，否则会报超出边界。
+                            try:
+                                self._send({"action": "click", "selector": candidate["selector"],
+                                            "x": width - 21, "y": 30})
+                            except RobotCommandError:
+                                self._move_window_on_screen(candidate["selector"])
+                                moved = self._screenshot(output_dir, candidate["selector"],
+                                                         f"close-miniapp-{index}-moved.png")
+                                width = float(moved.get("window_width") or width)
+                                self._send({"action": "click", "selector": candidate["selector"],
+                                            "x": width - 21, "y": 30})
+                            self._wait_title_gone(candidate["title"], 1.0)
+                            remaining = self._miniapp_candidates(
+                                self._window_list(self._send({"action": "discover"}).get("windows")))
+                            if any(item["title"] == candidate["title"] for item in remaining):
+                                # 胶囊未命中时退回“点标题栏聚焦 + Cmd+W”的老路径。
+                                self._send({"action": "click", "selector": candidate["selector"],
+                                            "x": width / 2, "y": 18})
+                                self._send({"action": "key", "selector": candidate["selector"],
+                                            "key": close_key})
+                                self._wait_title_gone(candidate["title"], 0.8)
+                                remaining = self._miniapp_candidates(
+                                    self._window_list(self._send({"action": "discover"}).get("windows")))
+                            if not any(item["title"] == candidate["title"] for item in remaining):
+                                closed += 1
+                    except (RobotTimeout, RunnerPaused, RunnerTerminated):
+                        raise
+                    except Exception:
+                        continue
+                round_trace.update(closed=closed)
             if sys.platform == "win32":
                 # 点击关闭后按“窗口是否还在”轮询，全部消失即结束本轮。
                 if self._wait_no_miniapp(1.0):
@@ -5582,6 +6235,41 @@ class UiPathRunner:
             return ""
         return re.sub(r"\s+", "", "".join(str(row.get("text", "")) for row in rows))
 
+    def _menu_gate(self, page_path: Path, source_name: str) -> dict:
+        """菜单语义门：首屏不能是空白页或加载/报错页。
+
+        判据只采用“确定能看到的失败证据”：画面接近纯白，或出现加载/报错文案。
+        不再要求 OCR 必须读出菜品与价格——窄窗口截图上 OCR 噪声很大（E0039 实测把
+        “￥8/位”读成乱码），拿锚点当否决条件会把真实菜单判成假失败。
+        锚点信息仍然写进 trace 供诊断，但不再决定成败。
+        """
+        with Image.open(page_path) as image_file:
+            size = image_file.size
+            blank_ratio = _near_white_ratio(image_file)
+        result = {"passed": True, "blank_ratio": round(blank_ratio, 4)}
+        if blank_ratio >= _MENU_BLANK_WHITE_RATIO:
+            result.update(passed=False, reason="首屏接近空白，未加载出内容")
+            return result
+        if self.ocr_reader is None:
+            result["skipped"] = "ocr_unavailable"
+            return result
+        try:
+            rows = self.ocr_reader(page_path) or []
+        except Exception as exc:
+            result["skipped"] = f"ocr_failed:{type(exc).__name__}"
+            return result
+        text = "".join(str(row.get("text", "")) for row in rows)
+        loading = next((word for word in _MENU_LOADING_WORDS if word in text), "")
+        result.update(loading=loading, rows=len(rows), chars=len(text))
+        decision = self._local_ready_preflight(page_path, source_name, (size, rows))
+        if decision is not None:
+            result.update(items=len(decision.item_names_visible), prices=len(decision.prices_visible),
+                          anchors_ok=bool(decision.ready_evidence_ok),
+                          reason=str(decision.reason or "")[:120])
+        if loading:
+            result["passed"] = False
+        return result
+
     @staticmethod
     def _same_page_text(left: str, right: str) -> bool:
         if not left or not right:
@@ -5598,6 +6286,8 @@ class UiPathRunner:
         scroll_y_ratio = 0.30
 
         def scroll_once(target: dict) -> dict:
+            # 前 3 帧慢一点，留出弹窗浮现与渲染时间供复核；之后恢复快速滚动，避免整体耗时被拉长。
+            settle = _SCROLL_SETTLE_SLOW_SECONDS if len(pages) < _SCROLL_SLOW_PAGES else _SCROLL_SETTLE_FAST_SECONDS
             return self._send({
                 "action": "scroll_capture", "path": str((output_dir / "evidence" / f"page-{index + 1:04d}.png").resolve()),
                 "selector": selector,
@@ -5605,6 +6295,7 @@ class UiPathRunner:
                 "y": (region.y + region.height * scroll_y_ratio) * target["window_height"] / target["height"],
                 "direction": "Down",
                 "units": int(profile.get("scroll_units", 4)),
+                "settle_seconds": settle,
             })
 
         def frame_content(target: dict) -> Image.Image:
@@ -5620,10 +6311,10 @@ class UiPathRunner:
             content = frame_content(frame)
             difference = self._image_difference_images(previous, content) if previous is not None else None
             rechecks = 0
-            # 刚滚完可能还没渲染完：相似时补拍一次再判到底，避免把“没加载出来”当成已滚到底。
-            while difference is not None and difference < 0.7 and rechecks < 1:
+            # 刚滚完可能还没渲染完：相似时按 1.0s/1.5s 复拍两次再判到底，避免把“没加载出来”当成已滚到底。
+            while difference is not None and difference < 0.7 and rechecks < len(_SCROLL_RECHECK_WAITS):
                 self._guard()
-                time.sleep(0.25)
+                time.sleep(_SCROLL_RECHECK_WAITS[rechecks])
                 frame = self._screenshot(output_dir, selector, f"menu-recheck-{index + 1}.png")
                 content = frame_content(frame)
                 difference = self._image_difference_images(previous, content)

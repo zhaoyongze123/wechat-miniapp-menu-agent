@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -24,6 +25,13 @@ from menu_capture.uipath_runner import (
 )
 import menu_capture.uipath_runner as uipath_runner_module
 
+@pytest.fixture(autouse=True)
+def _no_render_wait(monkeypatch):
+    """单元测试不等待真实渲染/网络：稳定期、复拍、语义门重试归零。"""
+    monkeypatch.setattr(uipath_runner_module, "_HANDOFF_SETTLE_SECONDS", 0)
+    monkeypatch.setattr(uipath_runner_module, "_SCROLL_RECHECK_WAITS", (0, 0))
+    monkeypatch.setattr(uipath_runner_module, "_MENU_GATE_RETRY_SECONDS", 0)
+
 class FakeAgentModel:
     node = "/test/node"
     base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -39,6 +47,23 @@ def _configured_gui_agent_model(monkeypatch):
 def _image(path: Path, color: str = "white", size=(240, 160)) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", size, color).save(path)
+
+
+def _menu_shot(path: Path, color, size=(240, 160)) -> None:
+    """模拟菜单截图：底色区分页面，网格线提供内容，避免被“空白页”判据误拦。
+
+    同一底色渲染结果完全一致，滚动/翻页判据仍然按像素差工作。
+    """
+    from PIL import ImageDraw
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.new("RGB", size, color)
+    draw = ImageDraw.Draw(image)
+    base = color if isinstance(color, tuple) else (
+        (255, 255, 255) if color == "white" else (0, 0, 0))
+    ink = tuple(255 - int(channel) for channel in base)
+    for y in range(10, size[1], 24):
+        draw.rectangle([8, y, size[0] - 8, y + 10], fill=ink)
+    image.save(path)
 
 def _profile(path: Path, task_id: str, **overrides) -> None:
     profile = {
@@ -203,7 +228,7 @@ class FakeActor:
         path = Path(command["path"])
         # 菜单页黑白交替，每 3 次滚动重复一次，模拟“滚动到底”；跨门店仍能稳定复现。
         color = "black" if self.scrolls % 3 == 1 else "white"
-        _image(path, color, size=(240, 160))
+        _menu_shot(path, color, size=(240, 160))
         return {
             "id": command["id"], "ok": True, "error": "", "path": str(path),
             "width": 240, "height": 160, "window_width": 120, "window_height": 80,
@@ -236,7 +261,7 @@ class PagingActor(FakeActor):
         else:
             color = ((self.page * 31) % 256, (self.page * 67) % 256, (self.page * 97) % 256)
         path = Path(command["path"])
-        _image(path, color, size=(240, 160))
+        _menu_shot(path, color, size=(240, 160))
         return {
             "id": command["id"], "ok": True, "error": "", "path": str(path),
             "width": 240, "height": 160, "window_width": 120, "window_height": 80,
@@ -271,7 +296,8 @@ def test_attached_mode_waits_for_manual_main_and_publishes_agent_capture(tmp_pat
     assert runner.transport.run_timeouts[0] == 300
     assert runner.transport.stop_requested is True
     if platform == "win32":
-        assert not any(command["action"] in {"resize", "capture_rect"} for command in runner.transport.commands)
+        # Windows 不再走 capture_rect 快路径；准备阶段会用 resize 统一收窄加高小程序窗口。
+        assert not any(command["action"] == "capture_rect" for command in runner.transport.commands)
     assert store.get(other["id"])["status"] == "pending"
     report_path = next((output_root / ".uipath-runs").glob("*/gui-agent/*/navigation-result.json"))
     report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -279,31 +305,6 @@ def test_attached_mode_waits_for_manual_main_and_publishes_agent_capture(tmp_pat
     assert report["capture_status"] == "staged"
     assert list(Path(record["output_dir"]).glob("page-*.png"))
     assert Path(record["output_dir"]).is_relative_to(output_root)
-
-def test_precheck_result_is_persisted_when_window_preparation_fails(tmp_path: Path, monkeypatch) -> None:
-    """导航前失败也要把先验落盘，便于复盘错码原因。"""
-    runner, _, selected, _, _, output_root = _setup(tmp_path)
-    from menu_capture import qr_precheck
-    monkeypatch.setattr(qr_precheck, "classify_image",
-                        lambda *_args, **_kwargs: qr_precheck.QrHint(
-                            status="ok", platform="dianping", purpose="group_buy",
-                            evidence="点评扫码买单", confidence=0.9))
-
-    def fail_prepare(*_args, **_kwargs):
-        raise RuntimeError("window preparation failed")
-
-    monkeypatch.setattr(runner, "_prepare_trial_window", fail_prepare)
-
-    runner.start()
-    runner.thread.join(timeout=10)
-    assert not runner.thread.is_alive()
-
-    report_path = next((output_root / ".uipath-runs").glob("*/gui-agent/*/navigation-result.json"))
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["runtime_status"] == "failed"
-    assert report["qr_precheck"]["status"] == "ok"
-    assert report["qr_precheck"]["purpose"] == "group_buy"
-    assert report["qr_precheck"]["evidence"] == "点评扫码买单"
 
 def _configure_cli_launch(runner, profile_path: Path, project_dir: Path, monkeypatch, **profile_overrides):
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -528,6 +529,120 @@ def test_annotation_menu_preflight_resolves_clear_menu_and_rejects_dimmed_overla
     assert clear_page is not None and clear_page.ready_evidence_ok
     assert dimmed_page is None
 
+def test_menu_gate_flags_blank_or_loading_without_ocr_anchor_veto(tmp_path: Path):
+    runner, _, _, _, _, _ = _setup(tmp_path)
+    path = tmp_path / "page-0001.png"
+    source_name = "ZA0070005＿老胖串店＿济南市＿老胖串店中央厨房"
+
+    # 有内容的画面即使 OCR 只读到部分锚点也放行：OCR 噪声不能当成失败结论。
+    from PIL import ImageDraw
+    image = Image.new("RGB", (414, 780), "white")
+    ImageDraw.Draw(image).rectangle([0, 0, 413, 300], fill=(200, 80, 60))
+    image.save(path)
+    runner.ocr_reader = lambda _path: _menu_anchor_ocr_rows()
+    passed = runner._menu_gate(path, source_name)
+    assert passed["passed"] is True and passed["anchors_ok"] is True
+
+    # 纯白页即使 OCR 勉强读出锚点，也按“未渲染出内容”转待检查。
+    _image(path, "white", size=(414, 780))
+    blank = runner._menu_gate(path, source_name)
+    assert blank["passed"] is False and "空白" in blank["reason"]
+
+    runner.ocr_reader = lambda _path: []
+    assert runner._menu_gate(path, source_name)["passed"] is False
+
+    image = Image.new("RGB", (414, 780), "white")
+    ImageDraw.Draw(image).rectangle([0, 0, 413, 300], fill=(40, 60, 90))
+    image.save(path)
+    runner.ocr_reader = lambda _path: [{"text": "内容加载中", "x": 0, "y": 0,
+                                        "width": 80, "height": 20, "confidence": .9}]
+    loading = runner._menu_gate(path, source_name)
+    assert loading["passed"] is False and loading["loading"] == "加载中"
+
+def test_shadow_click_guard_records_stale_without_blocking(tmp_path: Path):
+    runner = object.__new__(UiPathRunner)
+    frame_path, probe_path = tmp_path / "frame.png", tmp_path / "probe.png"
+    _image(frame_path, "white", size=(200, 200))
+    _image(probe_path, "black", size=(200, 200))
+    runner._guard_frame = {"path": str(frame_path)}
+    runner._guard_dir = tmp_path
+    runner._screenshot = lambda output_dir, selector, name: {"path": str(probe_path)}
+    events = []
+    runner._shadow_click_guard({"selector": "s"}, {"x": 10, "y": 20}, "3",
+                              lambda kind, **fields: events.append((kind, fields)))
+
+    assert events[0][0] == "click_guarded"
+    assert events[0][1]["stale"] is True
+    assert events[0][1]["shadow"] is True
+    assert events[0][1]["delta"] > uipath_runner_module._CLICK_GUARD_DELTA
+
+def test_follow_new_miniapp_window_switches_target_after_click(tmp_path: Path):
+    runner = object.__new__(UiPathRunner)
+    webpage = {"title": "点餐网页", "app": "WeChat", "window_id": "1",
+               "position": {"x": 0, "y": 0, "width": 420, "height": 900}}
+    miniapp = {"title": "点餐小程序", "app": "WeChat", "window_id": "2",
+               "position": {"x": 40, "y": 40, "width": 360, "height": 880}}
+    replies = [[webpage], [webpage, miniapp]]
+    runner._send = lambda _command: {"windows": replies.pop(0) if len(replies) > 1 else replies[0]}
+    prepared = []
+    runner._prepare_trial_window = lambda selector, evidence_dir, host_trace=None: prepared.append(selector)
+    runner._guard_dir = tmp_path
+    active = {"selector": "web", "title": ""}
+    events = []
+
+    result = runner._follow_new_miniapp_window(
+        active, UiPathRunner._miniapp_candidates([webpage]), "4",
+        lambda kind, **fields: events.append((kind, fields)))
+
+    assert result["switched"] is True and result["title"] == "点餐小程序"
+    assert active["title"] == "点餐小程序" and "点餐小程序" in active["selector"]
+    assert prepared == [active["selector"]]
+    assert events[0][0] == "window_switch" and events[0][1]["window_id"] == "2"
+
+
+def test_follow_new_miniapp_window_keeps_target_when_no_window_appears(tmp_path: Path, monkeypatch):
+    runner = object.__new__(UiPathRunner)
+    webpage = {"title": "点餐网页", "app": "WeChat", "window_id": "1",
+               "position": {"x": 0, "y": 0, "width": 420, "height": 900}}
+    runner._send = lambda _command: {"windows": [webpage]}
+    runner._prepare_trial_window = lambda *_args, **_kwargs: pytest.fail("不应切换窗口")
+    monkeypatch.setattr(uipath_runner_module, "_NEW_WINDOW_WAIT_SECONDS", 0)
+    active = {"selector": "web", "title": ""}
+
+    assert runner._follow_new_miniapp_window(
+        active, UiPathRunner._miniapp_candidates([webpage]), "5", lambda *_a, **_k: None) == {}
+    assert active["selector"] == "web"
+
+
+def test_execute_click_returns_window_switch_result(tmp_path: Path):
+    runner = object.__new__(UiPathRunner)
+    webpage = {"title": "点餐网页", "app": "WeChat", "window_id": "1",
+               "position": {"x": 0, "y": 0, "width": 420, "height": 900}}
+    miniapp = {"title": "点餐小程序", "app": "WeChat", "window_id": "2",
+               "position": {"x": 40, "y": 40, "width": 360, "height": 880}}
+    replies = [[webpage], [webpage, miniapp]]
+    sent = []
+
+    def send(command):
+        sent.append(command["action"])
+        return {"windows": replies.pop(0) if len(replies) > 1 else replies[0]} \
+            if command["action"] == "discover" else {}
+
+    runner._send = send
+    runner._shadow_click_guard = lambda *_args: None
+    runner._prepare_trial_window = lambda *_args, **_kwargs: None
+    runner._guard_dir = tmp_path
+    active = {"selector": "web", "title": ""}
+    events = []
+
+    result = runner._execute_trial_action(active, {"action": "click", "x": 10, "y": 20}, "6",
+                                          lambda kind, **fields: events.append((kind, fields)))
+
+    assert result["window_switch"]["title"] == "点餐小程序"
+    assert sent == ["discover", "click", "discover"]
+    assert [kind for kind, _ in events] == ["window_switch", "tool"]
+
+
 def test_automatic_readiness_allows_missing_ocr(tmp_path: Path) -> None:
     runner, _, _, _, profile_path, _ = _setup(tmp_path, mode="automatic")
     runner.clipboard_preparer = lambda _path: None
@@ -738,6 +853,25 @@ def test_capture_continues_until_two_adjacent_frames_match(tmp_path: Path) -> No
     assert all(c["y"] == pytest.approx((20 + 120 * 0.30) * 120 / 240) for c in downs)
     assert all(c["x"] == pytest.approx((20 + 180 * 0.65) * 120 / 240) for c in downs)
 
+
+def test_capture_scroll_paces_first_frames_slow_then_fast(tmp_path: Path) -> None:
+    """前 3 帧给弹窗/渲染留时间，之后恢复快速滚动，避免整店耗时被拖长。"""
+    runner, _, _, _, _, _ = _setup(tmp_path)
+    output = tmp_path / "paced-output"
+    output.mkdir()
+    actor = PagingActor(tmp_path / "ipc", output, page_limit=6)
+    runner.transport = actor
+    settings = runner.configs.load()
+    settings.capture.max_pages = 10
+    frame = runner._screenshot(output, "miniapp", "initial.png")
+    runner._capture_menu("miniapp", frame, Region(x=20, y=20, width=180, height=120),
+                         settings, {"scroll_units": 1}, output)
+    settles = [c["settle_seconds"] for c in actor.commands if c.get("action") == "scroll_capture"]
+    slow = uipath_runner_module._SCROLL_SETTLE_SLOW_SECONDS
+    fast = uipath_runner_module._SCROLL_SETTLE_FAST_SECONDS
+    assert settles[:2] == [slow, slow]
+    assert all(value == fast for value in settles[2:])
+
 def test_automatic_two_task_batch_reuses_one_actor_and_closes_between_stores(tmp_path: Path, monkeypatch) -> None:
     runner, store, first, second, profile_path, output_root = _setup(tmp_path, mode="automatic")
     profile = json.loads(profile_path.read_text(encoding="utf-8"))
@@ -780,7 +914,10 @@ def test_automatic_two_task_batch_reuses_one_actor_and_closes_between_stores(tmp
     for selected in (first, second):
         output = Path(store.get(selected["id"])["output_dir"])
         assert list(output.iterdir())
-        assert all(path.is_file() and path.suffix == ".png" and path.name.startswith("page-") for path in output.iterdir())
+        # 门店产物只允许菜单页与 trace/ 归档目录两类内容。
+        assert all((path.is_file() and path.suffix == ".png" and path.name.startswith("page-"))
+                   or (path.is_dir() and path.name == "trace") for path in output.iterdir())
+        assert (output / "trace" / "trace_summary.json").is_file()
     assert not (output_root / "100").exists()
     assert [command["action"] for command in actor.commands].count("scroll_capture") >= 2
 
@@ -1015,6 +1152,82 @@ def test_prune_deletes_failed_evidence_after_two_days_only(tmp_path):
     assert not expired.exists()
 
 
+def test_archive_trace_copies_calls_host_frames_and_summary(tmp_path):
+    runner, _store, selected, _other, _profile_path, output_dir = _setup(tmp_path)
+    runner.run_id = "run-1"
+    evidence = tmp_path / "run" / "gui-agent" / "attempt-1"
+    evidence.mkdir(parents=True)
+    frame_path = evidence / "ui-tars-001.png"
+    _image(frame_path, "white")
+    digest = hashlib.sha256(frame_path.read_bytes()).hexdigest()
+    (evidence / "agent-calls.jsonl").write_text("\n".join([
+        json.dumps({"type": "session", "at": "2026-11-12T10:00:00.000+08:00"}),
+        json.dumps({"type": "screenshot", "at": "2026-11-12T10:00:01.000+08:00", "frame_id": "1",
+                    "sha256": digest}),
+        json.dumps({"type": "request", "at": "2026-11-12T10:00:02.000+08:00", "call_id": 1}),
+        json.dumps({"type": "result", "at": "2026-11-12T10:00:03.000+08:00", "outcome": "success"}),
+    ]) + "\n", encoding="utf-8")
+    (evidence / "agent-host.jsonl").write_text("\n".join([
+        json.dumps({"kind": "frame", "sequence": 1, "frame_id": "1", "path": "ui-tars-001.png"}),
+        json.dumps({"kind": "tool", "frame_id": "1", "action": "click"}),
+    ]) + "\n", encoding="utf-8")
+    (evidence / "navigation-result.json").write_text(json.dumps({
+        "agent_outcome": "success", "agent_reason": "菜单可采集",
+        "navigation": {"outcome": "success", "reason": "菜单可采集"},
+        "capture": {"status": "staged", "pages": ["page-0001.png"]},
+    }), encoding="utf-8")
+    destination = output_dir / "清洗批次" / "批次A" / selected["source_name"]
+    destination.mkdir(parents=True)
+    _image(destination / "page-0001.png", "gray")
+    for name in ("page-0001.png",):
+        os.utime(destination / name, (time.time(), time.time()))
+    capture_dir = tmp_path / "staging"
+    capture_dir.mkdir()
+    _image(capture_dir / "wechat-after-close.png", "white")
+
+    trace_dir = runner._archive_trace(selected, evidence, destination, status="captured",
+                                      stage="captured", message="已保存菜单截图", code="",
+                                      capture_dir=capture_dir)
+
+    assert trace_dir == destination / "trace"
+    calls = [json.loads(line) for line in (trace_dir / "agent-calls.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert {record["trace_id"] for record in calls} == {f"run-1:{selected['id']}"}
+    # 没有 frame_id 的请求沿用上一轮观察序号，保证 step_id 连续可对齐。
+    assert [record["step_id"] for record in calls] == [None, 1, 1, 1]
+    assert (trace_dir / "frames" / f"{digest}.png").read_bytes() == frame_path.read_bytes()
+    summary = json.loads((trace_dir / "trace_summary.json").read_text(encoding="utf-8"))
+    assert summary["trace_id"] == f"run-1:{selected['id']}"
+    assert summary["status"] == "captured"
+    assert summary["agent"] == {"outcome": "success", "reason": "菜单可采集"}
+    assert summary["capture"] == {"status": "staged", "pages": 1}
+    assert summary["model_calls"] == 1 and summary["screenshots"] == 1
+    assert summary["artifacts"] == ["page-0001.png"]
+    assert summary["recovery"] == ["recovery/wechat-after-close.png"]
+    assert (trace_dir / "recovery" / "wechat-after-close.png").is_file()
+
+
+def test_archive_trace_appends_error_when_agent_did_not_finish(tmp_path):
+    runner, _store, selected, _other, _profile_path, _output_dir = _setup(tmp_path)
+    runner.run_id = "run-2"
+    evidence = tmp_path / "run" / "gui-agent" / "attempt-2"
+    evidence.mkdir(parents=True)
+    (evidence / "agent-calls.jsonl").write_text(
+        json.dumps({"type": "screenshot", "at": "2026-11-12T10:00:01.000+08:00", "frame_id": "1",
+                    "sha256": "0" * 64}) + "\n", encoding="utf-8")
+    destination = tmp_path / "output" / "门店"
+
+    trace_dir = runner._archive_trace(selected, evidence, destination, status="needs_review",
+                                      stage="uipath_timeout", message="UiPath 命令超时", code="uipath_timeout")
+
+    calls = [json.loads(line) for line in (trace_dir / "agent-calls.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert calls[-1]["type"] == "error"
+    assert calls[-1]["code"] == "uipath_timeout"
+    assert calls[-1]["trace_id"] == f"run-2:{selected['id']}"
+    summary = json.loads((trace_dir / "trace_summary.json").read_text(encoding="utf-8"))
+    assert summary["error_code"] == "uipath_timeout"
+    assert summary["status"] == "needs_review"
+
+
 def test_send_button_state_detects_pasted_content(tmp_path):
     # 微信发送按钮：输入框为空时灰色，有内容时变绿；用它判断大图是否已附着。
     empty = tmp_path / "empty.png"
@@ -1036,3 +1249,157 @@ def test_image_attach_timeout_scales_with_pixel_count():
     assert UiPathRunner._image_attach_timeout((800, 600)) == pytest.approx(3.672, abs=.001)
     assert UiPathRunner._image_attach_timeout((0, 0)) == pytest.approx(3.0)
     assert UiPathRunner._image_attach_timeout((12000, 9000)) == 20.0
+
+
+def test_close_windows_preview_uses_ctrl_w_because_escape_cannot_close_it(tmp_path, monkeypatch):
+    # 微信 4.x 的“图片和视频”独立窗口只认 Ctrl+W；只发 Esc 会把它永久留在前台，
+    # 后面每一家的安全起点校验都会连带失败。首次按键必须是 Ctrl+W。
+    runner, *_ = _setup(tmp_path)
+    selector = "<wnd app='weixin.exe' title='图片和视频' cls='Qt51514QIcon' />"
+    window = {"app": "Weixin.exe", "title": "图片和视频", "cls": "Qt51514QIcon", "window_id": "1:1"}
+    state = {"open": True}
+    sent = []
+
+    def send(command):
+        sent.append(command)
+        if command.get("action") == "key" and command.get("key") == "ctrl+w":
+            state["open"] = False
+        return {"ok": True, "windows": [window] if state["open"] else []}
+
+    monkeypatch.setattr(runner, "_send", send)
+    monkeypatch.setattr(runner, "_window_list", lambda windows: list(windows))
+
+    runner._close_windows_preview(selector)
+
+    assert [c["key"] for c in sent if c.get("action") == "key"] == ["ctrl+w"]
+
+
+def test_close_windows_preview_falls_back_to_escape_when_ctrl_w_ignored(tmp_path, monkeypatch):
+    # Ctrl+W 无效时（旧版微信/右键菜单）才退回 Esc，避免丢掉原有兜底能力。
+    runner, *_ = _setup(tmp_path)
+    selector = "<wnd app='weixin.exe' title='图片和视频' cls='Qt51514QIcon' />"
+    window = {"app": "Weixin.exe", "title": "图片和视频", "cls": "Qt51514QIcon", "window_id": "1:1"}
+    state = {"open": True}
+    sent = []
+
+    def send(command):
+        sent.append(command)
+        if command.get("action") == "key" and command.get("key") == "escape":
+            state["open"] = False
+        return {"ok": True, "windows": [window] if state["open"] else []}
+
+    monkeypatch.setattr(runner, "_send", send)
+    monkeypatch.setattr(runner, "_window_list", lambda windows: list(windows))
+    clock = iter(range(1000))
+    monkeypatch.setattr(uipath_runner_module.time, "monotonic", lambda: next(clock))
+
+    runner._close_windows_preview(selector)
+
+    assert [c["key"] for c in sent if c.get("action") == "key"] == ["ctrl+w", "ctrl+w", "escape"]
+
+
+def test_image_attach_retry_clicks_input_before_repasting(tmp_path, monkeypatch):
+    # 店名回车后焦点可能被聊天区接管，粘贴图片会被吞掉。重试粘贴前必须先点回输入框，
+    # 否则会连续整批报“二维码图片未附着到微信输入框”。
+    runner, *_ = _setup(tmp_path)
+    profile = {"wechat_selector": "<wnd app='weixin.exe' title='微信' cls='Qt51514QWindowIcon' />",
+               "paste_shortcut": "ctrl+v", "wechat_input_offset_x": 138.0, "wechat_input_offset_y": 48.0}
+    frame = {"path": str(tmp_path / "wechat.png"), "width": 999, "height": 749,
+             "window_width": 999, "window_height": 749}
+    sent = []
+    clicks = []
+
+    monkeypatch.setattr(runner, "_send", lambda command: sent.append(command) or {"ok": True})
+    monkeypatch.setattr(runner, "_screenshot", lambda out, sel, name: frame)
+    monkeypatch.setattr(runner, "_send_button_active", lambda path: False)
+    monkeypatch.setattr(runner, "_image_pixels", lambda path: (0, 0))
+    monkeypatch.setattr(runner, "_click_wechat_input", lambda prof, fr: clicks.append(dict(fr)))
+    monkeypatch.setattr(runner, "_guard", lambda: None)
+    clock = iter(range(0, 10000, 2))
+    monkeypatch.setattr(uipath_runner_module.time, "monotonic", lambda: float(next(clock)))
+
+    with pytest.raises(NeedsReview) as raised:
+        runner._await_image_attached(profile, tmp_path, None)
+
+    assert "未附着到微信输入框" in str(raised.value)
+    assert len(clicks) == 1
+    assert [c["key"] for c in sent if c.get("action") == "key"] == ["ctrl+v"]
+
+
+def test_input_content_distinguishes_text_image_and_empty(tmp_path):
+    # 三步判据的基础：相对点击后的空基线判断输入区是空、文本还是图片缩略图。
+    # 文本与图片靠变化区域的高度/填充率区分，1px 光标不能被当成内容。
+    size = (999, 749)
+    baseline = tmp_path / "input-baseline.png"
+    _image(baseline, "#EDEDED", size=size)
+
+    empty = tmp_path / "input-empty.png"
+    _image(empty, "#EDEDED", size=size)
+
+    text = tmp_path / "input-text.png"
+    _image(text, "#EDEDED", size=size)
+    with Image.open(text) as image:
+        ImageDraw.Draw(image).rectangle((280, 620, 520, 640), fill="#202020")
+        image.save(text)
+
+    thumbnail = tmp_path / "input-thumbnail.png"
+    _image(thumbnail, "#EDEDED", size=size)
+    with Image.open(thumbnail) as image:
+        ImageDraw.Draw(image).rectangle((275, 600, 395, 700), fill="#3366CC")
+        image.save(thumbnail)
+
+    caret = tmp_path / "input-caret.png"
+    _image(caret, "#EDEDED", size=size)
+    with Image.open(caret) as image:
+        ImageDraw.Draw(image).rectangle((300, 610, 301, 630), fill="#202020")
+        image.save(caret)
+
+    assert UiPathRunner._input_content(empty, baseline)["kind"] == "empty"
+    assert UiPathRunner._input_content(text, baseline)["kind"] == "text"
+    assert UiPathRunner._input_content(thumbnail, baseline)["kind"] == "image"
+    assert UiPathRunner._input_content(caret, baseline)["kind"] == "empty"
+    assert UiPathRunner._input_content(empty, None)["kind"] == "unknown"
+
+
+def test_input_content_detects_short_left_aligned_name(tmp_path):
+    # 真实截图（1443×749）里短店名从 x≈251、高约 11px 处起排；
+    # 旧裁剪左边界 26% 会把整段切掉，导致粘贴成功却判为空、回车不发、店名残留连锁失败。
+    size = (1443, 749)
+    baseline = tmp_path / "baseline.png"
+    _image(baseline, "#EDEDED", size=size)
+    text = tmp_path / "text.png"
+    _image(text, "#EDEDED", size=size)
+    with Image.open(text) as image:
+        ImageDraw.Draw(image).rectangle((251, 613, 298, 624), fill="#202020")
+        image.save(text)
+    caret = tmp_path / "caret.png"
+    _image(caret, "#EDEDED", size=size)
+    with Image.open(caret) as image:
+        ImageDraw.Draw(image).rectangle((251, 613, 252, 632), fill="#202020")
+        image.save(caret)
+
+    assert UiPathRunner._input_content(text, baseline)["kind"] == "text"
+    assert UiPathRunner._input_content(caret, baseline)["kind"] == "empty"
+
+
+def test_chat_image_bubble_located_while_still_loading(tmp_path):
+    # 图片刚发出、缩略图还是灰色占位时也能定位：只认门店名下方最新的一块非背景区域，
+    # 上方的旧气泡不参与，也不再要求原图模板匹配成功。
+    from menu_capture.chat_image_locator import locate_chat_image_bubble
+
+    shot = tmp_path / "chat.png"
+    Image.new("RGB", (999, 749), "#F5F5F5").save(shot)
+    with Image.open(shot) as image:
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((600, 120, 900, 260), fill="#C0C0C0")
+        draw.rectangle((600, 420, 900, 560), fill="#D8D8D8")
+        image.save(shot)
+
+    match = locate_chat_image_bubble(shot, anchor_bottom=380)
+
+    # 5×5 闭运算会把包围盒向外扩 1~2px，位置断言留同样容差。
+    left, top, right, bottom = match["box_image_px"]
+    assert (left, top) == (600, 420)
+    assert abs(right - 900) <= 2 and abs(bottom - 560) <= 2
+    assert match["center_image_px"] == {"x": 750, "y": 490}
+    assert match["method"] == "chat_bubble_background_diff"

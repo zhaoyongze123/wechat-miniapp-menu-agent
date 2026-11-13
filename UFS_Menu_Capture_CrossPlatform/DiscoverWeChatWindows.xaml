@@ -28,6 +28,7 @@
   <Sequence DisplayName="只读发现 WeChat 顶层窗口" sap:VirtualizedContainerService.HintSize="900,900" sap2010:WorkflowViewState.IdRef="Sequence_1">
     <Sequence.Variables>
       <Variable x:TypeArguments="scg:IEnumerable(ui:UiElement)" Name="foundWindows" />
+      <Variable x:TypeArguments="scg:IEnumerable(ui:UiElement)" Name="foundMiniappWindows" />
       <Variable x:TypeArguments="scg:List(scg:Dictionary(x:String, x:Object))" Name="windowRecords" />
       <Variable x:TypeArguments="x:String" Name="windowTitle" />
       <Variable x:TypeArguments="x:String" Name="windowApp" />
@@ -45,10 +46,15 @@
     </Assign>
     <uix:NFindElements Children="[foundWindows]" DisplayName="枚举 WeChat 顶层窗口" HealingAgentBehavior="SameAsCard" Mode="FindTopLevels" Version="V5" sap:VirtualizedContainerService.HintSize="500,120" sap2010:WorkflowViewState.IdRef="NFindElements_WeChat">
       <uix:NFindElements.FilterTarget>
-        <uix:TargetAnchorable FuzzySelectorArgument="[If(System.OperatingSystem.IsWindows(), If(System.Diagnostics.Process.GetProcessesByName(&quot;Weixin&quot;).Length &gt; 0, &quot;&lt;wnd app='weixin.exe' /&gt;&quot;, &quot;&lt;wnd app='wechat.exe' /&gt;&quot;), &quot;&lt;wnd app='WeChat' role='AXWindow' /&gt;&quot;)]" SearchSteps="FuzzySelector" />
+        <uix:TargetAnchorable FuzzySelectorArgument="[If(System.OperatingSystem.IsWindows(), If(System.Diagnostics.Process.GetProcessesByName(&quot;Weixin&quot;).Length &gt; 0, &quot;&lt;wnd app='weixin.exe' title='微信*' /&gt;&quot;, &quot;&lt;wnd app='wechat.exe' title='WeChat*' /&gt;&quot;), &quot;&lt;wnd app='WeChat' role='AXWindow' /&gt;&quot;)]" SearchSteps="FuzzySelector" />
       </uix:NFindElements.FilterTarget>
     </uix:NFindElements>
-    <ForEach x:TypeArguments="ui:UiElement" Values="[foundWindows]" sap:VirtualizedContainerService.HintSize="800,500" sap2010:WorkflowViewState.IdRef="ForEach_Window">
+    <uix:NFindElements Children="[foundMiniappWindows]" DisplayName="枚举小程序顶层窗口" HealingAgentBehavior="SameAsCard" Mode="FindTopLevels" Version="V5" sap:VirtualizedContainerService.HintSize="500,120" sap2010:WorkflowViewState.IdRef="NFindElements_Miniapp">
+      <uix:NFindElements.FilterTarget>
+        <uix:TargetAnchorable FuzzySelectorArgument="[If(System.OperatingSystem.IsWindows(), &quot;&lt;wnd app='wechatappex.exe' cls='Chrome_WidgetWin_*' /&gt;&quot;, &quot;&lt;wnd app='WeChatMiniProgram' role='AXWindow' /&gt;&quot;)]" SearchSteps="FuzzySelector" />
+      </uix:NFindElements.FilterTarget>
+    </uix:NFindElements>
+    <ForEach x:TypeArguments="ui:UiElement" Values="[foundWindows.Concat(foundMiniappWindows)]" sap:VirtualizedContainerService.HintSize="800,500" sap2010:WorkflowViewState.IdRef="ForEach_Window">
       <ForEach.Body>
         <ActivityAction x:TypeArguments="ui:UiElement">
           <ActivityAction.Argument>

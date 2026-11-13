@@ -237,12 +237,12 @@
       if (p && Number(p.total) > 0) { const pct = Math.min(100, Math.round(Number(p.done) / Number(p.total) * 100)); $('materials-progress-bar').style.width = `${pct}%`; $('materials-upload-progress').textContent = `${p.done} / ${p.total}`; }
       const s = state.batch?.summary || {};
       const stats = s.detection_stats || {};
-      const roundsText = stats.circle_enabled
-        ? ` · 圆形码命中 ${Number(stats.circle?.hit_stores)||0} 家 · 方形码命中 ${Number(stats.square?.hit_stores)||0} 家 · 检测用时 ${((Number(stats.total_ms)||0)/1000).toFixed(1)} 秒`
-        : s.circle_detector_error ? ' · 圆形码检测不可用，已按原链路完成' : '';
+      const roundsText = stats.square
+        ? ` · 方形码命中 ${Number(stats.square?.hit_stores)||0} 家 · 检测用时 ${((Number(stats.total_ms)||0)/1000).toFixed(1)} 秒`
+        : '';
       $('materials-store-subtitle').textContent = state.batch ? `共 ${Number(s.total_stores)||0} 家门店 · ${Number(s.total_images)||0} 张原图 · ${Number(s.pending_stores)||0} 待审核 · ${Number(s.confirmed_stores)||0} 已确认 · ${Number(s.skipped_stores)||0} 不合格${roundsText}` : '二维码候选和原始图片会显示在这里。';
       renderStores(stores);
-      if (active) { const ratio = p && Number(p.total) ? Number(p.done) / Number(p.total) : 0; const stage = state.batch.status === 'analyzing' && p && Number(p.total) ? (stats.circle_enabled ? (ratio < 1 / 3 ? '圆形小程序码检测' : ratio < 2 / 3 ? '方形二维码检测' : '本地 OCR 用途筛选') : (ratio < 0.5 ? '本地二维码检测' : '本地 OCR 用途筛选')) : (statusLabels[state.batch.status] || '处理中'); $('materials-upload-progress').textContent = `${stage}${p && Number(p.total) ? ` · ${p.done}/${p.total} 步` : ''}`; }
+      if (active) { const ratio = p && Number(p.total) ? Number(p.done) / Number(p.total) : 0; const stage = state.batch.status === 'analyzing' && p && Number(p.total) ? (ratio < 0.5 ? '本地二维码检测' : '本地 OCR 用途筛选') : (statusLabels[state.batch.status] || '处理中'); $('materials-upload-progress').textContent = `${stage}${p && Number(p.total) ? ` · ${p.done}/${p.total} 步` : ''}`; }
       renderAnalysisDialog();
       updateControls();
     }
@@ -329,14 +329,11 @@
       for (const { image, candidate } of candidates) {
         const card = node('article', `materials-candidate${String(state.selectedCandidate) === `${image.image_index}:${candidate.candidate_index}` ? ' selected' : ''}`);
         const thumb = document.createElement('img'); thumb.className = 'materials-candidate-thumb'; thumb.alt = `候选二维码裁剪 ${candidate.candidate_index + 1}`; thumb.src = candidateUrl(image.image_index, candidate.candidate_index); thumb.addEventListener('click', () => openPreview(thumb.src));
-        const title = node('div', 'materials-candidate-title', `原图 ${Number(image.image_index)+1} · 候选 ${Number(candidate.candidate_index) + 1}`); if (candidate.recommendation) title.append(node('span', 'materials-rec-tag', '推荐')); if (candidate.code_type === 'mini_program_code') title.append(node('span', 'materials-rec-tag', '第一轮命中')); if (candidate.source === 'vision_fallback') title.append(node('span', 'materials-rec-tag', '旧批次模型补检'));
+        const title = node('div', 'materials-candidate-title', `原图 ${Number(image.image_index)+1} · 候选 ${Number(candidate.candidate_index) + 1}`); if (candidate.recommendation) title.append(node('span', 'materials-rec-tag', '推荐')); if (candidate.source === 'vision_fallback') title.append(node('span', 'materials-rec-tag', '旧批次模型补检'));
         const quality = candidate.quality_score == null ? '未评分' : `质量分 ${Number(candidate.quality_score).toFixed(2)}`;
         const box = candidate.box || {};
         const dimensions = Number.isFinite(Number(box.width)) && Number.isFinite(Number(box.height)) ? `${Math.round(box.width)}×${Math.round(box.height)} px` : '尺寸未知';
-        const isMini = candidate.code_type === 'mini_program_code';
-        const metaText = isMini
-          ? `微信圆形小程序码 · 结构验证通过 · 待微信实际验证 · ${dimensions} · 短边 ${candidate.short_edge_px ?? '—'} px · ${quality}`
-          : `同码分组 ${groups.get(candidate.payload_sha256) || '未知'} · ${dimensions} · 短边 ${candidate.short_edge_px ?? '—'} px · ${quality}`;
+        const metaText = `同码分组 ${groups.get(candidate.payload_sha256) || '未知'} · ${dimensions} · 短边 ${candidate.short_edge_px ?? '—'} px · ${quality}`;
         const meta = node('div', 'materials-candidate-meta', metaText);
         const purpose = purposeLabels[candidate.purpose] ? candidate.purpose : 'unknown';
         const purposeRow = node('div', 'materials-purpose-row', `用途：${purposeLabels[purpose]}`);
@@ -468,14 +465,14 @@
     }
     // 显示画布会缩放适配卡片，但框选坐标始终换算回原图像素，并与原图序号一起提交。
     function canvasPoint(event) { const canvas = $('materials-canvas'), r = canvas.getBoundingClientRect(); return { x: Math.max(0, Math.min(canvas.width, (event.clientX-r.left)*canvas.width/r.width)), y: Math.max(0, Math.min(canvas.height, (event.clientY-r.top)*canvas.height/r.height)) }; }
+    // 人工框选预览必须与后端发布裁剪使用同一像素范围：严格按框 floor/ceil，不额外扩边。
     function createManualPreview(img,box){
       if(!img?.naturalWidth||!box)return'';
-      const pad=Math.max(14,Math.round(Math.max(box.width,box.height)*.22));
-      const left=Math.max(0,Math.floor(box.x-pad)),top=Math.max(0,Math.floor(box.y-pad));
-      const right=Math.min(img.naturalWidth,Math.ceil(box.x+box.width+pad)),bottom=Math.min(img.naturalHeight,Math.ceil(box.y+box.height+pad));
+      const left=Math.max(0,Math.floor(box.x)),top=Math.max(0,Math.floor(box.y));
+      const right=Math.min(img.naturalWidth,Math.ceil(box.x+box.width)),bottom=Math.min(img.naturalHeight,Math.ceil(box.y+box.height));
       const width=Math.max(1,right-left),height=Math.max(1,bottom-top),preview=document.createElement('canvas');
       preview.width=width;preview.height=height;preview.getContext('2d').drawImage(img,left,top,width,height,0,0,width,height);
-      return preview.toDataURL('image/jpeg',.88);
+      return preview.toDataURL('image/png');
     }
     $('materials-canvas').addEventListener('pointerdown', (e) => { if(!state.manualMode||state.busy||!canEditDetail())return; const p=canvasPoint(e);state.dragging=p;state.manualBox=null;state.manualPreviewUrl='';e.currentTarget.focus();e.currentTarget.setPointerCapture(e.pointerId); });
     $('materials-canvas').addEventListener('pointermove', (e) => { if (!state.dragging || state.busy) return; const p=canvasPoint(e);state.manualBox={x:Math.round(Math.min(p.x,state.dragging.x)),y:Math.round(Math.min(p.y,state.dragging.y)),width:Math.round(Math.abs(p.x-state.dragging.x)),height:Math.round(Math.abs(p.y-state.dragging.y))};drawManualCanvas($('materials-original'));renderManualNote(); });
@@ -949,7 +946,7 @@
         const info = node('div','materials-manage-info');
         info.append(node('span','',`${statusLabels[batch.status] || '未知状态'} · ${summary.total_stores||0} 家 · ${batch.versions_count||0} 个版本`));
         info.append(node('span','',`${summary.confirmed_stores||0} 已确认 · ${summary.pending_stores||0} 待审核`));
-        if (summary.detection_stats?.circle_enabled) info.append(node('span','',`圆形码 ${summary.detection_stats.circle?.hit_stores||0} 家 · 方形码 ${summary.detection_stats.square?.hit_stores||0} 家 · ${((Number(summary.detection_stats.total_ms)||0)/1000).toFixed(1)} 秒`));
+        if (summary.detection_stats?.square) info.append(node('span','',`方形码 ${summary.detection_stats.square?.hit_stores||0} 家 · ${((Number(summary.detection_stats.total_ms)||0)/1000).toFixed(1)} 秒`));
         info.append(node('span','',`更新 ${String(batch.updated_at||'').slice(0,16).replace('T',' ')}`));
         const actions = node('div','materials-manage-actions');
         if (manageDeleted) {

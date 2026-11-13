@@ -19,7 +19,7 @@ from PIL import Image
 
 from .config import ConfigStore, atomic_json
 from .preprocess import (
-    CROP_MARGIN_RATIO, MAX_STORE_IMAGES, SQUARE_IMAGE_RANGE, SUPPORTED_EXTENSIONS,
+    CROP_MARGIN_RATIO, SUPPORTED_EXTENSIONS,
     _apple_vision_inspector, _crop_candidate, _enumerate_images, analyze_store, discover_stores,
 )
 from .image_tools import image_ocr
@@ -48,16 +48,9 @@ MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_BATCH_BYTES = 5 * 1024 * 1024 * 1024
 MAX_STORE_UPLOAD_FILES = 100
 MAX_STORE_UPLOAD_BYTES = 500 * 1024 * 1024
-# 图片数分流：只有 2–5 张的门店跑圆形小程序码检测。1 张门店基本是桌面立牌，≥6 张门店多为手机截图。
-CIRCLE_IMAGE_RANGE = (2, 5)
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _UPLOAD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _FORMAT_BY_EXTENSION = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP"}
-# 两轮检测的受控状态码；只允许这些值进入 manifest 与决策库。
-_SCAN_STATUSES = {"circle_hit", "skipped_after_circle_hit", "square_checked"}
-_CIRCLE_ERROR_CODES = {
-    "circle_detector_unavailable", "circle_timeout", "circle_detector_error", "image_too_large",
-}
 
 
 def _now() -> str:
@@ -100,9 +93,16 @@ _LOCAL_OCR_REASON_LABELS = {
     "二维码周边没有识别到明确点餐标识，需人工确认",
     "本地 OCR 未能完成，需人工确认",
 }
-_SINGLE_IMAGE_REASON = "门店仅有 1 张素材，未定位到二维码，按整图候选推荐，待人工确认"
-# 只有企业微信用途被排除；其余已分类用途都可以作为推荐候选被批量接受。
-_ACCEPTABLE_PURPOSES = frozenset({"ordering", "other", "unknown"})
+
+
+def _selected_margin_ratio(selected: dict) -> float:
+    """人工框选严格按框裁剪；旧记录缺字段时按 candidate_index 推断，避免历史版本继续扩边。"""
+    if not isinstance(selected, dict):
+        return CROP_MARGIN_RATIO
+    value = selected.get("crop_margin_ratio")
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
+        return float(value)
+    return 0.0 if selected.get("candidate_index") is None else CROP_MARGIN_RATIO
 
 
 def _nearby_ocr_text(box: dict, items: list[dict], image_size: tuple[int, int]) -> str:
@@ -155,21 +155,10 @@ class MaterialService:
         inspector: Callable[[Path], list[dict]] | None = None,
         control_lock=None,
         ocr_reader: Callable[[Path], list[dict]] | None = None,
-        circle_inspector: Callable[[Path], dict | None] | None = None,
-        circle_mode: str | None = None,
     ):
         self.root = Path(root).expanduser().resolve()
         self.configs, self.task_store = configs, task_store
         self.inspector = inspector
-        self.circle_inspector = circle_inspector
-        if circle_mode is None:
-            # 显式注入圆形检测器视为已验收环境；生产按配置开关，默认关闭。
-            circle_mode = "priority" if circle_inspector is not None else configs.load().materials.circle_detection
-        if circle_mode not in {"off", "assist", "priority"}:
-            circle_mode = "off"
-        self.circle_mode = circle_mode
-        self.circle_priority = circle_mode == "priority"
-        self.circle_enabled = circle_mode in {"priority", "assist"}
         self.ocr_reader = ocr_reader or image_ocr
         self.control_lock = control_lock  # 发布并发/runner idle 由 API 外层负责。
         self.material_root = self.root / "materials"
@@ -186,8 +175,6 @@ class MaterialService:
         # OCR 引擎的线程安全性未知；只对 OCR 调用加锁，二维码检测仍可并发。
         self._ocr_lock = threading.Lock()
         self._ocr_local = threading.local()
-        # 并发 worker 的圆形码检测器按线程独立实例化，job 结束时统一 close。
-        self._detector_local = threading.local()
         self._init_schema()
         self.jobs = JobStore(self.task_store)
         self.job_runner = JobRunner(
@@ -316,21 +303,6 @@ class MaterialService:
             except Exception:
                 cache[key] = None
         return cache[key]
-
-    def _circle_gate(self, images: list[dict], resolve: Callable[[dict], Path]) -> bool:
-        """方形检测后判断是否仍需补跑圆形：只有候选全被判为微信/企微用途时才补跑。"""
-        for image in images:
-            for candidate in image.get("candidates", []):
-                if candidate.get("purpose_hint") == "enterprise_wechat":
-                    continue
-                items = self._read_ocr(resolve(image)) or []
-                full_text = " ".join(
-                    item.get("text", "") for item in items
-                    if isinstance(item, dict) and isinstance(item.get("text"), str)
-                )
-                if _classify_local_purpose(full_text)[0] != "other":
-                    return False
-        return True
 
     @staticmethod
     def rejection(row: dict) -> dict | None:
@@ -580,26 +552,12 @@ class MaterialService:
         inspect = self.inspector or _apple_vision_inspector
         analysis_dir = self.batch_root / batch_id / "repair-analysis"
         analysis_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        circle_inspector, detector, _warning = self._open_circle_detector(analysis_dir / "circle-roi")
-        try:
-            # 单店重分析复用同一“圆形优先”的两轮检测，不能退回逐图方形检测。
-            self._ocr_local.cache = {}
-            analyze_store(
-                store, Path(batch["source_root"]),
-                inspector=inspect,
-                circle_inspector=circle_inspector,
-                circle_priority=self.circle_priority,
-                circle_image_range=CIRCLE_IMAGE_RANGE,
-                square_image_range=SQUARE_IMAGE_RANGE,
-                max_images=MAX_STORE_IMAGES,
-                resolve_path=lambda image: self._checked_source(batch, image),
-                circle_gate=lambda images: self._circle_gate(
-                    images, lambda image: self._checked_source(batch, image)
-                ),
-            )
-        finally:
-            if detector is not None:
-                detector.close()
+        self._ocr_local.cache = {}
+        analyze_store(
+            store, Path(batch["source_root"]),
+            inspector=inspect,
+            resolve_path=lambda image: self._checked_source(batch, image),
+        )
         manifest = {"stores": [store]}
         source_root = Path(batch["source_root"])
         self._classify_and_select(
@@ -615,7 +573,7 @@ class MaterialService:
             {"input_root": batch["source_root"], "stores": [store]}
         )["stores"][0]
         recommendation = any(
-            candidate.get("selected") and (candidate.get("purpose") or "unknown") in _ACCEPTABLE_PURPOSES
+            candidate.get("selected") and candidate.get("purpose") == "ordering"
             for image in store["images"] for candidate in image.get("candidates", [])
         )
         with self.task_store.connect() as db:
@@ -751,25 +709,7 @@ class MaterialService:
             "analysis_dir": self.batch_root / job["batch_id"] / "analysis",
             "stores": {_store_id(store["source_folder"]): store for store in stores},
             "duplicate_names": duplicates,
-            "detectors": [],
-            "lock": threading.Lock(),
-            "warnings": set(),
         }
-
-    def _thread_detector(self, analysis_dir: Path, context: dict | None):
-        """每个 worker 线程独立持有圆形码检测器，避免并发共用引擎内部状态。"""
-        current = getattr(self._detector_local, "current", None)
-        if current is None:
-            inspector, detector, warning = self._open_circle_detector(analysis_dir / "circle-roi")
-            current = (inspector, detector)
-            self._detector_local.current = current
-            if context is not None:
-                if detector is not None:
-                    with context["lock"]:
-                        context["detectors"].append(detector)
-                if warning:
-                    context["warnings"].add(warning)
-        return current
 
     def _run_job_item(self, job: dict, item: dict, context: dict | None) -> None:
         """处理一家门店：检测 + 语义分类 + 写决策；任何异常由 JobRunner 记短码并重试。"""
@@ -799,20 +739,13 @@ class MaterialService:
             store = context["stores"].get(store_id)
             if store is None:
                 raise ValueError("素材目录中找不到该门店")
-        circle_inspector, _detector = self._thread_detector(analysis_dir, context)
         self._ocr_local.cache = {}
         # 检测阶段按相对路径定位源图；此时骨架还没有 sha256，校验放到检测完成之后。
         resolve = lambda image: context["source_root"] / image["path"]  # noqa: E731 - 与整批 build_materials 同口径
         analyze_store(
             store, context["source_root"],
             inspector=self.inspector or _apple_vision_inspector,
-            circle_inspector=circle_inspector,
-            circle_priority=self.circle_priority,
-            circle_image_range=CIRCLE_IMAGE_RANGE,
-            square_image_range=SQUARE_IMAGE_RANGE,
-            max_images=MAX_STORE_IMAGES,
             resolve_path=resolve,
-            circle_gate=lambda images: self._circle_gate(images, resolve),
         )
         manifest = {"stores": [store]}
         self._classify_and_select(
@@ -824,12 +757,12 @@ class MaterialService:
         # 检测后再核一次源图 hash，避免分析期间文件被替换。
         for image in store["images"]:
             self._checked_source(batch, image)
-        # 与整批路径一致：落库前统一清洗，补齐圆形码的受控字段（detector 等）。
+        # 与整批路径一致：落库前统一清洗。
         store = self._sanitize_manifest(
             {"input_root": str(context["source_root"]), "stores": [store]}
         )["stores"][0]
         recommendation = any(
-            candidate.get("selected") and (candidate.get("purpose") or "unknown") in _ACCEPTABLE_PURPOSES
+            candidate.get("selected") and candidate.get("purpose") == "ordering"
             for image in store["images"] for candidate in image.get("candidates", [])
         )
         with self.task_store.connect() as db:
@@ -848,19 +781,9 @@ class MaterialService:
             return
         batch_id = job["batch_id"]
         counts = job.get("counts") or self.jobs.counts(job["id"])
-        if context:
-            with context["lock"]:
-                detectors = list(context["detectors"])
-            for detector in detectors:
-                try:
-                    detector.close()
-                except Exception:
-                    pass
         with self.task_store.connect() as db:
             if job["status"] == "completed":
-                self._refresh_batch_summary(db, batch_id, extra={
-                    "circle_detector_error": next(iter(context["warnings"]), "") if context else "",
-                })
+                self._refresh_batch_summary(db, batch_id)
                 error = (f"部分门店未能分析（{counts['failed']} 家），可在任务详情重试"
                          if counts["failed"] else "")
                 db.execute(
@@ -927,16 +850,8 @@ class MaterialService:
         summary["total_stores"] = len(rows)
         summary["selected_stores"] = sum(bool(row["recommendation"]) for row in rows)
         summary["review_stores"] = len(rows) - summary["selected_stores"]
-        if self.circle_enabled:
-            summary["detection_rounds"] = 2
-            summary["circle_hit_stores"] = sum(bool(store.get("circle_hit")) for store in stores)
-            summary["circle_error_stores"] = sum(
-                bool(store.get("circle_error")) and not store.get("circle_hit") for store in stores
-            )
-            summary["square_checked_stores"] = sum(bool(store.get("square_checked")) for store in stores)
-        total_ms = round(sum(float(store.get("circle_ms", 0.0)) + float(store.get("square_ms", 0.0))
-                             for store in stores), 1)
-        summary["detection_stats"] = self._detection_stats(stores, self.circle_enabled, total_ms)
+        total_ms = round(sum(float(store.get("square_ms", 0.0)) for store in stores), 1)
+        summary["detection_stats"] = self._detection_stats(stores, total_ms)
         for key, value in (extra or {}).items():
             if value:
                 summary[key] = value
@@ -957,34 +872,10 @@ class MaterialService:
             shutil.rmtree(self.upload_root / batch["batch_id"], ignore_errors=True)
             raise
 
-    def _open_circle_detector(self, work_dir: Path) -> tuple[Callable[[Path], dict | None] | None, object | None, str]:
-        """解析圆形码检测器；关闭时不启动 worker，显式注入优先于配置。"""
-        if not self.circle_enabled:
-            return None, None, ""
-        if self.circle_inspector is not None:
-            return self.circle_inspector, None, ""
-        try:
-            from .miniapp_code import MiniProgramCodeDetector
-
-            detector = MiniProgramCodeDetector(work_dir=work_dir)
-            return detector.detect, detector, ""
-        except Exception as exc:  # noqa: BLE001 - 依赖缺失只记录受控短码
-            return None, None, getattr(exc, "code", None) or "circle_detector_unavailable"
-
     @staticmethod
-    def _detection_stats(stores: list[dict], circle_enabled: bool, total_ms: float) -> dict:
-        """两轮检测的聚合指标；只含计数与耗时，不含路径或二维码内容。"""
+    def _detection_stats(stores: list[dict], total_ms: float) -> dict:
+        """方形检测的聚合指标；只含计数与耗时，不含路径或二维码内容。"""
         return {
-            "circle_enabled": circle_enabled,
-            "circle": {
-                "scanned_stores": sum(bool(store.get("circle_images")) for store in stores),
-                "scanned_images": sum(int(store.get("circle_images", 0)) for store in stores),
-                "hit_stores": sum(bool(store.get("circle_hit")) for store in stores),
-                "error_stores": sum(bool(store.get("circle_error")) and not store.get("circle_hit") for store in stores),
-                "skipped_images": sum(int(store.get("skipped_images", 0)) for store in stores),
-                "skipped_stores_by_policy": sum(bool(store.get("circle_skipped")) for store in stores),
-                "ms": round(sum(float(store.get("circle_ms", 0.0)) for store in stores), 1),
-            },
             "square": {
                 "scanned_stores": sum(bool(store.get("square_checked")) for store in stores),
                 "hit_stores": sum(
@@ -1043,31 +934,6 @@ class MaterialService:
         for store in manifest["stores"]:
             # 清除 build_materials 的几何启发式预选；由语义分类单独决定建议。
             self._reset_store_selection(store, analysis_dir)
-            if len(store["images"]) > MAX_STORE_IMAGES:
-                store["status"] = "needs_review"
-                store["reason"] = f"图片超过 {MAX_STORE_IMAGES} 张，不做检测，转人工处理"
-                for _image in store["images"]:
-                    processed += 1
-                    if progress:
-                        progress(processed)
-                continue
-            has_circle = any(
-                candidate.get("code_type") == "mini_program_code"
-                for image in store["images"] for candidate in image["candidates"]
-            )
-            if has_circle and self.circle_priority:
-                # 圆形码命中店：不跑 OCR、不做方形码竞争，只做稳定选择。
-                for _image in store["images"]:
-                    processed += 1
-                    if progress:
-                        progress(processed)
-                if store["source_name"] in duplicate_names:
-                    store["status"] = "needs_review"
-                    store["reason"] = "不同父路径存在同名店铺目录，拒绝归档以防混店"
-                    continue
-                self._select_circle_candidate(store, resolve_source, analysis_dir)
-                continue
-
             for image in store["images"]:
                 source = resolve_source(image)
                 ocr_items = None
@@ -1146,35 +1012,13 @@ class MaterialService:
                 store["status"] = "needs_review"
                 store["reason"] = "不同父路径存在同名店铺目录，拒绝归档以防混店"
                 continue
-            if has_circle and not any(
-                candidate.get("payload_sha256") and candidate.get("code_type") != "mini_program_code"
-                for image in store["images"] for candidate in image["candidates"]
-            ):
-                # 辅助模式：方形链路没有可解码码时，圆形码仍作为最高优先级兜底推荐。
-                self._select_circle_candidate(store, resolve_source, analysis_dir)
-                continue
-            if store.get("circle_error"):
-                # 圆形扫描异常不等于“确认无圆码”；方形候选只展示，不做自动推荐。
-                store["status"] = "needs_review"
-                store["reason"] = "圆形小程序码检测异常，方形候选仅作参考，需人工复核"
-                continue
-
             # 解码成功就是本地可读的直接证据，不再用固定像素阈值排除较小的码。
             eligible = [
                 (image_index, candidate_index, image, candidate)
                 for image_index, image in enumerate(store["images"])
                 for candidate_index, candidate in enumerate(image["candidates"])
-                if candidate.get("code_type") != "mini_program_code"
-                and candidate.get("purpose") == "ordering"
+                if candidate.get("purpose") == "ordering"
                 and candidate.get("payload_sha256")
-            ]
-            # 批量接受只排除企业微信用途；其余候选都按识别结果作为建议。
-            acceptable = [
-                (image_index, candidate_index, image, candidate)
-                for image_index, image in enumerate(store["images"])
-                for candidate_index, candidate in enumerate(image["candidates"])
-                if candidate.get("code_type") != "mini_program_code"
-                and (candidate.get("purpose") or "unknown") in _ACCEPTABLE_PURPOSES
             ]
 
             def rank(item):
@@ -1189,38 +1033,6 @@ class MaterialService:
             if eligible:
                 picked = max(eligible, key=rank)
                 reason = "周边 OCR 识别到点餐标识且二维码本地解码成功；已按尺寸和清晰度选取，待微信验证"
-            elif acceptable:
-                picked = max(acceptable, key=rank)
-                reason = (
-                    "识别到点餐标识，但二维码未能由本地解码器读出；已按尺寸和清晰度选取，待微信验证"
-                    if picked[3].get("purpose") == "ordering"
-                    else "未识别到明确点餐标识，已按尺寸和清晰度选取候选，待微信验证"
-                )
-            elif len(store["images"]) == 1 and not store["images"][0]["candidates"]:
-                # 门店只有 1 张素材且没有定位到二维码：整图作为候选，交给人工确认后发布。
-                image = store["images"][0]
-                try:
-                    with Image.open(resolve_source(image)) as source_image:
-                        width, height = source_image.size
-                except Exception:
-                    store["status"] = "needs_review"
-                    store["reason"] = "无法读取原图尺寸，需人工确认"
-                    continue
-                candidate = {
-                    "box": {"x": 0, "y": 0, "width": width, "height": height},
-                    "payload_sha256": None,
-                    "short_edge_px": min(width, height),
-                    "purpose": "unknown",
-                    "purpose_source": "single_image",
-                    "purpose_reason": _SINGLE_IMAGE_REASON,
-                    "source": "single_image",
-                    "quality_score": 0.0,
-                    "selected": False,
-                }
-                image["candidates"].append(candidate)
-                image["detection_count"] = max(int(image.get("detection_count", 0)), len(image["candidates"]))
-                picked = (0, len(image["candidates"]) - 1, image, candidate)
-                reason = "门店仅有 1 张素材，未做二维码检测；按整图候选推荐，待人工确认"
             else:
                 store["status"] = "needs_review"
                 if any(image.get("ordering_text_seen") for image in store["images"]):
@@ -1264,47 +1076,6 @@ class MaterialService:
         if old_artifact:
             (analysis_dir / old_artifact).unlink(missing_ok=True)
         store["selected_artifact"] = None
-
-    def _select_circle_candidate(self, store: dict, resolve_source, analysis_dir: Path) -> None:
-        """圆形码命中店的最高优先级推荐：稳定选一张并裁剪，仍等待人工确认。"""
-        eligible = [
-            (image_index, candidate_index, image, candidate)
-            for image_index, image in enumerate(store["images"])
-            for candidate_index, candidate in enumerate(image["candidates"])
-            if candidate.get("code_type") == "mini_program_code"
-        ]
-        if not eligible:
-            store["status"] = "needs_review"
-            store["reason"] = "第一轮标记命中圆形小程序码，但缺少可用候选，需人工复核"
-            return
-        _image_index, _candidate_index, image, candidate = max(
-            eligible,
-            key=lambda item: (
-                item[3].get("quality_score", 0),
-                item[3].get("short_edge_px", 0),
-                item[2]["path"],
-            ),
-        )
-        artifact_relative = PurePosixPath("可采集") / store["source_name"] / "二维码.png"
-        artifact = analysis_dir.joinpath(*artifact_relative.parts)
-        try:
-            artifact.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-            _crop_candidate(resolve_source(image), candidate["box"], artifact)
-        except Exception:
-            artifact.unlink(missing_ok=True)
-            store["status"] = "needs_review"
-            store["reason"] = "圆形小程序码候选裁剪失败，需人工复核"
-            return
-        candidate["selected"] = True
-        candidate.update(
-            purpose="ordering",
-            purpose_source="mini_program_code_priority",
-            purpose_reason="第一轮命中微信圆形小程序码，待微信实际验证",
-        )
-        store["status"] = "selected"
-        store["reason"] = "第一轮命中微信圆形小程序码，待微信实际验证"
-        store["selected_source"] = image["path"]
-        store["selected_artifact"] = artifact_relative.as_posix()
 
     def active_release(self, active_root: Path) -> dict | None:
         return self.versions.active(active_root)
@@ -1421,7 +1192,7 @@ class MaterialService:
                 candidates.append({
                     **candidate,
                     "candidate_index": candidate_index,
-                    "recommendation": bool(candidate.get("selected") and (candidate.get("purpose") or "unknown") in _ACCEPTABLE_PURPOSES),
+                    "recommendation": bool(candidate.get("selected") and candidate.get("purpose") == "ordering"),
                 })
             images.append({**image, "image_index": image_index, "candidates": candidates})
         return {
@@ -1504,12 +1275,16 @@ class MaterialService:
                         raise ValueError("手选二维码框必须提供 box")
                     with Image.open(source) as original:
                         normalized_box = self._validate_box(box, original.size)
+                    # 人工框选以框本身为最终裁剪范围，不再自动扩边。
+                    crop_margin_ratio = 0.0
                 else:
                     candidate = self._candidate_record(image, candidate_index)
                     if box is not None:
                         raise ValueError("选择现有候选时不允许覆盖其 box")
                     normalized_box = candidate["box"]
-                selected = {"image_index": image_index, "candidate_index": candidate_index, "box": normalized_box}
+                    crop_margin_ratio = CROP_MARGIN_RATIO
+                selected = {"image_index": image_index, "candidate_index": candidate_index,
+                            "box": normalized_box, "crop_margin_ratio": crop_margin_ratio}
                 source_hash = image["sha256"]
             rejected_at = _now() if decision == "skip" else ""
             if decision == "skip" and row["decision"] == "skipped" and not reject_reason:
@@ -1546,7 +1321,7 @@ class MaterialService:
                     (image_index, candidate_index, candidate)
                     for image_index, image in enumerate(store["images"])
                     for candidate_index, candidate in enumerate(image["candidates"])
-                    if candidate.get("selected") and (candidate.get("purpose") or "unknown") in _ACCEPTABLE_PURPOSES
+                    if candidate.get("selected") and candidate.get("purpose") == "ordering"
                 ), None)
                 if match is None:
                     continue
@@ -1600,7 +1375,8 @@ class MaterialService:
                 fingerprint_items.append({
                     "store_id": row["store_id"], "source_folder": row["source_folder"],
                     "source_name": row["source_name"], "source_hash": row["selected_source_hash"],
-                    "image_index": selected["image_index"], "candidate_index": selected["candidate_index"], "box": box,
+                    "image_index": selected["image_index"], "candidate_index": selected["candidate_index"],
+                    "box": box, "crop_margin_ratio": _selected_margin_ratio(selected),
                 })
             content = json.dumps(fingerprint_items, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
             # 对相同版本的重试必须先验证内容，防止覆盖已经发布的版本。
@@ -1637,7 +1413,7 @@ class MaterialService:
                         source = self._checked_source(batch, image)
                         artifact = temporary / row["source_name"] / "二维码.png"
                         artifact.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-                        _crop_candidate(source, selected["box"], artifact)
+                        _crop_candidate(source, selected["box"], artifact, _selected_margin_ratio(selected))
                         artifact_hashes.append({"path": artifact.relative_to(temporary).as_posix(), "sha256": _sha256(artifact)})
                     atomic_json(temporary / ".materials-snapshot.json", {"snapshot_id": fingerprint, "stores": fingerprint_items, "artifacts": artifact_hashes})
                     temporary.rename(snapshot)
@@ -1799,9 +1575,6 @@ class MaterialService:
             "skipped_stores": sum(row["decision"] == "skipped" for row in decisions),
             "pending_stores": sum(row["decision"] == "pending" for row in decisions),
         }
-        for key in ("detection_rounds", "circle_hit_stores", "circle_error_stores", "square_checked_stores", "circle_detector_error"):
-            if key in summary:
-                counts[key] = summary[key]
         if isinstance(summary.get("detection_stats"), dict):
             counts["detection_stats"] = summary["detection_stats"]
         return counts
@@ -1822,7 +1595,7 @@ class MaterialService:
         data = json.loads(row["store_json"])
         selected = json.loads(row["selected_json"])
         valid_recommendation = bool(row["recommendation"]) and any(
-            candidate.get("selected") and (candidate.get("purpose") or "unknown") in _ACCEPTABLE_PURPOSES
+            candidate.get("selected") and candidate.get("purpose") == "ordering"
             for image in data.get("images", []) for candidate in image.get("candidates", [])
         )
         return {
@@ -1902,14 +1675,15 @@ class MaterialService:
         return {"x": x, "y": y, "width": width, "height": height}
 
     @staticmethod
-    def _crop_bounds(image_size: tuple[int, int], box: dict) -> tuple[int, int, int, int]:
+    def _crop_bounds(image_size: tuple[int, int], box: dict,
+                     margin_ratio: float = CROP_MARGIN_RATIO) -> tuple[int, int, int, int]:
         width, height = image_size
         x, y, qr_width, qr_height = (box[key] for key in ("x", "y", "width", "height"))
         return (
-            max(0, math.floor(x - qr_width * CROP_MARGIN_RATIO)),
-            max(0, math.floor(y - qr_height * CROP_MARGIN_RATIO)),
-            min(width, math.ceil(x + qr_width * (1 + CROP_MARGIN_RATIO))),
-            min(height, math.ceil(y + qr_height * (1 + CROP_MARGIN_RATIO))),
+            max(0, math.floor(x - qr_width * margin_ratio)),
+            max(0, math.floor(y - qr_height * margin_ratio)),
+            min(width, math.ceil(x + qr_width * (1 + margin_ratio))),
+            min(height, math.ceil(y + qr_height * (1 + margin_ratio))),
         )
 
     @staticmethod
@@ -1973,51 +1747,27 @@ class MaterialService:
                     raw_purpose = candidate.get("purpose")
                     purpose = raw_purpose if raw_purpose in {"ordering", "enterprise_wechat", "other", "unknown"} else "unknown"
                     purpose_source = candidate.get("purpose_source")
-                    is_mini = candidate.get("code_type") == "mini_program_code"
                     safe_reason = cls._purpose_reason(purpose)
                     if purpose_source == "local_ocr" and candidate.get("purpose_reason") in _LOCAL_OCR_REASON_LABELS:
                         safe_reason = candidate["purpose_reason"]
-                    if is_mini:
-                        purpose, purpose_source = "ordering", "mini_program_code_priority"
-                        safe_reason = "第一轮命中微信圆形小程序码，待微信实际验证"
-                    elif purpose_source == "single_image" and candidate.get("purpose_reason") == _SINGLE_IMAGE_REASON:
-                        safe_reason = _SINGLE_IMAGE_REASON
                     safe_candidate = {
                         "box": box, "payload_sha256": payload_hash, "short_edge_px": edge,
-                        # 旧清单缺用途时按 unknown 处理；只有企业微信用途不进入推荐。
-                        "selected": bool(candidate.get("selected")) and (is_mini or (raw_purpose or "unknown") in _ACCEPTABLE_PURPOSES), "purpose": purpose,
+                        # 只有“点餐”用途才能成为推荐；其余用途一律留给人工。
+                        "selected": bool(candidate.get("selected")) and purpose == "ordering", "purpose": purpose,
                         # OCR 只保存受控判断标签，不把整段图片文字写入清单。
                         "purpose_reason": ("本地解码识别为企业微信域名" if purpose == "enterprise_wechat" and purpose_source == "payload_domain" else safe_reason),
                         "source": (
-                            "mini_program_code" if is_mini
-                            else "single_image" if candidate.get("source") == "single_image"
-                            else "vision_fallback" if candidate.get("source") == "vision_fallback"
+                            "vision_fallback" if candidate.get("source") == "vision_fallback"
                             else "local_detector"
                         ),
                         "purpose_source": (
-                            "mini_program_code_priority"
-                            if is_mini
-                            else "payload_domain"
+                            "payload_domain"
                             if purpose == "enterprise_wechat" and purpose_source == "payload_domain"
-                            else "single_image"
-                            if purpose_source == "single_image"
                             else "local_ocr"
                             if purpose_source == "local_ocr"
                             else "vision_model"
                         ),
                     }
-                    if is_mini:
-                        # 圆形码不解码，只保留受控来源标记与调试用启发式分数。
-                        safe_candidate["code_type"] = "mini_program_code"
-                        safe_candidate["detector"] = "weapp-vite-qr"
-                        confidence = candidate.get("detector_confidence")
-                        if (
-                            isinstance(confidence, (int, float))
-                            and not isinstance(confidence, bool)
-                            and math.isfinite(confidence)
-                            and confidence >= 0
-                        ):
-                            safe_candidate["detector_confidence"] = float(confidence)
                     for score_name in ("sharpness_score", "quality_score"):
                         score = candidate.get(score_name)
                         if score is not None:
@@ -2025,15 +1775,12 @@ class MaterialService:
                                 raise ValueError(f"manifest {score_name} 无效")
                             safe_candidate[score_name] = float(score)
                     candidates.append(safe_candidate)
-                scan_status = raw_image.get("scan_status")
                 images.append({
                     "path": normalized_image_path, "sha256": digest,
                     "detection_count": max(0, int(raw_image.get("detection_count", len(candidates)))),
                     "candidates": candidates,
                     **({"ordering_text_seen": True} if raw_image.get("ordering_text_seen") is True else {}),
                     **({"error": str(raw_image["error"])[:200]} if raw_image.get("error") else {}),
-                    **({"scan_status": scan_status} if scan_status in _SCAN_STATUSES else {}),
-                    **({"circle_error": raw_image["circle_error"]} if raw_image.get("circle_error") in _CIRCLE_ERROR_CODES else {}),
                 })
                 total_images += 1
             status = raw_store.get("status") if raw_store.get("status") in {"selected", "needs_review"} else "needs_review"
@@ -2047,24 +1794,12 @@ class MaterialService:
                 "selected_artifact": raw_store.get("selected_artifact") if has_recommendation and isinstance(raw_store.get("selected_artifact"), str) else None,
                 "images": images,
             }
-            if "circle_hit" in raw_store:
-                # 保留门店级两轮检测状态，供单店重分析和前端展示。
-                safe_store["circle_hit"] = bool(raw_store.get("circle_hit"))
-                safe_store["circle_error"] = bool(raw_store.get("circle_error"))
-                safe_store["square_checked"] = bool(raw_store.get("square_checked"))
             safe_stores.append(safe_store)
         summary = {
             "total_stores": len(safe_stores), "total_images": total_images,
             "selected_stores": sum(store["status"] == "selected" for store in safe_stores),
             "review_stores": sum(store["status"] != "selected" for store in safe_stores),
         }
-        if any("circle_hit" in store for store in safe_stores):
-            summary.update({
-                "detection_rounds": 2,
-                "circle_hit_stores": sum(bool(store.get("circle_hit")) for store in safe_stores),
-                "circle_error_stores": sum(bool(store.get("circle_error")) and not store.get("circle_hit") for store in safe_stores),
-                "square_checked_stores": sum(bool(store.get("square_checked")) for store in safe_stores),
-            })
         return {"input_root": input_root, "stores": safe_stores, "summary": summary}
 
     @staticmethod

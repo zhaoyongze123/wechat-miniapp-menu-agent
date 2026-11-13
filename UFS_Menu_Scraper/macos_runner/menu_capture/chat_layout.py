@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 import cv2
@@ -40,21 +41,24 @@ def find_sent_text_bubbles(path: Path) -> list[dict[str, int | str]]:
         return []
 
     hsv = cv2.cvtColor(chat, cv2.COLOR_BGR2HSV)
-    # 微信浅色主题的绿色偏低饱和，深色主题则偏暗；放宽色相/亮度，仍要求
-    # 有足够色度以排除白色背景和灰色照片内容。
+    # 只跑浅色主题：实测微信绿气泡为 H≈57.5、S≈84、V≈221，而图片卡片里的木纹/底栏
+    # 是 H≈23、V≈97。窄范围在掩码阶段就排除后者，不再依赖事后按亮度兜底。
     mask = cv2.inRange(
         hsv,
-        np.array((22, 25, 32), dtype=np.uint8),
-        np.array((100, 255, 255), dtype=np.uint8),
+        np.array((44, 50, 150), dtype=np.uint8),
+        np.array((95, 255, 255), dtype=np.uint8),
     )
     # 轻微闭运算跨过字形造成的细小断点，不扩张到邻近聊天内容。
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
 
     count, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    min_width = max(70, round(width * 0.18))
+    # 3~7 字的短店名气泡只有 70~130px 宽，18% 窗口宽会把它们全部漏掉
+    # （实测 20 家里 9 家因此误判为“未看到发送文本气泡”）。先用 6.5% 收候选，
+    # 再用下面“同一条右边界”的约束剔除照片里偶然出现的绿色块。
+    min_width = max(60, round(width * 0.065))
     min_height = max(16, round(height * 0.016))
-    boxes: list[dict[str, int | str]] = []
+    boxes: list[dict[str, int | float | str]] = []
     for index in range(1, count):
         x, y, box_width, box_height, area = (int(value) for value in stats[index])
         right = x + box_width + chat_left
@@ -80,5 +84,14 @@ def find_sent_text_bubbles(path: Path) -> list[dict[str, int | str]]:
             "method": "wechat_green_text_bubble_hsv",
         })
 
+    if not boxes:
+        return []
+    # 真实发出的气泡共享同一条右边界，照片/贴纸里的绿色块通常对不齐。
+    # 只在存在足够宽的“可信气泡”时才启用对齐约束，避免全是短气泡时误杀。
+    confident = [item for item in boxes
+                 if int(item["right"]) - int(item["left"]) >= max(100, round(width * 0.10))]
+    if confident:
+        edge = Counter(int(item["right"]) for item in confident).most_common(1)[0][0]
+        boxes = [item for item in boxes if abs(int(item["right"]) - edge) <= 4]
     boxes.sort(key=lambda box: (int(box["top"]), int(box["left"])))
     return boxes
