@@ -43,7 +43,7 @@ from .preview_locator import PreviewIconNotFound, locate_preview_recognize
 from .chat_image_locator import (ChatImageNotFound, locate_chat_image_bubble, locate_sent_image,
                                  match_preview_source)
 from .ui_tars_trial import GUI_PLUS_MODEL, TrialModel, TrialProtocolError, run_navigation, trial_model_from_env
-from .capture_outputs import store_output_dir
+from .capture_outputs import archive_unqualified, store_output_dir
 from .uipath_cli import cli_entry
 
 # 预览按钮、小程序窗口与关闭动作统一改为短间隔轮询：条件满足即停，避免固定等待。
@@ -217,6 +217,14 @@ def _inside(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _runtime_root(output_root: str | Path) -> Path:
+    """运行期目录（.uipath-runs / .uipath-staging）放在产物目录同级的隐藏目录。
+
+    产物目录可能直接就是“合格”归档目录，运行期目录不能混进门店目录里。
+    """
+    return Path(output_root).expanduser().resolve().parent
 
 
 def production_window_geometry(screen) -> dict:
@@ -816,7 +824,7 @@ class UiPathRunner:
             if trial_source:
                 settings = settings.model_copy(update={"input_dir": trial_source})
             attempt = datetime.now().strftime("%Y%m%d-%H%M%S-%f") + "-" + uuid.uuid4().hex[:8]
-            run_directory = Path(settings.output_dir).expanduser().resolve() / ".uipath-runs" / (attempt + "-" + uuid.uuid4().hex[:8])
+            run_directory = _runtime_root(settings.output_dir) / ".uipath-runs" / (attempt + "-" + uuid.uuid4().hex[:8])
             output_dir = (run_directory / "ui-tars-trial" if ui_tars_trial
                           else self._staging_dir(settings.output_dir, task, attempt))
             if not ui_tars_trial:
@@ -2048,7 +2056,7 @@ class UiPathRunner:
         成功门店保留一天后只留简要记录；失败门店最多留两天，超期整体删除；
         存储超上限时从最早的门店开始删，成功门店优先，仍不够再删失败门店。
         """
-        root = Path(output_root).expanduser().resolve() / ".uipath-runs"
+        root = _runtime_root(output_root) / ".uipath-runs"
         if not root.is_dir():
             return
         now = time.time()
@@ -2113,6 +2121,24 @@ class UiPathRunner:
             self.store.event(message, "warning" if status != "captured" else "info", task["id"])
         except Exception:
             self.store.event("无法持久化 UiPath 运行结果；请检查当前任务输出目录", "error", task["id"])
+        # 不合格门店把原始店名与原图复制到本地不合格目录；暂停/终止不是门店结论，不归档。
+        if status != "captured" and stage not in {"paused", "terminated", "output_publish_error"}:
+            self._archive_unqualified(task, status, stage, message, code)
+
+    def _archive_unqualified(self, task: dict, status: str, stage: str, message: str, code: str) -> None:
+        root = self.configs.load().unqualified_dir.strip()
+        if not root:
+            return
+        try:
+            destination = archive_unqualified(
+                root, Path(task["source_path"]).parent, task["source_name"],
+                status=status, stage=stage, message=message, code=code,
+            )
+        except Exception as exc:
+            self.store.event(f"不合格原图归档失败（{type(exc).__name__}）：{str(exc)[:200]}",
+                             "warning", task["id"])
+            return
+        self.store.event(f"不合格原图已归档：{destination}", "info", task["id"])
 
     @staticmethod
     def _read_trace_lines(path: Path) -> list[dict]:
@@ -2318,16 +2344,18 @@ class UiPathRunner:
         return source
 
     def _store_output_dir(self, output_root: str | Path, task: dict, batch_id: str = "",
-                          batch_name: str = "") -> Path:
+                          batch_name: str = "", flat: bool | None = None) -> Path:
         # 目录使用用户起的批次名称；只有拿不到名称（历史数据）时才回退到批次 ID。
+        if flat is None:
+            flat = bool(self.configs.load().flat_store_output)
         name = batch_name or self.store.material_batch_name(batch_id)
-        return store_output_dir(output_root, task["source_name"], batch_id, name)
+        return store_output_dir(output_root, task["source_name"], batch_id, name, flat=flat)
 
     @staticmethod
     def _staging_dir(output_root: str | Path, task: dict, attempt: str) -> Path:
-        root = Path(output_root).expanduser().resolve()
-        staging = root / ".uipath-staging" / task["id"] / attempt
-        if not _inside(staging, root):
+        staging_root = _runtime_root(output_root) / ".uipath-staging"
+        staging = staging_root / task["id"] / attempt
+        if not _inside(staging, staging_root):
             raise ValueError("自动采集暂存路径无效")
         return staging
 
@@ -2336,7 +2364,7 @@ class UiPathRunner:
         """以 SQLite 发布记录保护目录替换；提交状态前旧目录始终可恢复。"""
         root = Path(output_root).expanduser().resolve()
         staging = Path(staging).expanduser().resolve()
-        staging_root = root / ".uipath-staging"
+        staging_root = _runtime_root(root) / ".uipath-staging"
         destination = self._store_output_dir(root, task, batch_id)
         if not _inside(staging, staging_root) or not staging.is_dir():
             raise ValueError("自动采集暂存目录不存在或越界")
@@ -2401,9 +2429,12 @@ class UiPathRunner:
             staging = Path(transaction["staging"]).expanduser().resolve()
             destination = Path(transaction["destination"]).expanduser().resolve()
             backup = Path(transaction["backup"]).expanduser().resolve()
-            staging_root = root / ".uipath-staging"
+            staging_root = _runtime_root(root) / ".uipath-staging"
+            # 旧版本把暂存目录放在产物目录内部；恢复记录里存的是绝对路径，两种位置都要能通过校验。
+            legacy_staging_root = root / ".uipath-staging"
             if (not _inside(destination, root) or destination == root or
-                    not _inside(staging, staging_root) or not _inside(backup, staging_root)):
+                    not (_inside(staging, staging_root) or _inside(staging, legacy_staging_root)) or
+                    not (_inside(backup, staging_root) or _inside(backup, legacy_staging_root))):
                 self.store.event("发现越界的截图发布恢复记录，未触碰本地目录", "error", task_id)
                 continue
             try:

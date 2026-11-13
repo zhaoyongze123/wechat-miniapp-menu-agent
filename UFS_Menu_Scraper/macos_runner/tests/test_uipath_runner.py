@@ -299,7 +299,7 @@ def test_attached_mode_waits_for_manual_main_and_publishes_agent_capture(tmp_pat
         # Windows 不再走 capture_rect 快路径；准备阶段会用 resize 统一收窄加高小程序窗口。
         assert not any(command["action"] == "capture_rect" for command in runner.transport.commands)
     assert store.get(other["id"])["status"] == "pending"
-    report_path = next((output_root / ".uipath-runs").glob("*/gui-agent/*/navigation-result.json"))
+    report_path = next((output_root.parent / ".uipath-runs").glob("*/gui-agent/*/navigation-result.json"))
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["agent_outcome"] == "success"
     assert report["capture_status"] == "staged"
@@ -965,7 +965,7 @@ def test_automatic_failed_retry_preserves_published_store_output_and_cleans_stag
     assert not runner.thread.is_alive()
     assert store.get(selected["id"])["status"] == "needs_review"
     assert (destination / "previous.png").read_bytes() == b"previous"
-    assert not any(path.is_file() for path in (output_root / ".uipath-staging").rglob("*"))
+    assert not any(path.is_file() for path in (output_root.parent / ".uipath-staging").rglob("*"))
 
 def test_automatic_selection_rejects_two_tasks_for_same_store_output(tmp_path: Path) -> None:
     runner, store, selected, _, profile_path, _ = _setup(tmp_path, mode="automatic")
@@ -1106,7 +1106,7 @@ def test_build_cache_skips_rebuild_only_when_sources_unchanged(tmp_path):
     assert runner._build_cache_matches() is False
 
 def _evidence_case(root: Path, name: str, *, outcome: str, capture: str, age_seconds: float) -> Path:
-    case = root / ".uipath-runs" / "run-1" / "gui-agent" / name
+    case = root.parent / ".uipath-runs" / "run-1" / "gui-agent" / name
     case.mkdir(parents=True)
     _image(case / "ui-tars-001.png", "white")
     _image(case / "ui-tars-handoff.png", "gray")

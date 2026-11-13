@@ -57,4 +57,4 @@ setTimeout(async () => {
 
 `result_file` 指向试验报告。报告记录素材版本、首帧和分段耗时。采集或人工标注正在运行时需等待其结束。需要停止时，以同样方式请求 `POST /api/terminate`。报告中的 `navigation.outcome` 记录菜单导航结论，`source: runtime` 标记技术中断或协议错误导致的需复核。只有 `success` 进入试验采集，`capture.status` 另行记录截图结果。
 
-在输出根目录的隐藏 `.uipath-runs/<本轮>/ui-tars-trial/` 中核对终态截图、页面和报告。实机验收应独立核对门店身份、菜单内容和滚动结果。
+在输出根目录同级的隐藏 `.uipath-runs/<本轮>/ui-tars-trial/` 中核对终态截图、页面和报告。实机验收应独立核对门店身份、菜单内容和滚动结果。

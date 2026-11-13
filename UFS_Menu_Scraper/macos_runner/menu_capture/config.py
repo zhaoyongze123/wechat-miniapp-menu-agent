@@ -68,6 +68,10 @@ class MaterialsConfig(StrictModel):
 class Settings(StrictModel):
     input_dir: str = str(WORKSPACE_ROOT / "素材" / "原图")
     output_dir: str = str(WORKSPACE_ROOT / "输出" / "截图输出")
+    # 不合格门店的原图归档目录；留空表示不做本地归档。
+    unqualified_dir: str = ""
+    # 保存目录直接按门店建子目录，不再套“清洗批次/批次名”这一层。
+    flat_store_output: bool = False
     model: ModelConfig = Field(default_factory=ModelConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     debug_logging: DebugLoggingConfig = Field(default_factory=DebugLoggingConfig)
@@ -117,11 +121,20 @@ class ConfigStore:
         secret = model.pop("api_key", "")
         clear = model.pop("clear_api_key", False)
         model.pop("api_key_configured", None)
+        # 控制台表单不包含归档相关字段，保存其他设置时沿用现有值，避免被默认值覆盖。
+        current = self.load()
+        for key in ("unqualified_dir", "flat_store_output"):
+            payload.setdefault(key, getattr(current, key))
         settings = Settings.model_validate(payload)
         source = Path(settings.input_dir).expanduser().resolve() if settings.input_dir.strip() else None
         output = Path(settings.output_dir).expanduser().resolve()
         if source and (source == output or source in output.parents or output in source.parents):
             raise ValueError("素材目录和保存目录不能相同或互相包含，避免把结果当成新素材")
+        if settings.unqualified_dir.strip():
+            reject = Path(settings.unqualified_dir).expanduser().resolve()
+            if reject == output or output in reject.parents:
+                raise ValueError("不合格目录不能放在保存目录里面")
+            settings.unqualified_dir = str(reject)
         # 清除采集版本后保留明确的未选择状态，不能把空字符串解析为进程工作目录。
         settings.input_dir, settings.output_dir = str(source) if source else "", str(output)
         atomic_json(self.path, settings.model_dump())

@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from menu_capture.capture_outputs import batch_output_dir
+from menu_capture.capture_outputs import archive_unqualified, batch_output_dir, store_output_dir
 from menu_capture.server import create_app
 
 
@@ -53,6 +53,44 @@ def test_store_output_dir_resolves_batch_name(tmp_path: Path):
     assert destination.name == "同一家店"
 
 
+def test_flat_store_output_puts_store_directly_under_save_root(tmp_path: Path):
+    destination = store_output_dir(tmp_path / "合格", "E0017_同一家店", "f" * 32, "100张测试素材", flat=True)
+
+    assert destination == (tmp_path / "合格").resolve() / "E0017_同一家店"
+
+
+def test_archive_unqualified_copies_originals_and_keeps_source(tmp_path: Path):
+    source = tmp_path / "原图" / "E0017_同一家店"
+    _image(source / "二维码.png", "red")
+    _image(source / "补充" / "门头.png", "blue")
+
+    destination = archive_unqualified(
+        tmp_path / "不合格", source, "E0017_同一家店",
+        status="needs_review", stage="agent_unqualified", message="菜单区域为空", code="agent_unqualified",
+    )
+
+    assert (destination / "二维码.png").is_file()
+    assert (destination / "补充" / "门头.png").is_file()
+    assert (source / "二维码.png").is_file()
+    info = (destination / "归档说明.txt").read_text(encoding="utf-8")
+    assert "原始店名：E0017_同一家店" in info
+    assert "菜单区域为空" in info
+    assert "agent_unqualified" in info
+
+
+def test_form_save_keeps_archive_settings(tmp_path: Path):
+    from menu_capture.config import ConfigStore, Settings
+
+    store = ConfigStore(tmp_path)
+    seeded = Settings(output_dir=str(tmp_path / "合格"), unqualified_dir=str(tmp_path / "不合格"), flat_store_output=True)
+    store.path.write_text(seeded.model_dump_json(), encoding="utf-8")
+
+    saved = store.save({"input_dir": "", "output_dir": str(tmp_path / "合格"), "model": {"api_key": ""}})
+
+    assert saved["unqualified_dir"] == str((tmp_path / "不合格").resolve())
+    assert saved["flat_store_output"] is True
+
+
 def test_same_store_in_separate_cleaning_batches_has_separate_task_and_output(tmp_path: Path):
     app = create_app(tmp_path)
     first_root = _snapshot(tmp_path / "published", "a" * 64, "red")
@@ -85,7 +123,7 @@ def test_artifact_api_does_not_serve_replaced_qr_version_output(tmp_path: Path):
     app.state.store.scan(old_root)
     app.state.store.scan(new_root)
     old_task, new_task = app.state.store.tasks()
-    staging_root = tmp_path / "output" / ".uipath-staging"
+    staging_root = tmp_path / ".uipath-staging"
     old_staging = staging_root / old_task["id"] / "old"
     new_staging = staging_root / new_task["id"] / "new"
     _page(old_staging / "page-0001.png", "red")
@@ -111,7 +149,7 @@ def test_failed_publish_retry_preserves_previous_output(tmp_path: Path):
     destination = app.state.runner._store_output_dir(tmp_path / "output", task, "f" * 32)
     _page(destination / "page-0001.png", "red")
     app.state.store.update(task["id"], status="captured", stage="captured", output_dir=str(destination))
-    staging = tmp_path / "output" / ".uipath-staging" / task["id"] / "retry"
+    staging = tmp_path / ".uipath-staging" / task["id"] / "retry"
     _page(staging / "page-0001.png", "blue")
 
     real_replace = __import__("os").replace
