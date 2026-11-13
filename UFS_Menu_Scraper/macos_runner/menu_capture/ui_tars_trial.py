@@ -86,7 +86,8 @@ def _output_contract() -> str:
 
 
 # 输出契约是固定协议：字段、类型、取值范围都写死，不允许模型自创字段。
-_OUTPUT_CONTRACT = _output_contract()
+# 注意：契约由 action-schema.json 生成，不能缓存成模块级常量——常驻服务进程会在
+# schema 更新后继续下发旧动作表，模型看不到新字段。
 
 
 class TrialProtocolError(RuntimeError):
@@ -182,7 +183,7 @@ def _run_agent(model: TrialModel, instruction: str, max_steps: int,
     config = {
         "model": {"baseURL": model.base_url, "apiKey": model.api_key, "model": GUI_PLUS_MODEL},
         "instruction": instruction, "max_steps": max_steps,
-        "output_contract": _OUTPUT_CONTRACT,
+        "output_contract": _output_contract(),
         "trace_path": str(trace_path) if trace_path else "",
         "trace": {str(key): str(value) for key, value in (trace_meta or {}).items() if value is not None},
     }
