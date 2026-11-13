@@ -389,8 +389,10 @@ function parseModelAction(rawArgs) {
     // 业务只收一个状态、一条理由；success 额外要求菜品区域。字段白名单之外一律视为格式违规。
     validateArgs('terminate', args, 'invalid_terminal');
     // 白屏/加载中/前置页只看一眼就结束是真实存在的“早退”。这里只校验观察过程是否充分，
-    // 不替模型判断页面性质；最多退回 3 次，避免异常页面无限循环。
-    if (args.outcome === 'needs_review' && observationDeferrals < MAX_OBSERVATION_DEFERRALS
+    // 不替模型判断页面性质；最早一帧就下终态视为观察不足，最多退回 1 次。
+    // unqualified 里包含“白屏超 10 秒”，同样需要最小观察预算，否则会在加载中就判不合格。
+    if ((args.outcome === 'needs_review' || args.outcome === 'unqualified')
+        && observationDeferrals < MAX_OBSERVATION_DEFERRALS
         && (screenshotCount < MIN_REVIEW_SCREENSHOTS
             || Date.now() - firstObservationAt < MIN_REVIEW_OBSERVATION_MS)) {
       observationDeferrals += 1;
@@ -516,7 +518,7 @@ function makeCustomActionParser() {
       if (code === 'insufficient_observation') {
         // 不计入格式失败预算；只补一次观察机会。
         pendingNotice = `结束判定过早：目前只观察到 ${screenshotCount} 帧、累计不足 10 秒。`
-          + '请再等待 3-5 秒观察一帧；白屏、加载中或前置页在画面仍无变化前不要返回 needs_review。';
+          + '请再等待 3-5 秒观察一帧；白屏、加载中或前置页在画面仍无变化前不要下终态。';
         trace({ type: 'observation_deferred', at: now(), call_id: currentCall?.id ?? null,
                 frame_id: currentFrame, screenshots: screenshotCount, deferrals: observationDeferrals });
         return { rawContent, reasoningContent: '', actions: [{ type: 'notice', inputs: { message: pendingNotice.slice(0, 300) } }] };

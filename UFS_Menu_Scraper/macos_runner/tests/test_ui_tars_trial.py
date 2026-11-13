@@ -652,18 +652,20 @@ def test_explicit_unqualified_terminal_keeps_reason_and_evidence_frame(model_ser
     server, handler = model_server
     handler.responses = [
         _terminal("unqualified", reason="页面明确提示暂停扫码点餐，且没有可浏览菜单"),
+        _terminal("unqualified", reason="页面明确提示暂停扫码点餐，且没有可浏览菜单"),
     ]
     observe, frames = _frame_factory(tmp_path)
 
     result, terminal_frame = run_navigation(
-        _model(server), "暂停点餐的门店", 1, 2,
+        _model(server), "暂停点餐的门店", 1, 4,
         observe=observe, execute=lambda *_: pytest.fail("终态不应执行动作"), check_stop=lambda: None,
     )
 
     assert result["outcome"] == "unqualified"
     assert result["reason"] == "页面明确提示暂停扫码点餐，且没有可浏览菜单"
     assert "code" not in result
-    assert terminal_frame == frames[0]
+    # unqualified 与 needs_review 一样有最小观察预算：首帧终态先退回观察，取证帧是第二帧。
+    assert terminal_frame == frames[1]
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
