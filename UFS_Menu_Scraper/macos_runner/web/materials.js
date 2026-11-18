@@ -1,3 +1,5 @@
+/* 素材与批次管理模块：上传/分析、门店决策、发布与激活、批次回收站与阶段维护。
+   由 index.html 通过 window.__materialsInit({api, token}) 初始化，只通过 HTTP 接口操作。 */
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);

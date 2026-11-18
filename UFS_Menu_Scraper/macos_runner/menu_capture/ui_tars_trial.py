@@ -1,4 +1,10 @@
-"""GUI Agent SDK 和 UiPath 的本机 IPC 与结果契约。"""
+"""GUI Agent SDK 和 UiPath 的本机 IPC 与结果契约。
+
+关键流程：把当前帧与候选目标交给模型 → 校验模型动作（白名单、目标 ID、坐标换算）
+→ 通过子进程协议执行动作 → 回传新帧，直到 success / unqualified / needs_review。
+
+边界：模型只做导航决策，不核对店名、不接触二维码原图；动作参数与窗口契约在此统一校验。
+"""
 
 from __future__ import annotations
 

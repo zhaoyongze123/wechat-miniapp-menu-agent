@@ -1,3 +1,7 @@
+"""配置模型与本地 JSON 存储：Settings 校验、原子写入、敏感字段分离。
+
+边界：只负责读写和校验配置，不推断业务默认值；secrets.local.json 与普通配置分开保存。
+"""
 from __future__ import annotations
 
 import json

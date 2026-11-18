@@ -1,3 +1,10 @@
+"""任务与运行的 SQLite 存储：tasks、runs、run_actions、events 的唯一事实源。
+
+关键约定：
+- 所有任务状态迁移都经过本模块，其他层不直接改表；
+- 建表与增量迁移在初始化时幂等执行，兼容历史库；
+- 查询只返回事实，不在这里做重试、去重等业务判断。
+"""
 from __future__ import annotations
 
 import hashlib

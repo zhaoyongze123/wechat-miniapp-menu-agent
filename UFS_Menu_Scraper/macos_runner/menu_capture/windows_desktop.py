@@ -4,6 +4,8 @@
 UiPath 的 NApplicationCard 会把它识别成 Chromium 浏览器，卡片内的窗口级目标
 （置前/截图/点击/输入）全部解析失败，因此这些动作改由本进程用 user32/gdi32 完成，
 回包字段与 FileRobotTransport 的约定保持一致。
+
+边界：只操作已校验的目标窗口，不主动结束无关进程；仅在 Windows 平台加载。
 """
 
 from __future__ import annotations

@@ -1,3 +1,10 @@
+"""本机控制台的 HTTP 层：FastAPI 路由、令牌校验与静态资源。
+
+职责边界：
+- 只做请求解析、鉴权、参数校验和响应组装，业务规则全部下沉到各 service；
+- 统一在这里维护 REST 契约，前端与其他脚本只通过 HTTP 操作，不直接改数据库；
+- 静态资源每次请求从 web/ 读取，替换前端文件后无需重启服务。
+"""
 from __future__ import annotations
 
 import hmac

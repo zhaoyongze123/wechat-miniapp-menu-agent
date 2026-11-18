@@ -1,4 +1,8 @@
-"""从现有清洗决策与采集任务中汇总仍有效的不合格记录。"""
+"""从不合格决策与采集任务汇总统一的不合格清单，并导出 Excel。
+
+边界：只做只读汇总、筛选与导出，不新增审核状态；事实仍分别保存在
+material_decisions 与 tasks.reject_* 字段中。
+"""
 from __future__ import annotations
 
 from io import BytesIO
