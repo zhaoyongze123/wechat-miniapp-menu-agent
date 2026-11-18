@@ -659,3 +659,15 @@
   #page-materials .materials-manage-row { grid-template-columns:1fr; gap:8px; }
   #page-materials .materials-manage-side { justify-content:flex-start; flex-wrap:wrap; }
 }
+
+/* 固定右侧操作列，避免“不可删除”提示把按钮挤出弹窗。 */
+#page-materials .materials-manage-row { grid-template-columns:minmax(0,1.25fr) minmax(0,1.35fr) 370px; column-gap:16px; }
+#page-materials .materials-manage-side { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:nowrap; min-width:0; }
+#page-materials .materials-manage-actions { display:flex; align-items:center; gap:6px; flex-wrap:nowrap; flex:0 0 auto; }
+#page-materials .materials-stage-select { width:150px; min-width:150px; max-width:150px; }
+#page-materials .materials-manage-note { flex-basis:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a35b2a; font-size:10px; }
+#page-materials .materials-manage-list { padding-right:8px; }
+@media (max-width:1100px) {
+  #page-materials .materials-manage-row { grid-template-columns:minmax(0,1.2fr) minmax(0,1.2fr) auto; }
+  #page-materials .materials-stage-select { width:140px; min-width:140px; max-width:140px; }
+}

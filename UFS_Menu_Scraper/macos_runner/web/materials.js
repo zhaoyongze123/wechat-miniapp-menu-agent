@@ -975,10 +975,13 @@
         stageSelect.setAttribute('aria-label', `${batch.name || '批次'} 执行阶段`);
         stageSelect.addEventListener('change', () => void mutateStage(batch, stageSelect.value, stageSelect));
         stageRow.append(stageSelect);
+        const side = node('div','materials-manage-side');
+        const notes = [];
         if (manageDeleted) {
           actions.append(managementButton('恢复', () => mutateRow(batch,'restore')));
-          actions.append(managementButton('彻底删除', () => mutateRow(batch,'purge'), !batch.can_purge, true));
-          if (!batch.can_purge) actions.append(node('small','materials-block-reason',batch.purge_block_reason || '已发布版本或历史记录需要保留'));
+          const purgeButton = managementButton('彻底删除', () => mutateRow(batch,'purge'), !batch.can_purge, true);
+          if (!batch.can_purge) { purgeButton.title = batch.purge_block_reason || '已发布版本或历史记录需要保留'; notes.push(purgeButton.title); }
+          actions.append(purgeButton);
         } else {
           actions.append(managementButton('打开', async () => {
             if (state.busy) return;
@@ -987,14 +990,18 @@
           }));
           actions.append(managementButton('编辑', () => openEdit(batch)));
           if (batch.current_active) {
-            actions.append(managementButton('清除选择', () => clearActiveSelection(batch), !batch.can_clear_selection));
-            actions.append(node('small','materials-block-reason',batch.clear_selection_block_reason || '切换或清除采集选择后可移入回收站'));
+            const clearButton = managementButton('清除选择', () => clearActiveSelection(batch), !batch.can_clear_selection);
+            if (!batch.can_clear_selection) { clearButton.title = batch.clear_selection_block_reason || '切换或清除采集选择后可移入回收站'; notes.push(clearButton.title); }
+            actions.append(clearButton);
           } else {
-            actions.append(managementButton('删除', () => mutateRow(batch,'delete'), !batch.can_delete, true));
-            if (!batch.can_delete) actions.append(node('small','materials-block-reason',batch.delete_block_reason));
+            const deleteButton = managementButton('删除', () => mutateRow(batch,'delete'), !batch.can_delete, true);
+            if (!batch.can_delete) { deleteButton.title = batch.delete_block_reason || '当前批次不可删除'; notes.push(deleteButton.title); }
+            actions.append(deleteButton);
           }
         }
-        const side = node('div','materials-manage-side'); side.append(stageRow, actions);
+        // 不可操作的说明放到左列名称下方，避免挤占右侧操作区导致按钮被裁切。
+        for (const note of notes) title.append(node('small','materials-manage-note', note));
+        side.append(stageRow, actions);
         row.append(title,info,side); list.append(row);
       }
       list.scrollTop = scroll;
