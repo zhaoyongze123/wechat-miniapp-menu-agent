@@ -74,7 +74,7 @@ main { display:flex; flex-direction:column; min-width:0; min-height:0; max-width
 .quality-toolbar h2 { margin:0; }
 .quality-actions,.quality-filters,.quality-row-actions { display:flex; align-items:center; gap:8px; }
 .quality-filters { flex-wrap:wrap; padding:12px 18px; border-bottom:1px solid var(--line); }
-.quality-filters input { flex:1; min-width:120px; }
+.quality-filters > input[type=search],.quality-filters > input[type=text] { flex:1; min-width:120px; }
 .quality-filters .quality-batch-picker { position:relative; flex:0 0 190px; }
 .quality-batch-trigger { width:100%; min-height:36px; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); font:inherit; font-size:12px; text-align:left; cursor:pointer; }
 .quality-batch-trigger::after { content:"▾"; float:right; color:var(--muted); }
@@ -87,6 +87,8 @@ main { display:flex; flex-direction:column; min-width:0; min-height:0; max-width
 .quality-filters .quality-reason-filter { flex:0 1 210px; min-width:175px; }
 .quality-select-all { display:flex; flex:0 0 auto; align-items:center; gap:6px; white-space:nowrap; font-size:12px; color:var(--muted); cursor:pointer; }
 .quality-select-all input { flex:0 0 auto; width:auto; min-width:0; }
+.quality-batch-menu input[type=checkbox],.quality-select-all input[type=checkbox] { width:14px; height:14px; min-width:0; flex:0 0 auto; margin:0; }
+.quality-batch-option { min-height:32px; line-height:18px; }
 .quality-filters input,.quality-filters select { min-height:36px; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); }
 .quality-list { max-height:min(68vh,760px); min-height:160px; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
 .quality-table-head { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(190px,1fr) minmax(0,1.5fr) 150px; align-items:center; gap:14px; padding:8px 18px; border-bottom:1px solid var(--line); background:#fafbfa; color:var(--muted); font-size:11px; letter-spacing:.02em; }
@@ -805,3 +807,13 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-vi
 .history-detail-row span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#5f6b66; }
 @media (max-width:1100px) { .history-head { display:none; } .history-row { grid-template-columns:1fr 1fr; } }
 @media (max-width:700px) { .history-row { grid-template-columns:1fr; } }
+
+/* 统一分页条：所有清单每页 100 条，样式与任务历史保持一致。 */
+.quality-pager,.history-pager { display:flex; align-items:center; justify-content:flex-end; gap:10px; padding:10px 18px; border-top:1px solid var(--line); font-size:12px; color:var(--muted); }
+.quality-pager .btn,.history-pager .btn { font-size:11px; padding:5px 9px; }
+.quality-pager .btn:disabled,.history-pager .btn:disabled { opacity:.45; cursor:not-allowed; }
+/* 任务中心固定一屏：页面本身不滚动，只有中间列表滚动。 */
+#page-task-center.active { display:flex; flex-direction:column; gap:14px; height:calc(100vh - 128px); min-height:0; overflow:hidden; }
+#page-task-center .quality-overview { flex:0 0 auto; }
+#page-task-center .quality-browser { display:flex; flex:1; flex-direction:column; min-height:0; }
+#page-task-center .quality-list { flex:1; min-height:0; max-height:none; }
