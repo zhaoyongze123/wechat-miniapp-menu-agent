@@ -956,12 +956,14 @@
         title.append(node('strong','',batch.name || '未命名批次'));
         if (batch.current_active) title.append(node('span','materials-current-tag','当前采集使用'));
         if (batch.description) title.append(node('span','materials-manage-description',batch.description));
+        title.append(node('span','materials-manage-time',`更新 ${String(batch.updated_at||'').slice(0,16).replace('T',' ')}`));
         const summary = batch.summary || {};
+        // 统计压成一行标签，避免四行同字号灰字堆在一起。
         const info = node('div','materials-manage-info');
-        info.append(node('span','',`${statusLabels[batch.status] || '未知状态'} · ${summary.total_stores||0} 家 · ${batch.versions_count||0} 个版本`));
+        info.append(node('span','',`${statusLabels[batch.status] || '未知状态'} · ${summary.total_stores||0} 家`));
         info.append(node('span','',`${summary.confirmed_stores||0} 已确认 · ${summary.pending_stores||0} 待审核`));
-        if (summary.detection_stats?.square) info.append(node('span','',`方形码 ${summary.detection_stats.square?.hit_stores||0} 家 · ${((Number(summary.detection_stats.total_ms)||0)/1000).toFixed(1)} 秒`));
-        info.append(node('span','',`更新 ${String(batch.updated_at||'').slice(0,16).replace('T',' ')}`));
+        info.append(node('span','',`${batch.versions_count||0} 个版本`));
+        if (Number(summary.detection_stats?.square?.hit_stores || 0) > 0) info.append(node('span','',`方形码 ${summary.detection_stats.square.hit_stores} 家`));
         const actions = node('div','materials-manage-actions');
         // 执行阶段支持人工覆盖：“自动判断”按运行轮次推断，其余四项由人工指定。
         const stageRow = node('div','materials-manage-stage');
@@ -970,9 +972,9 @@
         const stageOptions = [['', `自动判断${workflow.label ? `（${workflow.label}）` : ''}`], ['not_started','未采集'], ['first_run','首轮已跑'], ['rerun','已重跑'], ['approved','人工审核通过（可建档）']];
         for (const [value, label] of stageOptions) { const option = node('option','',label); option.value = value; stageSelect.append(option); }
         stageSelect.value = workflow.manual_stage || '';
-        stageSelect.setAttribute('aria-label', `${name} 执行阶段`);
+        stageSelect.setAttribute('aria-label', `${batch.name || '批次'} 执行阶段`);
         stageSelect.addEventListener('change', () => void mutateStage(batch, stageSelect.value, stageSelect));
-        stageRow.append(node('span','','执行阶段'), stageSelect);
+        stageRow.append(stageSelect);
         if (manageDeleted) {
           actions.append(managementButton('恢复', () => mutateRow(batch,'restore')));
           actions.append(managementButton('彻底删除', () => mutateRow(batch,'purge'), !batch.can_purge, true));
@@ -992,7 +994,8 @@
             if (!batch.can_delete) actions.append(node('small','materials-block-reason',batch.delete_block_reason));
           }
         }
-        row.append(title,info,stageRow,actions); list.append(row);
+        const side = node('div','materials-manage-side'); side.append(stageRow, actions);
+        row.append(title,info,side); list.append(row);
       }
       list.scrollTop = scroll;
     }

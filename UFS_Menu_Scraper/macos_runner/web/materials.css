@@ -640,3 +640,22 @@
   #page-materials .materials-steps { display: none; }
   #page-materials .materials-batch-bar { padding-block: 8px; }
 }
+
+/* 批次管理：一行式布局，左名称/中统计/右阶段与操作，减少空白和两行按钮。 */
+#page-materials .materials-manage-dialog { width:min(960px,calc(100vw - 40px)); height:min(720px,86vh); }
+#page-materials .materials-manage-row { grid-template-columns:minmax(0,1.4fr) minmax(0,1.5fr) auto; gap:20px; align-items:center; padding:14px 6px; }
+#page-materials .materials-manage-title { flex-wrap:wrap; align-items:center; gap:6px; font-size:13px; }
+#page-materials .materials-manage-title strong { overflow:hidden; max-width:100%; text-overflow:ellipsis; white-space:nowrap; }
+#page-materials .materials-manage-description { flex-basis:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; }
+#page-materials .materials-manage-time { flex-basis:100%; color:var(--mat-muted); font-size:10px; }
+#page-materials .materials-manage-info { display:flex; flex-wrap:wrap; gap:6px; font-size:10px; }
+#page-materials .materials-manage-info span { display:inline-flex; align-items:center; padding:2px 8px; border-radius:999px; background:#f3f6f5; color:#5f6b66; line-height:18px; }
+#page-materials .materials-manage-side { display:flex; align-items:center; justify-content:flex-end; gap:8px; }
+#page-materials .materials-manage-stage { margin:0; }
+#page-materials .materials-stage-select { min-width:140px; max-width:180px; padding:6px 8px; font-size:11px; }
+#page-materials .materials-manage-actions { flex-wrap:nowrap; }
+#page-materials .materials-manage-list { padding-bottom:8px; }
+@media (max-width:900px) {
+  #page-materials .materials-manage-row { grid-template-columns:1fr; gap:8px; }
+  #page-materials .materials-manage-side { justify-content:flex-start; flex-wrap:wrap; }
+}
