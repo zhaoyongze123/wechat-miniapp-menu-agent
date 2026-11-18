@@ -99,26 +99,27 @@ def wait_idle(client: Client, interval: int) -> None:
         time.sleep(interval)
 
 
-def start_capture(client: Client, batch: dict, release: dict, interval: int) -> dict:
-    name, batch_id, snapshot = batch["name"], batch["batch_id"], release["snapshot_id"]
-    client.call("POST", f"/api/materials/batches/{batch_id}/activate", {"version": VERSION})
-    log(f"{name} 已激活版本 {VERSION}")
-    for _ in range(10):
-        status = client.call("GET", "/api/status")
-        tasks = [task for task in status.get("tasks", [])
-                 if snapshot in str(task.get("source_path", ""))
-                 and task.get("status") == "pending" and not task.get("reject_reason")]
-        if tasks:
-            break
-        time.sleep(3)
-    else:
-        raise RuntimeError(f"{name} 激活后没有找到待采集任务")
+def pending_tasks(client: Client, snapshot: str) -> list[dict]:
+    """当前激活快照下仍待采集的任务；门店数超过单次上限时用于续跑。"""
+    status = client.call("GET", "/api/status")
+    return [task for task in status.get("tasks", [])
+            if snapshot in str(task.get("source_path", ""))
+            and task.get("status") == "pending" and not task.get("reject_reason")]
+
+
+def activate_batch(client: Client, batch: dict, release: dict) -> None:
+    client.call("POST", f"/api/materials/batches/{batch['batch_id']}/activate", {"version": VERSION})
+    log(f"{batch['name']} 已激活版本 {VERSION}")
+
+
+def start_capture(client: Client, batch: dict, tasks: list[dict], round_no: int) -> dict:
+    selected = tasks[:100]
     profile = client.call("GET", "/api/robot/profile")
-    profile["selected_task_ids"] = [task["id"] for task in tasks]
-    profile["max_tasks"] = max(1, min(100, len(tasks)))
+    profile["selected_task_ids"] = [task["id"] for task in selected]
+    profile["max_tasks"] = len(selected)
     client.call("POST", "/api/robot/profile", profile)
     client.call("POST", "/api/start", {})
-    log(f"{name} 采集已启动，共 {len(tasks)} 家")
+    log(f"{batch['name']} 第 {round_no} 轮采集已启动，共 {len(selected)} 家")
     return client.call("GET", "/api/status")
 
 
@@ -154,10 +155,26 @@ def main() -> int:
         batch = wait_analyzed(client, batch_id, name, args.interval)
         release = ensure_release(client, batch, args.interval)
         wait_idle(client, args.interval)
-        start_capture(client, batch, release, args.interval)
-        run = wait_run_finished(client, name, args.interval)
-        if run.get("status") != "completed":
-            raise RuntimeError(f"{name} 采集未正常完成：{run.get('status')}，流水线停止")
+        activate_batch(client, batch, release)
+        for _ in range(10):
+            tasks = pending_tasks(client, release["snapshot_id"])
+            if tasks:
+                break
+            time.sleep(3)
+        else:
+            raise RuntimeError(f"{name} 激活后没有找到待采集任务")
+        round_no = 0
+        while tasks:
+            round_no += 1
+            if round_no > 20:
+                raise RuntimeError(f"{name} 续跑轮次过多，流水线停止")
+            start_capture(client, batch, tasks, round_no)
+            run = wait_run_finished(client, name, args.interval)
+            if run.get("status") != "completed":
+                raise RuntimeError(f"{name} 采集未正常完成：{run.get('status')}，流水线停止")
+            tasks = pending_tasks(client, release["snapshot_id"])
+            if tasks:
+                log(f"{name} 仍有 {len(tasks)} 家待采集，继续下一轮")
     log("全部批次处理完成")
     return 0
 
