@@ -253,6 +253,21 @@ def test_delete_is_blocked_by_upload_analysis_and_recoverable_run_reference(tmp_
     assert denied.status_code == 409
 
 
+@pytest.mark.parametrize("run_status", ["completed", "terminated", "failed", "cancelled"])
+def test_finished_runs_do_not_block_batch_delete(tmp_path: Path, run_status: str):
+    app, client, headers = _setup(tmp_path)
+    source = tmp_path / "originals"
+    _png(source / "门店甲" / "菜单.png")
+    batch_id = _create(client, headers, source)
+    run_id = f"finished-{run_status}"
+    app.state.store.create_run(run_id, "queue", [])
+    with app.state.store.connect() as db:
+        db.execute("UPDATE runs SET material_batch_id=?,status=? WHERE id=?", (batch_id, run_status, run_id))
+    row = next(row for row in _management(client) if row["batch_id"] == batch_id)
+    assert row["can_delete"] is True
+    assert not row["delete_block_reason"]
+
+
 @pytest.mark.parametrize("run_status", ["running", "paused"])
 def test_clear_selection_blocks_running_or_paused_run_and_idle_clear_keeps_material_snapshot(tmp_path: Path, run_status: str):
     app, client, headers = _setup(tmp_path)

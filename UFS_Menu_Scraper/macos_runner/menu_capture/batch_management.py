@@ -12,7 +12,7 @@ from .materials import _now
 
 
 _ACTIVE_BATCH_STATES = {"uploading", "queued", "analyzing"}
-_TERMINAL_RUN_STATES = {"completed", "terminated"}
+_TERMINAL_RUN_STATES = {"completed", "terminated", "failed", "cancelled"}
 
 
 class BatchManager:
