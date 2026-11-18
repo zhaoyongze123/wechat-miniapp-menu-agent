@@ -1,4 +1,9 @@
-"""GUI Agent SDK 和 UiPath 的本机 IPC 与结果契约。"""
+"""GUI Agent SDK 的 Python 宿主。
+
+启动 Node.js 适配器，通过 JSON Lines 交换截图、动作和结果。宿主绑定截图与动作，
+把送模图的坐标换算为窗口坐标，再交给调用方提供的桌面回调执行。
+相邻帧的画面变化和可用的点击反馈会随下一帧返回，菜单导航由 Agent 判断。
+"""
 
 from __future__ import annotations
 
@@ -302,6 +307,8 @@ def _exchange_protocol(child, config, observe, execute, check_stop, pipe_reader=
             raise TrialProtocolError("GUI Agent 返回未知请求")
         method = event.get("method")
         if method == "screenshot":
+            # 宿主生成帧编号并保存本帧几何信息。Node.js 只能引用该编号，不能用
+            # 自带的窗口尺寸替换宿主观测。每次真正取图后才重新开放动作。
             sequence += 1
             frame = observe(sequence)
             frame_id = str(sequence)
@@ -313,8 +320,9 @@ def _exchange_protocol(child, config, observe, execute, check_stop, pipe_reader=
             previous_image_size = image_size
             pending_focus = None
             previous_titles = {item["title"] for item in facts["windows"]}
-            # delta/roi 已在未标记的原图上算完；只有这次点击确实无变化时，
-            # 才在回传副本上标记落点，并生成一张落点放大参考图（坐标空间不变）。
+            # 先按未标记的相邻帧计算整页与落点邻域变化，避免标记本身被统计成页面变化。
+            # 点击后未观察到明显变化时，给 Agent 返回带落点的截图副本及可用的放大图。
+            # 近邻 OCR 与放大图共用同一帧的识别结果，原始截图和动作坐标保持原样。
             click = params.get("mark")
             missed = click is not None and _click_missed(facts)
             if missed:
@@ -336,6 +344,8 @@ def _exchange_protocol(child, config, observe, execute, check_stop, pipe_reader=
                 raise TrialProtocolError("局部图需要同轮截图")
             result = _crop_region(frame, image_size, params)
         else:
+            # 当前帧之外的请求，以及已经消费该帧后的第二个动作，在调用桌面执行层前拒绝。
+            # 列窗口只读，不消费本帧。窗口切换后的点击需要等待新的截图。
             if frame is None or params.get("frame_id") != frame_id or action_sent:
                 raise TrialProtocolError("GUI Agent 动作需要同轮新鲜截图")
             try:
@@ -799,6 +809,8 @@ def _cmd_click(params, frame, image_size):
     if x > width * .55 and y < height * .045:
         # 右上角是小程序窗口胶囊（… / ◎），点中会退出小程序；本次不执行并明确告知 Agent。
         raise TrialActionRejected("点击落在窗口右上角胶囊保护区，会退出小程序；本次操作未执行，请换一个位置")
+    # 此处是送模图的像素坐标，可能已经缩小。按截图与窗口的宽高比例映射回窗口坐标，
+    # 到 Win32 执行时再加当前窗口的桌面原点。
     return {"action": "click", "x": x * frame["window_width"] / width,
             "y": y * frame["window_height"] / height}
 

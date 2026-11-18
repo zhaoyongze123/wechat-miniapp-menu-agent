@@ -1,3 +1,10 @@
+"""组织微信菜单采集任务并派发桌面命令。
+
+UiPathRunner 负责批次运行、窗口交接、导航调用和截图归档。FileRobotTransport 校验命令
+及回执，并保存最近一次截图的窗口身份和尺寸供坐标动作使用。Windows 下已支持的动作
+交给本地 Win32 驱动，其余保留 UiPath 文件协议。
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -304,6 +311,8 @@ class FileRobotTransport:
                 if not selector or not geometry or not geometry.get("bounds"):
                     raise RobotProtocolError("坐标动作必须使用最近一次同 selector 截图确认的窗口")
                 payload["expected_window_width"], payload["expected_window_height"] = geometry["bounds"]
+                # 原生驱动同时复核上次截图记下的窗口尺寸和身份。同名小程序另开窗口后，
+                # 旧截图对应的坐标不能用在新窗口上。
                 if self.local is not None and geometry.get("window_id"):
                     payload["expected_window_id"] = geometry["window_id"]
             self._validate_command(payload)
@@ -866,8 +875,9 @@ class UiPathRunner:
             if isinstance(self.transport, FileRobotTransport):
                 self.transport.retain_command_history = self.debug_log is None
                 if sys.platform == "win32":
-                    # 微信 4.x 的网页版/小程序窗口被 UiPath 当成 Chromium 浏览器，
-                    # 窗口级动作全部解析失败；改为本进程 Win32 直接执行，UiPath 只做发现。
+                    # 微信 4.x 小程序窗口曾在 UiPath 的 Chromium 选择器路径上解析失败。
+                    # WindowsDesktop 接管发现、取图和输入等已支持动作。FileRobotTransport
+                    # 对这些动作直接返回本地回执，其余动作仍按原有文件协议派发。
                     from .windows_desktop import WindowsDesktop
 
                     self.transport.local = WindowsDesktop()
