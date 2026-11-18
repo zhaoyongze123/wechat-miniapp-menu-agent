@@ -205,6 +205,8 @@ def _ensure_hit_target(hwnd, x: float, y: float) -> None:
         raise RuntimeError("点击落点被其它窗口遮挡；未执行点击")
 
 
+# 枚举顶层窗口时同时记录进程、标题和窗口类。标题可能重复，截图和后续动作
+# 可以用 PID 与 HWND 组成的 window_id 约束到同一个窗口。
 def _windows() -> list[dict]:
     items: list[dict] = []
     proto = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -474,6 +476,8 @@ class WindowsDesktop:
         path = Path(command["path"])
         path.parent.mkdir(parents=True, exist_ok=True)
         image.save(path)
+        # 原图的像素尺寸和窗口在屏幕上的几何信息随同一次截图返回。上层把送模图的落点
+        # 映射回窗口比例后，本驱动还会重新读取窗口矩形，检查动作是否仍能使用该几何信息。
         return {"ok": True, "action": command["action"], "path": str(path.resolve()),
                 "width": image.width, "height": image.height,
                 "window_id": window.get("window_id"),
@@ -540,7 +544,8 @@ class WindowsDesktop:
             info.bmiHeader.biBitCount = 32
             rows = gdi32.GetDIBits(memory, bitmap, 0, height, buffer, ctypes.byref(info), 0)
             if not printed or rows != height or _is_blank(buffer.raw):
-                # 被遮挡或 GPU 合成窗口拿不到内容时退回屏幕取图。
+                # PrintWindow 失败、读回行数不足或画面空白时，用 BitBlt 读取窗口矩形
+                # 对应的可见桌面像素。该回退会包含遮住该区域的其它窗口内容。
                 gdi32.BitBlt(memory, 0, 0, width, height, screen,
                              _rect(hwnd)[0], _rect(hwnd)[1], SRCCOPY)
                 rows = gdi32.GetDIBits(memory, bitmap, 0, height, buffer, ctypes.byref(info), 0)
@@ -582,6 +587,8 @@ class WindowsDesktop:
         if not self._activate(hwnd):
             raise RuntimeError("目标窗口未置前；未执行点击")
         left, top, width, height = self._point(window, x, y, command)
+        # Python 宿主传来的是窗口内的坐标。加上当前窗口左上角得到桌面落点，
+        # 再检查该点实际命中的顶层窗口，避免焦点正确但落点仍被浮窗遮挡。
         _ensure_hit_target(hwnd, left + x, top + y)
         user32.SetCursorPos(left + int(round(x)), top + int(round(y)))
         time.sleep(0.05)

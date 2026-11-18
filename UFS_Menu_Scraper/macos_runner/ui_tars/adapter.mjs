@@ -21,7 +21,7 @@ let screenHeight = 0;
 let actionUsedOnFrame = false;
 let terminal = null;
 let faulted = false;
-// 连续格式错误与整个任务的格式错误分开计数：连续合法输出后允许重新获得修正机会。
+// 连续和整任务的格式失败分别计数。一次合法输出只清零连续计数，整任务上限继续生效。
 const CONSECUTIVE_PARSE_FAILURE_LIMIT = 2;
 const TOTAL_PARSE_FAILURE_LIMIT = 4;
 const REASON_MAX_CHARS = 500;
@@ -366,10 +366,9 @@ function parseModelAction(rawArgs) {
   const args = normalizedArguments(rawArgs);
   if (!args || typeof args !== 'object' || Array.isArray(args) || typeof args.action !== 'string') throw new Error('invalid_action');
   // noop 必须在 schema 查找之前处理：它是“先不动作”的合法出口，schema 里没有对应的宿主方法。
-  // 空 arguments 会被 action-repair 归一化成 noop，如果先查 schema 就会误判成 disallowed_action 并直接终止。
+  // 只有显式 action=noop 才表示继续观察，空 arguments 缺少 action，走格式纠错。
   if (args.action === 'noop') {
-    // 模型用空 arguments 表示“先不动、继续观察”；转成一次短暂等待，下一轮重新截图。
-    // 连续空参数不是格式错误，但也不能一直静默：第二次起把合法出口直接说出来。
+    // 转成一次短等待，之后由 SDK 取新图。连续 noop 只提示可用出口。
     noopCount += 1;
     if (noopCount >= 2) pendingNotice = [pendingNotice, NOOP_NOTICE].filter(Boolean).join(' ');
     return { type: 'wait', inputs: { params: { seconds: 1 } } };
@@ -472,6 +471,8 @@ function makeCustomActionParser() {
     try {
       if (!currentFrame || !screenWidth || !screenHeight) throw new Error('no_observation');
       resetRepairFlag();
+      // 先解析并尝试可确定的 JSON 格式修复，再按动作定义校验字段。
+      // 两步通过后才产生可交给 Operator 的动作，修复不凭空补点击坐标或业务意图。
       args = extractAction(rawContent);
       const parsed = parseModelAction(args);
       // 合法输出后重置连续错误计数，让 Agent 在任务后段仍有修正机会；总上限仍保留。
@@ -508,7 +509,8 @@ function makeCustomActionParser() {
       }
       if (formatError && parseFailures <= CONSECUTIVE_PARSE_FAILURE_LIMIT
           && parseFailuresTotal <= TOTAL_PARSE_FAILURE_LIMIT) {
-        // 错误只解释格式，不替 Agent 判断页面；连续和总计各有上限，避免无限重试。
+        // 两个计数都在上限内才返回 notice。notice 由 SDK 带入后续观察，不调用桌面动作。
+        // 超过任一上限后走 reject，记录原始输出并结束适配器的执行循环。
         formatRetries += 1;
         const detail = error instanceof ShapeError
           ? (error.reason === 'missing' ? `缺少必填字段 ${error.field}`
@@ -526,6 +528,8 @@ function makeCustomActionParser() {
   };
 }
 
+// SDK 保留观察、模型调用和动作循环。Operator 通过 RPC 向 Python 请求取图或执行，
+// 把宿主返回的画面事实和失败回执带回模型，由模型决定下一步菜单导航。
 class HostOperator extends Operator {
   async initialize() {}
 
