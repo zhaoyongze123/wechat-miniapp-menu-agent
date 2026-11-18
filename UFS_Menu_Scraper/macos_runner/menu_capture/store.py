@@ -62,6 +62,9 @@ class TaskStore:
             if "inherited_from" not in {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}:
                 db.execute("ALTER TABLE tasks ADD COLUMN inherited_from TEXT NOT NULL DEFAULT ''")
             task_columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}
+            # 历史归集：归档后不再进入不合格清单，但保留原始记录可追溯。
+            if "archived_at" not in task_columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN archived_at TEXT NOT NULL DEFAULT ''")
             for column in ("reject_reason", "reject_detail", "rejected_at"):
                 if column not in task_columns:
                     db.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
@@ -225,18 +228,77 @@ class TaskStore:
     def rejections(self) -> list[dict]:
         with self.connect() as db:
             rows = db.execute("""
-                SELECT t.*, a.run_id, r.material_batch_id,
+                SELECT t.*, a.run_id, br.material_batch_id,
                     b.name AS material_batch_name
                 FROM tasks t
                 LEFT JOIN run_actions a ON a.id=(
                     SELECT MAX(latest.id) FROM run_actions latest WHERE latest.task_id=t.id
                 )
-                LEFT JOIN runs r ON r.id=a.run_id
-                LEFT JOIN material_batches b ON b.id=r.material_batch_id
-                WHERE t.reject_reason<>'' AND (b.id IS NULL OR b.deleted_at='')
+                -- 取最近一次真正绑定素材批次的运行；后续未绑定批次的运行不应让记录重新出现在不合格清单里。
+                LEFT JOIN runs br ON br.id=(
+                    SELECT r2.id FROM run_actions a2 JOIN runs r2 ON r2.id=a2.run_id
+                    WHERE a2.task_id=t.id AND r2.material_batch_id IS NOT NULL AND r2.material_batch_id<>''
+                    ORDER BY a2.id DESC LIMIT 1
+                )
+                LEFT JOIN material_batches b ON b.id=br.material_batch_id
+                WHERE t.reject_reason<>'' AND COALESCE(t.archived_at,'')='' AND (b.id IS NULL OR b.deleted_at='')
                 ORDER BY t.rejected_at DESC,t.id
             """).fetchall()
-        return [dict(row) for row in rows]
+            items = [dict(row) for row in rows]
+            # 部分历史任务的运行没有写 material_batch_id；按来源路径反推批次，
+            # 保证控制台与按批次筛选的不合格清单使用同一归属口径。
+            self._bind_missing_batches(db, items)
+        return [item for item in items if not item.pop("_deleted_batch", False)]
+
+    def review_candidates(self) -> list[dict]:
+        """跨批次的待检查任务：直接以任务状态为事实源，带上最近一次绑定的素材批次。"""
+        with self.connect() as db:
+            rows = db.execute("""
+                SELECT t.*, a.run_id, br.material_batch_id,
+                    b.name AS material_batch_name
+                FROM tasks t
+                LEFT JOIN run_actions a ON a.id=(
+                    SELECT MAX(latest.id) FROM run_actions latest WHERE latest.task_id=t.id
+                )
+                LEFT JOIN runs br ON br.id=(
+                    SELECT r2.id FROM run_actions a2 JOIN runs r2 ON r2.id=a2.run_id
+                    WHERE a2.task_id=t.id AND r2.material_batch_id IS NOT NULL AND r2.material_batch_id<>''
+                    ORDER BY a2.id DESC LIMIT 1
+                )
+                LEFT JOIN material_batches b ON b.id=br.material_batch_id
+                WHERE t.status IN ('needs_review','needs_retry','error','blocked')
+                  AND COALESCE(t.archived_at,'')=''
+                  AND (b.id IS NULL OR b.deleted_at='')
+                ORDER BY t.updated_at DESC,t.id
+            """).fetchall()
+            items = [dict(row) for row in rows]
+            self._bind_missing_batches(db, items)
+        return [item for item in items if not item.pop("_deleted_batch", False)]
+
+    @staticmethod
+    def _bind_missing_batches(db, items: list[dict]) -> None:
+        """按来源路径回填缺失的批次归属；删除中的批次标记为非当前记录。"""
+        missing = [item for item in items if not item.get("material_batch_id")]
+        if not missing:
+            return
+        mappings = db.execute(
+            "SELECT b.id,b.name,b.source_root,b.deleted_at,v.snapshot_id "
+            "FROM material_batches b LEFT JOIN material_versions v ON v.batch_id=b.id"
+        ).fetchall()
+        for item in missing:
+            path = item.get("source_path") or ""
+            matched = next((
+                mapping for mapping in mappings
+                if (mapping["source_root"] and mapping["source_root"] in path)
+                or (mapping["snapshot_id"] and mapping["snapshot_id"] in path)
+            ), None)
+            if matched is None:
+                continue
+            if matched["deleted_at"]:
+                item["_deleted_batch"] = True
+                continue
+            item["material_batch_id"] = matched["id"]
+            item["material_batch_name"] = matched["name"]
 
     def get(self, task_id: str) -> dict:
         with self.connect() as db:
@@ -373,6 +435,14 @@ class TaskStore:
         with self.connect() as db:
             row = db.execute("SELECT * FROM runs ORDER BY rowid DESC LIMIT 1").fetchone()
         return self._run_dict(row)
+
+    def run_history(self, limit: int = 500) -> list[dict]:
+        """全部采集运行记录，供任务中心历史页使用。"""
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT * FROM runs ORDER BY created_at DESC,rowid DESC LIMIT ?", (max(1, int(limit)),)
+            ).fetchall()
+        return [self._run_dict(row) for row in rows]
 
     def begin_publish(self, task_id: str, output_root: Path, staging: Path, destination: Path,
                       backup: Path, had_previous: bool) -> None:

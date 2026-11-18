@@ -195,6 +195,17 @@ class JobStore:
             row["queue_position"] = 0
         return rows
 
+    def history(self, limit: int = 500) -> list[dict]:
+        """全部素材分析任务记录，供任务中心历史页使用。"""
+        with self.task_store.connect() as db:
+            rows = [dict(row) for row in db.execute(
+                "SELECT * FROM material_jobs ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (max(1, int(limit)),),
+            )]
+        for row in rows:
+            row["counts"] = self.counts(row["id"])
+        return rows
+
     def counts(self, job_id: str) -> dict:
         with self.task_store.connect() as db:
             row = db.execute(

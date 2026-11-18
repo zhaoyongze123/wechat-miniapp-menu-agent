@@ -292,7 +292,10 @@ def locate_chat_image_bubble(screenshot_path: Path, anchor_bottom: float) -> dic
     # 右边界避开发送者头像栏；下边界取聊天区底部（输入框上沿之上），不把输入框算进来。
     x1, x2 = round(width * 0.58), round(width * 0.92)
     y1 = max(0, round(anchor_bottom))
-    y2 = min(round(height * _TRANSCRIPT_BOTTOM), round(anchor_bottom + height * 0.42))
+    # 只用聊天区底部封顶。锚点是“上一条文本气泡”，相邻两条文本右边界相差几像素时
+    # 更近的一条可能被 find_sent_text_bubbles 的对齐约束剔除，锚点会退回更早一条；
+    # 再按 anchor+42% 截断会把刚发出的图片整个切出搜索区，误把上方文本气泡当成图片。
+    y2 = round(height * _TRANSCRIPT_BOTTOM)
     diagnostics = {
         "reason": "no_bubble_appeared",
         "anchor_bottom": float(anchor_bottom),

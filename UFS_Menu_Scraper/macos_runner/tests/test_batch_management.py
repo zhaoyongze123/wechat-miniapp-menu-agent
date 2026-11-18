@@ -185,6 +185,52 @@ def test_soft_deleted_batch_is_excluded_from_rejection_summary_until_restored(tm
     assert restored["summary"]["records"] == 1
 
 
+def test_deleted_batch_hides_capture_rejections_bound_by_older_run(tmp_path: Path):
+    """批次删除后，采集侧不合格记录也必须归档，即使该任务后续又跑过未绑定批次的运行。"""
+    app, client, headers = _setup(tmp_path)
+    source = tmp_path / "originals"
+    _png(source / "门店甲" / "菜单.png")
+    batch_id = _create(client, headers, source)
+    store = app.state.store
+    store.create_run("bound-run", "queue", ["task-1"], material={
+        "id": 1, "batch_id": batch_id, "version": "v1", "snapshot_id": "snap-1",
+    })
+    store.create_run("later-run", "queue", ["task-1"])
+    with store.connect() as db:
+        db.execute("UPDATE runs SET status='completed' WHERE id IN ('bound-run','later-run')")
+        db.execute(
+            "INSERT INTO tasks(id,source_name,source_path,source_hash,status,stage,message,output_dir,"
+            "updated_at,reject_reason,reject_detail,rejected_at,source_key) "
+            "VALUES('task-1','门店甲','/tmp/甲.png','hash','failed','capture','失败','',"
+            "'2026-01-01T00:00:00','blur','','2026-01-01T00:00:00','')"
+        )
+        db.execute(
+            "INSERT INTO run_actions(run_id,task_id,attempt_id,stage,step,action,started_at,elapsed_ms,result,details) "
+            "VALUES('bound-run','task-1','a1','capture',1,'scan','2026-01-01T00:00:00',1,'ok','{}')"
+        )
+        db.execute(
+            "INSERT INTO run_actions(run_id,task_id,attempt_id,stage,step,action,started_at,elapsed_ms,result,details) "
+            "VALUES('later-run','task-1','a2','capture',1,'scan','2026-01-02T00:00:00',1,'ok','{}')"
+        )
+    assert client.get("/api/rejections", params={"source": "capture"}).json()["summary"]["records"] == 1
+
+    assert client.delete(f"/api/materials/batches/{batch_id}", headers=headers).status_code == 200
+    assert client.get("/api/rejections", params={"source": "capture"}).json()["summary"]["records"] == 0
+
+
+def test_archived_capture_rejection_is_hidden(tmp_path: Path):
+    """历史归档的采集失败记录保留在库中，但不再进入不合格清单。"""
+    app, client, headers = _setup(tmp_path)
+    with app.state.store.connect() as db:
+        db.execute(
+            "INSERT INTO tasks(id,source_name,source_path,source_hash,status,stage,message,output_dir,"
+            "updated_at,reject_reason,reject_detail,rejected_at,source_key,archived_at) "
+            "VALUES('archived-1','旧门店','/tmp/旧.png','hash','failed','capture','失败','',"
+            "'2026-01-01T00:00:00','blur','','2026-01-01T00:00:00','','2026-01-02T00:00:00')"
+        )
+    assert client.get("/api/rejections", params={"source": "capture"}).json()["summary"]["records"] == 0
+
+
 def test_delete_is_blocked_by_upload_analysis_and_recoverable_run_reference(tmp_path: Path):
     app, client, headers = _setup(tmp_path)
     uploading = client.post("/api/materials/uploads", json={"name": "上传中", "description": ""}, headers=headers)

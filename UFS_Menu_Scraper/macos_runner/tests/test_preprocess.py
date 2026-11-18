@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw, ImageFilter
 
-from menu_capture.preprocess import build_materials
+from menu_capture.preprocess import _payload_purpose, build_materials
 
 
 PAYLOAD = "https://private.example/qr-secret"
@@ -191,3 +191,59 @@ def test_invalid_detection_bounds_go_to_review_without_a_partial_artifact(tmp_pa
     assert not (output / "可采集").exists()
 
 
+def test_payload_purpose_covers_keywords_hosts_and_blacklist() -> None:
+    cases = {
+        "https://rms.meituan.com/diancan/14/abc": "ordering",
+        "https://rms.meituan.com/dc/abc": "ordering",
+        "https://app.welcrm.com/qrcode": "ordering",
+        "https://qrse.keruyun.com/mini/123/sb1": "ordering",
+        "https://qr.supermenus.cn/pad/": "ordering",
+        "https://2dfire.cn/wng1u-sxEDgZ": "ordering",
+        "https://apimobile.meituan.com/qrcode/rebate": "ordering_candidate",
+        "https://apimobile.meituan.com/qrcode/dprebate": "ordering_candidate",
+        "https://qrcode.dianping.com/14/abc": "ordering_candidate",
+        "https://dpurl.cn/Sbpcm6kMnRz": "unknown",
+        "https://m.restosuite.cn/open/app/x/table": "ordering_candidate",
+        "https://m.hualala.com/000/newm/personNum": "ordering_candidate",
+        "https://weixin.qq.com/r/abc": "unknown",
+        "https://weixin.qq.com/q/02PuGmQ68l8": "ordering",
+        "https://qr.qmai.cn/fipjnk-shop/cSdC": "ordering",
+        "https://rom.paidui.com/app_wct_v2/abc": "ordering",
+        "https://pos.flyhand.com/weapp/abc": "ordering",
+        "https://qr61.cn/o2ILNT": "ordering",
+        "https://sh6.co/105983": "ordering",
+        "https://cscte.fuioupay.com/s/abc": "ordering",
+        "https://hljh.pinzhikeji.net/pzcatering-gateway/abc": "ordering",
+        "https://wx-kaci.shouqianba.com/qrcode/123": "ordering",
+        "https://www.wjx.cn/vm/abc.aspx": "not_ordering",
+        "https://www.wjx.cn/vm/diancai.aspx": "conflict",
+        "https://rms.meituan.com/diancan/wjx.cn": "ordering",
+        "https://work.weixin.qq.com/u/abc": "enterprise_wechat",
+    }
+    assert {payload: _payload_purpose(payload) for payload in cases} == cases
+
+
+
+
+def test_qr_detections_keeps_second_undecodable_box(monkeypatch, tmp_path: Path) -> None:
+    """原图必须完整定位：一个码解码成功时，另一个未解码的定位框不能被丢掉。"""
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    from menu_capture import windows_image
+
+    image_path = tmp_path / "menu.png"
+    cv2.imwrite(str(image_path), np.full((400, 600, 3), 255, dtype=np.uint8))
+    monkeypatch.setattr(
+        windows_image, "_zxing_scan",
+        lambda _image: [{"box": (20.0, 20.0, 100.0, 100.0), "payload": "first"}],
+    )
+    monkeypatch.setattr(
+        windows_image, "_qr_scan",
+        lambda _detector, _image: [{"box": (300.0, 20.0, 100.0, 100.0), "payload": None}],
+    )
+    monkeypatch.setattr(windows_image, "_qr_refine", lambda _image, _box: None)
+
+    result = windows_image.qr_detections(image_path)
+    assert len(result) == 2
+    assert sum(1 for item in result if item["payload"] is None) == 1

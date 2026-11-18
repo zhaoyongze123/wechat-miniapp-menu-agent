@@ -61,21 +61,7 @@ export function validateArgs(name, args, code = 'invalid_action') {
 }
 
 function pointOf(args, ctx, required) {
-  // 点与框是互斥的两种表达，同时出现说明模型对落点没有把握，交回格式重试而不是猜一个。
-  if (args.coordinate !== undefined && args.target_box !== undefined) {
-    throw new ShapeError('invalid_action', 'target_box', 'value');
-  }
-  if (args.target_box !== undefined) {
-    const [x1, y1, x2, y2] = args.target_box;
-    if (x2 <= x1 || y2 <= y1
-        || [x1, y1, x2, y2].some((n) => n < 0 || n > COORDINATE_SPACE)) {
-      throw new ShapeError('invalid_action', 'target_box', 'value');
-    }
-    // 模型只圈出控件范围，落点由框中心决定：不再要求它猜一个精确像素。
-    const cx = (x1 + x2) / 2;
-    const cy = (y1 + y2) / 2;
-    return { x: cx * ctx.width / COORDINATE_SPACE, y: cy * ctx.height / COORDINATE_SPACE };
-  }
+  // 落点只有 coordinate 一种表达：模型给出 0..1000 的点，这里换算成窗口像素。
   const raw = args.coordinate;
   if (raw === undefined) {
     if (required) throw new ShapeError('invalid_action', 'coordinate', 'missing');
@@ -124,4 +110,27 @@ export function hostMethods() {
     if (spec?.host?.method) methods.add(spec.host.method);
   }
   return [...methods];
+}
+
+// 只用于留痕的文本字段缺失时补占位符：gui-plus 实测会输出 reason:null / target_name:null
+// 或整段漏掉，坐标与动作本身仍然完整。这里不碰 terminate：终态理由属于业务结论，必须由模型给出。
+// 单独开关，便于对比“严格必填”和“补齐留痕字段”两种策略的成功率。
+export const FILL_MISSING_TEXT_FIELDS = true;
+
+export function fillMissingTextFields(args) {
+  if (!FILL_MISSING_TEXT_FIELDS || !args || typeof args !== 'object' || Array.isArray(args)) return args;
+  if (args.action === 'terminate') return args;
+  const spec = ACTIONS[args.action];
+  if (!spec) return args;
+  const next = { ...args };
+  for (const key of ['reason', 'target_name']) {
+    if (!(key in (spec.required || {})) && !(key in (spec.optional || {}))) continue;
+    const value = next[key];
+    if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) {
+      // 点击目标名只用于反馈措辞；模型给了 reason 时直接复用它，比「未提供」更能让下一轮看懂上一轮做了什么。
+      const fallback = key === 'target_name' && typeof next.reason === 'string' ? next.reason.trim() : '';
+      next[key] = fallback || '未提供';
+    }
+  }
+  return next;
 }

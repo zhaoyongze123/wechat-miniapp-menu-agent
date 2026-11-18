@@ -188,6 +188,7 @@ class BatchManager:
             purge_reason = "仍有运行记录引用此批次"
         return {
             "name": batch["name"], "description": batch["description"], "deleted_at": batch["deleted_at"],
+            "workflow": self.service.workflow_stage(batch),
             "versions_count": state["versions_count"], "current_active": state["current_active"],
             "can_delete": can_delete, "delete_block_reason": "; ".join(reasons), "can_purge": can_purge,
             "purge_block_reason": purge_reason,

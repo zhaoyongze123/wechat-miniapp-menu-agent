@@ -11,7 +11,7 @@ import pytest
 from PIL import Image
 
 from menu_capture.config import ConfigStore
-from menu_capture.materials import MaterialService
+from menu_capture.materials import MaterialService, _classify_local_purpose, _mkdir_ok
 from menu_capture.store import TaskStore
 
 
@@ -215,7 +215,7 @@ def test_unrecognized_image_can_be_manually_selected_by_box(tmp_path: Path) -> N
     assert confirmed["selected"] == {
         "image_index": 0, "candidate_index": None,
         "box": {"x": 40.0, "y": 30.0, "width": 90.0, "height": 90.0},
-        "crop_margin_ratio": 0.0,
+        "crop_margin_ratio": 0.0, "box_space": "source",
     }
     result = service.publish_snapshot(batch["batch_id"])
     assert result["task_scan"]["added"] == 1
@@ -363,7 +363,7 @@ def test_local_ocr_selects_point_ordering_code_and_keeps_safe_fields(tmp_path: P
     assert "private-one" not in manifest and "test-secret" not in manifest
 
 
-def test_multiple_local_ordering_codes_choose_the_clearest_even_with_different_payloads(tmp_path: Path) -> None:
+def test_two_local_ordering_codes_in_one_image_require_manual_review(tmp_path: Path) -> None:
     def detector(path: Path) -> list[dict]:
         if path.name != "menu.png":
             return []
@@ -381,13 +381,92 @@ def test_multiple_local_ordering_codes_choose_the_clearest_even_with_different_p
         ],
     )
     _png(input_root / "Shop" / "menu.png", size=(800, 300))
-    _png(input_root / "Shop" / "z-extra.png", "gray")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["recommendation"] is False
+    assert store["analysis_status"] == "needs_review"
+    assert "同一图片" in store["reason"]
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    assert detail["images"][0]["is_multi_qr_image"] is True
+    assert all(not c["selected"] for c in detail["images"][0]["candidates"])
+
+
+def test_ambiguous_image_does_not_block_clear_ordering_code_from_other_image(tmp_path: Path) -> None:
+    def detector(path: Path) -> list[dict]:
+        if path.name == "multi.png":
+            return [
+                {"box": {"x": 20, "y": 20, "width": 100, "height": 100}, "payload": "multi-one"},
+                {"box": {"x": 300, "y": 20, "width": 100, "height": 100}, "payload": "multi-two"},
+            ]
+        if path.name == "clear.png":
+            return [{"box": {"x": 20, "y": 20, "width": 180, "height": 180}, "payload": "clear-one"}]
+        return []
+
+    service, _, _, input_root, _ = _setup(
+        tmp_path,
+        inspector=detector,
+        ocr_reader=lambda path: [
+            {"text": "扫码点餐", "x": 30, "y": 130, "width": 100, "height": 20},
+            {"text": "扫码点餐", "x": 310, "y": 130, "width": 100, "height": 20},
+        ] if path.name == "multi.png" else [
+            {"text": "扫码点餐", "x": 30, "y": 210, "width": 120, "height": 24},
+        ],
+    )
+    _png(input_root / "Shop" / "multi.png", size=(600, 300))
+    _png(input_root / "Shop" / "clear.png", size=(400, 300))
     batch = _analyze(service, input_root)
     store = batch["stores"][0]
     assert store["recommendation"] is True
-    assert store["analysis_status"] == "selected"
     detail = service.get_store(batch["batch_id"], store["store_id"])
-    assert [c["selected"] for c in detail["images"][0]["candidates"]] == [False, True]
+    images = {image["path"]: image for image in detail["images"]}
+    assert all(not c["selected"] for c in images["Shop/multi.png"]["candidates"])
+    assert any(c["selected"] for c in images["Shop/clear.png"]["candidates"])
+
+
+def test_ordering_codes_from_different_images_choose_the_best_quality(tmp_path: Path) -> None:
+    def detector(path: Path) -> list[dict]:
+        size = 80 if path.name == "small.png" else 180
+        return [{"box": {"x": 20, "y": 20, "width": size, "height": size}, "payload": path.stem}]
+
+    service, _, _, input_root, _ = _setup(
+        tmp_path,
+        inspector=detector,
+        ocr_reader=lambda _path: [
+            {"text": "扫码点餐", "x": 25, "y": 220, "width": 120, "height": 24},
+        ],
+    )
+    _png(input_root / "Shop" / "small.png", size=(400, 300))
+    _png(input_root / "Shop" / "large.png", size=(400, 300))
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["recommendation"] is True
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    selected_image = next(
+        image["path"] for image in detail["images"] if any(c["selected"] for c in image["candidates"])
+    )
+    assert selected_image == "Shop/large.png"
+
+
+def test_undecodable_candidate_still_counts_as_multi_code_image(tmp_path: Path) -> None:
+    def detector(_path: Path) -> list[dict]:
+        return [
+            {"box": {"x": 20, "y": 20, "width": 120, "height": 120}, "payload": "decoded"},
+            {"box": {"x": 300, "y": 20, "width": 120, "height": 120}, "payload": None},
+        ]
+
+    service, _, _, input_root, _ = _setup(
+        tmp_path,
+        inspector=detector,
+        ocr_reader=lambda _path: [
+            {"text": "扫码点餐", "x": 25, "y": 150, "width": 100, "height": 20},
+        ],
+    )
+    _png(input_root / "Shop" / "menu.png", size=(500, 300))
+    batch = _analyze(service, input_root)
+    detail = service.get_store(batch["batch_id"], batch["stores"][0]["store_id"])
+    assert detail["images"][0]["is_multi_qr_image"] is True
+    assert detail["images"][0]["candidates"][1]["payload_sha256"] is None
+    assert batch["stores"][0]["recommendation"] is True
 
 
 def test_small_locally_decoded_ordering_code_is_not_rejected_by_arbitrary_pixel_limit(tmp_path: Path) -> None:
@@ -405,7 +484,7 @@ def test_small_locally_decoded_ordering_code_is_not_rejected_by_arbitrary_pixel_
     assert batch["stores"][0]["analysis_status"] == "selected"
 
 
-def test_unreadable_code_with_point_ordering_text_goes_to_manual_review(tmp_path: Path) -> None:
+def test_unreadable_code_with_point_ordering_text_is_recommended(tmp_path: Path) -> None:
     service, _, _, input_root, _ = _setup(
         tmp_path,
         inspector=lambda path: (
@@ -417,10 +496,10 @@ def test_unreadable_code_with_point_ordering_text_goes_to_manual_review(tmp_path
     _png(input_root / "Shop" / "z-extra.png", "gray")
     batch = _analyze(service, input_root)
     store = batch["stores"][0]
-    # 原始判据要求本地解码成功，未解码的码即使周边识别到点餐标识也不自动推荐。
-    assert store["recommendation"] is False
-    assert store["analysis_status"] == "needs_review"
-    assert service.accept_recommendations(batch["batch_id"])["confirmed"] == 0
+    # 未解码但周边识别到点餐文字：按点餐候选推荐，由微信侧最终验证。
+    assert store["recommendation"] is True
+    assert store["analysis_status"] == "selected"
+    assert service.accept_recommendations(batch["batch_id"])["confirmed"] == 1
 
 
 def test_multi_image_unknown_purpose_candidate_goes_to_manual_review(tmp_path: Path) -> None:
@@ -436,6 +515,58 @@ def test_multi_image_unknown_purpose_candidate_goes_to_manual_review(tmp_path: P
     assert store["recommendation"] is False
     assert store["analysis_status"] == "needs_review"
     assert service.accept_recommendations(batch["batch_id"])["confirmed"] == 0
+
+
+def test_ocr_purpose_prefers_non_ordering_terms_over_weak_order() -> None:
+    # 团购卡常写“扫码下单 享优惠”，必须先命中“抢购/团购”，不能当成点餐。
+    assert _classify_local_purpose("扫码下单 单单享优惠 美团抢购")[0] == "not_ordering"
+    assert _classify_local_purpose("扫码点餐 不用等")[0] == "ordering"
+    assert _classify_local_purpose("扫码下单")[0] == "ordering"
+    assert _classify_local_purpose("体验不满意 扫码来吐槽")[0] == "not_ordering"
+    # 美团 dprebate 路径也用于打卡/收藏海报，必须靠周边文字排除。
+    assert _classify_local_purpose("大众点评App扫码打卡 打卡+收藏")[0] == "not_ordering"
+    assert _classify_local_purpose("打卡+收藏 送饮品")[0] == "not_ordering"
+    assert _classify_local_purpose("点评优惠买单 扫码买券更优惠")[0] == "not_ordering"
+
+
+def test_likely_ordering_host_with_nearby_ocr_text_is_recommended(tmp_path: Path) -> None:
+    def detector(path: Path) -> list[dict]:
+        return ([{"box": {"x": 30, "y": 20, "width": 100, "height": 100},
+                  "payload": "https://m.restosuite.cn/open/app/x/table"}]
+                if path.name == "menu.png" else [])
+
+    service, _, _, input_root, _ = _setup(
+        tmp_path, inspector=detector,
+        ocr_reader=lambda _path: [{"text": "扫码点餐", "x": 35, "y": 130, "width": 100, "height": 20}],
+    )
+    _png(input_root / "Shop" / "menu.png")
+    _png(input_root / "Shop" / "z-extra.png", "gray")
+    batch = _analyze(service, input_root)
+    assert batch["stores"][0]["recommendation"] is True
+    detail = service.get_store(batch["batch_id"], batch["stores"][0]["store_id"])
+    candidate = detail["images"][0]["candidates"][0]
+    assert candidate["purpose"] == "ordering"
+    assert candidate["purpose_source"] == "payload_url_ocr"
+    assert candidate["purpose_reason"] == "餐饮点餐域名且周边 OCR 识别到点餐标识"
+
+
+def test_likely_ordering_host_without_ocr_text_stays_unknown(tmp_path: Path) -> None:
+    def detector(path: Path) -> list[dict]:
+        suffix = "one" if path.name == "menu.png" else "two"
+        return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100},
+                 "payload": f"https://m.restosuite.cn/open/app/{suffix}/table"}]
+
+    service, _, _, input_root, _ = _setup(
+        tmp_path, inspector=detector,
+        ocr_reader=lambda _path: [{"text": "欢迎光临", "x": 40, "y": 130, "width": 100, "height": 20}],
+    )
+    _png(input_root / "Shop" / "menu.png")
+    _png(input_root / "Shop" / "z-extra.png", "gray")
+    batch = _analyze(service, input_root)
+    # 两个候选时唯一候选规则不生效，域名线索又无 OCR 佐证，保持 unknown 进人工。
+    assert batch["stores"][0]["recommendation"] is False
+    detail = service.get_store(batch["batch_id"], batch["stores"][0]["store_id"])
+    assert {c["purpose"] for image in detail["images"] for c in image["candidates"]} == {"unknown"}
 
 
 def test_enterprise_wechat_payload_is_excluded_without_ocr_or_model(tmp_path: Path) -> None:
@@ -482,7 +613,7 @@ def test_enterprise_and_ordering_codes_in_one_image_select_the_local_order_code(
     assert batch["stores"][0]["analysis_status"] == "selected"
 
 
-def test_legacy_candidate_without_purpose_goes_to_manual_review(tmp_path: Path) -> None:
+def test_legacy_candidate_without_purpose_is_recommended_as_unique_code(tmp_path: Path) -> None:
     service, _, store, input_root, _ = _setup(tmp_path)
     _png(input_root / "Shop" / "menu.png")
     batch = _analyze(service, input_root)
@@ -492,10 +623,10 @@ def test_legacy_candidate_without_purpose_goes_to_manual_review(tmp_path: Path) 
         legacy = json.loads(row[0])
         legacy["images"][0]["candidates"][0].pop("purpose", None)
         db.execute("UPDATE material_decisions SET store_json=? WHERE batch_id=? AND store_id=?", (json.dumps(legacy), batch["batch_id"], sid))
-    # 缺用途的历史数据无法证明是“点餐”，不再自动推荐。
-    assert service.get_store(batch["batch_id"], sid)["recommendation"] is False
-    assert service.accept_recommendations(batch["batch_id"])["confirmed"] == 0
-    assert service.get_store(batch["batch_id"], sid)["decision"] == "pending"
+    # 缺用途的历史数据按“唯一可解码候选”规则推荐，仍由人工或微信侧最终验证。
+    assert service.get_store(batch["batch_id"], sid)["recommendation"] is True
+    assert service.accept_recommendations(batch["batch_id"])["confirmed"] == 1
+    assert service.get_store(batch["batch_id"], sid)["decision"] == "confirmed"
 
 
 def test_enterprise_wechat_candidate_is_not_recommended_and_never_bulk_confirmed(tmp_path: Path) -> None:
@@ -734,3 +865,280 @@ def test_reanalysis_scope_is_pending_stores_only(tmp_path: Path) -> None:
                          reject_reason="other", reject_detail="测试用不合格")
     with pytest.raises(ValueError, match="没有待审核"):
         service.start_reanalysis(batch_id, [shop_a["store_id"], shop_b["store_id"]])
+
+
+def test_explicit_url_ordering_is_high_confidence_without_ocr(tmp_path: Path) -> None:
+    def detector(_path: Path) -> list[dict]:
+        return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100},
+                 "payload": "https://rms.meituan.com/diancan/14/abc"}]
+
+    def unexpected_ocr(_path: Path):
+        raise AssertionError("URL 明确点餐时不应依赖 OCR")
+
+    service, _, _, input_root, _ = _setup(tmp_path, inspector=detector, ocr_reader=unexpected_ocr)
+    _png(input_root / "Shop" / "menu.png")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["recommendation"] is True
+    assert store["recommendation_level"] == "high"
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    assert detail["wechat_validation_status"] == "unverified"
+    assert detail["images"][0]["candidates"][0]["purpose"] == "ordering"
+
+
+def test_unique_unknown_candidate_is_low_confidence_recommendation(tmp_path: Path) -> None:
+    service, _, _, input_root, _ = _setup(
+        tmp_path,
+        ocr_reader=lambda _path: [{"text": "欢迎光临", "x": 40, "y": 130, "width": 100, "height": 20}],
+    )
+    _png(input_root / "Shop" / "menu.png")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["recommendation"] is True
+    assert store["recommendation_level"] == "low"
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    candidate = detail["images"][0]["candidates"][0]
+    assert candidate["purpose"] == "unknown"
+    assert "低可信" in store["reason"]
+    assert detail["wechat_validation_status"] == "unverified"
+
+
+def test_full_image_ordering_text_only_hints_missed_code_and_blocks_low_confidence(tmp_path: Path) -> None:
+    def detector(_path: Path) -> list[dict]:
+        return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": None}]
+
+    service, _, _, input_root, _ = _setup(
+        tmp_path,
+        inspector=detector,
+        # 文字离二维码超过 3 倍码宽，不能归属给该码，只能作为全图漏检提示。
+        ocr_reader=lambda _path: [{"text": "扫码点餐", "x": 600, "y": 250, "width": 100, "height": 20}],
+    )
+    _png(input_root / "Shop" / "menu.png", size=(800, 300))
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["recommendation"] is False
+    assert "原图 OCR 发现点餐标识" in store["reason"]
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    assert detail["images"][0]["possible_missed_code"] is True
+    assert detail["images"][0]["candidates"][0]["purpose"] == "unknown"
+
+
+def test_ordering_and_non_ordering_codes_in_one_image_recommend_ordering(tmp_path: Path) -> None:
+    def detector(_path: Path) -> list[dict]:
+        return [
+            {"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": "private-order"},
+            {"box": {"x": 500, "y": 20, "width": 100, "height": 100}, "payload": "https://www.wjx.cn/vm/survey.aspx"},
+        ]
+
+    service, _, _, input_root, _ = _setup(
+        tmp_path,
+        inspector=detector,
+        ocr_reader=lambda _path: [{"text": "扫码点餐", "x": 40, "y": 130, "width": 100, "height": 20}],
+    )
+    _png(input_root / "Shop" / "menu.png", size=(800, 300))
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["recommendation"] is True
+    assert store["recommendation_level"] == "ocr"
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    candidates = detail["images"][0]["candidates"]
+    assert [candidate["purpose"] for candidate in candidates] == ["ordering", "not_ordering"]
+    assert candidates[0]["recommendation"] is True
+    assert candidates[1]["recommendation"] is False
+
+
+def test_image_error_with_unique_ordering_candidate_recommends_and_records_abnormality(tmp_path: Path) -> None:
+    def detector(path: Path) -> list[dict]:
+        if path.name == "broken.png":
+            raise RuntimeError("read failed")
+        return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": "private-order"}]
+
+    service, _, _, input_root, _ = _setup(tmp_path, inspector=detector)
+    _png(input_root / "Shop" / "broken.png")
+    _png(input_root / "Shop" / "good.png")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["recommendation"] is True
+    assert store["recommendation_level"] == "ocr"
+    assert "异常" in store["reason"]
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    broken = next(image for image in detail["images"] if image["path"].endswith("broken.png"))
+    assert "error" in broken
+
+
+def test_image_error_with_only_unknown_candidate_goes_to_review(tmp_path: Path) -> None:
+    def detector(path: Path) -> list[dict]:
+        if path.name == "broken.png":
+            raise RuntimeError("read failed")
+        return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": PAYLOAD}]
+
+    service, _, _, input_root, _ = _setup(
+        tmp_path,
+        inspector=detector,
+        ocr_reader=lambda _path: [{"text": "欢迎光临", "x": 40, "y": 130, "width": 100, "height": 20}],
+    )
+    _png(input_root / "Shop" / "broken.png")
+    _png(input_root / "Shop" / "unknown.png")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["recommendation"] is False
+    assert store["recommendation_level"] == "none"
+    assert "检查失败" in store["reason"]
+
+
+def test_image_error_with_multiple_ordering_candidates_goes_to_review(tmp_path: Path) -> None:
+    def detector(path: Path) -> list[dict]:
+        if path.name == "broken.png":
+            raise RuntimeError("read failed")
+        return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100}, "payload": path.stem}]
+
+    service, _, _, input_root, _ = _setup(tmp_path, inspector=detector)
+    _png(input_root / "Shop" / "broken.png")
+    _png(input_root / "Shop" / "one.png")
+    _png(input_root / "Shop" / "two.png")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["recommendation"] is False
+    assert "多个明确点餐候选" in store["reason"]
+
+
+def test_conflicting_url_evidence_goes_to_manual_review(tmp_path: Path) -> None:
+    def detector(_path: Path) -> list[dict]:
+        return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100},
+                 "payload": "https://www.wjx.cn/vm/diancai.aspx"}]
+
+    service, _, _, input_root, _ = _setup(
+        tmp_path,
+        inspector=detector,
+        ocr_reader=lambda _path: [{"text": "欢迎光临", "x": 40, "y": 130, "width": 100, "height": 20}],
+    )
+    _png(input_root / "Shop" / "menu.png")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["recommendation"] is False
+    assert "冲突" in store["reason"]
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    assert detail["images"][0]["candidates"][0]["purpose"] == "conflict"
+
+
+def test_structurally_invalid_candidate_goes_to_manual_review(tmp_path: Path) -> None:
+    def detector(_path: Path) -> list[dict]:
+        return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100},
+                 "payload": None, "qr_likeness": False}]
+
+    service, _, _, input_root, _ = _setup(tmp_path, inspector=detector)
+    _png(input_root / "Shop" / "menu.png")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    # 结构校验不通过的框不能靠周边 OCR 升级为点餐候选。
+    assert store["recommendation"] is False
+    assert "结构/包含度校验" in store["reason"]
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    candidate = detail["images"][0]["candidates"][0]
+    assert candidate["quality"] == "rejected"
+    assert candidate["purpose"] == "unknown"
+    assert candidate["purpose_reason"] == "候选框未通过二维码结构校验"
+
+
+def test_rejected_candidate_is_not_counted_as_multi_code_image(tmp_path: Path) -> None:
+    def detector(_path: Path) -> list[dict]:
+        return [
+            {"box": {"x": 20, "y": 20, "width": 120, "height": 120},
+             "payload": "https://rms.meituan.com/diancan/shop"},
+            {"box": {"x": 300, "y": 20, "width": 120, "height": 120},
+             "payload": None, "qr_likeness": False},
+        ]
+
+    service, _, _, input_root, _ = _setup(tmp_path, inspector=detector)
+    _png(input_root / "Shop" / "menu.png", size=(500, 300))
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    # 纹理误检框被质量门禁拒绝后，不再把单码图误判成多码图。
+    assert not detail["images"][0].get("is_multi_qr_image")
+    assert store["recommendation"] is True
+
+
+def test_qr_fill_containment_and_offset_rejections_keep_reason(tmp_path: Path) -> None:
+    def detector(_path: Path) -> list[dict]:
+        return [
+            {"box": {"x": 20, "y": 20, "width": 120, "height": 120},
+             "payload": None, "qr_fill": 0.05},
+            {"box": {"x": 300, "y": 20, "width": 120, "height": 120},
+             "payload": None, "qr_contained": False},
+            {"box": {"x": 20, "y": 160, "width": 120, "height": 120},
+             "payload": None, "qr_fill": 0.4, "qr_centered": False},
+        ]
+
+    service, _, _, input_root, _ = _setup(tmp_path, inspector=detector)
+    _png(input_root / "Shop" / "menu.png", size=(500, 300))
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    assert store["recommendation"] is False
+    assert "结构/包含度校验" in store["reason"]
+    detail = service.get_store(batch["batch_id"], store["store_id"])
+    reasons = {candidate["purpose_reason"] for candidate in detail["images"][0]["candidates"]}
+    assert reasons == {
+        "二维码面积占候选框过低", "二维码超出候选框", "二维码明显偏离候选框中心",
+    }
+
+
+def test_ordering_ocr_without_candidate_forces_rescan(tmp_path: Path) -> None:
+    calls = {"count": 0}
+
+    def detector(_path: Path) -> list[dict]:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return []
+        return [{"box": {"x": 30, "y": 20, "width": 100, "height": 100},
+                 "payload": "https://rms.meituan.com/diancan/shop"}]
+
+    service, _, _, input_root, _ = _setup(tmp_path, inspector=detector)
+    _png(input_root / "Shop" / "menu.png")
+    batch = _analyze(service, input_root)
+    store = batch["stores"][0]
+    # OCR 看到点餐文字但首轮 0 候选时，必须复扫一次而不是直接判定无码。
+    assert calls["count"] >= 2
+    assert store["recommendation"] is True
+
+
+def test_manifest_sanitize_keeps_rejected_quality_fields() -> None:
+    manifest = {
+        "input_root": "/tmp/inbox",
+        "stores": [{
+            "source_name": "Shop", "source_folder": "Shop", "status": "needs_review",
+            "images": [{
+                "path": "menu.png", "sha256": "a" * 64,
+                "candidates": [{
+                    "box": {"x": 20, "y": 20, "width": 120, "height": 120},
+                    "payload_sha256": None, "short_edge_px": 120,
+                    "purpose": "unknown", "purpose_source": "local_ocr",
+                    "purpose_reason": "二维码面积占候选框过低",
+                    "quality": "rejected", "quality_reason": "二维码面积占候选框过低",
+                    "qr_likeness": False, "qr_contained": True, "qr_fill": 0.05,
+                }],
+            }],
+        }],
+    }
+    safe = MaterialService._sanitize_manifest(manifest)
+    candidate = safe["stores"][0]["images"][0]["candidates"][0]
+    assert candidate["quality"] == "rejected"
+    assert candidate["quality_reason"] == "二维码面积占候选框过低"
+    assert candidate["qr_likeness"] is False
+    assert candidate["qr_contained"] is True
+    assert candidate["qr_fill"] == 0.05
+
+
+def test_mkdir_ok_does_not_stat_existing_dir(tmp_path, monkeypatch):
+    """Windows 上 stat 已存在目录偶发 WinError 5，建目录不能依赖 exist_ok 的 stat 回退。"""
+    target = tmp_path / "existing-store"
+    target.mkdir()
+    original = Path.stat
+
+    def deny(self, *args, **kwargs):
+        if self == target:
+            raise PermissionError(13, "拒绝访问")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", deny)
+    _mkdir_ok(target)

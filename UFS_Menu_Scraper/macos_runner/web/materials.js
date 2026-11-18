@@ -3,8 +3,9 @@
   const $ = (id) => document.getElementById(id);
   if (typeof window.__materialsInit !== 'function') return;
   window.__materialsInit(({ api, token }) => {
-    const state = { batches: [], batchId: '', batch: null, storeId: '', detail: null, selectionSeq: 0, imageLoadSeq: 0, filter: 'pending', search: '', selectedCandidate: null, selectedImageIndex: null, manualBox: null, manualBoxImageIndex: null, manualPreviewUrl: '', manualBoxBeforeDraw: null, manualImageBeforeDraw: null, manualPreviewBeforeDraw: '', selectedBeforeDraw: null, manualMode: false, repairMode: false, uploadMode: 'append', dragging: null, busy: false, files: [], pollTimer: null, selectedReleaseId: '', analysisDismissed: false, analysisStarted: '', analysisCloseTimer: null, reanalyzeMode: false };
-    const purposeLabels = { ordering: '点餐', enterprise_wechat: '企业微信', other: '其他', unknown: '未知' };
+    const state = { batches: [], batchId: '', batch: null, storeId: '', detail: null, selectionSeq: 0, imageLoadSeq: 0, filter: 'pending', search: '', selectedCandidate: null, selectedImageIndex: null, manualBox: null, manualBoxImageIndex: null, manualPreviewUrl: '', manualBoxBeforeDraw: null, manualImageBeforeDraw: null, manualPreviewBeforeDraw: '', selectedBeforeDraw: null, manualMode: false, repairMode: false, uploadMode: 'append', dragging: null, busy: false, files: [], pollTimer: null, selectedReleaseId: '', analysisDismissed: false, analysisStarted: '', analysisCloseTimer: null, reanalyzeMode: false, showRejected: false };
+    const purposeLabels = { ordering: '点餐', not_ordering: '非点餐', enterprise_wechat: '企业微信', conflict: '证据冲突', other: '其他', unknown: '未知' };
+    const purposeSourceLabels = { payload_url: '二维码链接（URL）', payload_url_ocr: '餐饮域名 + 周边 OCR', payload_domain: '企业微信域名', local_ocr: '周边 OCR', vision_model: '视觉模型' };
     const statusLabels = { ready_to_analyze: '待分析', uploading: '上传中', queued: '排队分析', analyzing: '分析中', completed: '分析完成', failed: '分析失败', ready: '待确认', interrupted: '已中断', error: '分析失败' };
     const esc = (v) => String(v ?? '');
     const node = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = esc(text); return n; };
@@ -89,7 +90,9 @@
       if (!state.batches.length) select.append(node('option', '', '暂无素材批次'));
       for (const b of state.batches) { const label = b.name || `清洗批次 ${String(b.created_at || '').slice(0, 10) || '未命名'}`; const o = node('option', '', label); o.value = String(b.batch_id); select.append(o); }
       select.value = selected;
-      $('materials-current-description').textContent = state.batch ? [state.batch.name || '未命名批次', state.batch.description || ''].filter(Boolean).join(' · ') : '尚未选择批次';
+      const description = $('materials-current-description');
+      description.textContent = state.batch ? [state.batch.name || '未命名批次', state.batch.description || ''].filter(Boolean).join(' · ') : '尚未选择批次';
+      if (state.batch?.workflow && typeof batchBadge === 'function') { const badge = batchBadge(state.batch.workflow); if (badge) description.append(badge); }
     }
     function scheduleBatchPoll() {
       clearTimeout(state.pollTimer); state.pollTimer = null;
@@ -316,34 +319,44 @@
       renderManualNote();
       if (!d) { $('materials-candidate-count').textContent = '等待分析'; updateControls(); return; }
       const images = Array.isArray(d.images) ? d.images : [];
-      const detectedCount=images.reduce((n, i) => n + (i.candidates?.length || 0), 0), totalCount=detectedCount+(state.manualBox?1:0);
-      $('materials-candidate-count').textContent = `${totalCount} 个候选${state.manualBox?' · 含人工框选':''}`;
+      const allCandidates = images.flatMap(i => i.candidates || []);
+      const rejectedCount = allCandidates.filter(c => c.quality === 'rejected').length;
+      const visibleCount = allCandidates.length - (state.showRejected ? 0 : rejectedCount);
+      const rejectedNote = rejectedCount ? (state.showRejected ? ` · 含 ${rejectedCount} 个未通过校验` : ` · 已隐藏 ${rejectedCount} 个未通过校验`) : '';
+      $('materials-candidate-count').textContent = `${visibleCount} 个候选${rejectedNote}${state.manualBox?' · 含人工框选':''}`;
+      const toggleRejected = $('materials-toggle-rejected');
+      if (toggleRejected) {
+        toggleRejected.hidden = !rejectedCount;
+        toggleRejected.textContent = state.showRejected ? `隐藏 ${rejectedCount} 个未通过校验` : `显示 ${rejectedCount} 个未通过校验`;
+      }
       const imageList = $('materials-image-list'); imageList.replaceChildren();
       if (state.selectedImageIndex == null && images.length) state.selectedImageIndex = images[0].image_index;
-      for (const image of images) { const manualCount=state.manualBox&&String(state.manualBoxImageIndex)===String(image.image_index)?1:0; const choose = node('button', `materials-image-choice${String(image.image_index)===String(state.selectedImageIndex)?' active':''}`, `${image.display_name || `原图 ${Number(image.image_index)+1}`} · ${(image.candidates?.length || 0)+manualCount} 个候选`); choose.type='button'; choose.title=image.display_name || ''; choose.disabled=state.busy; choose.addEventListener('click',()=>{state.selectedImageIndex=image.image_index;state.selectedCandidate=null;state.manualMode=false;renderDetail();}); imageList.append(choose); }
+      for (const image of images) { const manualCount=state.manualBox&&String(state.manualBoxImageIndex)===String(image.image_index)?1:0; const visible=(image.candidates||[]).filter(c=>state.showRejected||c.quality!=='rejected').length; const choose = node('button', `materials-image-choice${String(image.image_index)===String(state.selectedImageIndex)?' active':''}`, `${image.display_name || `原图 ${Number(image.image_index)+1}`} · ${visible+manualCount} 个候选`); choose.type='button'; choose.title=image.display_name || ''; choose.disabled=state.busy; choose.addEventListener('click',()=>{state.selectedImageIndex=image.image_index;state.selectedCandidate=null;state.manualMode=false;renderDetail();}); imageList.append(choose); }
       const host = $('materials-candidates'); host.replaceChildren();
       const candidates = [];
       for (const image of images) for (const c of image.candidates || []) candidates.push({ image, candidate: c });
       const groups = new Map();
       for (const { candidate } of candidates) if (candidate.payload_sha256 && !groups.has(candidate.payload_sha256)) groups.set(candidate.payload_sha256, `G${groups.size + 1}`);
       for (const { image, candidate } of candidates) {
-        const card = node('article', `materials-candidate${String(state.selectedCandidate) === `${image.image_index}:${candidate.candidate_index}` ? ' selected' : ''}`);
+        if (candidate.quality === 'rejected' && !state.showRejected) continue;
+        const card = node('article', `materials-candidate${String(state.selectedCandidate) === `${image.image_index}:${candidate.candidate_index}` ? ' selected' : ''}${candidate.quality === 'rejected' ? ' materials-candidate-rejected' : ''}`);
         const thumb = document.createElement('img'); thumb.className = 'materials-candidate-thumb'; thumb.alt = `候选二维码裁剪 ${candidate.candidate_index + 1}`; thumb.src = candidateUrl(image.image_index, candidate.candidate_index); thumb.addEventListener('click', () => openPreview(thumb.src));
-        const title = node('div', 'materials-candidate-title', `原图 ${Number(image.image_index)+1} · 候选 ${Number(candidate.candidate_index) + 1}`); if (candidate.recommendation) title.append(node('span', 'materials-rec-tag', '推荐')); if (candidate.source === 'vision_fallback') title.append(node('span', 'materials-rec-tag', '旧批次模型补检'));
+        const title = node('div', 'materials-candidate-title', `原图 ${Number(image.image_index)+1} · 候选 ${Number(candidate.candidate_index) + 1}`); if (candidate.recommendation) title.append(node('span', 'materials-rec-tag', '推荐')); if (candidate.quality === 'rejected') title.append(node('span', 'materials-rec-tag', candidate.quality_reason || '未通过校验')); if (candidate.source === 'vision_fallback') title.append(node('span', 'materials-rec-tag', '旧批次模型补检'));
         const quality = candidate.quality_score == null ? '未评分' : `质量分 ${Number(candidate.quality_score).toFixed(2)}`;
         const box = candidate.box || {};
         const dimensions = Number.isFinite(Number(box.width)) && Number.isFinite(Number(box.height)) ? `${Math.round(box.width)}×${Math.round(box.height)} px` : '尺寸未知';
         const metaText = `同码分组 ${groups.get(candidate.payload_sha256) || '未知'} · ${dimensions} · 短边 ${candidate.short_edge_px ?? '—'} px · ${quality}`;
         const meta = node('div', 'materials-candidate-meta', metaText);
         const purpose = purposeLabels[candidate.purpose] ? candidate.purpose : 'unknown';
-        const purposeRow = node('div', 'materials-purpose-row', `用途：${purposeLabels[purpose]}`);
+        const purposeSource = purposeSourceLabels[candidate.purpose_source] || '未知';
+        const purposeRow = node('div', 'materials-purpose-row', `用途：${purposeLabels[purpose]} · 来源：${purposeSource}`);
         const reason = node('div', 'materials-purpose-reason', candidate.purpose_reason || (candidate.purpose ? '分类未提供依据，请结合原图人工判断。' : '旧数据没有用途分类，请结合原图人工选择。'));
         const pick = document.createElement('input'); pick.type = 'radio'; pick.name = 'materials-candidate'; pick.disabled=state.busy || !canEditDetail(); pick.checked = String(state.selectedCandidate) === `${image.image_index}:${candidate.candidate_index}`; pick.setAttribute('aria-label', `确认候选 ${candidate.candidate_index + 1}`);
         const select = () => { state.selectedCandidate = `${image.image_index}:${candidate.candidate_index}`; state.selectedImageIndex=image.image_index; state.manualMode = false; renderDetail(); };
         pick.addEventListener('change', select); card.addEventListener('click', (e) => { if (!state.busy && canEditDetail() && e.target !== pick && e.target !== thumb) select(); }); card.append(thumb, title, meta, purposeRow, reason, pick); host.append(card);
       }
       if(state.manualBox) host.append(renderManualCandidate());
-      if (!candidates.length && !state.manualBox) host.append(node('div', 'materials-placeholder materials-empty-candidates', '未检测到二维码候选'));
+      if (!visibleCount && !state.manualBox) host.append(node('div', 'materials-placeholder materials-empty-candidates', rejectedCount ? `没有通过校验的二维码候选（已隐藏 ${rejectedCount} 个纹理/偏移误检）` : '未检测到二维码候选'));
       if (images.length) loadOriginal(state.selectedImageIndex ?? images[0].image_index, state.batchId, state.storeId, state.selectionSeq);
       updateControls();
     }
@@ -770,6 +783,7 @@
     }
     async function nextPending() { const rows=state.batch?.stores||[], idx=storeIndex(); const next=rows.slice(idx+1).find((s)=>normalizeDecision(s.decision)==='pending') || rows.slice(0,Math.max(0,idx)).find((s)=>normalizeDecision(s.decision)==='pending'); if(next) { $('materials-review-feedback').hidden=true; await selectStore(next.store_id); } else { const feedback=$('materials-review-feedback'); feedback.textContent='当前批次已无待审核门店。'; feedback.hidden=false; renderDetail(); } }
     $('materials-confirm').addEventListener('click',()=>decide('confirm'));
+    $('materials-toggle-rejected').addEventListener('click',()=>{ state.showRejected=!state.showRejected; renderDetail(); });
     const rejectionDialog = $('materials-rejection-dialog');
     $('materials-skip').addEventListener('click',()=>{ if (!state.busy && state.detail) { $('materials-rejection-detail').value='';$('materials-rejection-code').value='blur';$('materials-rejection-detail').required=false;$('materials-rejection-detail').placeholder=''; setError('materials-rejection-error',''); rejectionDialog.showModal(); } });
     $('materials-rejection-cancel').addEventListener('click',()=>rejectionDialog.close());
@@ -949,6 +963,16 @@
         if (summary.detection_stats?.square) info.append(node('span','',`方形码 ${summary.detection_stats.square?.hit_stores||0} 家 · ${((Number(summary.detection_stats.total_ms)||0)/1000).toFixed(1)} 秒`));
         info.append(node('span','',`更新 ${String(batch.updated_at||'').slice(0,16).replace('T',' ')}`));
         const actions = node('div','materials-manage-actions');
+        // 执行阶段支持人工覆盖：“自动判断”按运行轮次推断，其余四项由人工指定。
+        const stageRow = node('div','materials-manage-stage');
+        const stageSelect = node('select','materials-stage-select');
+        const workflow = batch.workflow || {};
+        const stageOptions = [['', `自动判断${workflow.label ? `（${workflow.label}）` : ''}`], ['not_started','未采集'], ['first_run','首轮已跑'], ['rerun','已重跑'], ['approved','人工审核通过（可建档）']];
+        for (const [value, label] of stageOptions) { const option = node('option','',label); option.value = value; stageSelect.append(option); }
+        stageSelect.value = workflow.manual_stage || '';
+        stageSelect.setAttribute('aria-label', `${name} 执行阶段`);
+        stageSelect.addEventListener('change', () => void mutateStage(batch, stageSelect.value, stageSelect));
+        stageRow.append(node('span','','执行阶段'), stageSelect);
         if (manageDeleted) {
           actions.append(managementButton('恢复', () => mutateRow(batch,'restore')));
           actions.append(managementButton('彻底删除', () => mutateRow(batch,'purge'), !batch.can_purge, true));
@@ -968,7 +992,7 @@
             if (!batch.can_delete) actions.append(node('small','materials-block-reason',batch.delete_block_reason));
           }
         }
-        row.append(title,info,actions); list.append(row);
+        row.append(title,info,stageRow,actions); list.append(row);
       }
       list.scrollTop = scroll;
     }
@@ -987,6 +1011,18 @@
         setSuccess('materials-manage-error', action === 'restore' ? '批次已恢复' : action === 'purge' ? '批次已彻底删除' : '已移入回收站');
       } catch (err) { setError('materials-manage-error',err.message); }
       finally { setBusy(false); }
+    }
+    async function mutateStage(batch, stage, select) {
+      if (state.busy) return;
+      setBusy(true);
+      try {
+        await api(url(`/batches/${encodeURIComponent(batch.batch_id)}/stage`), {method:'POST',body:JSON.stringify({stage})});
+        await loadBatches(); await loadManagement();
+        window.dispatchEvent(new Event('materials-published'));
+      } catch (err) {
+        select.value = batch.workflow?.manual_stage || '';
+        setError('materials-manage-error', err.message);
+      } finally { setBusy(false); }
     }
     function openEdit(batch) {
       editRow = batch; $('materials-edit-name').value = batch.name || '';

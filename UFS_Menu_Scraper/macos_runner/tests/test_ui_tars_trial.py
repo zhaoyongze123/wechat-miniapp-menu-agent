@@ -750,10 +750,10 @@ def test_normalized_point_upper_bound_is_rejected_before_execution(model_server,
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
-@pytest.mark.parametrize("extra,expected", [("", 0), (',"extra":true', 0)])
-def test_gui_plus_missing_click_bracket_is_rejected_when_reason_present(model_server, tmp_path, extra, expected):
+@pytest.mark.parametrize("extra,expected", [("", 1), (',"extra":true', 0)])
+def test_gui_plus_missing_click_bracket_is_repaired_without_dropping_fields(model_server, tmp_path, extra, expected):
     server, handler = model_server
-    # reason 成为必填字段后，只修方括号会把 reason 丢掉；这种变体必须整条拒绝，不能猜测后执行。
+    # 只修坐标括号并保留 reason；额外未知字段仍按协议拒绝，不能因为修复而放宽字段白名单。
     handler.responses = [
         '<tool_call>{"name":"computer_use","arguments":{"action":"left_click","coordinate":375,450],'
         '"reason":"点击目标按钮"' + extra + '}}</tool_call>',
@@ -1465,37 +1465,22 @@ def test_live_gui_plus_pixel_contract_before_mouse(tmp_path, width, height, squa
     assert top <= actions[0]["y"] <= top + side
 
 
-def test_reference_image_is_downscaled_and_missing_file_is_ignored(tmp_path):
-    from menu_capture.ui_tars_trial import reference_image
-
-    source = tmp_path / "qr-source.jpg"
-    Image.new("RGB", (1800, 1400), "white").save(source)
-    reference = reference_image(source)
-    assert reference["mime"] == "image/jpeg"
-    assert reference["width"] * reference["height"] <= 640_000
-    assert reference_image(tmp_path / "missing.jpg") is None
-
-
 @pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
-def test_source_image_is_sent_as_reference_context(model_server, tmp_path):
+def test_agent_request_excludes_qr_reference_and_store_name(model_server, tmp_path):
     server, handler = model_server
-    handler.responses = [_terminal("needs_review", reason="已看到本轮二维码原图")]
+    handler.responses = [_terminal("needs_review", reason="未进入菜单")]
     observe, _frames = _frame_factory(tmp_path)
-    source = tmp_path / "qr-source.jpg"
-    Image.new("RGB", (1200, 900), "white").save(source)
 
-    result, _terminal_frame = run_navigation(
+    run_navigation(
         _model(server), "测试门店", 2, 2,
         observe=observe, execute=lambda command, frame_id: None, check_stop=lambda: None,
-        source_image=source,
     )
 
-    assert result["outcome"] == "needs_review"
-    content = [item for request in handler.requests[:1]
-               for message in request["body"]["messages"] if isinstance(message.get("content"), list)
-               for item in message["content"]]
-    assert len([item for item in content if item.get("type") == "image_url"]) == 2
-    assert any("二维码原图" in item.get("text", "") for item in content)
+    payload = handler.requests[0]["body"]
+    assert "reference_image" not in payload
+    assert "目标门店" not in payload.get("instruction", "")
+    assert "二维码原图" not in payload.get("instruction", "")
+
 
 def test_click_marker_keeps_target_visible_and_image_size(tmp_path):
     from menu_capture.ui_tars_trial import _mark_click

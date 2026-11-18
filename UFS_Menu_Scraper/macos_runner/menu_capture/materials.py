@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -20,12 +21,15 @@ from PIL import Image
 from .config import ConfigStore, atomic_json
 from .preprocess import (
     CROP_MARGIN_RATIO, SUPPORTED_EXTENSIONS,
-    _apple_vision_inspector, _crop_candidate, _enumerate_images, analyze_store, discover_stores,
+    _apple_vision_inspector, _apply_orientation, _crop_candidate, _enumerate_images,
+    _inspect_image, analyze_store, discover_stores,
 )
 from .image_tools import image_ocr
 from .material_jobs import JobRunner, JobStore, OPEN_STATUSES
 from .material_versions import MaterialVersions
 from .store import TaskStore
+
+logger = logging.getLogger(__name__)
 
 REJECTION_REASONS = {
     "blur": "图片模糊 / 无法识别",
@@ -77,14 +81,31 @@ def _store_id(source_folder: str) -> str:
     return hashlib.sha256(source_folder.encode("utf-8")).hexdigest()[:24]
 
 
-_ORDERING_TERMS = (
-    "扫码点餐", "扫码点单", "扫码点菜", "扫码下单", "点餐", "点单", "点菜",
+def _mkdir_ok(path: Path) -> None:
+    """建目录，且不对已存在路径做 stat。
+
+    Windows 上安全软件/过滤驱动会偶发拒绝 stat（WinError 5）；pathlib 的
+    exist_ok=True 在 mkdir 抛 FileExistsError 后会再 stat 一次，把“目录已存在”
+    放大成裁剪失败。这里直接捕获 FileExistsError 视为成功。
+    """
+    try:
+        path.mkdir(parents=True, mode=0o700)
+    except FileExistsError:
+        return
+
+
+# OCR 关键词分三级：明确点餐 > 明确非点餐 > 泛化的“下单”，避免团购文案被当成点餐。
+_STRONG_ORDERING_TERMS = (
+    "扫码点餐", "扫码点单", "扫码点菜", "点餐", "点单", "点菜",
     "订餐", "餐桌码", "桌码", "点餐码", "在线点餐", "自助点餐", "立即点餐",
-    "立即下单", "小程序点餐", "扫码菜单",
+    "小程序点餐", "扫码菜单",
 )
+_WEAK_ORDERING_TERMS = ("扫码下单", "立即下单")
+_ORDERING_TERMS = (*_STRONG_ORDERING_TERMS, *_WEAK_ORDERING_TERMS)
 _NON_ORDERING_TERMS = (
     "企业微信", "企业号", "关注公众号", "微信公众号", "添加好友", "加好友",
     "进群", "加群", "收款码", "付款码", "微信支付", "核销",
+    "抢购", "团购", "买单", "入群", "吐槽", "打卡", "收藏", "买券",
 )
 _LOCAL_OCR_REASON_LABELS = {
     *(f"周边 OCR 识别到“{term}”" for term in _ORDERING_TERMS),
@@ -93,6 +114,51 @@ _LOCAL_OCR_REASON_LABELS = {
     "二维码周边没有识别到明确点餐标识，需人工确认",
     "本地 OCR 未能完成，需人工确认",
 }
+# URL 判定只保存受控标签，不把二维码原文写入清单。
+_PAYLOAD_URL_REASON_LABELS = {
+    "二维码链接命中点餐关键词",
+    "二维码链接命中非点餐关键词",
+    "二维码链接同时命中点餐与非点餐证据，需人工确认",
+}
+# 餐饮域名只作候选，必须与周边 OCR 同时命中点餐才落这个标签。
+_PAYLOAD_URL_OCR_REASON_LABELS = {
+    "餐饮点餐域名且周边 OCR 识别到点餐标识",
+}
+# 候选质量门禁只保存受控原因，便于人工核对时区分结构误检、偏移和松框。
+_QUALITY_REASON_LABELS = {
+    "候选框未通过二维码结构校验",
+    "二维码超出候选框",
+    "二维码面积占候选框过低",
+    "二维码明显偏离候选框中心",
+}
+# 用途枚举：not_ordering/conflict 是本轮新增；历史数据里的 other 在清洗时映射为 not_ordering。
+_PURPOSES = {"ordering", "not_ordering", "enterprise_wechat", "unknown", "conflict"}
+_LEGACY_PURPOSES = {"other": "not_ordering"}
+_RECOMMENDATION_LEVELS = {"high", "ocr", "low", "none"}
+_WECHAT_VALIDATION_STATUSES = {"unverified", "not_applicable"}
+
+
+def _atomic_crop(source: Path, box: dict, destination: Path,
+                 margin_ratio: float = CROP_MARGIN_RATIO) -> None:
+    """原子写入裁剪图：预览服务可能短暂占用目标文件，先写临时文件再替换；失败重试一次。"""
+    temporary = destination.with_name(f".{destination.stem}.{uuid.uuid4().hex}.png")
+    try:
+        for attempt in (0, 1):
+            try:
+                _crop_candidate(source, box, temporary, margin_ratio)
+                os.replace(temporary, destination)
+                return
+            except OSError as exc:
+                logger.warning(
+                    "crop atomic write failed attempt=%s winerror=%s errno=%s filename=%s dest_exists=%s",
+                    attempt, getattr(exc, "winerror", None), getattr(exc, "errno", None),
+                    Path(getattr(exc, "filename", "") or "").name, destination.exists(),
+                )
+                if attempt:
+                    raise
+                time.sleep(0.2)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _selected_margin_ratio(selected: dict) -> float:
@@ -105,14 +171,21 @@ def _selected_margin_ratio(selected: dict) -> float:
     return 0.0 if selected.get("candidate_index") is None else CROP_MARGIN_RATIO
 
 
-def _nearby_ocr_text(box: dict, items: list[dict], image_size: tuple[int, int]) -> str:
-    """只取二维码周边的 OCR 行，避免把同一张海报上的远处文字算给它。"""
-    image_width, image_height = image_size
-    x, y, width, height = (float(box[key]) for key in ("x", "y", "width", "height"))
-    margin_x, margin_y = max(width * 1.25, 48), max(height * 1.25, 48)
-    left, top = max(0, x - margin_x), max(0, y - margin_y)
-    right, bottom = min(image_width, x + width + margin_x), min(image_height, y + height + margin_y)
-    nearby = []
+def _assigned_ocr_texts(candidates: list[dict], items: list[dict],
+                        max_ratio: float = 3.0) -> dict[int, str]:
+    """把每条 OCR 文字只归给最近的二维码，避免同一段文字被多个码共用。
+
+    固定扩边会把同一张海报上的团购、返利文案算给旁边的点餐码；按中心距离归属后，
+    一条文字只有一个主人。距离上限按码尺寸归一化，避免把远处文字拉进来。
+    """
+    rects: list[tuple[float, float, float, float] | None] = []
+    for candidate in candidates:
+        try:
+            box = candidate["box"]
+            rects.append(tuple(float(box[key]) for key in ("x", "y", "width", "height")))
+        except (KeyError, TypeError, ValueError):
+            rects.append(None)
+    grouped: list[list[tuple[float, float, str]]] = [[] for _ in rects]
     for item in items:
         if not isinstance(item, dict) or not isinstance(item.get("text"), str):
             continue
@@ -126,21 +199,41 @@ def _nearby_ocr_text(box: dict, items: list[dict], image_size: tuple[int, int]) 
             continue
         if text_width <= 0 or text_height <= 0:
             continue
-        if text_x <= right and text_x + text_width >= left and text_y <= bottom and text_y + text_height >= top:
-            nearby.append((text_y, text_x, item["text"]))
-    nearby.sort(key=lambda item: (item[0], item[1]))
-    return " ".join(text for _y, _x, text in nearby)
+        center_x, center_y = text_x + text_width / 2, text_y + text_height / 2
+        best, best_score = None, float("inf")
+        for index, rect in enumerate(rects):
+            if rect is None:
+                continue
+            x, y, width, height = rect
+            size = max(width, height, 1.0)
+            score = math.hypot(center_x - (x + width / 2), center_y - (y + height / 2)) / size
+            if score < best_score:
+                best, best_score = index, score
+        if best is not None and best_score <= max_ratio:
+            grouped[best].append((text_y, text_x, item["text"]))
+    assigned = {}
+    for index, rows in enumerate(grouped):
+        rows.sort(key=lambda row: (row[0], row[1]))
+        assigned[index] = " ".join(text for _y, _x, text in rows)
+    return assigned
 
 
 def _classify_local_purpose(text: str) -> tuple[str, str]:
-    """用二维码附近的本地 OCR 文本判断用途；没有明确点餐字样时不猜。"""
+    """用二维码附近的本地 OCR 文本判断用途；没有明确点餐字样时不猜。
+
+    顺序是“强点餐 → 非点餐 → 弱下单”：团购卡上的“扫码下单 享优惠”会先命中
+    “抢购/团购”，不会被当成点餐。
+    """
     normalized = re.sub(r"[\W_]+", "", text.casefold())
-    for term in _ORDERING_TERMS:
+    for term in _STRONG_ORDERING_TERMS:
         if re.sub(r"[\W_]+", "", term.casefold()) in normalized:
             return "ordering", f"周边 OCR 识别到“{term}”"
     for term in _NON_ORDERING_TERMS:
         if re.sub(r"[\W_]+", "", term.casefold()) in normalized:
-            return "other", "周边 OCR 识别到非点餐用途标识"
+            return "not_ordering", "周边 OCR 识别到非点餐用途标识"
+    for term in _WEAK_ORDERING_TERMS:
+        if re.sub(r"[\W_]+", "", term.casefold()) in normalized:
+            return "ordering", f"周边 OCR 识别到“{term}”"
     return "unknown", "二维码周边没有识别到明确点餐标识，需人工确认"
 
 
@@ -166,7 +259,7 @@ class MaterialService:
         self.upload_root = self.material_root / "uploads"
         self.published_root = self.material_root / "published"
         for directory in (self.batch_root, self.upload_root, self.published_root):
-            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _mkdir_ok(directory)
             directory.chmod(0o700)
         self._lock = threading.RLock()
         # 批次管理（删除/恢复/清空选择）与上传写入的互斥锁；分析运行态已归 job，不再由它承载 worker 单例。
@@ -278,9 +371,24 @@ class MaterialService:
 
         with self.task_store.connect() as db:
             columns = {row["name"] for row in db.execute("PRAGMA table_info(material_batches)")}
-            for name in ("description", "deleted_at"):
+            for name in ("description", "deleted_at", "approved_at"):
                 if name not in columns:
                     db.execute(f"ALTER TABLE material_batches ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+            # 手工指定的执行阶段优先于自动推断；空字符串表示恢复“按运行轮次自动判断”。
+            if "manual_stage" not in columns:
+                db.execute("ALTER TABLE material_batches ADD COLUMN manual_stage TEXT NOT NULL DEFAULT ''")
+            db.execute(
+                "UPDATE material_batches SET manual_stage='approved' "
+                "WHERE approved_at<>'' AND manual_stage=''")
+            # 采集轮次只在实际启动采集时累加，用来区分“首轮 / 已重跑”，不参与任何业务判定。
+            if "capture_rounds" not in columns:
+                db.execute("ALTER TABLE material_batches ADD COLUMN capture_rounds INTEGER NOT NULL DEFAULT 0")
+            # 历史批次没有轮次记录：按已发生过的运行补一次，避免老批次全部显示“未采集”。
+            db.execute(
+                "UPDATE material_batches SET capture_rounds=("
+                "SELECT COUNT(*) FROM runs r WHERE r.material_batch_id=material_batches.id) "
+                "WHERE capture_rounds=0 AND EXISTS("
+                "SELECT 1 FROM runs r2 WHERE r2.material_batch_id=material_batches.id)")
             columns = {row["name"] for row in db.execute("PRAGMA table_info(material_decisions)")}
             for name in ("reject_reason", "reject_detail", "rejected_at"):
                 if name not in columns:
@@ -351,12 +459,14 @@ class MaterialService:
                 raise ValueError("单批总大小超过 5 GB 限制")
             source_root = Path(row["source_root"]).resolve(strict=True)
             target = source_root.joinpath(*rel.parts)
-            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _mkdir_ok(target.parent)
             if not _inside(target.parent, source_root) or any(parent.is_symlink() for parent in [target.parent, *target.parent.parents] if parent != source_root.parent):
                 raise ValueError("上传路径解析后超出私有素材目录")
             if target.exists() or target.is_symlink():
                 raise ValueError("上传批次内出现重复相对路径")
-            temporary = target.with_name(target.name + "." + uuid.uuid4().hex + ".tmp")
+            # 临时文件用短名：门店目录名较长时，原名再追加 uuid 会让完整路径超过
+            # Windows 260 字符上限，写入抛 OSError，整批上传中断。
+            temporary = target.with_name("." + uuid.uuid4().hex + ".tmp")
             try:
                 fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
                 with os.fdopen(fd, "wb") as stream:
@@ -551,7 +661,7 @@ class MaterialService:
             raise ValueError("当前门店没有图片，请先补充素材")
         inspect = self.inspector or _apple_vision_inspector
         analysis_dir = self.batch_root / batch_id / "repair-analysis"
-        analysis_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _mkdir_ok(analysis_dir)
         self._ocr_local.cache = {}
         analyze_store(
             store, Path(batch["source_root"]),
@@ -573,7 +683,7 @@ class MaterialService:
             {"input_root": batch["source_root"], "stores": [store]}
         )["stores"][0]
         recommendation = any(
-            candidate.get("selected") and candidate.get("purpose") == "ordering"
+            candidate.get("selected")
             for image in store["images"] for candidate in image.get("candidates", [])
         )
         with self.task_store.connect() as db:
@@ -703,10 +813,23 @@ class MaterialService:
         batch = self._batch_row(job["batch_id"])
         source_root = Path(batch["source_root"])
         stores, duplicates = discover_stores(source_root)
+        analysis_dir = self.batch_root / job["batch_id"] / "analysis"
+        # Windows 上并发创建门店目录会偶发 WinError 5（拒绝访问）；
+        # 目录属于准备工作，放到单线程阶段串行建好，worker 只负责写文件。
+        artifacts_root = analysis_dir / "可采集"
+        try:
+            _mkdir_ok(artifacts_root)
+        except OSError:
+            logger.exception("prepare artifacts root failed")
+        for store in stores:
+            try:
+                _mkdir_ok(artifacts_root / store["source_name"])
+            except OSError:
+                logger.warning("prepare store dir failed store=%s", store["source_name"])
         return {
             "batch": batch,
             "source_root": source_root,
-            "analysis_dir": self.batch_root / job["batch_id"] / "analysis",
+            "analysis_dir": analysis_dir,
             "stores": {_store_id(store["source_folder"]): store for store in stores},
             "duplicate_names": duplicates,
         }
@@ -718,7 +841,7 @@ class MaterialService:
         batch_id = job["batch_id"]
         store_id = item["store_id"]
         analysis_dir = context["analysis_dir"]
-        analysis_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _mkdir_ok(analysis_dir)
         try:
             row = self._decision_row(batch_id, store_id)
         except ValueError:
@@ -762,7 +885,7 @@ class MaterialService:
             {"input_root": str(context["source_root"]), "stores": [store]}
         )["stores"][0]
         recommendation = any(
-            candidate.get("selected") and candidate.get("purpose") == "ordering"
+            candidate.get("selected")
             for image in store["images"] for candidate in image.get("candidates", [])
         )
         with self.task_store.connect() as db:
@@ -819,7 +942,7 @@ class MaterialService:
             "summary": summary,
         }
         analysis_dir = context["analysis_dir"]
-        analysis_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _mkdir_ok(analysis_dir)
         atomic_json(analysis_dir / "manifest.json", self._sanitize_manifest(manifest))
         if isinstance(summary.get("detection_stats"), dict):
             atomic_json(analysis_dir / "analysis-metrics.json", summary["detection_stats"])
@@ -921,7 +1044,7 @@ class MaterialService:
 
     def _classify_and_select(self, manifest: dict, source_root: Path, analysis_dir: Path, progress=None,
                              source_resolver=None, duplicate_names: set[str] | None = None) -> None:
-        """本地 OCR 关联二维码周边文字，再按可解码和清晰度为每店选一张。"""
+        """图片级判断用途，门店级再按决策树产出唯一建议，两层职责分开。"""
         resolve_source = source_resolver or (lambda image: source_root / image["path"])
         if duplicate_names is None:
             # 整批调用时自行判定；逐店 job 必须由批次上下文传入，否则漏掉跨父目录同名冲突。
@@ -935,74 +1058,7 @@ class MaterialService:
             # 清除 build_materials 的几何启发式预选；由语义分类单独决定建议。
             self._reset_store_selection(store, analysis_dir)
             for image in store["images"]:
-                source = resolve_source(image)
-                ocr_items = None
-                image_size = None
-                if any(candidate.get("purpose_hint") != "enterprise_wechat" for candidate in image["candidates"]):
-                    try:
-                        ocr_items = self._read_ocr(source)
-                        if not isinstance(ocr_items, list):
-                            raise TypeError("OCR 结果格式无效")
-                        full_text = " ".join(
-                            item.get("text", "") for item in ocr_items
-                            if isinstance(item, dict) and isinstance(item.get("text"), str)
-                        )
-                        if _classify_local_purpose(full_text)[0] == "ordering":
-                            image["ordering_text_seen"] = True
-                        with Image.open(source) as source_image:
-                            image_size = source_image.size
-                    except Exception:
-                        ocr_items = None
-                for candidate in image["candidates"]:
-                    if candidate.get("purpose_hint") == "enterprise_wechat":
-                        candidate.update(
-                            purpose="enterprise_wechat",
-                            purpose_source="payload_domain",
-                            purpose_reason="本地解码识别为企业微信域名",
-                        )
-                        continue
-                    if ocr_items is None or image_size is None:
-                        candidate.update(
-                            purpose="unknown",
-                            purpose_source="local_ocr",
-                            purpose_reason="本地 OCR 未能完成，需人工确认",
-                        )
-                    else:
-                        nearby_text = _nearby_ocr_text(candidate["box"], ocr_items, image_size)
-                        purpose, reason = _classify_local_purpose(nearby_text)
-                        if purpose == "ordering" and not candidate.get("payload_sha256"):
-                            reason += "；二维码未能由本地解码器读出，需人工确认"
-                        candidate.update(
-                            purpose=purpose,
-                            purpose_source="local_ocr",
-                            purpose_reason=reason,
-                        )
-
-            ordering = [
-                candidate
-                for image in store["images"]
-                for candidate in image["candidates"]
-                if candidate.get("purpose") == "ordering" and candidate.get("payload_sha256")
-            ]
-            # 店内还没有可解码的点餐码时，再看没有二维码框出的照片；
-            # OCR 只用于提示人工找码，不会凭一行文字虚构二维码位置。
-            if not ordering:
-                for image in store["images"]:
-                    if image["candidates"]:
-                        continue
-                    try:
-                        ocr_items = self._read_ocr(resolve_source(image))
-                        if not isinstance(ocr_items, list):
-                            continue
-                        full_text = " ".join(
-                            item.get("text", "") for item in ocr_items
-                            if isinstance(item, dict) and isinstance(item.get("text"), str)
-                        )
-                        if _classify_local_purpose(full_text)[0] == "ordering":
-                            image["ordering_text_seen"] = True
-                    except Exception:
-                        continue
-
+                self._classify_image(image, resolve_source(image))
             for _image in store["images"]:
                 processed += 1
                 if progress:
@@ -1011,54 +1067,46 @@ class MaterialService:
             if store["source_name"] in duplicate_names:
                 store["status"] = "needs_review"
                 store["reason"] = "不同父路径存在同名店铺目录，拒绝归档以防混店"
+                store["recommendation_level"] = "none"
+                store["wechat_validation_status"] = "not_applicable"
                 continue
-            # 解码成功就是本地可读的直接证据，不再用固定像素阈值排除较小的码。
-            eligible = [
-                (image_index, candidate_index, image, candidate)
-                for image_index, image in enumerate(store["images"])
-                for candidate_index, candidate in enumerate(image["candidates"])
-                if candidate.get("purpose") == "ordering"
-                and candidate.get("payload_sha256")
-            ]
 
-            def rank(item):
-                candidate = item[3]
-                return (
-                    candidate.get("quality_score", candidate.get("short_edge_px", 0)),
-                    candidate.get("short_edge_px", 0),
-                    bool(candidate.get("payload_sha256")),
-                    item[2]["path"],
-                )
-
-            if eligible:
-                picked = max(eligible, key=rank)
-                reason = "周边 OCR 识别到点餐标识且二维码本地解码成功；已按尺寸和清晰度选取，待微信验证"
-            else:
+            picked, level, reason = self._recommend_store(store, resolve_source)
+            store["recommendation_level"] = level
+            store["wechat_validation_status"] = "unverified" if picked else "not_applicable"
+            if picked is None:
                 store["status"] = "needs_review"
-                if any(image.get("ordering_text_seen") for image in store["images"]):
-                    store["reason"] = "原图 OCR 发现点餐标识，但本地没有定位到对应二维码，需人工确认"
-                elif not any(image["candidates"] for image in store["images"]):
-                    store["reason"] = "没有检测到可用二维码候选，需人工确认"
-                elif all(
-                    (candidate.get("purpose") or "unknown") == "enterprise_wechat"
-                    for image in store["images"] for candidate in image["candidates"]
-                ):
-                    store["reason"] = "仅识别到企业微信码，需人工确认"
-                elif any("本地 OCR 未能完成" in c.get("purpose_reason", "") for image in store["images"] for c in image["candidates"]):
-                    store["reason"] = "本地 OCR 未能完成，需人工确认"
-                else:
-                    store["reason"] = "没有在二维码周边识别到明确点餐标识，需人工确认"
+                store["reason"] = reason
                 continue
             image_index, candidate_index, image, candidate = picked
             artifact_relative = PurePosixPath("可采集") / store["source_name"] / "二维码.png"
             artifact = analysis_dir.joinpath(*artifact_relative.parts)
             try:
-                artifact.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-                _crop_candidate(resolve_source(image), candidate["box"], artifact)
-            except Exception:
+                # 批量分析时 Windows 偶发对新建门店目录返回 WinError 5；
+                # 同一路径单店重跑即可成功，属于瞬时拒绝访问，按退避重试而非直接降级人工。
+                for attempt in range(4):
+                    try:
+                        _mkdir_ok(artifact.parent)
+                        _atomic_crop(resolve_source(image), candidate["box"], artifact)
+                        break
+                    except OSError as exc:
+                        logger.warning(
+                            "crop attempt=%s failed winerror=%s filename=%s",
+                            attempt, getattr(exc, "winerror", None),
+                            Path(getattr(exc, "filename", "") or "").name,
+                        )
+                        if attempt == 3:
+                            raise
+                        time.sleep(0.25 * (2 ** attempt))
+            except Exception as exc:
                 artifact.unlink(missing_ok=True)
+                # 本机日志保留完整堆栈用于定位；业务字段只写异常类型。
+                logger.exception("crop failed store=%s image=%s", store["source_name"], image["path"])
                 store["status"] = "needs_review"
-                store["reason"] = "候选裁剪失败，需人工复核"
+                # 只记异常类型，避免把本机路径或图片内容写进业务字段。
+                store["reason"] = f"候选裁剪失败（{type(exc).__name__}），需人工复核"
+                store["recommendation_level"] = "none"
+                store["wechat_validation_status"] = "not_applicable"
                 continue
             candidate["selected"] = True
             store["status"] = "selected"
@@ -1066,11 +1114,338 @@ class MaterialService:
             store["selected_source"] = image["path"]
             store["selected_artifact"] = artifact_relative.as_posix()
 
+    def _classify_image(self, image: dict, source: Path) -> None:
+        """图片级：只判断本图每个候选的用途，并记录漏检提示，不影响其他图片。"""
+        candidates = image.get("candidates", [])
+        image.pop("ordering_text_seen", None)
+        image.pop("possible_missed_code", None)
+        if not candidates:
+            image["is_multi_qr_image"] = False
+            # 全图 OCR 明确看到点餐文字却一个码都没定位到：强制再扫一次，
+            # 避免整图检测偶发漏检把“有码门店”直接判成无码。
+            try:
+                ocr_items = self._read_ocr(source)
+                if not isinstance(ocr_items, list):
+                    ocr_items = None
+            except Exception:
+                ocr_items = None
+            if ocr_items is None or _classify_local_purpose(self._ocr_text(ocr_items))[0] != "ordering":
+                return
+            if self._retry_candidates(image, source):
+                self._classify_all(image["candidates"], ocr_items)
+                image["is_multi_qr_image"] = self._valid_candidate_count(image["candidates"]) >= 2
+            if not any(
+                candidate.get("purpose") == "ordering" and candidate.get("quality") != "rejected"
+                for candidate in image["candidates"]
+            ):
+                image["ordering_text_seen"] = True
+                image["possible_missed_code"] = True
+            return
+        # 全部候选都能由链接直接定性时（如企业微信码），不需要跑 OCR。
+        url_decided = not any(
+            (candidate.get("purpose_hint") or "unknown") not in {"enterprise_wechat", "ordering", "not_ordering", "conflict"}
+            for candidate in candidates
+        )
+        ocr_items = None
+        if not url_decided:
+            try:
+                ocr_items = self._read_ocr(source)
+                if not isinstance(ocr_items, list):
+                    ocr_items = None
+            except Exception:
+                ocr_items = None
+        self._classify_all(candidates, ocr_items)
+        # 一图多码只统计通过质量门禁的候选；纹理误检不能把单码图变成多码图。
+        image["is_multi_qr_image"] = self._valid_candidate_count(candidates) >= 2
+
+        full_text = self._ocr_text(ocr_items)
+        valid_ordering = any(
+            candidate.get("purpose") == "ordering" and candidate.get("quality") != "rejected"
+            for candidate in candidates
+        )
+        # 漏检重试：OCR 明显看到点餐文字却没有有效点餐候选，或多码图强制再扫一次。
+        needs_retry = (
+            (ocr_items is not None and _classify_local_purpose(full_text)[0] == "ordering" and not valid_ordering)
+            or self._valid_candidate_count(candidates) >= 2
+        )
+        if needs_retry and self._retry_candidates(image, source):
+            candidates = image["candidates"]
+            if ocr_items is None:
+                try:
+                    ocr_items = self._read_ocr(source)
+                    if not isinstance(ocr_items, list):
+                        ocr_items = None
+                except Exception:
+                    ocr_items = None
+            self._classify_all(candidates, ocr_items)
+            image["is_multi_qr_image"] = self._valid_candidate_count(candidates) >= 2
+            full_text = self._ocr_text(ocr_items)
+
+        # 全图 OCR 只提示可能存在漏检：本图出现点餐文字，但没有任何候选被判定为点餐。
+        # 它不能单独给候选定罪，也不能单独触发推荐。
+        if ocr_items is not None and _classify_local_purpose(full_text)[0] == "ordering" and not any(
+            candidate.get("purpose") == "ordering" and candidate.get("quality") != "rejected"
+            for candidate in candidates
+        ):
+            image["ordering_text_seen"] = True
+            image["possible_missed_code"] = True
+
+    @staticmethod
+    def _ocr_text(ocr_items: list[dict] | None) -> str:
+        if not ocr_items:
+            return ""
+        return " ".join(
+            item.get("text", "") for item in ocr_items
+            if isinstance(item, dict) and isinstance(item.get("text"), str)
+        )
+
+    def _classify_all(self, candidates: list[dict], ocr_items: list[dict] | None) -> None:
+        assigned = _assigned_ocr_texts(candidates, ocr_items) if ocr_items is not None else {}
+        for index, candidate in enumerate(candidates):
+            self._classify_candidate(candidate, index, assigned, ocr_items is not None)
+
+    @staticmethod
+    def _valid_candidate_count(candidates: list[dict]) -> int:
+        return sum(1 for candidate in candidates if candidate.get("quality") != "rejected")
+
+    @staticmethod
+    def _same_candidate(first: dict, second: dict) -> bool:
+        try:
+            ax, ay, aw, ah = (float(first["box"][key]) for key in ("x", "y", "width", "height"))
+            bx, by, bw, bh = (float(second["box"][key]) for key in ("x", "y", "width", "height"))
+        except (KeyError, TypeError, ValueError):
+            return False
+        center_distance = math.hypot(ax + aw / 2 - bx - bw / 2, ay + ah / 2 - by - bh / 2)
+        return center_distance < max(aw, ah, bw, bh) * 0.3
+
+    def _retry_candidates(self, image: dict, source: Path) -> bool:
+        """对漏检/多码图再扫一次；新框与旧框合并，优先保留质量更好的那个。"""
+        if self.inspector is None:
+            return False
+        try:
+            record = _inspect_image(source, image["path"], self.inspector)
+        except Exception:
+            return False
+        incoming = record.get("candidates") or []
+        existing = image["candidates"]
+        added = False
+        for candidate in incoming:
+            if not isinstance(candidate, dict):
+                continue
+            candidate["selected"] = False
+            candidate["retry"] = True
+            for index, old in enumerate(existing):
+                if self._same_candidate(candidate, old):
+                    if self._candidate_better(candidate, old):
+                        existing[index] = candidate
+                        added = True
+                    break
+            else:
+                existing.append(candidate)
+                added = True
+        if added:
+            image["detection_count"] = max(int(image.get("detection_count", 0)), len(existing))
+        return added
+
+    @staticmethod
+    def _candidate_better(first: dict, second: dict) -> bool:
+        def score(candidate):
+            return (
+                1 if candidate.get("quality") != "rejected" else 0,
+                1 if candidate.get("payload_sha256") else 0,
+                candidate.get("qr_fill") if isinstance(candidate.get("qr_fill"), (int, float)) else 0,
+                candidate.get("quality_score", 0) or 0,
+            )
+        return score(first) > score(second)
+
+    @staticmethod
+    def _classify_candidate(candidate: dict, index: int, assigned: dict[int, str], ocr_done: bool) -> None:
+        """二维码级：URL 明确证据优先，只用离该码最近的文字做辅助判断。"""
+        # 质量门禁在用途判断之前：未通过结构/包含度校验的框不能被 OCR 提升为点餐候选。
+        if candidate.get("quality") == "rejected":
+            candidate.update(
+                purpose="unknown",
+                purpose_source="local_ocr",
+                purpose_reason=candidate.get("quality_reason") or "候选框未通过二维码质量校验，需人工确认",
+            )
+            return
+        hint = candidate.get("purpose_hint") or "unknown"
+        if hint == "enterprise_wechat":
+            candidate.update(
+                purpose="enterprise_wechat",
+                purpose_source="payload_domain",
+                purpose_reason="本地解码识别为企业微信域名",
+            )
+            return
+        if hint == "ordering":
+            candidate.update(
+                purpose="ordering",
+                purpose_source="payload_url",
+                purpose_reason="二维码链接命中点餐关键词",
+            )
+            return
+        if hint == "not_ordering":
+            candidate.update(
+                purpose="not_ordering",
+                purpose_source="payload_url",
+                purpose_reason="二维码链接命中非点餐关键词",
+            )
+            return
+        if hint == "conflict":
+            candidate.update(
+                purpose="conflict",
+                purpose_source="payload_url",
+                purpose_reason="二维码链接同时命中点餐与非点餐证据，需人工确认",
+            )
+            return
+        if not ocr_done:
+            candidate.update(
+                purpose="unknown",
+                purpose_source="local_ocr",
+                purpose_reason="本地 OCR 未能完成，需人工确认",
+            )
+            return
+        purpose, reason = _classify_local_purpose(assigned.get(index, ""))
+        if purpose == "ordering" and hint == "ordering_candidate":
+            # 餐饮 SaaS 域名本身不足以定性，必须由周边 OCR 复核后才算点餐。
+            candidate.update(
+                purpose="ordering",
+                purpose_source="payload_url_ocr",
+                purpose_reason="餐饮点餐域名且周边 OCR 识别到点餐标识",
+            )
+            return
+        if purpose == "ordering" and not candidate.get("payload_sha256"):
+            reason += "；二维码未能由本地解码器读出，需人工确认"
+        candidate.update(
+            purpose=purpose,
+            purpose_source="local_ocr",
+            purpose_reason=reason,
+        )
+
+    def _mark_missed_code_hints(self, store: dict, resolve_source: Callable[[dict], Path]) -> bool:
+        """只在门店没有明确点餐候选时补查无码图片的全图文字，作为漏检线索。"""
+        found = False
+        for image in store["images"]:
+            if image.get("possible_missed_code"):
+                found = True
+                continue
+            # 有候选的图片已在图片级完成 OCR；这里只补查完全没有定位到二维码的图片。
+            if image.get("candidates"):
+                continue
+            try:
+                ocr_items = self._read_ocr(resolve_source(image))
+                if not isinstance(ocr_items, list):
+                    continue
+                full_text = " ".join(
+                    item.get("text", "") for item in ocr_items
+                    if isinstance(item, dict) and isinstance(item.get("text"), str)
+                )
+            except Exception:
+                continue
+            if _classify_local_purpose(full_text)[0] == "ordering":
+                image["ordering_text_seen"] = True
+                image["possible_missed_code"] = True
+                found = True
+        return found
+
+    @staticmethod
+    def _candidate_rank(item: tuple) -> tuple:
+        """跨图片选优：先看证据强度，再看图片质量；同图多码歧义不进入这里。"""
+        candidate = item[3]
+        source = candidate.get("purpose_source")
+        evidence = 2 if source in {"payload_url", "payload_domain"} else 1 if source in {"payload_url_ocr", "local_ocr"} else 0
+        return (
+            evidence,
+            candidate.get("quality_score", candidate.get("short_edge_px", 0)),
+            candidate.get("short_edge_px", 0),
+            bool(candidate.get("payload_sha256")),
+            item[2]["path"],
+        )
+
+    def _recommend_store(self, store: dict, resolve_source: Callable[[dict], Path]) -> tuple:
+        """门店级决策树：同图歧义不选优，跨图明确点餐可选优，未知候选只低可信推荐。"""
+        all_items = [
+            (image_index, candidate_index, image, candidate)
+            for image_index, image in enumerate(store["images"])
+            for candidate_index, candidate in enumerate(image["candidates"])
+        ]
+        # 质量门禁：未通过结构/包含度校验的框不参与任何门店级决策，
+        # 否则纹理误检或超大松框会把“无码门店”推进推荐或冲突分支。
+        candidate_items = [item for item in all_items if item[3].get("quality") != "rejected"]
+        # 有框但全部被质量门禁拒绝时直接交人工；不能落到后面的漏检/未知分支误报原因。
+        if all_items and not candidate_items:
+            return None, "none", "候选框均未通过二维码结构/包含度校验，需人工确认"
+        # 同一图片出现两个及以上点餐候选时，整张图不参与自动选择；
+        # 其他图片的独立明确候选不受影响。
+        ordering_per_image: dict[int, int] = {}
+        for image_index, _candidate_index, _image, candidate in candidate_items:
+            if candidate.get("purpose") == "ordering":
+                ordering_per_image[image_index] = ordering_per_image.get(image_index, 0) + 1
+        ambiguous_images = {index for index, count in ordering_per_image.items() if count >= 2}
+        selectable = [
+            item for item in candidate_items
+            if item[3].get("purpose") == "ordering" and item[0] not in ambiguous_images
+        ]
+        image_error = any(image.get("error") for image in store["images"])
+
+        if selectable:
+            # 图片异常时只允许“唯一明确点餐候选”直推；多个候选无法排除异常图里的干扰。
+            if image_error and len(selectable) > 1:
+                return None, "none", "部分图片读取或二维码检查失败，且存在多个明确点餐候选，需人工确认"
+            picked = max(selectable, key=self._candidate_rank)
+            candidate = picked[3]
+            source = candidate.get("purpose_source")
+            level = "high" if source in {"payload_url", "payload_domain"} else "ocr"
+            if source in {"payload_url", "payload_domain"}:
+                base = "二维码链接明确指向点餐"
+            elif source == "payload_url_ocr":
+                base = "餐饮点餐域名且周边 OCR 识别到点餐标识"
+            else:
+                base = "周边 OCR 识别到点餐标识"
+            if candidate.get("payload_sha256"):
+                reason = f"{base}且二维码本地解码成功；已按证据和图片质量选取，待微信验证"
+            else:
+                reason = f"{base}；二维码本地未解码，按点餐候选推荐，待微信验证"
+            if image_error:
+                reason += "；部分图片读取或检查失败，已记录异常"
+            return picked, level, reason
+
+        if ambiguous_images:
+            return None, "none", "同一图片定位到多个点餐二维码，需人工确认"
+        if any(item[3].get("purpose") == "conflict" for item in candidate_items):
+            return None, "none", "存在用途证据冲突的二维码，需人工确认"
+        if self._mark_missed_code_hints(store, resolve_source):
+            return None, "none", "原图 OCR 发现点餐标识，但本地没有定位到对应二维码，需人工确认"
+        if image_error:
+            return None, "none", "至少一张原图读取或二维码检查失败，需人工复核"
+        if any(
+            "本地 OCR 未能完成" in (candidate.get("purpose_reason") or "")
+            for image in store["images"] for candidate in image["candidates"]
+        ):
+            return None, "none", "本地 OCR 未能完成，需人工确认"
+
+        unknown = [
+            item for item in candidate_items
+            if (item[3].get("purpose") or "unknown") == "unknown"
+        ]
+        # 唯一未知候选只在“图片正常、无冲突、无漏检线索”时低可信推荐，不能当作点餐码认定。
+        if len(unknown) == 1:
+            return unknown[0], "low", "店内仅剩一个用途未知二维码，图片正常且无冲突或漏检线索；按低可信候选推荐，待微信验证"
+        if not candidate_items:
+            return None, "none", "没有检测到可用二维码候选，需人工确认"
+        if all(item[3].get("purpose") == "enterprise_wechat" for item in candidate_items):
+            return None, "none", "仅识别到企业微信码，需人工确认"
+        if unknown:
+            return None, "none", "存在多个用途未知二维码，需人工确认"
+        return None, "none", "仅识别到非点餐二维码，需人工确认"
+
     @staticmethod
     def _reset_store_selection(store: dict, analysis_dir: Path) -> None:
         for image in store["images"]:
             for candidate in image["candidates"]:
                 candidate["selected"] = False
+        store["recommendation_level"] = "none"
+        store["wechat_validation_status"] = "not_applicable"
         store["selected_source"] = None
         old_artifact = store.get("selected_artifact")
         if old_artifact:
@@ -1110,6 +1485,69 @@ class MaterialService:
             predicate = "" if include_deleted else "WHERE deleted_at=''"
             rows = [dict(row) for row in db.execute(f"SELECT * FROM material_batches {predicate} ORDER BY created_at DESC,id DESC")]
         return [self._batch_summary(row) for row in rows]
+
+    # 批次执行阶段：事实源是采集轮次和人工通过标记，避免再维护一套会与运行记录打架的状态机。
+    _WORKFLOW_LABELS = {
+        "not_started": "未采集",
+        "first_run": "首轮已跑",
+        "rerun": "已重跑",
+        "approved": "人工审核通过（可建档）",
+    }
+
+    def workflow_stage(self, batch: dict) -> dict:
+        rounds = int(batch.get("capture_rounds") or 0)
+        manual = str(batch.get("manual_stage") or "")
+        if manual in self._WORKFLOW_LABELS:
+            stage, source = manual, "manual"
+        elif str(batch.get("approved_at") or ""):
+            # 兼容旧数据：approved_at 曾经是唯一的人工标记。
+            stage, source = "approved", "manual"
+        elif rounds >= 2:
+            stage, source = "rerun", "auto"
+        elif rounds == 1:
+            stage, source = "first_run", "auto"
+        else:
+            stage, source = "not_started", "auto"
+        return {"stage": stage, "label": self._WORKFLOW_LABELS[stage],
+                "capture_rounds": rounds, "source": source, "manual_stage": manual}
+
+    def set_stage(self, batch_id: str, stage: str) -> dict:
+        """人工指定批次阶段；传空字符串恢复自动判断。"""
+        stage = str(stage or "").strip()
+        if stage and stage not in self._WORKFLOW_LABELS:
+            raise ValueError("批次阶段无效")
+        self._batch_row(batch_id)
+        with self.task_store.connect() as db:
+            db.execute(
+                "UPDATE material_batches SET manual_stage=?,approved_at=?,updated_at=? "
+                "WHERE id=? AND deleted_at=''",
+                (stage, _now() if stage == "approved" else "", _now(), batch_id),
+            )
+        return self.get_batch(batch_id)
+
+    def register_capture_round(self, task_ids: list[str]) -> list[str]:
+        """采集启动时按任务归属批次累加轮次；同一批次一次启动只加一次。"""
+        batch_ids: set[str] = set()
+        for task_id in task_ids:
+            task = self.task_store.get(task_id)
+            snapshot = Path(task["source_path"]).expanduser().resolve().parent.parent
+            binding = self.task_store.material_binding(str(snapshot))
+            if binding and binding.get("batch_id"):
+                batch_ids.add(binding["batch_id"])
+        if not batch_ids:
+            return []
+        stamp = _now()
+        with self.task_store.connect() as db:
+            for batch_id in batch_ids:
+                db.execute(
+                    "UPDATE material_batches SET capture_rounds=capture_rounds+1,updated_at=? "
+                    "WHERE id=? AND deleted_at=''", (stamp, batch_id),
+                )
+        return sorted(batch_ids)
+
+    def set_approved(self, batch_id: str, approved: bool) -> dict:
+        """兼容旧入口：审核通过/撤销等价于手工阶段 approved/自动。"""
+        return self.set_stage(batch_id, "approved" if approved else "")
 
     def rejections(self) -> list[dict]:
         """返回仍处于不合格状态的清洗门店，直接以人工审核决策为事实源。"""
@@ -1174,6 +1612,7 @@ class MaterialService:
             "error": row["error"],
             "snapshot_id": row["snapshot_id"] or None,
             "job": job,
+            "workflow": self.workflow_stage(row),
             **self._version_summary(row),
             "stores": [self._store_summary(item) for item in stores],
         }
@@ -1192,7 +1631,7 @@ class MaterialService:
                 candidates.append({
                     **candidate,
                     "candidate_index": candidate_index,
-                    "recommendation": bool(candidate.get("selected") and candidate.get("purpose") == "ordering"),
+                    "recommendation": bool(candidate.get("selected")),
                 })
             images.append({**image, "image_index": image_index, "candidates": candidates})
         return {
@@ -1205,6 +1644,8 @@ class MaterialService:
             "decision": row["decision"],
             "rejection": self.rejection(row),
             "recommendation": summary["recommendation"],
+            "recommendation_level": summary["recommendation_level"],
+            "wechat_validation_status": summary["wechat_validation_status"],
             "selected": selected,
             "images": images,
         }
@@ -1226,9 +1667,11 @@ class MaterialService:
         source = self._checked_source(batch, image)
         buffer = io.BytesIO()
         with Image.open(source) as original:
+            orientation = int(original.getexif().get(274, 1) or 1)
             box = candidate["box"]
             left, top, right, bottom = self._crop_bounds(original.size, box)
             crop = original.crop((left, top, right, bottom))
+            crop = _apply_orientation(crop, orientation)
             if crop.mode not in {"RGB", "RGBA", "L", "LA", "P", "1"}:
                 crop = crop.convert("RGB")
             crop.save(buffer, format="PNG")
@@ -1273,8 +1716,10 @@ class MaterialService:
                 if candidate_index is None:
                     if box is None:
                         raise ValueError("手选二维码框必须提供 box")
+                    # 浏览器按 EXIF 方向显示原图，人工框选坐标是显示方向；先换算回原图像素坐标再校验。
+                    normalized_box = self._display_box_to_source(box, source)
                     with Image.open(source) as original:
-                        normalized_box = self._validate_box(box, original.size)
+                        normalized_box = self._validate_box(normalized_box, original.size)
                     # 人工框选以框本身为最终裁剪范围，不再自动扩边。
                     crop_margin_ratio = 0.0
                 else:
@@ -1284,7 +1729,8 @@ class MaterialService:
                     normalized_box = candidate["box"]
                     crop_margin_ratio = CROP_MARGIN_RATIO
                 selected = {"image_index": image_index, "candidate_index": candidate_index,
-                            "box": normalized_box, "crop_margin_ratio": crop_margin_ratio}
+                            "box": normalized_box, "crop_margin_ratio": crop_margin_ratio,
+                            "box_space": "source"}
                 source_hash = image["sha256"]
             rejected_at = _now() if decision == "skip" else ""
             if decision == "skip" and row["decision"] == "skipped" and not reject_reason:
@@ -1321,7 +1767,7 @@ class MaterialService:
                     (image_index, candidate_index, candidate)
                     for image_index, image in enumerate(store["images"])
                     for candidate_index, candidate in enumerate(image["candidates"])
-                    if candidate.get("selected") and candidate.get("purpose") == "ordering"
+                    if candidate.get("selected")
                 ), None)
                 if match is None:
                     continue
@@ -1371,7 +1817,7 @@ class MaterialService:
                     raise ValueError("确认后原图 hash 已变化，拒绝发布")
                 self._verify_store_hashes(batch, store)
                 with Image.open(source) as original:
-                    box = self._validate_box(selected["box"], original.size)
+                    box = self._validate_box(self._source_box(selected, source), original.size)
                 fingerprint_items.append({
                     "store_id": row["store_id"], "source_folder": row["source_folder"],
                     "source_name": row["source_name"], "source_hash": row["selected_source_hash"],
@@ -1404,7 +1850,9 @@ class MaterialService:
             if already_published:
                 self._validate_snapshot_marker(snapshot, fingerprint, expected_artifact_paths)
             else:
-                temporary = self.published_root / ("." + fingerprint + ".tmp-" + uuid.uuid4().hex)
+                # 临时目录用短名：fingerprint（64 字符）叠加超长门店名会让 Windows
+                # 路径超过 260 字符，mkdir 直接抛 WinError 206；发布完成后再重命名。
+                temporary = self.published_root / (".tmp-" + uuid.uuid4().hex[:12])
                 temporary.mkdir(mode=0o700)
                 try:
                     artifact_hashes = []
@@ -1412,8 +1860,8 @@ class MaterialService:
                         image = self._image_record(_store, selected["image_index"])
                         source = self._checked_source(batch, image)
                         artifact = temporary / row["source_name"] / "二维码.png"
-                        artifact.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-                        _crop_candidate(source, selected["box"], artifact, _selected_margin_ratio(selected))
+                        _mkdir_ok(artifact.parent)
+                        _crop_candidate(source, self._source_box(selected, source), artifact, _selected_margin_ratio(selected))
                         artifact_hashes.append({"path": artifact.relative_to(temporary).as_posix(), "sha256": _sha256(artifact)})
                     atomic_json(temporary / ".materials-snapshot.json", {"snapshot_id": fingerprint, "stores": fingerprint_items, "artifacts": artifact_hashes})
                     temporary.rename(snapshot)
@@ -1594,15 +2042,28 @@ class MaterialService:
     def _store_summary(self, row: dict) -> dict:
         data = json.loads(row["store_json"])
         selected = json.loads(row["selected_json"])
-        valid_recommendation = bool(row["recommendation"]) and any(
-            candidate.get("selected") and candidate.get("purpose") == "ordering"
-            for image in data.get("images", []) for candidate in image.get("candidates", [])
-        )
+        selected_candidates = [
+            candidate for image in data.get("images", [])
+            for candidate in image.get("candidates", []) if candidate.get("selected")
+        ]
+        valid_recommendation = bool(row["recommendation"]) and bool(selected_candidates)
+        level = data.get("recommendation_level")
+        if level not in _RECOMMENDATION_LEVELS:
+            sources = [candidate.get("purpose_source") for candidate in selected_candidates]
+            level = (
+                "high" if any(source in {"payload_url", "payload_domain"} for source in sources)
+                else "ocr" if sources else "none"
+            )
+        validation_status = data.get("wechat_validation_status")
+        if validation_status not in _WECHAT_VALIDATION_STATUSES:
+            validation_status = "unverified" if valid_recommendation else "not_applicable"
         return {
             "store_id": row["store_id"], "source_name": row["source_name"], "source_folder": row["source_folder"],
             "analysis_status": row["analysis_status"],
             "reason": data.get("reason", ""),
             "recommendation": valid_recommendation, "decision": row["decision"],
+            "recommendation_level": level,
+            "wechat_validation_status": validation_status,
             "rejection": self.rejection(row),
             "selected": selected or None,
         }
@@ -1624,7 +2085,9 @@ class MaterialService:
     def _purpose_reason(purpose: str) -> str:
         return {
             "ordering": "本地 OCR 识别到点餐标识，尚未微信扫码验证",
+            "not_ordering": "本地 OCR 识别到非点餐用途标识",
             "enterprise_wechat": "本地解码识别为企业微信用途",
+            "conflict": "二维码用途证据冲突，需人工确认",
             "other": "本地 OCR 识别到非点餐用途标识",
             "unknown": "二维码周边没有明确点餐标识，需人工确认",
         }.get(purpose, "画面用途证据不足，需人工复核")
@@ -1662,6 +2125,34 @@ class MaterialService:
             self._checked_source(batch, image)
 
     @staticmethod
+    def _display_box_to_source(box: dict, source: Path) -> dict:
+        """浏览器按 EXIF 方向显示图片，人工框选坐标属于显示方向；这里换算回原图像素坐标。"""
+        with Image.open(source) as image:
+            width, height = image.size
+            orientation = int(image.getexif().get(274, 1) or 1)
+        x, y, w, h = (float(box[key]) for key in ("x", "y", "width", "height"))
+        if orientation == 6:
+            return {"x": y, "y": height - (x + w), "width": h, "height": w}
+        if orientation == 8:
+            return {"x": width - (y + h), "y": x, "width": h, "height": w}
+        if orientation == 3:
+            return {"x": width - (x + w), "y": height - (y + h), "width": w, "height": h}
+        return {"x": x, "y": y, "width": w, "height": h}
+
+    @classmethod
+    def _source_box(cls, selected: dict, source: Path) -> dict:
+        """兼容旧记录：新记录已标记 source；旧记录越界时按显示方向换算。"""
+        box = selected["box"]
+        if selected.get("box_space") == "source":
+            return box
+        with Image.open(source) as image:
+            size = image.size
+        try:
+            return cls._validate_box(box, size)
+        except ValueError:
+            return cls._display_box_to_source(box, source)
+
+    @staticmethod
     def _validate_box(box: dict, image_size: tuple[int, int]) -> dict:
         if not isinstance(box, dict):
             raise ValueError("二维码 box 必须是对象")
@@ -1670,8 +2161,14 @@ class MaterialService:
             raise ValueError("二维码 box 坐标必须是有限数值")
         x, y, width, height = map(float, values)
         image_width, image_height = image_size
-        if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > image_width or y + height > image_height:
+        # 前端 canvas 取整可能带来 1~2px 误差；容差内钳制到边界，避免合法框选被拦截。
+        tolerance = 2.0
+        if x < -tolerance or y < -tolerance or width <= 0 or height <= 0 or x + width > image_width + tolerance or y + height > image_height + tolerance:
             raise ValueError("二维码 box 超出原图边界")
+        x = min(max(0.0, x), max(0.0, image_width - 1.0))
+        y = min(max(0.0, y), max(0.0, image_height - 1.0))
+        width = min(width, image_width - x)
+        height = min(height, image_height - y)
         return {"x": x, "y": y, "width": width, "height": height}
 
     @staticmethod
@@ -1745,15 +2242,23 @@ class MaterialService:
                     if isinstance(edge, bool) or not isinstance(edge, int) or edge < 0:
                         raise ValueError("manifest 二维码尺寸无效")
                     raw_purpose = candidate.get("purpose")
-                    purpose = raw_purpose if raw_purpose in {"ordering", "enterprise_wechat", "other", "unknown"} else "unknown"
+                    raw_purpose = _LEGACY_PURPOSES.get(raw_purpose, raw_purpose)
+                    purpose = raw_purpose if raw_purpose in _PURPOSES else "unknown"
                     purpose_source = candidate.get("purpose_source")
                     safe_reason = cls._purpose_reason(purpose)
                     if purpose_source == "local_ocr" and candidate.get("purpose_reason") in _LOCAL_OCR_REASON_LABELS:
                         safe_reason = candidate["purpose_reason"]
+                    # 质量门禁原因也走受控标签，人工核对时能区分结构误检、偏移和松框。
+                    if candidate.get("purpose_reason") in _QUALITY_REASON_LABELS:
+                        safe_reason = candidate["purpose_reason"]
+                    if purpose_source == "payload_url" and candidate.get("purpose_reason") in _PAYLOAD_URL_REASON_LABELS:
+                        safe_reason = candidate["purpose_reason"]
+                    if purpose_source == "payload_url_ocr" and candidate.get("purpose_reason") in _PAYLOAD_URL_OCR_REASON_LABELS:
+                        safe_reason = candidate["purpose_reason"]
                     safe_candidate = {
                         "box": box, "payload_sha256": payload_hash, "short_edge_px": edge,
-                        # 只有“点餐”用途才能成为推荐；其余用途一律留给人工。
-                        "selected": bool(candidate.get("selected")) and purpose == "ordering", "purpose": purpose,
+                        # 选中标记由本服务的推荐规则维护，重新分析时不能再按用途二次收紧。
+                        "selected": bool(candidate.get("selected")), "purpose": purpose,
                         # OCR 只保存受控判断标签，不把整段图片文字写入清单。
                         "purpose_reason": ("本地解码识别为企业微信域名" if purpose == "enterprise_wechat" and purpose_source == "payload_domain" else safe_reason),
                         "source": (
@@ -1763,11 +2268,35 @@ class MaterialService:
                         "purpose_source": (
                             "payload_domain"
                             if purpose == "enterprise_wechat" and purpose_source == "payload_domain"
+                            else "payload_url"
+                            if purpose_source == "payload_url"
+                            else "payload_url_ocr"
+                            if purpose_source == "payload_url_ocr"
                             else "local_ocr"
                             if purpose_source == "local_ocr"
                             else "vision_model"
                         ),
                     }
+                    if candidate.get("kind") == "wechat_mini_program":
+                        safe_candidate["kind"] = "wechat_mini_program"
+                    # 质量门禁字段：重新分析/交付清单时必须保留，否则被拒候选会重新变成可用。
+                    quality = candidate.get("quality")
+                    quality_reason = candidate.get("quality_reason")
+                    if quality in {"ok", "rejected"}:
+                        safe_candidate["quality"] = quality
+                        if quality == "rejected" and quality_reason in _QUALITY_REASON_LABELS:
+                            safe_candidate["quality_reason"] = quality_reason
+                    if isinstance(candidate.get("qr_likeness"), bool):
+                        safe_candidate["qr_likeness"] = candidate["qr_likeness"]
+                    if isinstance(candidate.get("qr_contained"), bool):
+                        safe_candidate["qr_contained"] = candidate["qr_contained"]
+                    if isinstance(candidate.get("qr_centered"), bool):
+                        safe_candidate["qr_centered"] = candidate["qr_centered"]
+                    fill = candidate.get("qr_fill")
+                    if isinstance(fill, (int, float)) and not isinstance(fill, bool) and math.isfinite(fill) and 0 <= fill <= 1:
+                        safe_candidate["qr_fill"] = round(float(fill), 4)
+                    if candidate.get("retry") is True:
+                        safe_candidate["retry"] = True
                     for score_name in ("sharpness_score", "quality_score"):
                         score = candidate.get(score_name)
                         if score is not None:
@@ -1780,6 +2309,8 @@ class MaterialService:
                     "detection_count": max(0, int(raw_image.get("detection_count", len(candidates)))),
                     "candidates": candidates,
                     **({"ordering_text_seen": True} if raw_image.get("ordering_text_seen") is True else {}),
+                    **({"possible_missed_code": True} if raw_image.get("possible_missed_code") is True else {}),
+                    **({"is_multi_qr_image": True} if raw_image.get("is_multi_qr_image") is True else {}),
                     **({"error": str(raw_image["error"])[:200]} if raw_image.get("error") else {}),
                 })
                 total_images += 1
@@ -1787,9 +2318,25 @@ class MaterialService:
             has_recommendation = any(candidate["selected"] for image in images for candidate in image["candidates"])
             if status == "selected" and not has_recommendation:
                 status = "needs_review"
+            level = raw_store.get("recommendation_level")
+            if level not in _RECOMMENDATION_LEVELS:
+                # 旧清单没有等级字段：按选中候选的证据来源补算，避免历史数据被当成高可信。
+                selected_sources = [
+                    candidate.get("purpose_source")
+                    for image in images for candidate in image["candidates"] if candidate["selected"]
+                ]
+                level = (
+                    "high" if any(source in {"payload_url", "payload_domain"} for source in selected_sources)
+                    else "ocr" if selected_sources else "none"
+                )
+            validation_status = raw_store.get("wechat_validation_status")
+            if validation_status not in _WECHAT_VALIDATION_STATUSES:
+                validation_status = "unverified" if has_recommendation else "not_applicable"
             safe_store = {
                 "source_name": source_name, "source_folder": folder_key, "status": status,
                 "reason": str(raw_store.get("reason", ""))[:300],
+                "recommendation_level": level,
+                "wechat_validation_status": validation_status,
                 "selected_source": raw_store.get("selected_source") if has_recommendation and isinstance(raw_store.get("selected_source"), str) else None,
                 "selected_artifact": raw_store.get("selected_artifact") if has_recommendation and isinstance(raw_store.get("selected_artifact"), str) else None,
                 "images": images,

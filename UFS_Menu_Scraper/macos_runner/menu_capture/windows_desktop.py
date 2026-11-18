@@ -31,6 +31,7 @@ PW_RENDERFULLCONTENT = 0x00000002
 SRCCOPY = 0x00CC0020
 SW_RESTORE = 9
 SW_SHOW = 5
+GW_ENABLEDPOPUP = 6
 HWND_TOP = 0
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
@@ -78,6 +79,11 @@ def _declare() -> None:
     user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
     user32.IsWindowVisible.argtypes = [wintypes.HWND]
     user32.IsIconic.argtypes = [wintypes.HWND]
+    # 64 位进程里 HWND 可能超过 32 位，未声明 argtypes/restype 会被截断成 c_int。
+    user32.IsZoomed.argtypes = [wintypes.HWND]
+    user32.IsWindowEnabled.argtypes = [wintypes.HWND]
+    user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetWindow.restype = wintypes.HWND
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
     user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
     user32.GetWindowThreadProcessId.restype = wintypes.DWORD
@@ -333,10 +339,16 @@ class WindowsDesktop:
         return sized[0]
 
     def _activate(self, hwnd) -> bool:
+        # 只在真正要点击/输入时调用。窗口被隐藏、被禁用或被模态窗占用时必须中止：
+        # 强行显示窗口会在小程序 WebView 初始化时让微信输入路由卡死。
+        if not user32.IsWindowVisible(hwnd):
+            raise RuntimeError("微信窗口当前不可见（被隐藏或最小化），已中止操作，请人工恢复窗口后重试")
+        if not user32.IsWindowEnabled(hwnd):
+            raise RuntimeError("微信窗口已被禁用（可能有未关闭的对话框），已中止操作")
+        if user32.GetWindow(hwnd, GW_ENABLEDPOPUP):
+            raise RuntimeError("微信窗口被一个模态窗口占用，已中止操作")
         if user32.IsIconic(hwnd):
             user32.ShowWindow(hwnd, SW_RESTORE)
-        if not user32.IsWindowVisible(hwnd):
-            user32.ShowWindow(hwnd, SW_SHOW)
         if user32.GetForegroundWindow() == hwnd:
             return True
         current = kernel32.GetCurrentThreadId()
@@ -406,11 +418,11 @@ class WindowsDesktop:
                 and (not expected_window_id or item.get("window_id") == expected_window_id)]
 
     def _restore_window(self, command: dict) -> dict:
-        """把被隐藏或最小化的目标窗口恢复出来。
+        """只读检查目标窗口状态，不再主动显示或激活。
 
-        实测微信主窗口会被隐藏却仍在进程里存活（IsWindowVisible=False、IsIconic=False），
-        而 discover 只返回可见窗口，上层就会以为“微信没有了”。这里按 selector 连隐藏窗口
-        一起枚举，ShowWindow 恢复后再回报真实矩形。
+        强制 ShowWindow 恢复被隐藏的微信主窗口，会在小程序 WebView 初始化阶段把微信的
+        输入路由卡死（实测：恢复后主窗口点击、输入框、会话列表全部无响应，且窗口本身
+        仍是 enabled 状态）。所以这里只汇报真实状态，由上层决定报错或等待人工处理。
         """
         candidates = self._selector_candidates(self._selector_attributes(command),
                                                command.get("expected_window_id"))
@@ -418,8 +430,6 @@ class WindowsDesktop:
             raise RuntimeError("未找到目标窗口（可能进程已退出）")
         window = max(candidates, key=lambda item: item["rect"][2] * item["rect"][3])
         hwnd = window["hwnd"]
-        # _activate 内部已对最小化/隐藏窗口做 SW_RESTORE + SW_SHOW。
-        self._activate(hwnd)
         left, top, width, height = _rect(hwnd)
         return {"ok": True, "action": "restore_window", "window_id": window["window_id"],
                 "visible": bool(user32.IsWindowVisible(hwnd)),

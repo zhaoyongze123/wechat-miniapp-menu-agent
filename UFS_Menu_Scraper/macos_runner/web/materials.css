@@ -384,6 +384,11 @@
   cursor: pointer;
   transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease;
 }
+#page-materials .materials-candidate-rejected {
+  opacity: .72;
+  border-style: dashed;
+  background: #fafafa;
+}
 #page-materials .materials-candidate:hover { border-color: #d1d1d1; background: #fdfdfd; }
 #page-materials .materials-candidate.selected { border-color: #555; box-shadow: 0 0 0 2px rgba(0,0,0,.06); }
 #page-materials .materials-candidate-manual { border-style: dashed; background: #fcfcfb; }

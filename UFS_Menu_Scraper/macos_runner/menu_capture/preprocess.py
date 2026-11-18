@@ -21,6 +21,85 @@ SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MIN_QR_EDGE_PX = 80
 CROP_MARGIN_RATIO = 0.80
 
+# URL 优先判定用途：链接特征比周边 OCR 更可靠，OCR 只在链接看不出用途时兜底。
+_ORDERING_URL_TERMS = (
+    "diancai", "dine", "dishes", "tableno", "rms.meituan.com/dc", "rms.meituan.com/diancan",
+    # 微信 URL Link 的 /q/ 前缀；/r/ 是通用短链，不能按前缀定性。
+    "weixin.qq.com/q/",
+)
+# 仅保留明确的非点餐域名。
+_NON_ORDERING_URL_TERMS = ("wjx.cn",)
+# 已验证的具体入口路径优先于宽泛域名/关键词：同一域名下不同路径可能用途相反。
+_ORDERING_PATH_RULES = (
+    ("rms.meituan.com", "/diancan"),
+    ("rms.meituan.com", "/dc"),
+    ("weixin.qq.com", "/q/"),
+)
+# 实测：同一 host+path 的 dprebate/rebate 既可能打开点餐菜单（5/5 合格门店截图），
+# 也可能打开团购券/打卡页（海报实测）。差异在 ?code= 参数，而参数不落库，
+# 因此路径只能判为 ambiguous，必须由周边 OCR 决定。
+_AMBIGUOUS_PATH_RULES = (
+    ("apimobile.meituan.com", "/qrcode/dprebate"),
+    ("apimobile.meituan.com", "/qrcode/rebate"),
+)
+_ENTERPRISE_HOSTS = {"work.weixin.qq.com", "qy.weixin.qq.com"}
+# 合格门店（有截图输出）验证过的点餐 SaaS 域名，路径随机串不稳定，按域名判定。
+_ORDERING_HOSTS = {
+    "app.welcrm.com", "qrse.keruyun.com", "qr.supermenus.cn", "2dfire.cn", "www.2dfire.com",
+    "qr.qmai.cn", "rom.paidui.com", "pos.flyhand.com", "qr61.cn", "sh6.co",
+    "cscte.fuioupay.com", "hljh.pinzhikeji.net", "wx-kaci.shouqianba.com",
+}
+# 餐饮 SaaS/POS 域名但路径不足以单独定性：必须同时命中周边 OCR 的点餐文字才认定为点餐。
+# qrcode.dianping.com 既可能是“扫码点餐”，也可能是团购/买单入口，必须由 OCR 区分。
+_LIKELY_ORDERING_HOSTS = {
+    "qrcode.dianping.com", "m.restosuite.cn", "m.hualala.com", "applet.mtcbj.com", "pos.mzdpgroup.com",
+    "d.hocyun.com", "m.sqbe.cn", "yun.bypos.net", "cy.wrhmx.com", "ogs-api.gmonline-all.com",
+}
+
+
+def _path_rule_matches(host: str, path: str, host_suffix: str, path_prefix: str) -> bool:
+    """按“域名后缀 + 路径前缀”匹配具体入口，避免同一个词出现在随机路径里被误判。"""
+    if not (host == host_suffix or host.endswith("." + host_suffix)):
+        return False
+    if path_prefix.endswith("/"):
+        return path.startswith(path_prefix)
+    return path == path_prefix or path.startswith(path_prefix + "/")
+
+
+def _payload_purpose(payload) -> str:
+    """按链接特征给出用途提示，返回 ordering/not_ordering/ordering_candidate/enterprise_wechat/conflict/unknown。
+
+    判定分两级：具体入口路径优先；具体路径给不出结论时再看宽泛域名和关键词。
+    同级证据相互矛盾（同时命中点餐与非点餐）时不强行裁定，返回 conflict 交给人工。
+    """
+    if not isinstance(payload, str) or not payload:
+        return "unknown"
+    raw = payload.lower()
+    try:
+        parsed = urlsplit(payload)
+        host = (parsed.hostname or "").lower()
+        path = parsed.path or ""
+    except ValueError:
+        host, path = "", ""
+    if host in _ENTERPRISE_HOSTS or host.endswith(".work.weixin.qq.com"):
+        return "enterprise_wechat"
+    if any(_path_rule_matches(host, path, rule_host, rule_path) for rule_host, rule_path in _AMBIGUOUS_PATH_RULES):
+        return "ordering_candidate"
+    if any(_path_rule_matches(host, path, rule_host, rule_path) for rule_host, rule_path in _ORDERING_PATH_RULES):
+        return "ordering"
+    # 具体路径得不出结论后，域名与关键词属于同一级证据；两类同时命中时转人工。
+    ordering_broad = host in _ORDERING_HOSTS or any(term in raw for term in _ORDERING_URL_TERMS)
+    non_ordering_broad = any(term in raw for term in _NON_ORDERING_URL_TERMS)
+    if ordering_broad and non_ordering_broad:
+        return "conflict"
+    if ordering_broad:
+        return "ordering"
+    if non_ordering_broad:
+        return "not_ordering"
+    if host in _LIKELY_ORDERING_HOSTS:
+        return "ordering_candidate"
+    return "unknown"
+
 
 def _apple_vision_inspector(path: Path) -> list[dict]:
     """使用本机二维码扫描器；payload 只在本函数调用链内存活。"""
@@ -144,29 +223,58 @@ def _detect_square(path: Path, record: dict, size: tuple[int, int], inspector: C
                 box = {key: detection.get(key) for key in ("x", "y", "width", "height")}
             coords = [box.get(key) for key in ("x", "y", "width", "height")]
             if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in coords):
-                raise ValueError("二维码位置坐标无效")
+                record["dropped_detections"] = record.get("dropped_detections", 0) + 1
+                continue
             x, y, width, height = map(float, coords)
+            # 单个越界框只丢弃自身，不能让整张图判定失败：EXIF 旋转、缩放换算都可能产生个别脏框。
             if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > image_width or y + height > image_height:
-                raise ValueError("二维码位置超出原图边界")
+                record["dropped_detections"] = record.get("dropped_detections", 0) + 1
+                continue
             payload = detection.get("payload")
             payload_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest() if isinstance(payload, str) and payload else None
-            # 本地只保存用途提示与散列，不记录二维码内容；明确企业微信域名无需请求模型。
-            try:
-                host = (urlsplit(payload).hostname or "").lower() if isinstance(payload, str) else ""
-            except ValueError:
-                host = ""
-            enterprise = host in {"work.weixin.qq.com", "qy.weixin.qq.com"} or host.endswith(".work.weixin.qq.com")
+            # 本地只保存用途提示与散列，不记录二维码内容；用途先按链接判定，OCR 只做兜底。
             short_edge, sharpness, quality_score = _box_scores(path, {"x": x, "y": y, "width": width, "height": height})
+            qr_likeness = detection.get("qr_likeness") is not False
+            qr_contained = detection.get("qr_contained") is not False
+            qr_centered = detection.get("qr_centered") is not False
+            qr_fill = detection.get("qr_fill")
+            if isinstance(qr_fill, (int, float)) and not isinstance(qr_fill, bool):
+                qr_fill = round(float(qr_fill), 4)
+            else:
+                qr_fill = None
+            # 质量门禁只拦截有明确结构/几何问题的候选，仍在清单中保留，交给人工复核。
+            quality, quality_reason = "ok", ""
+            if not qr_likeness:
+                quality, quality_reason = "rejected", "候选框未通过二维码结构校验"
+            elif not qr_contained:
+                quality, quality_reason = "rejected", "二维码超出候选框"
+            elif qr_fill is not None and qr_fill < 0.15:
+                quality, quality_reason = "rejected", "二维码面积占候选框过低"
+            elif not qr_centered:
+                quality, quality_reason = "rejected", "二维码明显偏离候选框中心"
             # 只比较同码的可解码候选。尺寸和边缘变化是排序启发式，不代表微信扫码成功率。
-            record["candidates"].append({
+            candidate = {
                 "box": {"x": x, "y": y, "width": width, "height": height},
                 "payload_sha256": payload_hash,
-                "purpose_hint": "enterprise_wechat" if enterprise else "unknown",
+                "purpose_hint": _payload_purpose(payload),
                 "short_edge_px": short_edge,
                 "sharpness_score": sharpness,
                 "quality_score": quality_score,
+                "qr_likeness": qr_likeness,
+                "qr_fill": qr_fill,
+                "qr_contained": qr_contained,
+                "qr_centered": qr_centered,
+                "quality": quality,
+                **({"quality_reason": quality_reason} if quality_reason else {}),
                 "selected": False,
-            })
+            }
+            # 微信圆形小程序码标准解码器解不出内容，只由 worker 定位；带上标记供前端与人工识别。
+            if detection.get("kind") == "wechat_mini_program":
+                candidate["kind"] = "wechat_mini_program"
+            record["candidates"].append(candidate)
+        # 全部检测框都越界说明坐标换算整体失真，仍按图片检查失败处理，避免静默丢码。
+        if detections and not record["candidates"]:
+            raise ValueError("二维码位置全部超出原图边界")
     except Exception as exc:
         # 不记录异常文本，防止某些解码器把条码内容写入错误消息。
         record["error"] = f"本地图片/二维码检查失败（{type(exc).__name__})"
@@ -232,11 +340,24 @@ def _select_store(store: dict) -> tuple[tuple[int, int] | None, str]:
     return (image_index, candidate_index), "同店只有一种可解码载荷；已结合二维码尺寸和边缘清晰度推荐一张，待微信验证"
 
 
+def _apply_orientation(image: Image.Image, orientation: int) -> Image.Image:
+    """按 EXIF Orientation 把裁剪结果转正；只处理常见的 3/6/8。"""
+    transpose = getattr(Image, "Transpose", Image)
+    if orientation == 3:
+        return image.transpose(transpose.ROTATE_180)
+    if orientation == 6:
+        return image.transpose(transpose.ROTATE_270)
+    if orientation == 8:
+        return image.transpose(transpose.ROTATE_90)
+    return image
+
+
 def _crop_candidate(source_path: Path, box: dict, destination: Path,
                     margin_ratio: float = CROP_MARGIN_RATIO) -> None:
     # 自动检测候选按比例扩边；人工框选传 0，保证落图与框选完全一致。
     with Image.open(source_path) as image:
         image.load()
+        orientation = int(image.getexif().get(274, 1) or 1)
         width, height = image.size
         qr_width, qr_height = box["width"], box["height"]
         left = max(0, int(math.floor(box["x"] - qr_width * margin_ratio)))
@@ -244,6 +365,9 @@ def _crop_candidate(source_path: Path, box: dict, destination: Path,
         right = min(width, int(math.ceil(box["x"] + qr_width * (1 + margin_ratio))))
         bottom = min(height, int(math.ceil(box["y"] + qr_height * (1 + margin_ratio))))
         cropped = image.crop((left, top, right, bottom))
+        # 裁剪坐标始终基于原图像素；输出按 EXIF 方向转正，保证人工框选、自动候选
+        # 与最终发送到聊天的二维码方向完全一致。
+        cropped = _apply_orientation(cropped, orientation)
         if cropped.mode not in {"RGB", "RGBA", "L", "LA", "P", "1"}:
             cropped = cropped.convert("RGB")
         cropped.save(destination, format="PNG")

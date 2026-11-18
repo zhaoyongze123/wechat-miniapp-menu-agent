@@ -53,12 +53,66 @@ function quoteBareKeys(text) {
 }
 // 百炼实测会把 menu_box 输出成两个角点（"menu_box":[59,243],[940,907]）；角点顺序唯一，可展开成扁平四元组。
 const MENU_BOX_AS_POINTS = /("menu_box"\s*:\s*)\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]\s*,\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]/;
+// 实测还会把 menu_box 写成裸四元组（"menu_box":40,230,960,970）；四个整数语义唯一，补方括号即可。
+const MENU_BOX_WITHOUT_BRACKETS = /("menu_box"\s*:\s*)(-?\d{1,4})\s*,\s*(-?\d{1,4})\s*,\s*(-?\d{1,4})\s*,\s*(-?\d{1,4})(?!\s*[,\]])/;
 // 实测 gui-plus 会把点击写成 {"x":70, y":34}，或坐标后多一个悬空引号；结构仍然唯一。
 const XY_CLICK_AS_OBJECT = /"left_click"\s*,\s*\{\s*"?x"?\s*:\s*(\d{1,4})\s*,\s*"?y"?\s*:\s*(\d{1,4})\s*"?\s*\}/;
 const STRAY_QUOTE_BEFORE_CLOSE = /([\]\d])\s*"\s*(\}\s*\})$/;
 // 坐标漏方括号但后面还跟着 reason 等字段：只补坐标括号，保留其余字段，避免整条动作被丢掉。
 const LEFT_CLICK_ACTION = /"action"\s*:\s*"left_click"/;
 const COORDINATE_WITHOUT_BRACKETS = /"coordinate"\s*:\s*(0|[1-9]\d{0,2}|1000)\s*,\s*(0|[1-9]\d{0,2}|1000)\s*(?!,\s*\d|\]\s*)/;
+// 实测还会出现 "coordinate":639, 973]（漏左括号、保留右括号）且后面带 reason：
+// 这种形态两个整数语义唯一，补左括号即可；合法数组以 "[" 开头，不会误伤。
+const COORDINATE_MISSING_OPEN = /"coordinate"\s*:\s*(0|[1-9]\d{0,2}|1000)\s*,\s*(0|[1-9]\d{0,2}|1000)\s*\]/;
+// 实测 gui-plus 会漏掉字符串值两侧的引号（"target_name":搜索结果...），有时值后面还多一个引号。
+// 只处理 reason/target_name，且要求值以中文开头：JSON 字面量（null/true/false/数字）和英文枚举不会被误加引号。
+const UNQUOTED_CJK_VALUE = /("(?:reason|target_name)"\s*:\s*)([\u4e00-\u9fff][^,}"]*?)"?\s*(?=[,}])/g;
+
+// 流式输出偶尔少一个结尾大括号。只有“最外层对象恰好差一个右括号、且不在字符串中间”时才补，
+// 其余截断（例如停在 reason 中间）保持拒绝，避免把不完整输出当成合法动作执行。
+function closeMissingOuterBrace(text) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '{') depth += 1;
+    else if (char === '}') depth -= 1;
+  }
+  return !inString && depth === 1 ? `${text}}` : '';
+}
+
+// 统一的确定性修复链：先补键名引号，再按已带引号的文本识别坐标变体。
+function repairText(payload) {
+  // 实测 gui-plus 偶发把整个 arguments 里的引号转义输出（\"action\":\"left_click\"）。
+  // 只在原始 JSON 已解析失败时走到这里；反转义后的结果仍要过完整字段校验。
+  const unescaped = payload.includes('\\"') ? payload.replace(/\\"/g, '"') : payload;
+  const keyQuoted = quoteBareKeys(unescaped).replace(UNQUOTED_KEY, '$1"$2":');
+  const withoutOpen = LEFT_CLICK_ACTION.test(keyQuoted)
+    ? keyQuoted.replace(COORDINATE_MISSING_OPEN, '"coordinate":[$1,$2]')
+    : keyQuoted;
+  const coordinateFixed = LEFT_CLICK_ACTION.test(keyQuoted)
+    ? withoutOpen.replace(COORDINATE_WITHOUT_BRACKETS, '"coordinate":[$1,$2]')
+    : withoutOpen;
+  return coordinateFixed
+    .replace(XY_CLICK_AS_OBJECT, '"left_click","coordinate":[$1,$2]}')
+    .replace(STRAY_QUOTE_BEFORE_CLOSE, '$1$2')
+    .replace(MENU_BOX_AS_POINTS, '$1[$2,$3,$4,$5]')
+    .replace(MENU_BOX_WITHOUT_BRACKETS, '$1[$2,$3,$4,$5]')
+    .replace(UNQUOTED_CJK_VALUE, '$1"$2"');
+}
+
+// 是否发生过格式修复：只用于统计“模型原始输出不合规”的比例，不参与执行判定。
+let repaired = false;
+export function resetRepairFlag() { repaired = false; }
+export function wasRepaired() { return repaired; }
 
 export function parseActionPayload(payload) {
   let parsed;
@@ -67,21 +121,31 @@ export function parseActionPayload(payload) {
   } catch (error) {
     // 百炼实测偶发漏掉点击坐标的方括号。只接受结构完整、恰好包含两个整数的 left_click 变体。
     const click = payload.match(CLICK_WITHOUT_BRACKETS);
-    if (click) return { action: 'left_click', coordinate: [Number(click[1]), Number(click[2])] };
-    const coordinateFixed = LEFT_CLICK_ACTION.test(payload)
-      ? payload.replace(COORDINATE_WITHOUT_BRACKETS, '"coordinate":[$1,$2]')
-      : payload;
-    const objectFixed = coordinateFixed.replace(XY_CLICK_AS_OBJECT, '"left_click","coordinate":[$1,$2]}');
-    const repaired = quoteBareKeys(objectFixed)
-      .replace(UNQUOTED_KEY, '$1"$2":')
-      .replace(STRAY_QUOTE_BEFORE_CLOSE, '$1$2')
-      .replace(MENU_BOX_AS_POINTS, '$1[$2,$3,$4,$5]');
-    if (repaired === payload) throw error;
-    try {
-      parsed = JSON.parse(repaired);
-    } catch {
-      const fallback = repaired.match(CLICK_WITHOUT_BRACKETS);
+    if (click) {
+      repaired = true;
+      return { action: 'left_click', coordinate: [Number(click[1]), Number(click[2])] };
+    }
+    // 少一个结尾大括号的流式截断与完整输出都尝试一次；修复后仍要过完整 JSON 与字段校验。
+    const closed = closeMissingOuterBrace(payload);
+    const candidates = closed ? [payload, closed] : [payload];
+    let lastRepaired = '';
+    for (const candidate of candidates) {
+      const text = repairText(candidate);
+      lastRepaired = text;
+      // 补大括号后的候选本身可能已经是合法 JSON，修复链无改动时也要直接尝试解析。
+      for (const attempt of text === candidate ? [candidate] : [text, candidate]) {
+        try {
+          parsed = JSON.parse(attempt);
+          repaired = true;
+          break;
+        } catch { /* 当前候选不可解析，继续尝试下一种 */ }
+      }
+      if (parsed) break;
+    }
+    if (!parsed) {
+      const fallback = lastRepaired.match(CLICK_WITHOUT_BRACKETS);
       if (!fallback) throw error;
+      repaired = true;
       return { action: 'left_click', coordinate: [Number(fallback[1]), Number(fallback[2])] };
     }
   }
@@ -119,7 +183,8 @@ function leadingJsonObject(text) {
   return '';
 }
 
-// 动作对象之后只允许空白、一个围栏代码块，或一个被截断的闭合标签（实测流式输出会停在 </to）。
+// 动作对象之后只允许空白、一个围栏代码块、一个被截断的闭合标签（实测流式输出会停在 </to），
+// 或 1-4 个多余的右括号/引号（实测 gui-plus 会在完整对象后多吐 "}" 或 "}}"）。
 // 若后面还有第二个动作对象或其它解释文本，说明响应有歧义，仍按协议错误处理。
 function parseWithTrailingNote(body) {
   try {
@@ -129,7 +194,8 @@ function parseWithTrailingNote(body) {
     if (!head) throw error;
     const rest = body.slice(head.length).trim();
     const truncatedTag = rest && '</tool_call>'.startsWith(rest);
-    if (rest && !/^```[\s\S]*$/.test(rest) && !truncatedTag) throw error;
+    const strayClosers = /^[}"'\s]{1,4}$/.test(rest) && /[}"]/.test(rest);
+    if (rest && !/^```[\s\S]*$/.test(rest) && !truncatedTag && !strayClosers) throw error;
     return parseActionPayload(head);
   }
 }

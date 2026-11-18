@@ -642,20 +642,20 @@ class SceneAgent:
             "误入个人资料、会员资料、设置等非菜单页时，只要左上角有返回箭头（< / 〈 / ‹），先点击它退回上一页；不要因为该类页面的“保存”按钮不可用就判定 blocked。"
             + "除上述允许的授权动作外，其他 click 仅限明确关闭/跳过遮挡、进入只读菜单（如点餐、去点餐、开始点餐、开始选餐、查看菜单）。"
             "如果画面要求选择人数且没有看到配置人数已选中，先定位并点击配置人数按钮。看到灰色或不可用的开始点餐按钮时，不要点击它。根据当前画面确认配置人数已选中，且开始按钮看起来可用，再建议点击；不能根据自己的上轮动作推断已选中。人数弹窗的 target_label 必须是要选的确切人数按钮文字，reason 明确说明这是人数选择且与配置人数相符；不要只因看到数字就点击。人数页面需把屏幕中当前高亮/已选的人数填写到 selected_people_count，无法确认时填 null。recent_actions 已记录本轮成功点击配置人数后，若出现确认页，只有 selected_people_count 与配置人数完全相同，且 target_label 严格等于“确定”“确认”或“确认人数”时才可点击，并在 reason 说明确认的是刚选的配置人数；若人数不同，应建议回人数列表重新选配置值，不要点击确认。没有该历史动作时不能点击通用确认按钮。目标文字不清楚时 wait 或 blocked。"
-            "检测到无效 URI、服务暂停、页面异常、重新加载或门店选择页面时，先报告当前状态；不要点击被遮挡的底栏入口，也不要自行选择距离最近的门店。无法确认当前任务门店时返回 blocked。"
+            "检测到无效 URI、服务暂停、页面异常、重新加载或门店选择页面时，先报告当前状态；不要点击被遮挡的底栏入口，也不要自行选择距离最近的门店。无法确认当前页面状态时返回 blocked。"
             "ready 必须同时确认菜名与价格确实可见、没有遮挡，并给出当前菜单滚动区域、可见菜名、可见价格。"
             "菜单页里内嵌的会员/优惠/充值卡片、横幅海报不算遮挡弹窗：只要左侧分类栏和菜品卡片仍完整可见，"
             "直接返回 ready 并填写可见菜名与价格，不要点击卡片边角或页面空白去“关闭”它。"
             "微信小程序窗口顶部右侧的胶囊按钮（… / ◎ / ⊙ 等）属于窗口控件，任何情况下都不要点击。"
             "本任务只查看并截图菜单，不需要下单。门店已休息、打烊、非营业、暂停接单、无法下单均不构成停止原因：只要菜名价格可见且菜单可滚动就返回 ready。不能因为休息提示推断菜单无效；仅在实际无法查看菜单（例如小程序暂停服务、错误页或必须完成的遮挡）时返回 blocked 或继续处理遮挡。"
             "菜单区域和动作坐标应使用当前图像截图坐标，不得用窗口逻辑坐标。滚动区域应覆盖右侧菜品列表，排除左侧固定分类栏和底部导航。"
-            "不确定就 wait 或 blocked，不猜坐标。observed_store_text 填截图中可辨认的门店名称文字；看不到填空数组。"
+            "不确定就 wait 或 blocked，不猜坐标。"
             + examples
             + "字段必须完整且不能增加字段："
             '{"action":"...","reason":"...","target_id":null,"x":null,"y":null,"pixels":0,'
             '"menu_region":null,"categories":[],"overlay_visible":false,'
             '"login_required":false,"phone_required":false,"consent_required":false,'
-            '"transaction_visible":false,"target_label":"...","item_names_visible":[],"prices_visible":[],"observed_store_text":[],"selected_people_count":null,"expects_transition":false,'
+            '"transaction_visible":false,"target_label":"...","item_names_visible":[],"prices_visible":[],"selected_people_count":null,"expects_transition":false,'
             + f'"coordinate_space":"{coordinate_space}"}}. '
             'target_id 与 x/y 二选一：有合适候选时只填 target_id，x/y 必须为 null；没有候选时才填 x/y。'
             'ready 时 menu_region 必须为对象，包含左上坐标 x/y 和区域宽高 width/height；不能返回数组或右下坐标。非 ready 且不确定区域时填 null。'

@@ -227,6 +227,11 @@ def _runtime_root(output_root: str | Path) -> Path:
     return Path(output_root).expanduser().resolve().parent
 
 
+def _staging_root(output_root: str | Path) -> Path:
+    """批次统一的暂存根；每家店在下面按 task/attempt 各建一层。"""
+    return _runtime_root(output_root) / ".uipath-staging"
+
+
 def production_window_geometry(screen) -> dict:
     """批量采集统一使用的小程序窗口几何（贴屏幕左侧、全高）。
 
@@ -246,6 +251,10 @@ class FileRobotTransport:
         self.local = local
         self.run_directory = Path(run_directory).expanduser().resolve()
         self.output_directory = Path(output_directory or run_directory).expanduser().resolve()
+        # 一轮采集有两处合法截图落点：暂存目录（菜单页，待发布）与本次运行目录下的
+        # gui-agent 过程证据。自 f3d3689 起运行期目录移出产物目录，两者都不在
+        # output_directory 内，校验必须同时放行 gui-agent 子树。
+        self.output_directories = (self.output_directory, (self.run_directory / "gui-agent").resolve())
         self.run_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.run_directory.chmod(0o700)
         self.output_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -436,7 +445,7 @@ class FileRobotTransport:
             raise RobotProtocolError("resize 需要窗口 selector 和整数尺寸")
         if action in {"screenshot", "screenshot_desktop", "scroll_capture", "capture_rect"}:
             path = command.get("path")
-            if not path or not _inside(Path(path), self.output_directory):
+            if not path or not any(_inside(Path(path), root) for root in self.output_directories):
                 raise RobotProtocolError("截图路径必须位于当前任务输出目录内")
             if not selector:
                 raise RobotProtocolError("截图命令必须指定窗口 selector")
@@ -521,7 +530,8 @@ class FileRobotTransport:
         if not path_value:
             raise RobotProtocolError("截图回复缺少 path")
         path = Path(path_value).expanduser().resolve()
-        if not _inside(path, self.output_directory) or path != requested or not path.is_file():
+        if not any(_inside(path, root) for root in self.output_directories) or path != requested \
+                or not path.is_file():
             raise RobotProtocolError("截图回复路径不属于本任务，拒绝归档")
         for key in ("width", "height"):
             value = reply.get(key)
@@ -773,7 +783,8 @@ class UiPathRunner:
         return str(snapshot) if snapshot.parent == published and self.store.material_binding(str(snapshot)) else ""
 
     def start(self, resume_run: dict | None = None, *, ui_tars_trial: bool = False,
-              trial_task_id: str | None = None, trial_task_ids: list[str] | None = None) -> dict:
+              trial_task_id: str | None = None, trial_task_ids: list[str] | None = None,
+              cross_batch: bool = False) -> dict:
         with self.lock:
             if self.running:
                 raise ValueError("UiPath 单任务控制器已在运行")
@@ -794,8 +805,9 @@ class UiPathRunner:
                 # 未登记的普通素材仍须属于当前配置的输入目录，由 readiness 校验。
                 trial_source = self._registered_trial_source(trial_task_id)
             if trial_task_ids is not None:
-                if not ui_tars_trial or resume_run or trial_task_id or not 1 <= len(trial_task_ids) <= 20:
-                    raise ValueError("全自动试验须指定 1 到 20 条已发布的门店任务")
+                limit = 300 if cross_batch else 20
+                if not ui_tars_trial or resume_run or trial_task_id or not 1 <= len(trial_task_ids) <= limit:
+                    raise ValueError(f"全自动试验须指定 1 到 {limit} 条已发布的门店任务")
                 trial_batch_sources = {task_id: self._registered_trial_source(task_id) for task_id in trial_task_ids}
                 if not all(trial_batch_sources.values()):
                     raise ValueError("全自动试验门店必须使用已登记且有效的发布素材")
@@ -847,7 +859,10 @@ class UiPathRunner:
             }
             _atomic_write_json(run_directory / "entry.json", entry)
             self.run_directory, self.output_directory = run_directory, output_dir
-            self.transport = self.transport_factory(run_directory, Path(settings.output_dir).expanduser().resolve())
+            # 批次里每家店都会新建自己的暂存目录，白名单必须给整个暂存根；
+            # trial 模式的截图落在 run_directory/ui-tars-trial 下，直接放行运行目录。
+            transport_output = run_directory if ui_tars_trial else _staging_root(settings.output_dir)
+            self.transport = self.transport_factory(run_directory, Path(transport_output).expanduser().resolve())
             if isinstance(self.transport, FileRobotTransport):
                 self.transport.retain_command_history = self.debug_log is None
                 if sys.platform == "win32":
@@ -884,8 +899,10 @@ class UiPathRunner:
                 self.store.update_run(self.run_id, status="resuming", current_task_id=task_ids[0],
                                       message="正在恢复批次；开始下一家前会先确认微信安全起点")
             else:
+                # 跨批次任务没有单一素材版本；批次归属按每家店的来源快照单独记录。
                 self.store.create_run(self.run_id, profile["mode"], task_ids,
-                                      material=self.store.material_binding(settings.input_dir))
+                                      material=None if trial_batch_sources
+                                      else self.store.material_binding(settings.input_dir))
             self._deadline = 0
             self.current_task = {"id": task["id"], "source_name": task["source_name"], "stage": "waiting_uipath", "mode": profile["mode"]}
             launch_mode = profile.get("launch_mode", "manual")
@@ -1372,7 +1389,9 @@ class UiPathRunner:
     def _run_ui_tars_trial_case(self, task: dict, settings, profile: dict, output_dir: Path,
                                 model: TrialModel, *, automatic: bool = False) -> dict:
         self._trace_attempt = self.run_directory.name
-        binding = self.store.material_binding(settings.input_dir) or {}
+        # 单店接管也要按任务自己的快照归属；跨批次重跑时当前 input_dir 可能是别的批次。
+        snapshot = Path(task["source_path"]).expanduser().resolve().parent.parent
+        binding = self.store.material_binding(str(snapshot)) or self.store.material_binding(settings.input_dir) or {}
         self._trace_material = {"material_version_id": binding.get("id", ""),
                                 "material_batch_id": binding.get("batch_id", ""),
                                 "material_version": binding.get("version", ""),
@@ -1495,10 +1514,7 @@ class UiPathRunner:
                         log_path=output_dir / "adapter.log",
                         trace_path=trace_path,
                         trace_meta={"run_id": self.run_id, "task_id": task["id"],
-                                    "store_name": task["source_name"],
                                     "batch": self._trace_material.get("material_batch_id", "")},
-                        # 原始二维码照片提供品牌、桌号等背景，只作参考，不能当成可点击屏幕。
-                        source_image=task.get("source_path"),
                         feedback=message,
                     )
                     timing["navigation"] = round((time.monotonic() - navigation_started) * 1000)
@@ -1734,6 +1750,12 @@ class UiPathRunner:
                 self._trace_attempt = output_dir.name
                 self._trace_step = None
                 self._debug_frame_refs.clear()
+                # 跨批次运行时每条任务按自己的发布快照归属素材版本，不能沿用当前激活批次。
+                task_binding = self.store.material_binding(
+                    str(Path(task["source_path"]).expanduser().resolve().parent.parent)) or run_binding
+                self._trace_material = {key: task_binding.get(key, "") for key in (
+                    "material_batch_id", "material_version_id", "material_version", "material_snapshot"
+                )}
                 self.store.update_run(self.run_id, current_index=absolute_index,
                                       current_task_id=task["id"], message=f"正在处理第 {absolute_index + 1} 家：{task['source_name']}")
                 if profile["mode"] == "automatic":
@@ -1768,7 +1790,8 @@ class UiPathRunner:
                     try:
                         with self._trace("publish_output"):
                             self._publish_store_output(settings.output_dir, task, output_dir,
-                                                       batch_id=run_binding.get("material_batch_id", ""), message=message)
+                                                       batch_id=task_binding.get("material_batch_id", ""),
+                                                       message=message)
                     except Exception as exc:
                         status, stage = "needs_review", "output_publish_error"
                         message = f"截图完成但尚未发布成功（{type(exc).__name__}）；旧结果已保留"
@@ -2353,7 +2376,7 @@ class UiPathRunner:
 
     @staticmethod
     def _staging_dir(output_root: str | Path, task: dict, attempt: str) -> Path:
-        staging_root = _runtime_root(output_root) / ".uipath-staging"
+        staging_root = _staging_root(output_root)
         staging = staging_root / task["id"] / attempt
         if not _inside(staging, staging_root):
             raise ValueError("自动采集暂存路径无效")
@@ -2364,7 +2387,7 @@ class UiPathRunner:
         """以 SQLite 发布记录保护目录替换；提交状态前旧目录始终可恢复。"""
         root = Path(output_root).expanduser().resolve()
         staging = Path(staging).expanduser().resolve()
-        staging_root = _runtime_root(root) / ".uipath-staging"
+        staging_root = _staging_root(root)
         destination = self._store_output_dir(root, task, batch_id)
         if not _inside(staging, staging_root) or not staging.is_dir():
             raise ValueError("自动采集暂存目录不存在或越界")
@@ -2429,7 +2452,7 @@ class UiPathRunner:
             staging = Path(transaction["staging"]).expanduser().resolve()
             destination = Path(transaction["destination"]).expanduser().resolve()
             backup = Path(transaction["backup"]).expanduser().resolve()
-            staging_root = _runtime_root(root) / ".uipath-staging"
+            staging_root = _staging_root(root)
             # 旧版本把暂存目录放在产物目录内部；恢复记录里存的是绝对路径，两种位置都要能通过校验。
             legacy_staging_root = root / ".uipath-staging"
             if (not _inside(destination, root) or destination == root or
@@ -4874,7 +4897,6 @@ class UiPathRunner:
                                   login_required=False, phone_required=False, consent_required=False,
                                   transaction_visible=False)
         resolved = self._resolve_ready_region(path, candidate, source_name, ocr_result)
-        identity_unconfirmed = "门店标识未确认" in resolved.reason
         if ocr_result and ocr_result[1]:
             # 底部优惠券/登录浮层不会让整页变暗，但会吞掉滚动手势，导致只截到首屏。
             # 出现这类文案时把页面交给模型确认并点掉关闭，不直接判就绪。
@@ -4946,8 +4968,6 @@ class UiPathRunner:
                 # 协议/授权弹窗未关闭时不能判就绪，否则弹窗会被截进菜单且滚动被吞。
                 return None
         if not resolved.ready_evidence_ok:
-            return None
-        if not identity_unconfirmed and not self._store_matches(source_name, resolved.observed_store_text):
             return None
 
         # 菜单栏与底部导航均未变暗才认为菜单没有被半透明弹窗遮挡；暗色主题交给模型。

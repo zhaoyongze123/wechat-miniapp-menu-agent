@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -36,6 +37,18 @@ from .debug_log import DebugLog
 from .model_usage import UsageLedger
 from .annotation import AnnotationSession, RunnerExecutor
 from .instance_lock import InstanceLockedError, instance_lock
+
+logger = logging.getLogger(__name__)
+
+# 跨批次待检查重跑的上限：仅用于一次人工批量操作，超过这个量级应拆成多轮。
+REVIEW_RERUN_LIMIT = 300
+
+
+def _rejection_store_code(text: str) -> str:
+    """提取门店编号（如 E02412），用于素材不合格与采集不合格按门店去重。"""
+    name = Path(text or "").name
+    match = re.match(r"^([A-Za-z]{1,4}\d+)", name)
+    return (match.group(1) if match else name).upper()
 
 
 def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
@@ -155,6 +168,69 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         if annotations.active:
             raise HTTPException(409, "人工标注进行中，请先结束标注再修改配置")
 
+    def review_queue(batch_ids: str, query: str) -> dict:
+        """待检查清单：跨批次读取任务状态，同一门店只保留最新一条。"""
+        candidates = store.review_candidates()
+        batches = materials.list_batches()
+        workflow = {batch["batch_id"]: batch.get("workflow") or {} for batch in batches}
+        names = {batch["batch_id"]: batch.get("name") or batch["batch_id"] for batch in batches}
+        selected = set()
+        if batch_ids and batch_ids != "all":
+            selected = {value.strip() for value in batch_ids.split(",") if value.strip()}
+        normalized = query.strip().casefold()
+        records = []
+        for task in candidates:
+            batch_id = task.get("material_batch_id") or ""
+            if selected and batch_id not in selected:
+                continue
+            if normalized and normalized not in (task.get("source_name") or "").casefold():
+                continue
+            failure = describe_failure(task.get("error_code", ""))
+            records.append({
+                "task_id": task["id"],
+                "store_name": task["source_name"],
+                "status": task["status"],
+                "stage": task["stage"],
+                "message": task["message"],
+                "error_code": task.get("error_code", ""),
+                "group": failure["group"],
+                "label": failure["label"],
+                "source_path": task["source_path"],
+                "output_dir": task["output_dir"],
+                "reject_reason": task.get("reject_reason", ""),
+                "reject_detail": task.get("reject_detail", ""),
+                "updated_at": task.get("updated_at", ""),
+                "batch_id": batch_id,
+                "batch_name": task.get("material_batch_name") or names.get(batch_id, ""),
+                "workflow": workflow.get(batch_id, {}),
+            })
+        latest: dict[str, dict] = {}
+        for record in records:
+            key = _rejection_store_code(record["store_name"])
+            if key not in latest or record["updated_at"] > latest[key]["updated_at"]:
+                latest[key] = record
+        deduplicated = sorted(latest.values(), key=lambda row: (row["updated_at"], row["store_name"]), reverse=True)
+        options = {}
+        for record in deduplicated:
+            if record["batch_id"]:
+                options[record["batch_id"]] = {
+                    "id": record["batch_id"],
+                    "name": record["batch_name"] or record["batch_id"],
+                    "workflow": record["workflow"],
+                }
+        return {
+            "records": deduplicated,
+            "batches": sorted(options.values(), key=lambda item: (item["name"], item["id"])),
+            "summary": {
+                "stores": len(deduplicated),
+                "batches": len(options),
+                "needs_review": sum(row["status"] == "needs_review" for row in deduplicated),
+                # 清单里的门店都已落定，可以直接批量重跑；单独保留该字段方便前端展示。
+                "retryable": len(deduplicated),
+            },
+        }
+
+
     @app.get("/", response_class=HTMLResponse)
     def index():
         html = (ROOT / "web/index.html").read_text(encoding="utf-8")
@@ -272,6 +348,25 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
                        review=processed-captured-unqualified,
                        remaining=len(ids)-processed,
                        next_name=by_id.get(ids[processed], {}).get("source_name", "") if processed < len(ids) else "")
+        # 素材清洗拒绝的门店可能没有采集任务，控制台必须与不合格清单同口径计入。
+        material_rejected = 0
+        if release:
+            with store.connect() as db:
+                rows = db.execute(
+                    "SELECT store_json FROM material_decisions WHERE batch_id=? AND decision='skipped'",
+                    (release["batch_id"],),
+                ).fetchall()
+            task_codes = {_rejection_store_code(task.get("source_name")) for task in tasks if task.get("reject_reason")}
+            material_codes = set()
+            for row in rows:
+                try:
+                    data = json.loads(row["store_json"] or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    data = {}
+                code = _rejection_store_code(data.get("source_folder") or data.get("name") or "")
+                if code:
+                    material_codes.add(code)
+            material_rejected = len(material_codes - task_codes)
         launch_mode = ready.get("launch_mode", "manual")
         return {"execution_engine": "UiPath", "launch_mode": launch_mode, "engine_ready": ready["ready"], "engine_message": "；".join(ready["issues"]) if ready["issues"] else ("已就绪，点击开始后由 UiPath CLI 自动启动 Main.xaml" if launch_mode == "cli" else "已就绪，等待手动在 Studio 运行 Main.xaml"),
                 "robot_readiness": ready, "run_directory": str(getattr(runner, "run_directory", "") or ""),
@@ -283,7 +378,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
                                                           release.get("batch_name", "") if release else ""))
                                      if settings.output_dir else ""),
                 "input_name": current_root.name if current_root else "",
-                "tasks": tasks, "counts": dict(Counter(t["status"] for t in tasks)), "events": store.events()}
+                "tasks": tasks, "counts": dict(Counter(t["status"] for t in tasks)),
+                "material_rejected": material_rejected, "events": store.events()}
 
     @app.get("/api/materials/batches")
     def material_batches():
@@ -488,6 +584,122 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             })
         return {"tasks": items}
 
+    @app.get("/api/tasks/history")
+    def task_history(kind: str = "all", status: str = "", q: str = "", page: int = 1, page_size: int = 20):
+        """任务中心历史页：采集运行与素材分析任务统一成同一结构，按时间倒序分页。"""
+        page = max(1, int(page))
+        page_size = min(100, max(5, int(page_size)))
+        task_index = {task["id"]: task for task in store.tasks()}
+        rows: list[dict] = []
+        if kind in ("all", "capture"):
+            for run in store.run_history(500):
+                tasks = [task_index[task_id] for task_id in run.get("task_ids", []) if task_id in task_index]
+                statuses = Counter(task["status"] for task in tasks)
+                batch_id = run.get("material_batch_id", "")
+                rows.append({
+                    "kind": "capture",
+                    "id": run["id"],
+                    "title": store.material_batch_name(batch_id) if batch_id else "未关联批次",
+                    "batch_id": batch_id,
+                    "batch_name": store.material_batch_name(batch_id) if batch_id else "未关联批次",
+                    "mode": run.get("mode", ""),
+                    "status": run.get("status", ""),
+                    "created_at": run.get("created_at", ""),
+                    "updated_at": run.get("updated_at", ""),
+                    "message": run.get("message", ""),
+                    "counts": {
+                        "total": len(tasks),
+                        "done": statuses.get("captured", 0),
+                        "attention": sum(statuses.get(key, 0) for key in ("needs_review", "needs_retry", "error", "blocked")),
+                        "failed": statuses.get("failed", 0),
+                    },
+                })
+        if kind in ("all", "materials"):
+            for job in materials.jobs.history(500):
+                rows.append({
+                    "kind": "materials",
+                    "id": job["id"],
+                    "title": _batch_name(job["batch_id"]),
+                    "batch_id": job["batch_id"],
+                    "batch_name": _batch_name(job["batch_id"]),
+                    "mode": job.get("kind", ""),
+                    "status": job.get("status", ""),
+                    "created_at": job.get("created_at", ""),
+                    "updated_at": job.get("updated_at", ""),
+                    "message": job.get("message", "") or job.get("error", ""),
+                    "counts": {
+                        "total": int(job.get("total_stores") or 0),
+                        "done": int(job.get("done_stores") or 0),
+                        "attention": 0,
+                        "failed": int(job.get("failed_stores") or 0),
+                    },
+                })
+        if status:
+            if status == "running":
+                active = {"queued", "running", "pause_requested", "paused", "interrupted"}
+                rows = [row for row in rows if row["status"] in active]
+            elif status == "failed":
+                rows = [row for row in rows if row["status"] in {"failed", "cancelled"}]
+            else:
+                rows = [row for row in rows if row["status"] == status]
+        normalized = q.strip().casefold()
+        if normalized:
+            rows = [row for row in rows
+                    if normalized in (row["title"] + row["batch_name"] + row["id"]).casefold()]
+        rows.sort(key=lambda row: row["created_at"], reverse=True)
+        total = len(rows)
+        page_count = max(1, (total + page_size - 1) // page_size)
+        page = min(page, page_count)
+        start = (page - 1) * page_size
+        return {
+            "records": rows[start:start + page_size],
+            "summary": {
+                "total": total,
+                "running": sum(row["status"] in {"queued", "running", "pause_requested", "paused", "interrupted"}
+                               for row in rows),
+                "completed": sum(row["status"] == "completed" for row in rows),
+                "failed": sum(row["status"] in {"failed", "cancelled"} for row in rows),
+            },
+            "page": page,
+            "page_size": page_size,
+            "page_count": page_count,
+        }
+
+    @app.get("/api/tasks/history/{kind}/{item_id}")
+    def task_history_detail(kind: str, item_id: str):
+        """历史任务详情：采集运行返回逐店状态，素材分析返回阶段事件。"""
+        if kind == "capture":
+            run = store.get_run(item_id)
+            if run is None:
+                raise HTTPException(404, "运行记录不存在")
+            task_index = {task["id"]: task for task in store.tasks()}
+            tasks = []
+            for task_id in run.get("task_ids", []):
+                task = task_index.get(task_id)
+                if task is None:
+                    continue
+                failure = describe_failure(task.get("error_code", ""))
+                tasks.append({
+                    "task_id": task_id,
+                    "store_name": task.get("source_name", ""),
+                    "status": task.get("status", ""),
+                    "label": "已采集" if task.get("status") == "captured" else failure["label"],
+                    "message": task.get("message", ""),
+                })
+            batch_id = run.get("material_batch_id", "")
+            return {"kind": "capture", "id": item_id, "title": store.material_batch_name(batch_id) if batch_id else "未关联批次",
+                    "mode": run.get("mode", ""), "status": run.get("status", ""),
+                    "created_at": run.get("created_at", ""), "updated_at": run.get("updated_at", ""),
+                    "message": run.get("message", ""), "tasks": tasks}
+        if kind == "materials":
+            job = materials.job_detail(item_id, events=True)
+            return {"kind": "materials", "id": item_id, "title": _batch_name(job["batch_id"]),
+                    "mode": job.get("kind", ""), "status": job.get("status", ""),
+                    "created_at": job.get("created_at", ""), "updated_at": job.get("updated_at", ""),
+                    "message": job.get("message", "") or job.get("error", ""),
+                    "counts": job.get("counts", {}), "events": job.get("events", [])}
+        raise HTTPException(404, "任务类型不存在")
+
     @app.get("/api/materials/batches/{batch_id}")
     def material_batch(batch_id: str):
         return materials.get_batch(batch_id)
@@ -551,7 +763,19 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             raise ValueError("确认参数无效")
         if payload["decision"] == "skip" and not payload.get("reject_reason"):
             raise ValueError("请选择不合格原因")
-        return materials.decide_store(batch_id, store_id, **payload)
+        try:
+            return materials.decide_store(batch_id, store_id, **payload)
+        except Exception as exc:
+            box = payload.get("box") if isinstance(payload.get("box"), dict) else {}
+            logger.warning(
+                "decision failed batch=%s store=%s decision=%s image=%s candidate=%s "
+                "box=%s error=%r",
+                batch_id, store_id, payload.get("decision"), payload.get("image_index"),
+                payload.get("candidate_index"),
+                {key: box.get(key) for key in ("x", "y", "width", "height")},
+                exc,
+            )
+            raise
 
     @app.post("/api/materials/batches/{batch_id}/accept-recommendations")
     def accept_material_recommendations(batch_id: str):
@@ -817,6 +1041,41 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             idle()
             return {"ok": True, "task": rejections.undo_task(task_id)}
 
+    @app.get("/api/reviews/pending")
+    def pending_reviews(batch_ids: str = "all", q: str = ""):
+        return review_queue(batch_ids, q)
+
+    @app.post("/api/reviews/pending/rerun")
+    def rerun_pending_reviews(payload: dict):
+        task_ids = payload.get("task_ids")
+        if (not isinstance(task_ids, list) or not task_ids or len(task_ids) > REVIEW_RERUN_LIMIT
+                or any(not isinstance(value, str) or not value.strip() for value in task_ids)):
+            raise ValueError(f"请选择 1 到 {REVIEW_RERUN_LIMIT} 个待检查任务")
+        selected = [value.strip() for value in task_ids]
+        if len(set(selected)) != len(selected):
+            raise ValueError("待检查任务列表不能包含重复项")
+        with control_lock:
+            idle()
+            result = runner.start(ui_tars_trial=True, trial_task_ids=selected, cross_batch=True)
+            # 启动成功后才累加轮次，避免校验失败也把批次标成“已重跑”。
+            materials.register_capture_round(selected)
+            return result
+
+    @app.post("/api/materials/batches/{batch_id}/stage")
+    def set_material_batch_stage(batch_id: str, payload: dict):
+        with control_lock:
+            return materials.set_stage(batch_id, payload.get("stage", ""))
+
+    @app.post("/api/materials/batches/{batch_id}/approve")
+    def approve_material_batch(batch_id: str):
+        with control_lock:
+            return materials.set_approved(batch_id, True)
+
+    @app.post("/api/materials/batches/{batch_id}/approve/undo")
+    def unapprove_material_batch(batch_id: str):
+        with control_lock:
+            return materials.set_approved(batch_id, False)
+
     @app.post("/api/rejections/materials/{batch_id}/{store_id}/undo")
     def undo_material_rejection(batch_id: str, store_id: str):
         with control_lock:
@@ -845,6 +1104,21 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             # 重试开始不等于问题已经解决；不合格记录保留到新一轮成功采集。
             store.update(task_id, status="pending", stage="queued", message="已重新排队；旧输出保留")
             return {"ok": True}
+
+    @app.post("/api/tasks/{task_id}/mark-review")
+    def mark_task_review(task_id: str):
+        """人工把已有采集结果的门店改为待检查；不合格记录必须先撤销，避免状态自相矛盾。"""
+        with control_lock:
+            idle()
+            task = store.get(task_id)
+            if task.get("reject_reason"):
+                raise ValueError("请先撤销不合格标记，再改为待检查")
+            if task["status"] == "needs_review":
+                return {"ok": True, "task": task}
+            if task["status"] not in {"captured", "needs_retry", "error", "blocked"}:
+                raise ValueError("该门店还没有采集结果，不能改为待检查")
+            store.update(task_id, status="needs_review")
+            return {"ok": True, "task": store.get(task_id)}
 
     @app.post("/api/reveal")
     def reveal(payload: dict):
