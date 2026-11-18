@@ -1,9 +1,8 @@
-"""Windows 本地桌面驱动：用 Win32 直接完成窗口级动作。
+"""Windows 原生桌面驱动。
 
-微信 4.x 把小程序/网页版放在独立进程 WeChatAppEx.exe 里，窗口是 Chromium 内嵌浏览器。
-UiPath 的 NApplicationCard 会把它识别成 Chromium 浏览器，卡片内的窗口级目标
-（置前/截图/点击/输入）全部解析失败，因此这些动作改由本进程用 user32/gdi32 完成，
-回包字段与 FileRobotTransport 的约定保持一致。
+接收 FileRobotTransport 的桌面命令，通过 Win32 和 GDI 枚举、激活、截图及操作窗口。
+截图回传图像尺寸、窗口标识和桌面位置。坐标动作复核命令提供的窗口身份与尺寸，
+点击前再确认落点实际属于目标窗口。菜单导航和业务终态由上层处理。
 """
 
 from __future__ import annotations

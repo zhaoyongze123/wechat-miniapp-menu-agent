@@ -1,3 +1,10 @@
+"""组织微信菜单采集任务并派发桌面命令。
+
+UiPathRunner 负责批次运行、窗口交接、导航调用和截图归档。FileRobotTransport 校验命令
+及回执，并保存最近一次截图的窗口身份和尺寸供坐标动作使用。Windows 下已支持的动作
+交给本地 Win32 驱动，其余保留 UiPath 文件协议。
+"""
+
 from __future__ import annotations
 
 import hashlib

@@ -1,4 +1,9 @@
-"""GUI Agent SDK 和 UiPath 的本机 IPC 与结果契约。"""
+"""GUI Agent SDK 的 Python 宿主。
+
+启动 Node.js 适配器，通过 JSON Lines 交换截图、动作和结果。宿主绑定截图与动作，
+把送模图的坐标换算为窗口坐标，再交给调用方提供的桌面回调执行。
+相邻帧的画面变化和可用的点击反馈会随下一帧返回，菜单导航由 Agent 判断。
+"""
 
 from __future__ import annotations
 

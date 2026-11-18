@@ -1,3 +1,7 @@
+// GUI Agent SDK 的 Node.js 适配器。
+// 解析和校验模型输出，给可纠正的格式错误提供有限反馈。HostOperator 通过 RPC 向
+// Python 宿主请求截图和执行动作，并把观察结果带回 SDK，供模型判断下一步菜单导航。
+
 import { createInterface } from 'node:readline';
 import { appendFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
