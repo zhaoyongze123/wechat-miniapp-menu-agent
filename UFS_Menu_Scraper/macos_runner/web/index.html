@@ -1,4 +1,9 @@
 <!doctype html>
+<!--
+  工作台单页入口：页面骨架、全局状态、轮询与大部分页面渲染逻辑都在这里。
+  页面用 id="page-*" 的 section 切换；批次管理、任务中心、标注等模块由
+  /assets/*.js 通过 window.__*Init 初始化，样式见 workspace.css 与各模块 css。
+-->
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -861,9 +866,15 @@
       function qualityReasonCell(label, summary, detail){
         const cell=el('div','quality-reason');
         cell.append(el('strong','',label||'未记录原因'));
-        if(summary)cell.append(el('span','quality-reason-summary',summary));
-        if(detail){
-          const more=el('span','quality-detail','');more.hidden=true;more.textContent=detail;
+        // 原因正文默认直接展示（两行内），只有确实放不下时才收进“详情”。
+        // 采集任务的 detail 就是 Agent/运行器给出的可读失败说明，不能只显示分类名。
+        const text=String(detail||summary||'').trim();
+        if(!text)return cell;
+        const limit=60;
+        const short=text.length>limit?text.slice(0,limit).trimEnd()+'…':text;
+        cell.append(el('span','quality-reason-summary',short));
+        if(text.length>limit){
+          const more=el('span','quality-detail','');more.hidden=true;more.textContent=text;
           const toggle=el('button','quality-detail-toggle','详情');toggle.type='button';
           toggle.addEventListener('click',event=>{event.stopPropagation();more.hidden=!more.hidden;toggle.textContent=more.hidden?'详情':'收起';});
           cell.append(toggle,more);
@@ -903,8 +914,9 @@
               const review=el('button','btn btn-primary','继续处理');review.type='button';review.addEventListener('click',()=>reopenMaterialForReview(record,review));
               const undo=el('button','btn','撤销不合格');undo.type='button';undo.addEventListener('click',()=>undoMaterialRejection(record,undo));actions.append(review,undo);
             }else{
-              const undo=el('button','btn','撤销不合格');undo.type='button';undo.disabled=!!state.status?.running;undo.addEventListener('click',()=>undoTaskRejection(record.task_id,undo));
-              const retryable=['needs_review','needs_retry','error','blocked','captured'].includes(record.status);const retry=el('button','btn btn-primary',retryable?'重新采集':'处理中');retry.type='button';retry.disabled=!!state.status?.running||!retryable;retry.addEventListener('click',()=>retryCaptureTask(record.task_id,retry,true));actions.append(undo,retry);
+              const running=!!state.status?.running;
+              const undo=el('button','btn','撤销不合格');undo.type='button';undo.disabled=running;undo.title=running?'采集任务运行中，结束后可操作':'';undo.addEventListener('click',()=>undoTaskRejection(record.task_id,undo));
+              const retryable=['needs_review','needs_retry','error','blocked','captured'].includes(record.status);const retry=el('button','btn btn-primary',retryable?'重新采集':'处理中');retry.type='button';retry.disabled=running||!retryable;retry.title=!retryable?'该任务当前状态不可重新采集':(running?'采集任务运行中，结束后可操作':'');retry.addEventListener('click',()=>retryCaptureTask(record.task_id,retry,true));actions.append(undo,retry);
             }
             row.append(head,meta,reason,actions);list.append(row);
           }

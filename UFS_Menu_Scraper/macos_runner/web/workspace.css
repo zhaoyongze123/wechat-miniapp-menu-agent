@@ -1,3 +1,5 @@
+/* 工作台共享样式：应用外框、顶栏、卡片、表格、列表分页与各页面通用组件。
+   模块专属样式放在 materials.css / task-center.css / annotation.css 等文件，这里只放复用部分。 */
 /* 应用外框固定为视口大小，各页面指定唯一的正文滚动边界。 */
 html, body { height:100%; overflow:hidden; }
 .shell { height:100dvh; min-height:0; grid-template-columns:200px minmax(0,1fr); overflow:hidden; }
@@ -107,7 +109,7 @@ label.quality-title strong { overflow:hidden; min-width:0; text-overflow:ellipsi
 .quality-row-time { color:#8b9691; font-size:11px; }
 .quality-reason { display:flex; flex-wrap:wrap; align-items:center; gap:6px; min-width:0; color:#53615d; font-size:12px; }
 .quality-reason strong { color:#8e423c; font-weight:650; white-space:nowrap; }
-.quality-reason-summary { overflow:hidden; min-width:0; max-width:100%; text-overflow:ellipsis; white-space:nowrap; color:#6c7873; font-size:11px; }
+.quality-reason-summary { overflow:hidden; min-width:0; flex:1 1 120px; max-width:100%; color:#6c7873; font-size:11px; line-height:1.5; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
 .quality-detail-toggle { flex:0 0 auto; padding:0; border:0; background:none; color:#2f6f62; font-size:11px; cursor:pointer; }
 .quality-detail-toggle:hover { text-decoration:underline; }
 .quality-detail { flex:1 1 100%; max-height:132px; overflow:auto; padding:7px 9px; border-radius:6px; background:#f6f8f7; color:#5f6b66; font-size:11px; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere; }
