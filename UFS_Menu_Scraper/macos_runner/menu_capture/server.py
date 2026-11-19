@@ -177,7 +177,11 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
 
     def review_queue(batch_ids: str, query: str) -> dict:
         """待检查清单：跨批次读取任务状态，同一门店只保留最新一条。"""
-        candidates = store.review_candidates()
+        # 与批次管理、工作台保持同一口径：只取未删除批次的最新发布快照任务，
+        # 旧版本遗留的失败任务不进入清单，避免同一门店重复计数或被重跑旧素材。
+        current_ids = {row["id"] for row in materials.effective_capture_tasks()
+                       if row["status"] in {"needs_review", "needs_retry", "error", "blocked"}}
+        candidates = [task for task in store.review_candidates() if task["id"] in current_ids]
         batches = materials.list_batches()
         workflow = {batch["batch_id"]: batch.get("workflow") or {} for batch in batches}
         names = {batch["batch_id"]: batch.get("name") or batch["batch_id"] for batch in batches}
@@ -331,6 +335,28 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             connections.invalidate()
             return result
 
+    def _run_progress(run: dict) -> dict:
+        """本运行的真实进度：按 run_actions 里已出结果的任务统计。
+
+        恢复/阻塞后 current_index 会从 0 重新计数，不能再用它算“已处理”，
+        否则前端进度会倒退、任务中心显示 3/300 这类错误数字。
+        """
+        ids = list(run.get("task_ids") or [])
+        if run.get("status") in {"completed", "failed", "stopped"}:
+            # 终态运行的全部门店都已处理，必须带回 done_ids，否则统计会把完成项误算成需检查。
+            return {"ids": ids, "processed": len(ids), "done_ids": ids}
+        try:
+            with store.connect() as db:
+                rows = db.execute(
+                    "SELECT DISTINCT task_id FROM run_actions WHERE run_id=? AND result!='running'",
+                    (run["id"],)).fetchall()
+        except Exception:
+            rows = []
+        done = [row["task_id"] for row in rows if row["task_id"] in set(ids)]
+        if not done:
+            done = ids[:min(max(int(run.get("current_index") or 0), 0), len(ids))]
+        return {"ids": ids, "processed": len(done), "done_ids": done}
+
     @app.get("/api/status")
     def status():
         # 任务表保留历史；更换成清洗后的目录时，只展示当前素材集，避免旧照片继续可选。
@@ -346,14 +372,22 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         if run:
             by_id = {task["id"]: task for task in all_tasks}
             ids = run["task_ids"]
-            processed = min(max(run["current_index"], 0), len(ids))
-            processed_tasks = [by_id.get(task_id, {}) for task_id in ids[:processed]]
+            progress = _run_progress(run)
+            processed = progress["processed"]
+            processed_tasks = [by_id[task_id] for task_id in progress.get("done_ids", []) if task_id in by_id]
             captured = sum(task.get("status") == "captured" for task in processed_tasks)
             unqualified = sum(task.get("status") != "captured" and bool(task.get("reject_reason"))
                               for task in processed_tasks)
+            # 跨批次重跑没有单一素材批次可展示：按任务来源快照数量识别。
+            snapshots = {Path(by_id[task_id]["source_path"]).parent.parent.name
+                         for task_id in ids if task_id in by_id}
             run.update(processed=processed, captured=captured, unqualified=unqualified,
                        review=processed-captured-unqualified,
-                       remaining=len(ids)-processed,
+                       remaining=len(ids)-processed, total=len(ids),
+                       processed_ids=progress.get("done_ids", ids[:processed]),
+                       cross_batch=len(snapshots) > 1, batch_count=len(snapshots),
+                       task_list=[{"id": task_id, "name": by_id.get(task_id, {}).get("source_name", ""),
+                                   "status": by_id.get(task_id, {}).get("status", "")} for task_id in ids],
                        next_name=by_id.get(ids[processed], {}).get("source_name", "") if processed < len(ids) else "")
         # 素材清洗拒绝的门店可能没有采集任务，控制台必须与不合格清单同口径计入。
         material_rejected = 0
@@ -374,6 +408,24 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
                 if code:
                     material_codes.add(code)
             material_rejected = len(material_codes - task_codes)
+        # 全部批次口径与批次管理列表保持一致：只算未删除批次（回收站不计），
+        # 并扣除已经有采集不合格记录的同一门店，避免同一家店被计两次。
+        with store.connect() as db:
+            all_rows = db.execute(
+                "SELECT d.store_json FROM material_decisions d "
+                "JOIN material_batches b ON b.id=d.batch_id WHERE d.decision='skipped' AND b.deleted_at=''"
+            ).fetchall()
+        capture_codes = {_rejection_store_code(task.get("source_name")) for task in store.rejections()}
+        all_material_codes = set()
+        for row in all_rows:
+            try:
+                data = json.loads(row["store_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                data = {}
+            code = _rejection_store_code(data.get("source_folder") or data.get("name") or "")
+            if code:
+                all_material_codes.add(code)
+        material_rejected_all = len(all_material_codes - capture_codes)
         launch_mode = ready.get("launch_mode", "manual")
         return {"execution_engine": "UiPath", "launch_mode": launch_mode, "engine_ready": ready["ready"], "engine_message": "；".join(ready["issues"]) if ready["issues"] else ("已就绪，点击开始后由 UiPath CLI 自动启动 Main.xaml" if launch_mode == "cli" else "已就绪，等待手动在 Studio 运行 Main.xaml"),
                 "robot_readiness": ready, "run_directory": str(getattr(runner, "run_directory", "") or ""),
@@ -386,7 +438,35 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
                                      if settings.output_dir else ""),
                 "input_name": current_root.name if current_root else "",
                 "tasks": tasks, "counts": dict(Counter(t["status"] for t in tasks)),
-                "material_rejected": material_rejected, "events": store.events()}
+                "material_rejected": material_rejected, "material_rejected_all": material_rejected_all,
+                "events": store.events(),
+                "manual": runner.manual_state() if runner.running else None}
+
+    @app.get("/api/capture/queue")
+    def capture_queue(batch_ids: str = "all", q: str = ""):
+        """跨批次有效任务清单：列表、统计、全选和开跑共用这一份数据。"""
+        wanted = None if batch_ids in {"", "all"} else [value for value in batch_ids.split(",") if value]
+        records = materials.effective_capture_tasks()
+        if wanted is not None:
+            records = [row for row in records if row["batch_id"] in set(wanted)]
+        needle = q.strip().casefold()
+        if needle:
+            records = [row for row in records
+                       if needle in (row["source_name"] + " " + row["batch_name"]).casefold()]
+        batches = {}
+        for row in records:
+            item = batches.setdefault(row["batch_id"], {"batch_id": row["batch_id"], "batch_name": row["batch_name"],
+                                                        "version": row["version"], "stores": 0})
+            item["stores"] += 1
+            item["version"] = max(item["version"], row["version"])
+        enriched = [row | describe_failure(row.get("error_code", "")) for row in records]
+        return {
+            "records": enriched,
+            "batches": sorted(batches.values(), key=lambda item: item["batch_name"]),
+            "summary": {"stores": len(enriched),
+                        "runnable": sum(bool(row["runnable"]) for row in enriched),
+                        "batches": len(batches)},
+        }
 
     @app.get("/api/materials/batches")
     def material_batches():
@@ -574,11 +654,15 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
                      if current_root and current_root in Path(task["source_path"]).resolve().parents]
             by_id = {task["id"]: task for task in tasks}
             ids = run["task_ids"]
-            processed = min(max(run["current_index"], 0), len(ids))
+            progress = _run_progress(run)
+            processed = progress["processed"]
+            snapshots = {Path(by_id[task_id]["source_path"]).parent.parent.name
+                         for task_id in ids if task_id in by_id}
             items.append({
                 "source": "capture",
                 "id": run["id"],
-                "title": current_root.name if current_root else run["mode"],
+                "title": run.get("name") or (f"待检查重跑 · 跨 {len(snapshots)} 个批次" if len(snapshots) > 1
+                                             else (current_root.name if current_root else run["mode"])),
                 "kind": run["mode"],
                 "status": status,
                 "progress": {"done": processed, "total": len(ids)},
@@ -606,7 +690,7 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
                 rows.append({
                     "kind": "capture",
                     "id": run["id"],
-                    "title": store.material_batch_name(batch_id) if batch_id else "未关联批次",
+                    "title": run.get("name") or (store.material_batch_name(batch_id) if batch_id else "未关联批次"),
                     "batch_id": batch_id,
                     "batch_name": store.material_batch_name(batch_id) if batch_id else "未关联批次",
                     "mode": run.get("mode", ""),
@@ -763,6 +847,18 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         result = materials.preview_candidate(batch_id, store_id, image_index, candidate_index)
         return Response(result["bytes"], media_type=result["media_type"])
 
+    @app.get("/api/materials/batches/{batch_id}/stores/{store_id}/selected")
+    def material_selected_candidate(batch_id: str, store_id: str):
+        """当前门店正在使用的候选二维码；未选码的门店返回 404，不猜测。"""
+        record = materials.get_store(batch_id, store_id)
+        selected = record.get("selected") or {}
+        if selected.get("image_index") is None or selected.get("candidate_index") is None:
+            raise HTTPException(404, "该门店尚未选择二维码")
+        result = materials.preview_candidate(batch_id, store_id, int(selected["image_index"]),
+                                             int(selected["candidate_index"]))
+        return Response(result["bytes"], media_type=result["media_type"],
+                        headers={"Cache-Control": "no-store"})
+
     @app.post("/api/materials/batches/{batch_id}/stores/{store_id}/decision")
     def decide_material_store(batch_id: str, store_id: str, payload: dict):
         allowed = {"decision", "image_index", "candidate_index", "box", "reject_reason", "reject_detail"}
@@ -802,6 +898,72 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             if can_activate:
                 runner.invalidate_readiness()
             return result
+
+    @app.get("/api/materials/rework")
+    def material_rework(batch_ids: str = "all", q: str = ""):
+        """跨批次返工清单：待处理 / 不合格 / 已选码待发布。"""
+        wanted = None if batch_ids in {"", "all"} else [value for value in batch_ids.split(",") if value]
+        records = materials.rework_records(wanted)
+        needle = q.strip().casefold()
+        if needle:
+            records = [row for row in records
+                       if needle in (row["store_name"] + " " + row["batch_name"]).casefold()]
+        return {
+            "records": records,
+            "summary": {
+                "stores": len(records),
+                "pending": sum(row["category"] == "pending" for row in records),
+                "rejected": sum(row["category"] == "rejected" for row in records),
+                "unpublished": sum(row["category"] == "unpublished" for row in records),
+                "batches": len({row["batch_id"] for row in records}),
+            },
+        }
+
+    @app.post("/api/materials/rework/return")
+    def return_material_rework(payload: dict):
+        """打回选错码的门店：恢复待处理，等待人工在原批次重新选码。"""
+        if set(payload) != {"batch_id", "store_id"}:
+            raise ValueError("打回参数无效")
+        with control_lock:
+            idle()
+            return materials.return_rework_store(str(payload["batch_id"]), str(payload["store_id"]))
+
+    @app.post("/api/materials/rework/publish")
+    def publish_material_rework(payload: dict):
+        """统一发布已处理门店：按原批次分组，各自在最新快照上增量更新。"""
+        payload = payload or {}
+        if set(payload) - {"store_ids", "description"}:
+            raise ValueError("发布参数无效")
+        store_ids = payload.get("store_ids")
+        if not isinstance(store_ids, list) or not store_ids:
+            raise ValueError("请勾选要发布的门店")
+        groups: dict[str, list[str]] = {}
+        for value in store_ids:
+            if not isinstance(value, str) or ":" not in value:
+                raise ValueError("门店发布标识无效")
+            batch_id, _, store_id = value.partition(":")
+            if not batch_id or not store_id:
+                raise ValueError("门店发布标识无效")
+            groups.setdefault(batch_id, []).append(store_id)
+        names = {batch["batch_id"]: batch.get("name", "") for batch in materials.list_batches()}
+        description = str(payload.get("description") or "跨批次返工发布")
+        results, errors = [], []
+        with control_lock:
+            idle()
+            for batch_id, ids in groups.items():
+                try:
+                    result = materials.publish_snapshot(batch_id, description, store_ids=ids, activate=False)
+                    results.append({
+                        "batch_id": batch_id, "batch_name": names.get(batch_id, ""),
+                        "snapshot_id": result["snapshot_id"],
+                        "version": result["release"]["version"],
+                        "already_published": result["already_published"],
+                        "task_scan": result["task_scan"],
+                    })
+                except Exception as exc:
+                    errors.append({"batch_id": batch_id, "batch_name": names.get(batch_id, ""),
+                                   "error": str(exc)})
+        return {"results": results, "errors": errors}
 
     @app.post("/api/materials/batches/{batch_id}/activate")
     def activate_material_version(batch_id: str, payload: dict):
@@ -911,14 +1073,15 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             if not run or run["status"] not in {"paused", "blocked", "interrupted"}:
                 raise HTTPException(409, "当前没有可恢复的暂停或阻塞批次")
             profile = profiles.load()
-            if profile.get("mode") != run["mode"]:
+            # 批量采集按本轮锁定的模式恢复，不再受当前机器人连接方式影响。
+            if not run.get("capture_mode") and profile.get("mode") != run["mode"]:
                 raise HTTPException(409, "采集方式与原批次不一致；请恢复原采集方式后继续")
             remaining = run["task_ids"][run["current_index"]:]
             if not remaining:
                 raise HTTPException(409, "此批次没有尚未完成的门店")
             try:
                 runner.start(resume_run=run)
-            except RuntimeError as exc:
+            except (RuntimeError, ValueError) as exc:
                 raise HTTPException(409, str(exc)) from None
             return status()
 
@@ -942,6 +1105,78 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             if task_id:
                 return runner.start(ui_tars_trial=True, trial_task_id=task_id.strip())
             return runner.start(ui_tars_trial=True)
+
+    @app.post("/api/capture/start")
+    def start_capture(payload: dict | None = None):
+        """统一开跑入口：本轮模式与任务清单在这里锁定，两种模式共用同一批门店。"""
+        payload = payload or {}
+        if set(payload) - {"mode", "task_ids", "name"}:
+            raise ValueError("开跑参数无效")
+        mode = payload.get("mode")
+        if mode not in {"auto", "manual"}:
+            raise ValueError("请选择全自动 Agent 或半自动人工")
+        name = payload.get("name", "")
+        if not isinstance(name, str) or len(name.strip()) > 80:
+            raise ValueError("任务名称无效")
+        task_ids = payload.get("task_ids")
+        if not isinstance(task_ids, list) or not 1 <= len(task_ids) <= REVIEW_RERUN_LIMIT:
+            raise ValueError(f"请选择 1 到 {REVIEW_RERUN_LIMIT} 家门店")
+        if any(not isinstance(value, str) or not value.strip() for value in task_ids):
+            raise ValueError("门店任务编号无效")
+        if mode == "manual" and sys.platform != "win32":
+            raise HTTPException(501, "半自动人工首版仅支持 Windows")
+        unique_ids = list(dict.fromkeys(value.strip() for value in task_ids))
+        with control_lock:
+            idle()
+            run = store.latest_run()
+            if run and run["status"] in {"paused", "blocked", "interrupted"}:
+                raise HTTPException(409, "请先继续或终止当前批次")
+            try:
+                result = runner.start(ui_tars_trial=True, trial_task_ids=unique_ids,
+                                      cross_batch=True, capture_mode=mode, run_name=name.strip())
+            except (ValueError, RuntimeError) as exc:
+                raise HTTPException(400, str(exc)) from None
+            try:
+                # 采集轮次与审核失效跟随实际开跑，失败不影响已启动的批次。
+                materials.register_capture_round(unique_ids)
+            except Exception:
+                logger.exception("记录采集轮次失败")
+            return {**result, "status": status()}
+
+    def _manual_action(kind: str, reason: str = "", detail: str = "") -> dict:
+        try:
+            result = runner.manual_action(kind, reason, detail)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return result | {"manual": runner.manual_state(), "status": status()}
+
+    @app.get("/api/manual/state")
+    def manual_state():
+        return {"manual": runner.manual_state()}
+
+    @app.post("/api/manual/capture")
+    def manual_capture():
+        with control_lock:
+            return _manual_action("capture")
+
+    @app.post("/api/manual/reject")
+    def manual_reject(payload: dict | None = None):
+        payload = payload or {}
+        if set(payload) - {"reason", "detail"}:
+            raise ValueError("不合格参数无效")
+        with control_lock:
+            return _manual_action("reject", str(payload.get("reason") or ""), str(payload.get("detail") or ""))
+
+    @app.post("/api/manual/skip")
+    def manual_skip():
+        with control_lock:
+            return _manual_action("skip")
+
+    @app.post("/api/manual/reason")
+    def manual_reason(payload: dict):
+        if set(payload) != {"reason"}:
+            raise ValueError("不合格原因参数无效")
+        return {"ok": True, "reason": runner.set_manual_reason(str(payload["reason"]))}
 
     @app.get("/api/robot/profile")
     def robot_profile():
@@ -975,6 +1210,43 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         with control_lock:
             runner.terminate()
             return status()
+
+    @app.get("/api/tasks/{task_id}/source")
+    def task_source_image(task_id: str):
+        """任务当前使用的二维码裁剪图；不合格详情用它展示“当前使用的候选码”。"""
+        task = store.get(task_id)
+        path = Path(task["source_path"]).expanduser()
+        if not path.is_file():
+            raise HTTPException(404, "素材文件不存在")
+        return FileResponse(path, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/tasks/{task_id}/last-frame")
+    def task_last_frame(task_id: str):
+        """待检查门店的“最后一帧”：取运行期目录里该任务最新的一张画面。
+
+        待检查任务没有发布截图，动作记录也可能因调试日志轮转丢失证据字段；
+        运行目录（.uipath-runs / .uipath-staging）仍保留当时的画面，用它兜底。
+        """
+        if not re.fullmatch(r"[0-9a-f]{20}", task_id):
+            raise HTTPException(404, "任务编号无效")
+        task = store.get(task_id)
+        runtime = Path(configs.load().output_dir).expanduser().resolve().parent
+        candidates: list[Path] = []
+        runs = runtime / ".uipath-runs"
+        if runs.is_dir():
+            candidates.extend(runs.glob(f"*/ui-tars-trial/{task_id}/**/*.png"))
+            candidates.extend(runs.glob(f"*/{task_id}/**/*.png"))
+        staging = runtime / ".uipath-staging"
+        if staging.is_dir():
+            candidates.extend(staging.glob(f"{task_id}/**/*.png"))
+        output = Path(task.get("output_dir") or "")
+        if task.get("output_dir") and output.is_dir():
+            candidates.extend(output.glob("*.png"))
+        files = [path for path in candidates if path.is_file()]
+        if not files:
+            raise HTTPException(404, "没有可用截图")
+        newest = max(files, key=lambda path: path.stat().st_mtime)
+        return FileResponse(newest, media_type="image/png", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/tasks/{task_id}/actions")
     def task_actions(task_id: str, before: int | None = None):
@@ -1034,6 +1306,20 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             headers={"Content-Disposition": f"attachment; filename=unqualified-stores.xlsx; filename*=UTF-8''{quote(filename)}"},
         )
 
+    @app.post("/api/rejections/review")
+    def review_rejection(payload: dict):
+        """人工复核不合格：只切换确认标记，不改变任务状态与原因。"""
+        if set(payload) - {"source_type", "task_id", "batch_id", "store_id", "reviewed"}:
+            raise ValueError("人工确认参数无效")
+        if payload.get("source_type") not in {"capture", "materials"} or not isinstance(payload.get("reviewed"), bool):
+            raise ValueError("人工确认参数无效")
+        with control_lock:
+            return rejections.mark_reviewed(
+                payload["source_type"], task_id=str(payload.get("task_id") or ""),
+                batch_id=str(payload.get("batch_id") or ""), store_id=str(payload.get("store_id") or ""),
+                reviewed=payload["reviewed"],
+            )
+
     @app.post("/api/tasks/{task_id}/reject")
     def reject_task(task_id: str, payload: dict):
         if set(payload) - {"reason", "detail"} or "reason" not in payload:
@@ -1048,6 +1334,24 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             idle()
             return {"ok": True, "task": rejections.undo_task(task_id)}
 
+    @app.post("/api/rejections/tasks/{task_id}/return-to-materials")
+    def return_rejection_to_materials(task_id: str):
+        """把采集不合格打回素材清洗；不新建批次或发布。"""
+        with control_lock:
+            idle()
+            return rejections.return_to_materials(task_id)
+
+    @app.get("/api/rejections/tasks/{task_id}/evidence")
+    def rejection_evidence(task_id: str):
+        task = store.get(task_id)
+        name = str(task.get("reject_evidence") or "")
+        if not re.fullmatch(r"[0-9a-f]{20}\.png", name):
+            raise HTTPException(404)
+        path = store.path.parent / "rejection-evidence" / name
+        if not path.is_file():
+            raise HTTPException(404)
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
     @app.get("/api/reviews/pending")
     def pending_reviews(batch_ids: str = "all", q: str = ""):
         return review_queue(batch_ids, q)
@@ -1061,12 +1365,29 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         selected = [value.strip() for value in task_ids]
         if len(set(selected)) != len(selected):
             raise ValueError("待检查任务列表不能包含重复项")
+        name = payload.get("name", "")
+        if not isinstance(name, str) or len(name.strip()) > 80:
+            raise ValueError("任务名称无效")
         with control_lock:
             idle()
-            result = runner.start(ui_tars_trial=True, trial_task_ids=selected, cross_batch=True)
+            result = runner.start(ui_tars_trial=True, trial_task_ids=selected, cross_batch=True,
+                                  capture_mode="auto", run_name=name.strip())
             # 启动成功后才累加轮次，避免校验失败也把批次标成“已重跑”。
             materials.register_capture_round(selected)
             return result
+
+    @app.post("/api/reviews/approve")
+    def approve_reviews(payload: dict):
+        """最终按原批次审核通过；一次可提交多个批次，批次号与归属不变。"""
+        batch_ids = payload.get("batch_ids") if isinstance(payload, dict) else None
+        if (not isinstance(batch_ids, list) or not 1 <= len(batch_ids) <= 100
+                or any(not isinstance(value, str) or not value.strip() for value in batch_ids)):
+            raise ValueError("请选择 1 到 100 个原批次")
+        results = []
+        with control_lock:
+            for batch_id in dict.fromkeys(value.strip() for value in batch_ids):
+                results.append(materials.set_approved(batch_id, True))
+        return {"ok": True, "batches": results}
 
     @app.post("/api/materials/batches/{batch_id}/stage")
     def set_material_batch_stage(batch_id: str, payload: dict):

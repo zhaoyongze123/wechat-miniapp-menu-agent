@@ -136,8 +136,11 @@ def test_batch_trial_stops_before_next_store_when_safe_return_is_not_confirmed(t
     assert [entry["task_id"] for entry in summary["results"]] == [task_ids[0]]
     assert summary["results"][0]["wechat_return"]["status"] == "blocked"
     assert summary["unstarted_task_ids"] == [task_ids[1]]
-    assert store.latest_run() is None
-    assert [store.get(task_id)["status"] for task_id in task_ids] == ["pending", "pending"]
+    run = store.latest_run()
+    assert run is not None and run["status"] == "blocked"
+    assert run["capture_mode"] == "auto" and run["task_ids"] == task_ids
+    # 试验批次也要先落库：未采到的门店记为待检查，未启动的仍保持待处理。
+    assert [store.get(task_id)["status"] for task_id in task_ids] == ["needs_review", "pending"]
     assert not any(output_dir.glob("**/page-*.png"))
 
 
@@ -160,7 +163,6 @@ def test_batch_trial_reuses_one_robot_startup_and_writes_per_store_reports(tmp_p
         store.scan(snapshot)
     tasks = store.tasks()
     task_ids = [task["id"] for task in tasks]
-    task_snapshot = [store.get(task_id) for task_id in task_ids]
     profile_path = tmp_path / "uipath.profile.json"
     profile = {"mode": "automatic", "launch_mode": "cli", "max_tasks": 10}
     profile_path.write_text(json.dumps(profile), encoding="utf-8")
@@ -234,8 +236,17 @@ def test_batch_trial_reuses_one_robot_startup_and_writes_per_store_reports(tmp_p
         assert report["navigation"]["outcome"] == "unqualified"
         assert report["wechat_return"]["status"] == "ready"
         assert not (report_path.parent / task_id).exists()
-    assert [store.get(task_id) for task_id in task_ids] == task_snapshot
-    assert store.latest_run() is None
+    # Agent 判不合格同样要落库，而不是只留在 batch-result.json 里。
+    for task_id in task_ids:
+        task = store.get(task_id)
+        assert task["status"] == "needs_review"
+        assert task["stage"] == "agent_unqualified"
+        assert task["error_code"] == "agent_unqualified"
+        assert task["reject_reason"] == "other"
+        assert task["reject_detail"] == "页面明确显示门店不营业"
+    run = store.latest_run()
+    assert run is not None and run["status"] == "completed"
+    assert run["capture_mode"] == "auto" and run["task_ids"] == task_ids
     assert not any(output_dir.glob("**/page-*.png"))
 
 

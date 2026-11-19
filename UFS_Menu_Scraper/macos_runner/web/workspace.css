@@ -113,6 +113,9 @@ label.quality-title strong { overflow:hidden; min-width:0; text-overflow:ellipsi
 .quality-detail-toggle { flex:0 0 auto; padding:0; border:0; background:none; color:#2f6f62; font-size:11px; cursor:pointer; }
 .quality-detail-toggle:hover { text-decoration:underline; }
 .quality-detail { flex:1 1 100%; max-height:132px; overflow:auto; padding:7px 9px; border-radius:6px; background:#f6f8f7; color:#5f6b66; font-size:11px; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere; }
+.quality-detail-media { max-height:none; }
+.quality-detail-text { margin:0; }
+.quality-detail-image { display:block; max-width:100%; max-height:360px; margin-top:6px; border:1px solid #e3e8e6; border-radius:6px; background:#fff; }
 .quality-row-actions { display:flex; justify-content:flex-end; gap:6px; flex-wrap:wrap; }
 .quality-row-actions .btn { font-size:11px; padding:6px 9px; }
 .quality-rejection-inline { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; align-items:center; gap:9px; padding:10px 11px; border:1px solid #f0d8d5; border-radius:9px; background:#fff7f6; color:#8e423c; font-size:11px; overflow-wrap:anywhere; }
@@ -126,6 +129,28 @@ label.quality-title strong { overflow:hidden; min-width:0; text-overflow:ellipsi
 #task-rejection-form textarea { resize:vertical; min-height:82px; }
 .quality-dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:7px; }
 .quality-dialog-actions #task-rejection-submit { min-width:86px; }
+
+/* 状态徽标补充：需检查/需重试用橙色，与运行中的琥珀色区分 */
+.badge-warning { color:#a15b00; }
+.badge-warning::before { background:#d9822b; }
+
+/* 门店列表标题悬浮统计 */
+.stat-tip-host { position:relative; display:inline-flex; align-items:center; gap:6px; cursor:help; outline:none; }
+.stat-tip { position:absolute; z-index:60; left:0; top:calc(100% + 8px); display:none; min-width:178px; padding:9px 12px; border:1px solid var(--line); border-radius:10px; background:#fff; box-shadow:0 14px 34px rgba(15,23,42,.14); white-space:nowrap; }
+.stat-tip-host:hover .stat-tip,.stat-tip-host:focus .stat-tip,.stat-tip-host:focus-within .stat-tip { display:grid; gap:2px; }
+.stat-tip b { display:flex; justify-content:space-between; gap:22px; font-size:12px; font-weight:500; line-height:1.7; }
+.stat-tip span { color:var(--muted); }
+.stat-tip strong { color:var(--ink); font-variant-numeric:tabular-nums; font-weight:650; }
+
+/* 任务命名对话框 */
+#run-name-dialog { width:min(430px,calc(100vw - 32px)); border:1px solid var(--line); border-radius:14px; padding:23px; color:var(--ink); box-shadow:0 24px 80px #0003; }
+#run-name-dialog::backdrop { background:#18202555; }
+#run-name-form { display:grid; gap:9px; }
+#run-name-title { margin:0; font-size:18px; }
+#run-name-copy { margin:0; }
+#run-name-form label { margin-top:4px; font-size:12px; font-weight:600; }
+#run-name-input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:#f8faf9; color:var(--ink); }
+#run-name-input:focus { outline:none; border-color:#73b9aa; box-shadow:0 0 0 3px #e6f4f0; }
 
 @media (max-width:1100px) {
   .quality-table-head { display:none; }
@@ -819,3 +844,34 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-vi
 #page-task-center .quality-overview { flex:0 0 auto; }
 #page-task-center .quality-browser { display:flex; flex:1; flex-direction:column; min-height:0; }
 #page-task-center .quality-list { flex:1; min-height:0; max-height:none; }
+/* 工作台双模式：开跑前选模式，运行后本轮锁定。 */
+.capture-mode { display:inline-flex; gap:0; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.capture-mode .capture-mode-btn { border:0; border-radius:0; min-height:36px; padding:7px 12px; background:transparent; }
+.capture-mode .capture-mode-btn + .capture-mode-btn { border-left:1px solid var(--line); }
+.capture-mode .capture-mode-btn.active { background:var(--accent,#1f6feb); color:#fff; }
+.workbench-scope { min-height:36px; padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:transparent; }
+/* 半自动人工操作栏：固定显示当前门店、进度与一次性决定。 */
+.manual-panel { margin-top:8px; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--paper,#fff); display:flex; flex-direction:column; gap:10px; }
+.manual-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:10px; }
+.manual-head .label { font-size:11px; color:var(--muted); }
+.manual-head strong { font-size:15px; }
+.manual-stage { font-size:12px; color:var(--accent,#1f6feb); }
+.manual-actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+.manual-actions .btn { min-height:38px; padding:8px 14px; }
+.manual-reject { display:inline-flex; align-items:center; gap:8px; }
+.manual-reject select { min-height:38px; max-width:220px; }
+.manual-actions kbd { margin-left:6px; padding:1px 5px; border:1px solid rgba(0,0,0,.18); border-radius:4px; font-size:10px; opacity:.8; }
+.manual-last { margin:0; min-height:16px; font-size:12px; color:var(--muted); }
+/* 不合格门店人工复核标记：点一下变成绿色对号，再点取消；导出 Excel 同列可见。 */
+.quality-review-toggle { width:24px; height:24px; min-width:24px; padding:0; border-radius:50%; border:1.5px dashed var(--line); background:transparent; color:transparent; font-size:14px; line-height:1; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; transition:background .15s,border-color .15s,color .15s; }
+.quality-review-toggle:hover, .quality-review-toggle:focus-visible { border-color:#16a34a; outline:none; }
+.quality-review-toggle.is-reviewed { border-style:solid; border-color:#16a34a; background:#16a34a; color:#fff; }
+.quality-review-toggle:disabled { opacity:.5; cursor:wait; }
+/* 不合格详情：展示当前使用的候选二维码，与判定截图并列。 */
+.quality-qr { display:flex; flex-direction:column; align-items:flex-start; gap:6px; }
+/* 两张图左右并排：左边当前候选码，右边判定截图；空间不足时自动换行。 */
+.quality-media-row { display:flex; flex-wrap:wrap; align-items:flex-start; gap:12px; margin-top:6px; }
+.quality-media-row .quality-detail-image { margin-top:0; max-width:min(220px,100%); max-height:360px; }
+.quality-qr-image { width:140px; height:140px; object-fit:contain; padding:6px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+.quality-qr-label { font-size:11px; color:var(--muted); }
+

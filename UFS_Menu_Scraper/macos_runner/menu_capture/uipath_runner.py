@@ -53,7 +53,9 @@ from .preview_locator import PreviewIconNotFound, locate_preview_recognize
 from .chat_image_locator import (ChatImageNotFound, locate_chat_image_bubble, locate_sent_image,
                                  match_preview_source)
 from .ui_tars_trial import GUI_PLUS_MODEL, TrialModel, TrialProtocolError, run_navigation, trial_model_from_env
-from .capture_outputs import archive_unqualified, store_output_dir
+from .capture_outputs import (
+    archive_unqualified, retire_store_dir, store_output_dir, unqualified_store_dir,
+)
 from .uipath_cli import cli_entry
 
 # 预览按钮、小程序窗口与关闭动作统一改为短间隔轮询：条件满足即停，避免固定等待。
@@ -135,7 +137,11 @@ class NeedsReview(RuntimeError):
 
 
 class AgentUnqualified(NeedsReview):
-    """Agent 给出了带理由的明确不合格终态。"""
+    """Agent 给出了带理由的明确不合格终态；evidence 是判定时看到的画面。"""
+
+    def __init__(self, message: str, code: str = "", evidence: str | Path = ""):
+        super().__init__(message, code)
+        self.evidence = str(evidence or "")
 
 
 class QrEntryUnavailable(NeedsReview):
@@ -637,6 +643,16 @@ class UiPathRunner:
         # 人工标注复用截图/点击能力，但不得改动采集任务状态。
         self._annotation_mode = False
         self._ui_tars_trial_active = False
+        # 本轮采集模式：auto=全自动 Agent，manual=半自动人工；空值代表历史批次。
+        self._capture_mode = ""
+        # 批量采集的暂停只在门店边界生效，不打断当前门店。
+        self._pause_at_boundary = False
+        # 半自动人工：当前等待人工操作的门店状态与一次性动作。
+        self._manual_cond = threading.Condition()
+        self._manual_state: dict | None = None
+        self._manual_action: dict | None = None
+        self._manual_reason = "not_ordering"
+        self._manual_last_result = ""
 
     @property
     def running(self) -> bool:
@@ -792,19 +808,34 @@ class UiPathRunner:
         published = (self.store.path.parent / "materials/published").resolve()
         return str(snapshot) if snapshot.parent == published and self.store.material_binding(str(snapshot)) else ""
 
+    def _has_published_output(self, task_id: str) -> bool:
+        """门店是否已有可分发的发布结果：有 page-*.png 才算，空目录或旧路径不算。"""
+        task = self.store.get(task_id) or {}
+        output = str(task.get("output_dir") or "").strip()
+        return bool(output) and Path(output).is_dir() and any(Path(output).glob("page-*.png"))
+
     def start(self, resume_run: dict | None = None, *, ui_tars_trial: bool = False,
               trial_task_id: str | None = None, trial_task_ids: list[str] | None = None,
-              cross_batch: bool = False) -> dict:
+              cross_batch: bool = False, capture_mode: str = "", run_name: str = "") -> dict:
         with self.lock:
             if self.running:
                 raise ValueError("UiPath 单任务控制器已在运行")
+            if capture_mode not in {"", "auto", "manual"}:
+                raise ValueError("采集模式无效")
             task_ids_override = resume_run.get("task_ids", []) if resume_run else None
             start_index = int(resume_run.get("current_index", 0)) if resume_run else 0
+            # 暂停恢复沿用原批次锁定的模式，不允许中途切换。
+            resume_capture = str(resume_run.get("capture_mode") or "") if resume_run else ""
+            capture_mode = capture_mode or resume_capture
             if resume_run:
                 snapshot = resume_run.get("material_snapshot")
                 if snapshot and Path(self.configs.load().input_dir).name != snapshot:
                     raise ValueError("当前素材与暂停任务的版本不同，请切回原版本后继续")
                 task_ids_override = task_ids_override[start_index:]
+                # current_index 是相对本轮剩余清单写入的，恢复时直接当全量索引会重复最后一家；
+                # 以“已有有效发布结果”为准剔除已完成门店，避免成功结果被再次失败覆盖。
+                task_ids_override = [task_id for task_id in task_ids_override
+                                     if not self._has_published_output(task_id)]
                 if not task_ids_override:
                     raise ValueError("批次中没有尚未完成的门店")
             trial_source = ""
@@ -822,6 +853,15 @@ class UiPathRunner:
                 if not all(trial_batch_sources.values()):
                     raise ValueError("全自动试验门店必须使用已登记且有效的发布素材")
                 task_ids_override = trial_task_ids
+            if resume_capture:
+                # 两种模式的暂停恢复都回到同一批剩余门店，并按每家店自己的发布快照执行。
+                ui_tars_trial = True
+                trial_batch_sources = {task_id: self._registered_trial_source(task_id) for task_id in task_ids_override}
+                if not trial_batch_sources or not all(trial_batch_sources.values()):
+                    raise ValueError("恢复门店的发布素材已失效，请重新发布后再继续")
+            # 历史调用方不带模式；批量试验默认按全自动 Agent 记录，避免批次事实缺模式。
+            if ui_tars_trial and trial_batch_sources is not None and not capture_mode:
+                capture_mode = "auto"
             status = (self.readiness(task_ids_override=task_ids_override, trial=True,
                                      trial_task_id=trial_task_id, trial_source=trial_source,
                                      trial_batch_sources=trial_batch_sources) if ui_tars_trial
@@ -829,6 +869,8 @@ class UiPathRunner:
             if not status["ready"]:
                 raise ValueError("UiPath 尚未就绪：" + "；".join(status["issues"]))
             profile = status["profile"]
+            if capture_mode and not ui_tars_trial:
+                raise ValueError("采集模式只用于批量采集入口")
             if ui_tars_trial and not trial_batch_sources and (
                 resume_run or profile["mode"] != "attached" or len(status["selected_task_ids"]) != 1
             ):
@@ -891,18 +933,33 @@ class UiPathRunner:
             if ui_tars_trial:
                 self._deadline = 0
                 self._ui_tars_trial_active = True
+                self._capture_mode = capture_mode
+                self._pause_at_boundary = False
                 self.current_task = {"id": task["id"], "source_name": task["source_name"],
                                      "stage": "ui_tars_connecting", "mode": profile["mode"],
-                                     "navigation": "gui_agent", "trial": True}
+                                     "navigation": "gui_agent", "trial": True,
+                                     "capture_mode": capture_mode}
+                if trial_batch_sources is not None:
+                    # 批量开跑必须有批次事实，用于进度、模式与恢复；单店接管保持原行为。
+                    label = "半自动人工采集" if capture_mode == "manual" else "全自动 Agent 采集"
+                    if resume_run:
+                        self.store.update_run(self.run_id, status="running", current_index=start_index,
+                                              current_task_id=task_ids[0], message=f"继续{label}")
+                    else:
+                        self.store.create_run(self.run_id, "automatic", task_ids,
+                                              message=f"{label}已启动", material=None, capture_mode=capture_mode,
+                                              name=run_name.strip()[:80] or self.store.default_run_name(task_ids))
+                target = (self._manual_batch_worker if capture_mode == "manual"
+                          else self._ui_tars_trial_worker)
                 self.thread = threading.Thread(
-                    target=self._ui_tars_trial_worker,
+                    target=target,
                     args=(task, settings, profile, output_dir, model, trial_batch_sources),
                     name="ui-tars-trial", daemon=True,
                 )
                 self.thread.start()
                 return {"ok": True, "running": True, "navigation": "gui_agent", "run_id": self.run_id,
                         "task_id": task["id"], "in_RunDirectory": str(run_directory),
-                        "task_count": len(task_ids),
+                        "task_count": len(task_ids), "capture_mode": capture_mode,
                         "result_file": str(output_dir / ("batch-result.json" if trial_batch_sources else "navigation-result.json")),
                         "launch_mode": profile.get("launch_mode", "manual")}
             if resume_run:
@@ -912,7 +969,8 @@ class UiPathRunner:
                 # 跨批次任务没有单一素材版本；批次归属按每家店的来源快照单独记录。
                 self.store.create_run(self.run_id, profile["mode"], task_ids,
                                       material=None if trial_batch_sources
-                                      else self.store.material_binding(settings.input_dir))
+                                      else self.store.material_binding(settings.input_dir),
+                                      name=run_name.strip()[:80] or self.store.default_run_name(task_ids))
             self._deadline = 0
             self.current_task = {"id": task["id"], "source_name": task["source_name"], "stage": "waiting_uipath", "mode": profile["mode"]}
             launch_mode = profile.get("launch_mode", "manual")
@@ -948,7 +1006,15 @@ class UiPathRunner:
         if not self.running:
             raise ValueError("当前没有运行中的批次")
         if self._ui_tars_trial_active:
-            raise ValueError("GUI Agent 试验可以终止后重试")
+            if not self._capture_mode:
+                raise ValueError("GUI Agent 试验可以终止后重试")
+            # 批量采集只在门店边界暂停：当前门店继续处理，完成后停在下一家之前。
+            self._pause_at_boundary = True
+            if self.run_id:
+                self.store.request_run_state(self.run_id, "pause_requested", "已请求暂停；当前门店完成后在下一家开始前暂停")
+            if self.current_task:
+                self.store.event("已请求暂停；当前门店完成后暂停", task_id=self.current_task["id"])
+            return
         self.pause_event.set()
         if self.run_id:
             self.store.request_run_state(self.run_id, "pause_requested", "已请求暂停；当前门店完成并安全返回后暂停")
@@ -965,11 +1031,113 @@ class UiPathRunner:
             raise ValueError("当前没有可终止的批次")
         self.stop_event.set()
         if self._ui_tars_trial_active:
+            if self._capture_mode and self.run_id:
+                self.store.update_run(self.run_id, status="terminating", message="终止请求已收到；当前门店收尾后停止")
             return
         if self.run_id:
             self.store.request_run_state(self.run_id, "terminating", "终止请求已收到；当前 UiPath 命令结束后停止本批次")
         if self.current_task:
             self.store.event("已请求终止；当前 UiPath 命令结束后停止发送新命令", task_id=self.current_task["id"])
+
+    def manual_state(self) -> dict | None:
+        """半自动人工面板状态；等待人工与处理中都返回，供刷新后恢复界面。"""
+        with self._manual_cond:
+            if not self._manual_state:
+                return None
+            state = dict(self._manual_state)
+        state["reason"] = self._manual_reason
+        state["last_result"] = self._manual_last_result
+        return state
+
+    def manual_action(self, kind: str, reason: str = "", detail: str = "") -> dict:
+        """接收人工决定；同一门店只接受第一次，重复或过期页面请求直接拒绝。"""
+        if kind not in {"capture", "reject", "skip"}:
+            raise ValueError("人工操作类型无效")
+        from .materials import REJECTION_REASONS
+
+        with self._manual_cond:
+            state = self._manual_state or {}
+            if not state.get("waiting") or not state.get("task_id"):
+                raise ValueError("当前没有等待人工操作的门店")
+            if state.get("decision"):
+                raise ValueError("本店已处理，等待下一家")
+            if kind == "reject":
+                reason = (reason or self._manual_reason).strip()
+                if reason not in REJECTION_REASONS:
+                    raise ValueError("请选择有效的不合格原因")
+                if reason == "other" and not str(detail).strip():
+                    raise ValueError("选择其他原因时请填写备注")
+            state["decision"] = kind
+            self._manual_state = state
+            self._manual_action = {"type": kind, "task_id": state["task_id"],
+                                   "reason": reason, "detail": str(detail or "").strip()[:200]}
+            self._manual_cond.notify_all()
+        return {"ok": True, "task_id": state["task_id"], "action": kind}
+
+    def set_manual_reason(self, reason: str) -> str:
+        """保存当前不合格原因，供前台 F9 快捷键复用。"""
+        from .materials import REJECTION_REASONS
+
+        if reason not in REJECTION_REASONS:
+            raise ValueError("不合格原因无效")
+        self._manual_reason = reason
+        return reason
+
+    def _manual_hotkey(self, kind: str) -> None:
+        try:
+            self.manual_action(kind)
+        except Exception:
+            # 快捷键只在等待人工时生效；其余时段的按键直接忽略。
+            return
+
+    def _manual_region(self, frame: dict) -> Region:
+        """半自动截图的滚动区域：取小程序窗口内容区，避开标题栏与底部安全边。"""
+        width = float(frame["width"])
+        height = float(frame["height"])
+        return Region(x=0.0, y=height * 0.06, width=width, height=height * 0.88)
+
+    def _set_manual_state(self, task: dict, index: int, total: int, stage: str, *, waiting: bool) -> None:
+        with self._manual_cond:
+            previous = (self._manual_state or {}).get("task_id")
+            if previous != task["id"]:
+                self._manual_action = None
+            self._manual_state = {
+                "task_id": task["id"], "store_name": task["source_name"],
+                "index": index + 1, "total": total, "stage": stage,
+                "waiting": waiting, "decision": "",
+            }
+            self._manual_cond.notify_all()
+
+    def _wait_manual_action(self, task: dict) -> dict:
+        with self._manual_cond:
+            while True:
+                if self.stop_event.is_set():
+                    raise RunnerTerminated("用户已终止半自动采集")
+                action = self._manual_action
+                if action and action.get("task_id") == task["id"]:
+                    self._manual_action = None
+                    return action
+                self._manual_cond.wait(0.5)
+
+    def _capture_run_progress(self, done: int, total: int, next_task_id: str) -> None:
+        """批量采集按门店推进进度；单店接管没有 run 行，直接跳过。"""
+        if not self.run_id or not self.store.get_run(self.run_id):
+            return
+        # 自动与人工共用批次推进：文案必须跟随本轮真实模式，不能把自动采集写成人工。
+        label = "半自动人工" if self._capture_mode == "manual" else "全自动 Agent"
+        self.store.update_run(self.run_id, current_index=done, current_task_id=next_task_id,
+                              message=f"{label} {done}/{total} 已完成；刷新页面可恢复当前进度")
+
+    def _finish_capture_run(self, summary: dict) -> None:
+        if not self.run_id or not self.store.get_run(self.run_id):
+            return
+        status = {"completed": "completed", "paused": "paused",
+                  "blocked": "blocked", "terminated": "terminated"}.get(summary.get("status"), "completed")
+        label = "半自动人工采集" if self._capture_mode == "manual" else "全自动 Agent 采集"
+        message = str(summary.get("reason") or "").strip()
+        if not message:
+            message = f"{label}已完成" if status == "completed" else f"{label}已停止"
+        self.store.update_run(self.run_id, status=status, message=message[:300])
 
     def _launch_cli(self, run_directory: Path, settings, profile: dict, *, task_count: int | None = None,
                     timeout_seconds: float | None = None, allow_skip_build: bool = True) -> None:
@@ -1359,15 +1527,24 @@ class UiPathRunner:
             # 批次版面先校准一次，后面各店复用同一窗口尺寸与几何。
             with self._trace("wechat_batch_frame"):
                 self._prepare_batch_wechat_frame(profile)
-            for task_id, source in batch_sources.items():
+            for index, (task_id, source) in enumerate(batch_sources.items()):
                 self._guard()
+                if self._pause_at_boundary:
+                    summary.update(status="paused", reason="已请求暂停；在下一家开始前停止")
+                    break
                 task = self.store.get(task_id)
                 case_dir = output_dir / task_id
                 case_dir.mkdir(mode=0o700)
                 case_settings = settings.model_copy(update={"input_dir": source})
                 report = self._run_ui_tars_trial_case(task, case_settings, dict(profile), case_dir, model, automatic=True)
+                # 试验批次与正式批次共用同一份事实源：先落库/发布，再判断能否继续下一家。
+                persisted = self._persist_trial_case(task, case_dir, report, case_settings)
                 summary["unstarted_task_ids"].pop(0)
-                summary["results"].append(report | {"result_file": f"{task_id}/navigation-result.json"})
+                summary["results"].append(report | {"result_file": f"{task_id}/navigation-result.json",
+                                                    "persisted": persisted})
+                total = len(batch_sources)
+                remaining = list(batch_sources)[index + 1:]
+                self._capture_run_progress(index + 1, total, remaining[0] if remaining else "")
                 self._guard()
                 if report["wechat_return"]["status"] != "ready":
                     summary.update(status="blocked", reason=report["wechat_return"]["reason"])
@@ -1387,14 +1564,19 @@ class UiPathRunner:
                     atomic_json(summary_path, summary)
             finally:
                 try:
-                    self.transport.request_stop()
+                    self._finish_capture_run(summary or {})
                 finally:
                     try:
-                        self._reap_cli()
+                        self.transport.request_stop()
                     finally:
-                        self._ui_tars_trial_active = False
-                        self.current_task = None
-                        self._deadline = 0
+                        try:
+                            self._reap_cli()
+                        finally:
+                            self._ui_tars_trial_active = False
+                            self.current_task = None
+                            self._deadline = 0
+                            self._capture_mode = ""
+                            self._pause_at_boundary = False
 
     def _run_ui_tars_trial_case(self, task: dict, settings, profile: dict, output_dir: Path,
                                 model: TrialModel, *, automatic: bool = False) -> dict:
@@ -1409,6 +1591,261 @@ class UiPathRunner:
         self._set_stage(task, "ui_tars_connecting", "准备 GUI Agent 试验")
         return self._run_gui_agent_case(task, settings, profile, output_dir, model,
                                         automatic=automatic, capture_dir=output_dir, trial=True)
+
+    def _persist_trial_case(self, task: dict, case_dir: Path, report: dict, settings) -> str:
+        """试验批次也走正式批次的落库口径：发布截图并更新任务状态。
+
+        原实现只写 batch-result.json，导致采到的截图不进产物目录、状态停留在上一轮。
+        返回本轮落库类别，便于 batch-result.json 复盘。
+        """
+        nav = report.get("navigation") or {}
+        capture = report.get("capture") or {}
+        frame = str(nav.get("frame") or "")
+        evidence = frame if not frame or Path(frame).is_absolute() else str(case_dir / frame)
+        binding = self.store.material_binding(
+            str(Path(task["source_path"]).expanduser().resolve().parent.parent)) or {}
+        pages = sorted(case_dir.glob("page-*.png"), key=lambda path: int(path.stem.split("-")[1]))
+        if capture.get("status") == "staged" and pages:
+            staging = self._staging_dir(settings.output_dir, task, "trial-" + uuid.uuid4().hex[:8])
+            staging.mkdir(parents=True, exist_ok=False, mode=0o700)
+            try:
+                for page in pages:
+                    shutil.copy2(page, staging / page.name)
+                warning = (report.get("wechat_return") or {}).get("status") not in {"", "ready", None}
+                message = ("已保存菜单截图；窗口清理未确认，不影响本店结果" if warning
+                           else "已保存菜单截图；覆盖完整性待复核")
+                self._publish_store_output(settings.output_dir, task, staging,
+                                           batch_id=binding.get("batch_id", ""), message=message)
+                return "captured"
+            finally:
+                if staging.exists():
+                    shutil.rmtree(staging, ignore_errors=True)
+        if nav.get("outcome") == "unqualified":
+            code = report.get("rejection_code") or "agent_unqualified"
+            message = (report.get("agent_reason") or "Agent 判定不合格")[:500]
+            self._persist_task_result(task, case_dir, "needs_review", code, message, code,
+                                      evidence=evidence)
+            return "unqualified"
+        runtime_ok = report.get("runtime_status") == "ok"
+        code = report.get("runtime_code") or ("agent_needs_review" if runtime_ok else "agent_runtime")
+        message = (report.get("runtime_error") or nav.get("reason") or report.get("agent_reason")
+                   or "结果待人工检查")[:500]
+        self._persist_task_result(task, case_dir, "needs_review", "needs_review", message, code,
+                                  evidence=evidence)
+        return "needs_review"
+
+    def _manual_batch_worker(self, task: dict, settings, profile: dict, output_dir: Path,
+                             model: TrialModel, batch_sources: dict[str, str] | None = None) -> None:
+        """半自动人工：系统负责扫码、开小程序、调窗口；人工决定何时截图或判不合格。
+
+        与全自动共用扫码、窗口校准、滚动截图与跨店收尾；区别只在进入菜单后等待人工。
+        """
+        summary = {"run_id": self.run_id, "status": "running", "capture_mode": "manual",
+                   "results": [], "unstarted_task_ids": list(batch_sources or {})}
+        summary_path = output_dir / "batch-result.json"
+        atomic_json(summary_path, summary)
+        hotkeys = None
+        try:
+            self._trace_attempt = self.run_directory.name
+            with self._trace("uipath_startup"):
+                self._await_cli_startup()
+            # 与全自动一致：批次版面先校准一次，后面各店复用同一窗口尺寸。
+            with self._trace("wechat_batch_frame"):
+                self._prepare_batch_wechat_frame(profile)
+            from .manual_hotkeys import ManualHotkeys
+
+            hotkeys = ManualHotkeys(
+                on_capture=lambda: self._manual_hotkey("capture"),
+                on_reject=lambda: self._manual_hotkey("reject"),
+            )
+            hotkeys.start()
+            total = len(batch_sources or {})
+            for index, (task_id, source) in enumerate(list((batch_sources or {}).items())):
+                self._guard()
+                if self._pause_at_boundary:
+                    summary.update(status="paused", reason="已请求暂停；在下一家开始前停止")
+                    break
+                current = self.store.get(task_id)
+                case_dir = output_dir / task_id
+                case_dir.mkdir(mode=0o700)
+                case_settings = settings.model_copy(update={"input_dir": source})
+                report = self._run_manual_case(current, case_settings, dict(profile), case_dir, index, total)
+                persisted = self._persist_manual_case(current, case_dir, report, case_settings)
+                summary["unstarted_task_ids"].pop(0)
+                summary["results"].append(report | {"result_file": f"{task_id}/navigation-result.json",
+                                                    "persisted": persisted})
+                decision = report.get("manual_decision") or {}
+                if persisted == "captured":
+                    self._manual_last_result = f"上一家已保存 {len(report.get('capture', {}).get('pages', []))} 张截图"
+                elif persisted == "unqualified":
+                    self._manual_last_result = "上一家已记为不合格"
+                else:
+                    self._manual_last_result = "上一家已跳过，留在待检查"
+                remaining = list(batch_sources or {})[index + 1:]
+                self._capture_run_progress(index + 1, total, remaining[0] if remaining else "")
+                self._guard()
+                if report.get("wechat_return", {}).get("status") != "ready":
+                    summary.update(status="blocked",
+                                   reason=report["wechat_return"].get("reason", "未确认安全返回微信"))
+                    break
+                atomic_json(summary_path, summary)
+            if summary["status"] == "running":
+                summary["status"] = "completed"
+        except RunnerTerminated:
+            summary.update(status="terminated", reason="已终止半自动人工采集")
+        except Exception as exc:
+            summary.update(status="blocked",
+                           reason=f"半自动采集中断（{type(exc).__name__}）：{str(exc)[:300]}")
+        finally:
+            if hotkeys is not None:
+                try:
+                    hotkeys.stop()
+                except Exception:
+                    pass
+            try:
+                atomic_json(summary_path, summary)
+            finally:
+                try:
+                    self._finish_capture_run(summary)
+                finally:
+                    try:
+                        self.transport.request_stop()
+                    finally:
+                        try:
+                            self._reap_cli()
+                        finally:
+                            self._ui_tars_trial_active = False
+                            self._manual_state = None
+                            self._manual_action = None
+                            self.current_task = None
+                            self._deadline = 0
+                            self._capture_mode = ""
+                            self._pause_at_boundary = False
+
+    def _run_manual_case(self, task: dict, settings, profile: dict, output_dir: Path,
+                         index: int, total: int) -> dict:
+        """单店半自动：开店 → 等人工决定 → 截图/不合格/跳过 → 关店。"""
+        self._trace_attempt = self.run_directory.name
+        snapshot = Path(task["source_path"]).expanduser().resolve().parent.parent
+        binding = self.store.material_binding(str(snapshot)) or {}
+        self._trace_material = {"material_version_id": binding.get("id", ""),
+                                "material_batch_id": binding.get("batch_id", ""),
+                                "material_version": binding.get("version", ""),
+                                "material_snapshot": binding.get("snapshot_id", "")}
+        self._deadline = 0  # 人工判断不设超时，依靠终止批次退出。
+        report = {"task_id": task["id"], "run_id": self.run_id, "source_name": task["source_name"],
+                  "capture": {"status": "not_started", "pages": []}, "capture_status": "not_started",
+                  "wechat_return": {"status": "pending", "reason": ""}}
+        try:
+            self._set_stage(task, "manual_opening", "正在扫码并打开小程序")
+            self._open_source_automatic(task, profile, output_dir, settings.capture.settle_seconds)
+            selector = profile.get("miniapp_selector") or ""
+            if not selector:
+                raise NeedsReview("未能识别本轮小程序窗口")
+            evidence_dir = output_dir / "evidence"
+            evidence_dir.mkdir(mode=0o700, exist_ok=True)
+            self._prepare_trial_window(selector, evidence_dir, None)
+            self._set_manual_state(task, index, total, "waiting_human", waiting=True)
+            self._set_stage(task, "manual_waiting", "等待人工进入菜单并选择操作")
+            action = self._wait_manual_action(task)
+            if action["type"] == "capture":
+                self._set_manual_state(task, index, total, "capturing", waiting=False)
+                self._set_stage(task, "manual_capturing", "人工确认菜单，正在滚动截图")
+                frame = self._screenshot(output_dir, selector, "manual-start.png")
+                pages = self._capture_menu(selector, frame, self._manual_region(frame),
+                                           settings, profile, output_dir)
+                if not pages:
+                    raise NeedsReview("人工截图未产生有效画面，已转待检查", "manual_capture_empty")
+                report["capture"] = {"status": "staged", "pages": pages}
+            elif action["type"] == "reject":
+                self._set_manual_state(task, index, total, "rejected", waiting=False)
+                frame = self._screenshot(output_dir, selector, "manual-reject.png")
+                report["manual_decision"] = {"type": "reject", "reason": action.get("reason", ""),
+                                             "detail": action.get("detail", "")}
+                report["evidence"] = frame.get("path", "")
+            else:
+                self._set_manual_state(task, index, total, "skipped", waiting=False)
+                report["manual_decision"] = {"type": "skip"}
+        except (NeedsReview, TrialProtocolError, RobotProtocolError, RobotCommandError, RobotTimeout) as exc:
+            report["runtime_status"] = "failed"
+            report["runtime_error"] = str(exc)[:500]
+            report["runtime_code"] = getattr(exc, "code", "") or "manual_runtime"
+            report["manual_decision"] = {"type": "error"}
+        finally:
+            report["capture_status"] = str(report["capture"].get("status") or "not_started")
+            # 关店失败必须停住本轮，避免把未清理的窗口带进下一家。
+            self._deadline = time.monotonic() + 60
+            try:
+                self._guard()
+                self._return_to_wechat(profile, output_dir, settings.capture.settle_seconds)
+                report["wechat_return"] = {"status": "ready"}
+            except RunnerTerminated:
+                report["wechat_return"] = {"status": "blocked", "reason": "批次已终止"}
+                raise
+            except Exception as exc:
+                report["wechat_return"] = {"status": "blocked",
+                                           "reason": f"未确认安全返回微信（{type(exc).__name__}）：{str(exc)[:200]}"}
+            finally:
+                self._deadline = 0
+                with self._manual_cond:
+                    if self._manual_state and self._manual_state.get("task_id") == task["id"]:
+                        self._manual_state = {**self._manual_state, "stage": "closed", "waiting": False}
+                        self._manual_cond.notify_all()
+                atomic_json(output_dir / "navigation-result.json", report)
+        return report
+
+    def _persist_manual_case(self, task: dict, case_dir: Path, report: dict, settings) -> str:
+        """半自动结果落库：截图发布为 captured；不合格记录原因；跳过留待检查。"""
+        from .materials import REJECTION_REASONS
+
+        binding = self.store.material_binding(
+            str(Path(task["source_path"]).expanduser().resolve().parent.parent)) or {}
+        pages = sorted(case_dir.glob("page-*.png"), key=lambda path: int(path.stem.split("-")[1]))
+        if report.get("capture", {}).get("status") == "staged" and pages:
+            staging = self._staging_dir(settings.output_dir, task, "manual-" + uuid.uuid4().hex[:8])
+            staging.mkdir(parents=True, exist_ok=False, mode=0o700)
+            try:
+                for page in pages:
+                    shutil.copy2(page, staging / page.name)
+                warning = report.get("wechat_return", {}).get("status") != "ready"
+                message = ("已保存人工截图；窗口清理未确认，不影响本店结果" if warning
+                           else "已保存人工滚动截图；覆盖完整性待复核")
+                self._publish_store_output(settings.output_dir, task, staging,
+                                           batch_id=binding.get("batch_id", ""), message=message)
+                return "captured"
+            finally:
+                if staging.exists():
+                    shutil.rmtree(staging, ignore_errors=True)
+        decision = report.get("manual_decision") or {}
+        if decision.get("type") == "reject":
+            reason = decision.get("reason") if decision.get("reason") in REJECTION_REASONS else "other"
+            detail = str(decision.get("detail") or "").strip()[:200]
+            reject_evidence = ""
+            source = Path(str(report.get("evidence") or ""))
+            if source.is_file():
+                evidence_dir = self.store.path.parent / "rejection-evidence"
+                evidence_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                destination = evidence_dir / f"{task['id']}.png"
+                shutil.copyfile(source, destination)
+                os.chmod(destination, 0o600)
+                reject_evidence = destination.name
+            message = f"人工判定不合格：{REJECTION_REASONS.get(reason, reason)}"
+            self.store.update(task["id"], status="needs_review", stage="manual_rejected",
+                              message=message,
+                              error_code="manual_rejected", reject_reason=reason, reject_detail=detail,
+                              rejected_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                              reject_evidence=reject_evidence)
+            self.store.event("人工判定不合格", "warning", task["id"])
+            self._archive_unqualified(task, "needs_review", "manual_rejected", message, "manual_rejected")
+            return "unqualified"
+        skip = decision.get("type") == "skip"
+        message = ("人工跳过，留待检查" if skip
+                   else (report.get("runtime_error") or "半自动采集未完成，留待检查"))[:500]
+        self._persist_task_result(task, case_dir, "needs_review",
+                                  "manual_skipped" if skip else "manual_failed",
+                                  message, "manual_skipped" if skip else (
+                                      report.get("runtime_code") or "manual_runtime"))
+        return "needs_review"
 
     def _run_gui_agent_case(self, task: dict, settings, profile: dict, output_dir: Path,
                             model: TrialModel, *, automatic: bool, capture_dir: Path, trial: bool = False) -> dict:
@@ -1630,6 +2067,12 @@ class UiPathRunner:
             report["agent_reason"] = reason
             report["rejection_code"] = exc.code
             report["navigation"] = {"outcome": "unqualified", "reason": reason, "source": "wechat_preview"}
+            if last_frame:
+                # 二维码入口缺失同样是基于当前画面下的结论，保留这一帧供人工复核。
+                try:
+                    report["navigation"]["frame"] = str(Path(last_frame["path"]).relative_to(output_dir))
+                except ValueError:
+                    report["navigation"]["frame"] = str(last_frame["path"])
             report["runtime_status"] = "ok"
         except (TrialProtocolError, NeedsReview, RunnerTerminated, RunnerPaused, RobotProtocolError,
                 RobotCommandError, RobotTimeout) as exc:
@@ -1773,6 +2216,7 @@ class UiPathRunner:
                 self._deadline = time.monotonic() + settings.capture.max_task_seconds
                 status, stage, message = "needs_review", "uipath_error", "执行未完成，需人工检查"
                 failure_code = ""
+                reject_evidence = ""
                 safe_to_continue = False
                 terminated = False
                 try:
@@ -1784,6 +2228,7 @@ class UiPathRunner:
                 except AgentUnqualified as exc:
                     failure_code = exc.code or "agent_unqualified"
                     stage, message = failure_code, str(exc)[:500]
+                    reject_evidence = getattr(exc, "evidence", "")
                 except RunnerTerminated as exc:
                     stage, message, terminated, failure_code = "terminated", str(exc), True, "terminated"
                 except RunnerPaused as exc:
@@ -1811,7 +2256,8 @@ class UiPathRunner:
                     else:
                         self.store.event(message, task_id=task["id"])
                 else:
-                    self._persist_task_result(task, output_dir, status, stage, message, failure_code)
+                    self._persist_task_result(task, output_dir, status, stage, message, failure_code,
+                                              evidence=reject_evidence)
                     if profile["mode"] == "automatic":
                         self._deadline = 0
                         resume_safe = not terminated and stage not in {"paused", "uipath_timeout"}
@@ -1857,6 +2303,13 @@ class UiPathRunner:
                     # 不阻塞整批：本店已落到待检查/不合格，继续下一家。
                     self.store.event("当前门店未完成且未能确认安全回到文件传输助手；已记为待检查，继续下一家",
                                      "warning", task["id"])
+                if self._wechat_return_warning:
+                    # 本店结果已经发布；下一家的起点无法确认，停在本店而不是丢弃结果继续猜。
+                    run_status, run_message = "blocked", self._wechat_return_warning
+                    self.store.update_run(self.run_id, status=run_status, current_index=next_index,
+                                          current_task_id=task["id"], message=run_message)
+                    self.store.event(run_message, "warning", task["id"])
+                    break
                 if self.pause_event.is_set() and absolute_index + 1 < start_index + len(task_ids):
                     run_status, run_message = "paused", "当前门店已处理，下一家尚未开始"
                     self.store.update_run(self.run_id, status=run_status, current_index=absolute_index + 1,
@@ -2022,6 +2475,7 @@ class UiPathRunner:
 
     def _run_task(self, task: dict, settings, profile: dict, output_dir: Path, model: TrialModel) -> None:
         # 证据留在本次私有运行目录；发布事务只接收连续编号的菜单页。
+        self._wechat_return_warning = ""
         evidence_dir = self.run_directory / "gui-agent" / output_dir.name
         evidence_dir.mkdir(parents=True, mode=0o700)
         automatic = profile["mode"] == "automatic"
@@ -2031,13 +2485,24 @@ class UiPathRunner:
         if report["runtime_status"] != "ok":
             raise NeedsReview(report["runtime_error"], "agent_runtime")
         if report["agent_outcome"] == "unqualified":
-            raise AgentUnqualified(report["agent_reason"], report.get("rejection_code", ""))
+            frame = (report.get("navigation") or {}).get("frame", "")
+            evidence = str(output_dir / frame) if frame and not Path(frame).is_absolute() else frame
+            raise AgentUnqualified(report["agent_reason"], report.get("rejection_code", ""), evidence)
         if report["agent_outcome"] == "needs_review":
             raise NeedsReview(report["agent_reason"], "agent_needs_review")
         if report["capture_status"] != "staged":
             raise NeedsReview("GUI Agent 未交接可发布的菜单截图", "agent_runtime")
         if automatic:
-            self._return_to_wechat(profile, output_dir, settings.capture.settle_seconds)
+            try:
+                self._return_to_wechat(profile, output_dir, settings.capture.settle_seconds)
+            except (RunnerPaused, RunnerTerminated):
+                raise
+            except Exception as exc:
+                # 截图已成功交接；关窗/回微信校验失败只影响下一家的起点，
+                # 不能因此把本店已经采到的截图丢掉。交给 _worker 发布后再停批。
+                self._wechat_return_warning = (
+                    f"截图已保存，但未能确认微信已回到文件传输助手（{type(exc).__name__}）；本批在本店后停止")
+                self.store.event(self._wechat_return_warning, "warning", task["id"])
         # 成功门店的过程截图不立即删除，保留一天供复核；由 _prune_run_evidence 统一按时间与容量回收。
 
     @staticmethod
@@ -2134,16 +2599,41 @@ class UiPathRunner:
             raise NeedsReview("仍有小程序窗口未关闭，未确认安全返回微信", "wechat_context_lost")
 
     def _persist_task_result(self, task: dict, output_dir: Path, status: str, stage: str, message: str,
-                             code: str = "") -> None:
+                             code: str = "", evidence: str = "") -> None:
         code = code or classify_failure(stage, message)
         # Agent 的原因是给人阅读的证据；只在收到明确业务终态时创建不合格记录。
         reject = {}
         reject_reason = {"agent_unqualified": "other", QrEntryUnavailable.code: "invalid_qr"}.get(code, "")
+        if status != "captured" and not reject_reason and self._has_published_output(task["id"]):
+            # 本次重跑失败不能覆盖此前已发布的有效截图：同一 run 恢复时可能重复处理门店。
+            # 保留 captured 事实，失败原因只写入消息与事件，避免“有输出却显示需检查”。
+            preserved = f"本次重跑未完成，保留此前已发布截图（{message[:200]}）"
+            try:
+                self.store.update(task["id"], status="captured", stage="captured",
+                                  message=preserved, error_code="")
+                atomic_json(output_dir / "result.json", {"task_id": task["id"], "status": "captured",
+                                                        "stage": "captured", "message": preserved,
+                                                        "error_code": "", "reject_reason": ""})
+                self.store.event(preserved, "warning", task["id"])
+            except Exception:
+                self.store.event("无法保留已发布结果状态；请检查任务输出目录", "error", task["id"])
+            return
         if reject_reason:
+            # 判定截图复制到独立证据目录，运行目录清理后仍可复核；同一任务重跑时覆盖为最新判断。
+            reject_evidence = ""
+            source = Path(evidence) if evidence else None
+            if source and source.is_file():
+                evidence_dir = self.store.path.parent / "rejection-evidence"
+                evidence_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                destination = evidence_dir / f"{task['id']}.png"
+                shutil.copyfile(source, destination)
+                os.chmod(destination, 0o600)
+                reject_evidence = destination.name
             reject = {
                 "reject_reason": reject_reason,
                 "reject_detail": message[:200],
                 "rejected_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "reject_evidence": reject_evidence,
             }
         try:
             self.store.update(task["id"], status=status, stage=stage, message=message,
@@ -2154,14 +2644,24 @@ class UiPathRunner:
             self.store.event(message, "warning" if status != "captured" else "info", task["id"])
         except Exception:
             self.store.event("无法持久化 UiPath 运行结果；请检查当前任务输出目录", "error", task["id"])
-        # 不合格门店把原始店名与原图复制到本地不合格目录；暂停/终止不是门店结论，不归档。
-        if status != "captured" and stage not in {"paused", "terminated", "output_publish_error"}:
+        # 只有门店级不合格结论才归档；技术失败、跳过、暂停仍在待检查，不能占用不合格目录。
+        if reject_reason:
             self._archive_unqualified(task, status, stage, message, code)
 
     def _archive_unqualified(self, task: dict, status: str, stage: str, message: str, code: str) -> None:
-        root = self.configs.load().unqualified_dir.strip()
+        root = str(getattr(self.configs.load(), "unqualified_dir", "") or "").strip()
         if not root:
             return
+        # 同一门店先前成功采过时，旧合格目录要让位，两个目录不能同时列出这家店。
+        previous = str(task.get("output_dir") or "").strip()
+        if previous:
+            try:
+                retired = retire_store_dir(previous)
+                if retired:
+                    self.store.event(f"旧合格目录已移入历史：{retired}", "info", task["id"])
+            except OSError as exc:
+                self.store.event(f"旧合格目录移入历史失败（{type(exc).__name__}）：{str(exc)[:200]}",
+                                 "warning", task["id"])
         try:
             destination = archive_unqualified(
                 root, Path(task["source_path"]).parent, task["source_name"],
@@ -2452,6 +2952,16 @@ class UiPathRunner:
                 raise
         if had_previous and backup.exists():
             shutil.rmtree(backup, ignore_errors=True)
+        # 采集成功是当前结论：旧的不合格归档移入历史，避免同一门店同时出现在两个结果目录。
+        reject_root = str(getattr(self.configs.load(), "unqualified_dir", "") or "").strip()
+        if reject_root:
+            try:
+                retired = retire_store_dir(unqualified_store_dir(reject_root, task["source_name"]))
+                if retired:
+                    self.store.event(f"旧不合格归档已移入历史：{retired}", "info", task["id"])
+            except OSError as exc:
+                self.store.event(f"旧不合格归档移入历史失败（{type(exc).__name__}）：{str(exc)[:200]}",
+                                 "warning", task["id"])
         return destination
 
     def recover_publishes(self) -> None:
@@ -2475,6 +2985,12 @@ class UiPathRunner:
                 task = self.store.get(task_id)
                 if committed:
                     self.store.complete_capture(task_id, destination, "已完成截图发布（服务恢复后确认）")
+                    reject_root = str(getattr(self.configs.load(), "unqualified_dir", "") or "").strip()
+                    if reject_root:
+                        try:
+                            retire_store_dir(unqualified_store_dir(reject_root, task["source_name"]))
+                        except OSError:
+                            pass
                     if backup.exists():
                         shutil.rmtree(backup) if backup.is_dir() and not backup.is_symlink() else backup.unlink()
                 else:

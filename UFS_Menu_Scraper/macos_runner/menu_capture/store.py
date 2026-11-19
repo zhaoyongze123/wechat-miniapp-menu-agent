@@ -46,7 +46,7 @@ class TaskStore:
                     id TEXT PRIMARY KEY, mode TEXT NOT NULL, status TEXT NOT NULL,
                     task_ids TEXT NOT NULL, current_index INTEGER NOT NULL DEFAULT 0,
                     current_task_id TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, name TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS run_actions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL,
@@ -66,13 +66,19 @@ class TaskStore:
             for column in ("material_version_id", "material_batch_id", "material_version", "material_snapshot"):
                 if column not in {row["name"] for row in db.execute("PRAGMA table_info(runs)")}:
                     db.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            # 本轮采集模式：auto=全自动 Agent，manual=半自动人工；空值代表历史批次。
+            if "capture_mode" not in {row["name"] for row in db.execute("PRAGMA table_info(runs)")}:
+                db.execute("ALTER TABLE runs ADD COLUMN capture_mode TEXT NOT NULL DEFAULT ''")
+            # 任务名称：绑定批次时自动取批次名，跨批次重跑由用户起名；历史记录为空时按旧逻辑回退。
+            if "name" not in {row["name"] for row in db.execute("PRAGMA table_info(runs)")}:
+                db.execute("ALTER TABLE runs ADD COLUMN name TEXT NOT NULL DEFAULT ''")
             if "inherited_from" not in {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}:
                 db.execute("ALTER TABLE tasks ADD COLUMN inherited_from TEXT NOT NULL DEFAULT ''")
             task_columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}
             # 历史归集：归档后不再进入不合格清单，但保留原始记录可追溯。
             if "archived_at" not in task_columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN archived_at TEXT NOT NULL DEFAULT ''")
-            for column in ("reject_reason", "reject_detail", "rejected_at"):
+            for column in ("reject_reason", "reject_detail", "rejected_at", "reject_evidence", "reject_reviewed_at"):
                 if column not in task_columns:
                     db.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
             if "source_key" not in task_columns:
@@ -274,6 +280,7 @@ class TaskStore:
                 )
                 LEFT JOIN material_batches b ON b.id=br.material_batch_id
                 WHERE t.status IN ('needs_review','needs_retry','error','blocked')
+                  AND COALESCE(t.reject_reason,'')=''
                   AND COALESCE(t.archived_at,'')=''
                   AND (b.id IS NULL OR b.deleted_at='')
                 ORDER BY t.updated_at DESC,t.id
@@ -321,8 +328,21 @@ class TaskStore:
                 return task
         return None
 
+    def task_material_binding(self, task_id: str) -> dict:
+        """返回任务最近一次绑定素材批次的运行信息；未绑定返回空字段。"""
+        with self.connect() as db:
+            row = db.execute("""
+                SELECT r.material_batch_id AS batch_id, b.name AS batch_name
+                FROM run_actions a JOIN runs r ON r.id=a.run_id
+                LEFT JOIN material_batches b ON b.id=r.material_batch_id
+                WHERE a.task_id=? AND r.material_batch_id IS NOT NULL AND r.material_batch_id<>''
+                ORDER BY a.id DESC LIMIT 1
+            """, (task_id,)).fetchone()
+        return dict(row) if row else {"batch_id": "", "batch_name": ""}
+
     def update(self, task_id: str, **changes) -> None:
-        allowed = {"status", "stage", "message", "output_dir", "reject_reason", "reject_detail", "rejected_at", "error_code"}
+        allowed = {"status", "stage", "message", "output_dir", "reject_reason", "reject_detail", "rejected_at",
+                   "reject_evidence", "reject_reviewed_at", "error_code"}
         if not changes or not set(changes) <= allowed:
             raise ValueError("无效的任务状态字段")
         if changes.get("status") == "captured":
@@ -330,6 +350,8 @@ class TaskStore:
             changes.setdefault("reject_reason", "")
             changes.setdefault("reject_detail", "")
             changes.setdefault("rejected_at", "")
+            changes.setdefault("reject_evidence", "")
+            changes.setdefault("reject_reviewed_at", "")
             # 下一轮成功采集后，旧失败原因不能继续留在任务行上。
             changes.setdefault("error_code", "")
         changes["updated_at"] = now()
@@ -339,13 +361,14 @@ class TaskStore:
                 (*changes.values(), task_id),
             )
 
-    def create_run(self, run_id: str, mode: str, task_ids: list[str], message: str = "批次已启动", *, material: dict | None = None) -> dict:
+    def create_run(self, run_id: str, mode: str, task_ids: list[str], message: str = "批次已启动", *, material: dict | None = None,
+                   capture_mode: str = "", name: str = "") -> dict:
         stamp = now()
         with self.connect() as db:
             db.execute(
-                "INSERT INTO runs(id,mode,status,task_ids,current_index,current_task_id,message,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO runs(id,mode,status,task_ids,current_index,current_task_id,message,created_at,updated_at,capture_mode,name) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, mode, "running", json.dumps(task_ids, ensure_ascii=False), 0,
-                 task_ids[0] if task_ids else "", message, stamp, stamp),
+                 task_ids[0] if task_ids else "", message, stamp, stamp, capture_mode, name),
             )
             if material:
                 db.execute("UPDATE runs SET material_version_id=?,material_batch_id=?,material_version=?,material_snapshot=? WHERE id=?",
@@ -380,6 +403,22 @@ class TaskStore:
             row = db.execute("SELECT name FROM material_batches WHERE id=?", (batch_id,)).fetchone()
         return (row["name"] or "") if row else ""
 
+    def default_run_name(self, task_ids: list[str]) -> str:
+        """未指定任务名时的默认值：同一素材批次沿用批次名+版本，跨批次按重跑时间命名。"""
+        bindings: list[tuple[str, str]] = []
+        for task_id in task_ids:
+            task = self.get(task_id)
+            if not task:
+                continue
+            snapshot = Path(task["source_path"]).resolve().parent.parent
+            binding = self.material_binding(str(snapshot))
+            if binding:
+                bindings.append((binding.get("batch_name") or "", binding.get("version") or ""))
+        unique = list(dict.fromkeys(bindings))
+        if len(unique) == 1 and unique[0][0]:
+            return " · ".join(value for value in unique[0] if value)
+        return "待检查重跑 · " + datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
+
     def complete_capture(self, task_id: str, destination: Path, message: str) -> None:
         """同一结果路径替换后，旧二维码版本不能再读取新结果。"""
         path = str(destination)
@@ -399,7 +438,7 @@ class TaskStore:
             )
             db.execute(
                 """UPDATE tasks SET status='captured',stage='captured',message=?,output_dir=?,
-                    error_code='',reject_reason='',reject_detail='',rejected_at='',updated_at=? WHERE id=?""",
+                    error_code='',reject_reason='',reject_detail='',rejected_at='',reject_reviewed_at='',updated_at=? WHERE id=?""",
                 (message, path, stamp, task_id),
             )
             db.execute("DELETE FROM publish_transactions WHERE task_id=?", (task_id,))

@@ -126,6 +126,8 @@
     }
     .debug-log-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;background:#f6f9f7;border:1px solid var(--line);border-radius:8px}.debug-log-summary span{font-size:11px;color:var(--muted)}
     .debug-block{margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:#fbfcfb}.debug-block>summary{font-size:11px;color:#52615c;font-weight:650;cursor:pointer}.debug-json{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;margin:8px 0 0;font:10px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#34413d}.debug-expired{margin:8px 0;padding:8px 10px;border-radius:7px;background:#f5f6f5;color:#77817d;font-size:11px}.debug-run-export{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin:8px 0}.debug-run-export[hidden]{display:none}.debug-run-export select{min-width:150px;max-width:250px;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px 10px;color:var(--ink);font-size:12px}
+  .quality-row.is-visited{background:#f5f9f7}
+    .quality-row.is-active{background:#e9f5f0;box-shadow:inset 3px 0 0 var(--teal,#24856f)}
   </style>
   <link rel="stylesheet" href="/assets/workspace.css">
   <link rel="stylesheet" href="/assets/model-usage.css">
@@ -159,7 +161,7 @@
       <section class="page active" id="page-overview">
         <div class="card run-card workbench-run">
           <div class="run-top"><div><div class="run-title"><h2 id="run-heading">采集运行</h2><span class="run-state" id="run-state">等待选择任务</span></div><p class="card-desc" id="run-instruction"></p></div>
-            <div class="run-controls"><button class="btn queue-toggle" id="queue-toggle" type="button" aria-expanded="false" aria-controls="queue-panel">执行队列</button><button class="btn" type="button" data-go="materials">导入素材</button><button class="btn" id="scan-btn" type="button">扫描输入目录</button><button class="btn btn-primary" id="start-btn" type="button" disabled aria-disabled="true">开始采集</button><button class="btn" id="resume-btn" type="button" hidden>恢复批次</button><button class="btn" id="stop-btn" type="button" disabled>请求暂停</button><button class="btn btn-danger" id="terminate-btn" type="button" disabled>终止批次</button></div>
+            <div class="run-controls"><div class="capture-mode" id="capture-mode" role="radiogroup" aria-label="采集模式"><button class="btn capture-mode-btn active" type="button" data-capture-mode="auto" aria-pressed="true">全自动 Agent</button><button class="btn capture-mode-btn" type="button" data-capture-mode="manual" aria-pressed="false">半自动人工</button></div><select id="workbench-scope" class="workbench-scope" aria-label="批次范围"><option value="current">当前素材</option><option value="all">全部批次</option></select><button class="btn queue-toggle" id="queue-toggle" type="button" aria-expanded="false" aria-controls="queue-panel">执行队列</button><button class="btn" type="button" data-go="materials">导入素材</button><button class="btn" id="scan-btn" type="button">扫描输入目录</button><button class="btn btn-primary" id="start-btn" type="button" disabled aria-disabled="true">开始采集</button><button class="btn" id="resume-btn" type="button" hidden>恢复批次</button><button class="btn" id="stop-btn" type="button" disabled>请求暂停</button><button class="btn btn-danger" id="terminate-btn" type="button" disabled>终止批次</button></div>
           </div>
           <p class="card-desc" id="active-material-release" aria-live="polite"></p>
           <div class="run-strip" id="run-strip" aria-live="polite" hidden>
@@ -169,12 +171,22 @@
             <p id="run-strip-message"></p>
           </div>
           <div class="checklist" id="preflight-list"></div><div class="check-error" id="preflight-error"></div>
-          <div class="current-task" id="current-task"><span class="label">当前门店 · <span id="current-stage"></span></span><strong id="current-name"></strong><span id="current-id"></span></div><div class="run-hint" id="robot-run-help" style="overflow-wrap:anywhere"></div>
+          <div class="current-task" id="current-task"><span class="label">当前门店 · <span id="current-stage"></span></span><strong id="current-name"></strong><span id="current-id"></span></div>
+          <div class="manual-panel" id="manual-panel" hidden>
+            <div class="manual-head"><span class="label">半自动人工 · <span id="manual-progress">0 / 0</span></span><strong id="manual-name">—</strong><span id="manual-stage" class="manual-stage"></span></div>
+            <div class="manual-actions">
+              <button class="btn btn-primary" id="manual-capture" type="button" disabled>开始截图 <kbd>F8</kbd></button>
+              <div class="manual-reject"><select id="manual-reason" aria-label="不合格原因" disabled><option value="not_ordering">非点餐码</option><option value="qr_external_web">二维码指向外部网页（非小程序）</option><option value="store_closed">门店已关店 / 停业</option><option value="menu_unavailable">门店未配置菜单 / 无可用菜品</option><option value="blur">图片模糊 / 无法识别</option><option value="invalid_qr">二维码无效</option><option value="store_mismatch">门店信息不匹配</option><option value="miniapp_unavailable">小程序到期或未绑定</option><option value="scan_order_unsupported">门店不支持扫码点餐</option><option value="duplicate">重复素材</option><option value="other">其他原因</option></select><button class="btn btn-danger" id="manual-reject-btn" type="button" disabled>不合格 <kbd>F9</kbd></button></div>
+              <button class="btn" id="manual-skip" type="button" disabled>跳过</button>
+            </div>
+            <p class="manual-last" id="manual-last" aria-live="polite"></p>
+          </div>
+          <div class="run-hint" id="robot-run-help" style="overflow-wrap:anywhere"></div>
           <div class="stats workbench-stats"><div class="stat"><span>待处理</span><strong id="count-pending">—</strong></div><div class="stat"><span>运行中</span><strong id="count-running">—</strong></div><div class="stat"><span>成功</span><strong id="count-completed">—</strong></div><div class="stat"><span>不合格</span><strong id="count-rejected">—</strong></div><div class="stat"><span>需人工审核</span><strong id="count-attention">—</strong></div></div>
         </div>
         <div class="workbench-grid section-gap">
           <section class="card task-browser" aria-label="门店素材列表">
-            <div class="table-head"><div><h2>门店列表</h2><p class="card-desc"></p></div><button class="btn" type="button" data-go="settings">设置</button></div>
+            <div class="table-head"><div><h2 class="stat-tip-host" tabindex="0">门店列表<span id="store-stats-tip" class="stat-tip" role="tooltip"></span></h2><p class="card-desc"></p></div><button class="btn" type="button" data-go="settings">设置</button></div>
             <div class="task-toolbar"><input id="task-search" type="search" placeholder="搜索门店或来源图片" aria-label="搜索门店或来源图片"><select id="task-filter" aria-label="按状态筛选"><option value="all">全部状态</option><option value="pending">待处理</option><option value="running">运行中</option><option value="captured">成功</option><option value="rejected">不合格</option><option value="review">需人工审核</option></select><select id="task-sort" aria-label="列表排序"><option value="source">按门店名称</option><option value="recent">按最近更新</option><option value="status">按状态</option></select></div>
             <div class="robot-task-toolbar"><label class="robot-task-select-all"><input id="robot-task-select-all" type="checkbox">全选当前列表</label><span id="robot-task-count" class="robot-task-count">执行队列 0 家</span></div>
             <div class="task-columns" aria-hidden="true"><span></span><span>门店 / 素材</span><span>状态</span><span class="task-time-heading">更新时间</span><span></span></div>
@@ -189,9 +201,11 @@
           </aside>
         </div>
         <button type="button" class="queue-backdrop" id="queue-backdrop" hidden aria-label="关闭执行队列"></button>
-        <div id="task-drawer" class="task-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden><div class="drawer-backdrop" data-drawer-close></div><section class="drawer-content"><header><div><p class="eyebrow">门店详情</p><h2 id="drawer-title">门店</h2></div><div class="drawer-head-actions"><button class="btn" type="button" id="drawer-review" hidden>改为待检查</button><button class="btn" type="button" data-drawer-close aria-label="关闭详情">关闭</button></div></header><button class="drawer-nav prev" id="drawer-prev" type="button" aria-label="上一家门店" title="上一家（←）">‹</button><button class="drawer-nav next" id="drawer-next" type="button" aria-label="下一家门店" title="下一家（→）">›</button><div class="drawer-body"><div id="drawer-status"></div><p id="drawer-message" class="drawer-message"></p><div id="drawer-rejection" class="quality-rejection-inline" hidden></div><div class="drawer-meta"><span>来源二维码</span><code id="drawer-source"></code><span>截图目录</span><code id="drawer-output"></code></div><details id="drawer-timeline"><summary>动作时间线</summary><div id="drawer-debug-runs" class="debug-run-export" hidden><select id="drawer-debug-run-select" aria-label="选择调试轮次"></select><a class="btn" id="drawer-debug-run-export" href="#" target="_blank" rel="noopener">导出调试包</a></div><button class="btn" id="drawer-load-actions" type="button">刷新记录</button><div id="drawer-actions"></div></details><div id="drawer-images" class="drawer-images"></div><div class="drawer-quality-actions"><button class="btn btn-danger" id="drawer-reject" type="button" hidden>标记不合格</button><button class="btn btn-primary" id="drawer-retry" type="button">重新采集此店</button></div></div></section></div>
-        <dialog id="task-rejection-dialog" aria-labelledby="task-rejection-title"><form id="task-rejection-form"><h2 id="task-rejection-title">标记为不合格</h2><p id="task-rejection-store" class="card-desc"></p><label for="task-rejection-reason">不合格原因</label><select id="task-rejection-reason" required><option value="blur">图片模糊 / 无法识别</option><option value="invalid_qr">二维码无效</option><option value="store_mismatch">门店信息不匹配</option><option value="store_closed">门店已关店 / 停业</option><option value="miniapp_unavailable">小程序到期或未绑定</option><option value="scan_order_unsupported">门店不支持扫码点餐</option><option value="qr_external_web">二维码指向外部网页（非小程序）</option><option value="menu_unavailable">门店未配置菜单 / 无可用菜品</option><option value="duplicate">重复素材</option><option value="other">其他原因</option></select><label for="task-rejection-detail">补充说明</label><textarea id="task-rejection-detail" maxlength="200" rows="3"></textarea><p id="task-rejection-error" role="alert" class="card-desc" hidden></p><div class="quality-dialog-actions"><button class="btn" id="task-rejection-cancel" type="button">取消</button><button class="btn btn-danger" id="task-rejection-submit" type="submit">保存</button></div></form></dialog>
       </section>
+        <div id="task-drawer" class="task-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden><div class="drawer-backdrop" data-drawer-close></div><section class="drawer-content"><header><div><p class="eyebrow">门店详情</p><h2 id="drawer-title">门店</h2></div><div class="drawer-head-actions"><button class="btn" type="button" id="drawer-review" hidden>改为待检查</button><button class="btn" type="button" data-drawer-close aria-label="关闭详情">关闭</button></div></header><button class="drawer-nav prev" id="drawer-prev" type="button" aria-label="上一家门店" title="上一家（←）">‹</button><button class="drawer-nav next" id="drawer-next" type="button" aria-label="下一家门店" title="下一家（→）">›</button><div class="drawer-body"><div id="drawer-status"></div><p id="drawer-message" class="drawer-message"></p><div id="drawer-evidence" class="drawer-images"></div><div id="drawer-rejection" class="quality-rejection-inline" hidden></div><div class="drawer-meta"><span>来源二维码</span><code id="drawer-source"></code><span>截图目录</span><code id="drawer-output"></code></div><details id="drawer-timeline"><summary>动作时间线</summary><div id="drawer-debug-runs" class="debug-run-export" hidden><select id="drawer-debug-run-select" aria-label="选择调试轮次"></select><a class="btn" id="drawer-debug-run-export" href="#" target="_blank" rel="noopener">导出调试包</a></div><button class="btn" id="drawer-load-actions" type="button">刷新记录</button><div id="drawer-actions"></div></details><div id="drawer-images" class="drawer-images"></div><div class="drawer-quality-actions"><button class="btn" id="drawer-materials" type="button" hidden>打回素材清洗</button><button class="btn btn-danger" id="drawer-reject" type="button" hidden>标记不合格</button><button class="btn btn-primary" id="drawer-retry" type="button">重新采集此店</button></div></div></section></div>
+        <dialog id="task-rejection-dialog" aria-labelledby="task-rejection-title"><form id="task-rejection-form"><h2 id="task-rejection-title">标记为不合格</h2><p id="task-rejection-store" class="card-desc"></p><label for="task-rejection-reason">不合格原因</label><select id="task-rejection-reason" required><option value="blur">图片模糊 / 无法识别</option><option value="invalid_qr">二维码无效</option><option value="store_mismatch">门店信息不匹配</option><option value="store_closed">门店已关店 / 停业</option><option value="miniapp_unavailable">小程序到期或未绑定</option><option value="scan_order_unsupported">门店不支持扫码点餐</option><option value="not_ordering">非点餐码</option><option value="qr_external_web">二维码指向外部网页（非小程序）</option><option value="menu_unavailable">门店未配置菜单 / 无可用菜品</option><option value="duplicate">重复素材</option><option value="other">其他原因</option></select><label for="task-rejection-detail">补充说明</label><textarea id="task-rejection-detail" maxlength="200" rows="3"></textarea><p id="task-rejection-error" role="alert" class="card-desc" hidden></p><div class="quality-dialog-actions"><button class="btn" id="task-rejection-cancel" type="button">取消</button><button class="btn btn-danger" id="task-rejection-submit" type="submit">保存</button></div></form></dialog>
+        <dialog id="run-name-dialog" aria-labelledby="run-name-title"><form id="run-name-form"><h2 id="run-name-title">任务名称</h2><p id="run-name-copy" class="card-desc">跨批次执行的名称会显示在任务中心与历史记录中，可按需修改。</p><label for="run-name-input">任务名称</label><input id="run-name-input" maxlength="80" required autocomplete="off"><div class="quality-dialog-actions"><button class="btn" id="run-name-cancel" type="button">取消</button><button class="btn btn-primary" id="run-name-confirm" type="submit">开始采集</button></div></form></dialog>
+        <div id="rejection-drawer" class="task-drawer" role="dialog" aria-modal="true" aria-labelledby="rejection-drawer-title" hidden><div class="drawer-backdrop" data-rejection-close></div><section class="drawer-content"><header><div><p class="eyebrow">不合格详情</p><h2 id="rejection-drawer-title">门店</h2></div><div class="drawer-head-actions"><span class="quality-source" id="rejection-drawer-source"></span><button class="btn" type="button" data-rejection-close aria-label="关闭不合格详情">关闭</button></div></header><button class="drawer-nav prev" id="rejection-prev" type="button" aria-label="上一条不合格记录" title="上一条（←）">‹</button><button class="drawer-nav next" id="rejection-next" type="button" aria-label="下一条不合格记录" title="下一条（→）">›</button><div class="drawer-body"><div class="drawer-meta"><span>批次</span><code id="rejection-drawer-batch"></code><span>原因</span><code id="rejection-drawer-reason"></code><span>时间</span><code id="rejection-drawer-time"></code></div><p id="rejection-drawer-message" class="drawer-message"></p><div id="rejection-drawer-images" class="drawer-images"></div><div class="drawer-quality-actions" id="rejection-drawer-actions"></div></div></section></div>
 
       <section class="page" id="page-rejections" aria-labelledby="rejections-heading">
         <div class="quality-overview">
@@ -205,7 +219,7 @@
             <div><h2 id="rejections-heading">不合格门店</h2><p class="card-desc">撤销或重新处理后，记录会从当前清单和导出中移除。</p></div>
             <div class="quality-actions"><button class="btn" id="quality-refresh" type="button">刷新</button><button class="btn btn-primary" id="quality-export" type="button">导出 Excel</button></div>
           </div>
-          <div class="quality-filters"><select id="quality-batch" class="quality-batch-filter" aria-label="筛选批次"><option value="all">全部批次</option></select><input id="quality-search" type="search" placeholder="搜索门店、批次或原因" aria-label="搜索不合格门店"><select id="quality-source" class="quality-source-filter"><option value="all">全部来源</option><option value="materials">素材清洗</option><option value="capture">采集任务</option></select><select id="quality-reason" class="quality-reason-filter"><option value="all">全部原因</option><option value="blur">图片模糊 / 无法识别</option><option value="invalid_qr">二维码无效</option><option value="store_mismatch">门店信息不匹配</option><option value="store_closed">门店已关店 / 停业</option><option value="miniapp_unavailable">小程序到期或未绑定</option><option value="scan_order_unsupported">门店不支持扫码点餐</option><option value="qr_external_web">二维码指向外部网页（非小程序）</option><option value="menu_unavailable">门店未配置菜单 / 无可用菜品</option><option value="duplicate">重复素材</option><option value="other">其他原因</option></select></div>
+          <div class="quality-filters"><select id="quality-batch" class="quality-batch-filter" aria-label="筛选批次"><option value="all">全部批次</option></select><input id="quality-search" type="search" placeholder="搜索门店、批次或原因" aria-label="搜索不合格门店"><select id="quality-review" class="quality-source-filter" aria-label="筛选人工确认状态"><option value="all">全部确认状态</option><option value="reviewed">已人工确认</option><option value="pending">未人工确认</option></select><select id="quality-source" class="quality-source-filter"><option value="all">全部来源</option><option value="materials">素材清洗</option><option value="capture">采集任务</option></select><select id="quality-reason" class="quality-reason-filter"><option value="all">全部原因</option><option value="blur">图片模糊 / 无法识别</option><option value="invalid_qr">二维码无效</option><option value="store_mismatch">门店信息不匹配</option><option value="store_closed">门店已关店 / 停业</option><option value="miniapp_unavailable">小程序到期或未绑定</option><option value="scan_order_unsupported">门店不支持扫码点餐</option><option value="not_ordering">非点餐码</option><option value="qr_external_web">二维码指向外部网页（非小程序）</option><option value="menu_unavailable">门店未配置菜单 / 无可用菜品</option><option value="duplicate">重复素材</option><option value="other">其他原因</option></select></div>
           <div class="quality-table-head"><span>门店</span><span>批次 / 阶段</span><span>原因</span><span>操作</span></div>
           <div id="quality-list" class="quality-list" aria-live="polite"><div class="empty">正在读取不合格记录…</div></div>
           <div class="quality-pager" id="quality-pager"></div>
@@ -288,7 +302,7 @@
         <div class="card section-gap materials-batch-bar">
           <div class="field materials-batch-field"><label for="materials-batch">当前批次</label><div class="materials-batch-control"><select id="materials-batch" disabled><option value="">选择或新建批次</option></select><button class="btn" id="materials-manage-batches" type="button">管理批次</button></div><div id="materials-current-description" class="card-desc"></div></div>
           <div class="field materials-release-field"><label for="materials-release-version">发布版本</label><div class="materials-batch-control"><select id="materials-release-version" disabled><option value="">暂无已发布版本</option></select><button class="btn" id="materials-activate-release" type="button" disabled>正在使用</button></div></div>
-          <div class="materials-batch-toolbar"><p class="card-desc" id="materials-release-info"></p><div class="materials-batch-actions"><button class="btn btn-primary" id="materials-analyze" type="button" disabled>开始分析</button><button class="btn" id="materials-accept-recommended" type="button" disabled>批量接受自动推荐</button><button class="btn btn-primary" id="materials-publish" type="button" disabled>发布已确认门店</button></div></div>
+          <div class="materials-batch-toolbar"><p class="card-desc" id="materials-release-info"></p><div class="materials-batch-actions"><button class="btn" id="materials-rework-open" type="button">全部批次返工</button><button class="btn btn-primary" id="materials-analyze" type="button" disabled>开始分析</button><button class="btn" id="materials-accept-recommended" type="button" disabled>批量接受自动推荐</button><button class="btn btn-primary" id="materials-publish" type="button" disabled>发布已确认门店</button></div></div>
           <div class="inline-error" id="materials-batch-error" role="alert" hidden></div>
           <dialog id="materials-release-dialog" aria-labelledby="materials-release-title">
             <form id="materials-release-form">
@@ -307,6 +321,21 @@
           </dialog>
         </div>
         <div class="materials-view-switch" role="group" aria-label="素材工作区视图"><button class="btn" id="materials-show-list" type="button" aria-pressed="true">门店列表</button><button class="btn" id="materials-show-review" type="button" aria-pressed="false">图片复核</button></div>
+        <dialog id="materials-rework-dialog" class="materials-rework-dialog" aria-labelledby="materials-rework-title">
+          <div class="materials-rework-shell">
+            <header><div><h2 id="materials-rework-title">全部批次返工</h2><p class="card-desc">跨批次查看待处理、不合格和已选码待发布；打回后在原批次重新选码，再一次统一发布。</p></div><button class="btn" id="materials-rework-close" type="button">关闭</button></header>
+            <div class="materials-rework-toolbar">
+              <div class="materials-rework-tabs" role="group" aria-label="返工筛选"><button class="btn active" type="button" data-rework-filter="all">全部</button><button class="btn" type="button" data-rework-filter="pending">待处理</button><button class="btn" type="button" data-rework-filter="rejected">不合格</button><button class="btn" type="button" data-rework-filter="unpublished">已选码待发布</button></div>
+              <input id="materials-rework-search" type="search" placeholder="搜索门店或批次" aria-label="搜索返工门店">
+              <label class="quality-select-all"><input id="materials-rework-select-all" type="checkbox">全选当前筛选</label>
+              <span class="card-desc" id="materials-rework-count">0 家</span>
+            </div>
+            <div class="inline-error" id="materials-rework-error" role="alert" hidden></div>
+            <div class="inline-success" id="materials-rework-success" role="status" hidden></div>
+            <div id="materials-rework-list" class="materials-rework-list" aria-live="polite"><div class="materials-placeholder">正在读取返工门店…</div></div>
+            <footer class="materials-rework-footer"><p class="card-desc" id="materials-rework-hint">勾选要发布的门店；未勾选的门店沿用上一版。</p><button class="btn btn-primary" id="materials-rework-publish" type="button" disabled>发布已处理门店</button></footer>
+          </div>
+        </dialog>
         <dialog id="materials-manage-dialog" class="materials-manage-dialog" aria-labelledby="materials-manage-title"><div class="materials-manage-shell"><header><div><h2 id="materials-manage-title">批次管理</h2><p class="card-desc">查看清洗批次及回收站中的批次。</p></div><button class="btn" id="materials-manage-close" type="button" aria-label="关闭">关闭</button></header><div class="materials-manage-tabs" role="tablist"><button type="button" role="tab" id="materials-tab-active" aria-selected="true">批次</button><button type="button" role="tab" id="materials-tab-trash" aria-selected="false">回收站</button></div><label class="visually-hidden" for="materials-manage-search">搜索批次</label><input id="materials-manage-search" type="search" placeholder="搜索批次名称或描述"><div id="materials-manage-error" class="inline-error" role="alert" hidden></div><div id="materials-manage-list" class="materials-manage-list" aria-live="polite"><div class="materials-placeholder">正在加载批次…</div></div></div></dialog>
         <dialog id="materials-edit-dialog" class="materials-dialog" aria-labelledby="materials-edit-title"><form id="materials-edit-form"><h2 id="materials-edit-title">编辑批次</h2><label for="materials-edit-name">批次名称</label><input id="materials-edit-name" required maxlength="80"><label for="materials-edit-description">描述</label><textarea id="materials-edit-description" maxlength="500" rows="4"></textarea><p id="materials-edit-error" class="inline-error" role="alert" hidden></p><div class="release-form-actions"><button class="btn" id="materials-edit-cancel" type="button">取消</button><button class="btn btn-primary" type="submit">保存</button></div></form></dialog>
         <dialog id="materials-action-dialog" class="materials-dialog" aria-labelledby="materials-action-title" aria-describedby="materials-action-copy"><form method="dialog"><h2 id="materials-action-title"></h2><p id="materials-action-copy" class="materials-confirm-copy"></p><div class="release-form-actions"><button class="btn" value="cancel" autofocus>取消</button><button class="btn btn-danger" id="materials-action-confirm" value="confirm">确认</button></div></form></dialog>
@@ -472,15 +501,19 @@
       'use strict';
       let TOKEN = '__CAPTURE_TOKEN__';
       const $ = (id) => document.getElementById(id);
-      const state = {config:null,status:null,connections:null,queueIds:[],visibleTaskIds:[],drawerTaskId:null,connectionsLoading:false,connectionActionRunning:false,connectionErrors:{},connectionRecoveryRunning:false,serviceDisconnected:false,configLoaded:false,polling:false,statusPollTimer:null,toastTimer:null};
-      let qualityRefreshTimer=null,qualityRequestSeq=0,qualityRefreshBusy=false;
+      const state = {config:null,status:null,connections:null,queueIds:[],visibleTaskIds:[],drawerTaskId:null,connectionsLoading:false,connectionActionRunning:false,connectionErrors:{},connectionRecoveryRunning:false,serviceDisconnected:false,configLoaded:false,polling:false,statusPollTimer:null,toastTimer:null,captureMode:'auto',scope:'all',scopeTasks:null,manualBusy:false};
+      let qualityRefreshTimer=null,qualityRequestSeq=0,qualityRefreshBusy=false,qualitySignature='',qualityExpanded=new Set();
       let reviewRefreshTimer=null,reviewRequestSeq=0,reviewRefreshBusy=false;
       const reviewSelected=new Set();
       const reviewBatchSelection=new Set();
       let reviewBatchOptions=[];
       let historyPage=1,historySeq=0,historyDialog=null;
       const LIST_PAGE_SIZE=100;
-      let qualityPage=1,reviewPage=1;
+      let qualityPage=1,reviewPage=1,reviewRecordsCache=[],reviewActiveId='';
+      // 已看过详情的门店：刷新页面后仍保留底色，方便区分处理进度。
+      const reviewVisitedIds=new Set((()=>{try{return JSON.parse(localStorage.getItem('review-visited')||'[]');}catch(error){return [];}})());
+      let qualityRecordsCache=[],qualityActiveKey='';
+      const rejectionVisitedIds=new Set((()=>{try{return JSON.parse(localStorage.getItem('rejection-visited')||'[]');}catch(error){return [];}})());
       function renderPager(hostId,page,pageCount,total,onChange){
         const host=$(hostId);if(!host)return;
         const prev=el('button','btn','上一页');prev.type='button';prev.disabled=page<=1;prev.addEventListener('click',()=>onChange(page-1));
@@ -696,13 +729,16 @@
         $('connection-dot').className=`status-dot ${running?'busy':'live'}`;$('connection-label').textContent=running?'采集中':'服务已连接';$('poll-clock').textContent=`同步于 ${new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
         $('sidebar-connection-label').textContent='本地服务已连接';
         const resumable=!!run&&['paused','blocked','interrupted'].includes(run.status);$('run-state').textContent=running?(RUN_LABELS[run?.status]||'运行中'):run?(RUN_LABELS[run.status]||'等待运行'):hasRobotSelection()?'可开始':'等待选择门店';$('run-state').className=`run-state ${running?'running':run?.status==='completed'?'done':''}`;
-        $('start-btn').textContent=s.launch_mode==='cli'?'开始采集':'准备采集任务';$('start-btn').title='按执行队列开始采集';$('run-instruction').textContent=running?'暂停会等当前门店处理结束，终止会在当前 UiPath 命令结束后生效。':'';
+        $('start-btn').textContent='开始批处理';$('start-btn').title='按当前范围勾选的门店，用选定模式开始采集';$('run-instruction').textContent=running?'暂停会等当前门店处理结束，终止会在当前动作结束后生效。':'先勾门店，再选「全自动 Agent」或「半自动人工」；开跑后本轮沿用该模式。';
         const trial=running&&s.current_task?.trial===true;
+        const captureMode=s?.run?.capture_mode||s?.current_task?.capture_mode||'';
+        if(running&&captureMode&&captureMode!==state.captureMode){state.captureMode=captureMode;syncCaptureModeButtons();}
+        const listTasks=state.scope==='all'&&Array.isArray(state.scopeTasks)?state.scopeTasks:tasks;
         const busy=!!state.runAction, phase=run?.status, single=(trial?s.current_task:run)?.mode==='attached';
-        $('run-heading').textContent=trial?(single?'GUI Agent 单店试验':'GUI Agent 批量试验'):run?(single?'单店采集':'批量采集'):'采集运行';
-        $('stop-btn').hidden=!running||single||trial;
+        $('run-heading').textContent=(run&&!trial&&run.name)||(running&&captureMode==='manual'?'半自动人工采集':running&&captureMode==='auto'?'全自动 Agent 采集':trial?(single?'GUI Agent 单店试验':'GUI Agent 批量试验'):run?(single?'单店采集':'批量采集'):'采集运行');
+        $('stop-btn').hidden=!running||single||(trial&&!captureMode);
         if(trial)$('run-state').textContent='运行中';
-        if(running&&(single||trial))$('run-instruction').textContent='终止会在当前 UiPath 动作结束后生效。';
+        if(running&&(single||trial))$('run-instruction').textContent=captureMode==='manual'?'人工进入菜单后按「开始截图」或 F8；不合格按 F9。暂停会在当前门店完成后生效。':'终止会在当前 UiPath 动作结束后生效。';
         $('stop-btn').disabled=busy||phase!=='running';
         $('stop-btn').textContent=phase==='pause_requested'?'暂停中':'本店完成后暂停';
         $('terminate-btn').hidden=!running&&!resumable;
@@ -710,9 +746,13 @@
         $('scan-btn').disabled=running||busy;
         const material=s.material_release;
         $('overview-output').textContent=s.batch_output_dir||'尚未配置';
-        const releaseText=material
-          ? ['当前采集素材',material.batch_name,material.version,`${material.store_count??tasks.length} 家`].filter(Boolean).join(' · ')
-          : '当前采集素材 · '+(s.input_name||'未设置输入目录');
+        // 跨批次重跑没有单一素材批次：按本轮真实范围展示，避免沿用旧批次名。
+        const crossRun=!!(run&&run.cross_batch);
+        const releaseText=crossRun
+          ? ['待检查重跑',`跨 ${run.batch_count} 个批次`,`${run.total} 家`].filter(Boolean).join(' · ')
+          : (material
+            ? ['当前采集素材',material.batch_name,material.version,`${material.store_count??tasks.length} 家`].filter(Boolean).join(' · ')
+            : '当前采集素材 · '+(s.input_name||'未设置输入目录'));
         $('active-material-release').replaceChildren(document.createTextNode(releaseText));
         const releaseBatchId=material?.batch_id||material?.material_batch_id;
         const releaseBadge=releaseBatchId?batchBadge(batchWorkflow.get(String(releaseBatchId))):null;
@@ -728,17 +768,13 @@
         strip.hidden=!run||trial;
         if(run&&!trial){
           strip.dataset.phase=phase||'';
-          const total=Array.isArray(run.task_ids)?run.task_ids.length:0;
-          const cursor=Math.max(0,Number(run.current_index)||0);
+          const total=Number(run.total)||(Array.isArray(run.task_ids)?run.task_ids.length:0);
           const saved=Math.min(total,Math.max(0,Number(run.captured)||0));
-          const byId=new Map(tasks.map(task=>[String(task.id),task]));
-          const currentTask=run.current_task_id?byId.get(String(run.current_task_id)):null;
-          // 百分比表示本轮已有结果的门店；需检查也算已处理，但不会被误读为成功采集。
-          const currentFailed=!running&&cursor<total&&currentTask&&isFail(currentTask);
-          const unqualified=Math.max(0,Number(run.unqualified)||0)+(currentFailed&&currentTask.reject_reason?1:0);
-          const review=Math.min(total-saved-unqualified,Math.max(0,Number(run.review)||0)+(currentFailed&&!currentTask.reject_reason?1:0));
-          const processed=Math.min(total,saved+unqualified+review);
-          const runningCount=running&&cursor<total?1:0;
+          const unqualified=Math.max(0,Number(run.unqualified)||0);
+          const review=Math.max(0,Number(run.review)||0);
+          // 已处理数以服务端 run_actions 统计为准：恢复/阻塞后游标会重置，不能再用游标。
+          const processed=Math.min(total,Math.max(Number(run.processed)||0,saved+unqualified+review));
+          const runningCount=running&&processed<total?1:0;
           const remaining=Math.max(0,total-processed-runningCount);
           const percent=total?Math.min(100,Math.round(processed/total*100)):0;
           $('run-strip-percent').textContent=`${percent}%`;
@@ -759,15 +795,92 @@
           $('run-strip-message').textContent=messages[phase]??run.message??'';
         }
         const current=s.current_task;$('current-task').classList.toggle('visible',!!current);if(current){$('current-name').textContent=current.source_name||'当前门店';$('current-stage').textContent=current.stage||'处理中';$('current-id').textContent=current.id?`任务 ${current.id}`:'';}
-        // 不合格 = 采集任务拒绝 + 素材清洗拒绝（服务端已按门店去重），与不合格清单同口径。
-        const taskRejected=(s.tasks||[]).filter(t=>t.reject_reason).length;
-        const rejectedCount=taskRejected+(Number(s.material_rejected)||0);
-        const attentionCount=Math.max(0,countStatuses(s,['needs_review','error','blocked','needs_retry'])-taskRejected);
-        $('count-pending').textContent=countStatuses(s,['pending']);$('count-running').textContent=countStatuses(s,['running']);$('count-completed').textContent=countStatuses(s,['captured']);$('count-rejected').textContent=rejectedCount;$('count-attention').textContent=attentionCount;
-        renderRobotTasks(tasks);renderActivity(s.events||[]);syncStartButton();
+        renderScopeStats(listTasks);renderManual(s,listTasks);
+        renderRobotTasks(listTasks);renderActivity(s.events||[]);syncStartButton();
       }
-      const rejectionLabels={blur:'图片模糊 / 无法识别',invalid_qr:'二维码无效',store_mismatch:'二维码门店不一致',store_closed:'门店已关店 / 停业',miniapp_unavailable:'小程序到期或未绑定',scan_order_unsupported:'门店不支持扫码点餐',qr_external_web:'二维码指向外部网页（非小程序）',menu_unavailable:'门店未配置菜单 / 无可用菜品',authorization_unavailable:'需要验证码 / 扫码授权',duplicate:'重复素材',other:'其他原因'};
-      function badgeFor(t){if(t.reject_reason)return el('span','badge badge-error','不合格');const cls=isActive(t)?'badge-running':isDone(t)?'badge-success':isFail(t)?'badge-error':'';return el('span','badge '+cls,TASK_STATUS_LABELS[t.status]||t.status||'未知');}
+      function renderScopeStats(tasks){
+        // 跨批次重跑：统计按本轮任务清单，而不是全库或当前发布批次。
+        const crossRun=state.status?.run;
+        if(crossRun&&crossRun.cross_batch){
+          $('count-pending').textContent=String(Math.max(0,(crossRun.total||0)-(crossRun.processed||0)));
+          $('count-running').textContent=state.status?.running?'1':'0';
+          $('count-completed').textContent=String(crossRun.captured||0);
+          $('count-rejected').textContent=String(crossRun.unqualified||0);
+          $('count-attention').textContent=String(crossRun.review||0);
+          renderStoreTip({qualified:crossRun.captured,rejected:crossRun.unqualified,review:crossRun.review,total:crossRun.total});
+          return;
+        }
+        // 统计与列表同源：全部批次范围用有效任务清单，当前素材范围用当前快照任务。
+        const taskRejected=tasks.filter(t=>t.reject_reason).length;
+        const materialRejected=Number((state.scope==='all'?state.status?.material_rejected_all:state.status?.material_rejected)||0);
+        const attention=Math.max(0,tasks.filter(t=>['needs_review','error','blocked','needs_retry'].includes(t.status)&&!t.reject_reason).length);
+        $('count-pending').textContent=tasks.filter(t=>t.status==='pending').length;
+        $('count-running').textContent=tasks.filter(t=>t.status==='running').length;
+        const qualified=tasks.filter(t=>t.status==='captured').length;
+        $('count-completed').textContent=qualified;
+        $('count-rejected').textContent=taskRejected+materialRejected;
+        $('count-attention').textContent=attention;
+        renderStoreTip({qualified,rejected:taskRejected+materialRejected,review:attention,total:tasks.length});
+      }
+      // 门店列表标题悬浮统计：与页面顶部统计条同口径，不另建一套计算。
+      function renderStoreTip({qualified,rejected,review,total}){
+        const tip=$('store-stats-tip');if(!tip)return;
+        tip.replaceChildren();
+        for(const [label,value] of [['合格',qualified],['不合格',rejected],['人工审核',review],['总数',total]]){
+          const row=el('b',''),name=el('span','',label),num=el('strong','',String(Number(value)||0));
+          row.append(name,num);tip.append(row);
+        }
+      }
+      function syncCaptureModeButtons(){
+        document.querySelectorAll('[data-capture-mode]').forEach(button=>{
+          const active=button.dataset.captureMode===state.captureMode;
+          button.classList.toggle('active',active);
+          button.setAttribute('aria-pressed',String(active));
+        });
+      }
+      function renderManual(s,running){
+        const manual=s?.manual||null;
+        const run=s?.run||null;
+        const manualRun=!!(run?.capture_mode==='manual'||s?.current_task?.capture_mode==='manual');
+        const resumable=run&&['paused','blocked','interrupted'].includes(run.status);
+        $('manual-panel').hidden=!(manualRun&&(running||resumable));
+        if($('manual-panel').hidden)return;
+        const waiting=!!manual?.waiting&&running;
+        $('manual-progress').textContent=manual?`${manual.index||0} / ${manual.total||0}`:'—';
+        $('manual-name').textContent=manual?.store_name||'等待下一家';
+        const labels={waiting_human:'等待人工进入菜单',capturing:'正在滚动截图',rejected:'已记录不合格',skipped:'已跳过',closed:'正在换店',opening:'正在扫码开店'};
+        $('manual-stage').textContent=labels[manual?.stage]||(manual?'':'等待批次开始');
+        $('manual-capture').disabled=!waiting||state.manualBusy;
+        $('manual-reject-btn').disabled=!waiting||state.manualBusy;
+        $('manual-skip').disabled=!waiting||state.manualBusy;
+        $('manual-reason').disabled=!waiting||state.manualBusy;
+        $('manual-last').textContent=manual?.last_result||'';
+      }
+      async function loadCaptureQueue(){
+        try{
+          const result=await api('/api/capture/queue?batch_ids=all');
+          state.scopeTasks=result.records||[];
+          if(state.status)renderStatus(state.status);
+        }catch(error){toast(error.message);}
+      }
+      async function manualAction(path,body){
+        if(state.manualBusy)return;
+        state.manualBusy=true;renderStatus(state.status);
+        try{
+          const result=await api(path,{method:'POST',body:JSON.stringify(body||{})});
+          if(result.status)renderStatus(result.status);
+        }catch(error){toast(error.message);}
+        finally{state.manualBusy=false;void poll();}
+      }
+      const rejectionLabels={blur:'图片模糊 / 无法识别',invalid_qr:'二维码无效',store_mismatch:'二维码门店不一致',store_closed:'门店已关店 / 停业',miniapp_unavailable:'小程序到期或未绑定',scan_order_unsupported:'门店不支持扫码点餐',not_ordering:'非点餐码',qr_external_web:'二维码指向外部网页（非小程序）',menu_unavailable:'门店未配置菜单 / 无可用菜品',authorization_unavailable:'需要验证码 / 扫码授权',duplicate:'重复素材',other:'其他原因'};
+      function badgeFor(t){if(t.reject_reason)return el('span','badge badge-error','不合格');const cls=isActive(t)?'badge-running':isDone(t)?'badge-success':t.status==='needs_retry'?'badge-warning':isFail(t)?'badge-error':'';return el('span','badge '+cls,TASK_STATUS_LABELS[t.status]||t.status||'未知');}
+      // 队列徽标按门店真实状态着色：只有 captured 是成功，需检查/需重试是提醒，错误/阻塞才是失败。
+      function queueBadge(item,{done,current}){
+        if(current)return el('span','badge badge-running','处理中');
+        if(!done)return el('span','badge','待处理');
+        const cls=item.status==='captured'?'badge-success':['needs_review','needs_retry'].includes(item.status)?'badge-warning':['error','blocked'].includes(item.status)?'badge-error':'';
+        return el('span','badge '+cls,TASK_STATUS_LABELS[item.status]||'已处理');
+      }
       function renderActivity(events){const target=$('overview-logs');target.replaceChildren();const latest=[...events].reverse();if(!latest.length){target.append(el('div','log-empty','暂无运行日志'));return;}for(const event of latest.slice(0,40)){const row=el('div','log-row'),time=el('span','log-time',timeLabel(event.time)),level=el('span',`log-level ${/error/i.test(event.level||'')?'error':/warn/i.test(event.level||'')?'warning':''}`,event.level||'info'),message=el('span','log-message',event.message||'');if(event.task_id)message.title=`任务 ${event.task_id}`;row.append(time,level,message);target.append(row);}}
       function visibleTasks(tasks){const query=$('task-search').value.trim().toLocaleLowerCase(),filter=$('task-filter').value,sort=$('task-sort').value;let rows=tasks.filter(task=>{const text=`${task.source_name||''} ${task.source_path||''}`.toLocaleLowerCase();if(query&&!text.includes(query))return false;if(filter==='review'&&(!isFail(task)||task.reject_reason))return false;if(filter==='rejected'&&!task.reject_reason)return false;if(filter!=='all'&&filter!=='review'&&filter!=='rejected'&&task.status!==filter)return false;return true;});rows.sort((a,b)=>sort==='recent'?String(b.updated_at||'').localeCompare(String(a.updated_at||'')):sort==='status'?String(a.status).localeCompare(String(b.status))||String(a.source_name).localeCompare(String(b.source_name),'zh-CN'):String(a.source_name||'').localeCompare(String(b.source_name||''),'zh-CN'));return rows;}
       function renderRobotTasks(tasks,fromProfile=false){
@@ -776,23 +889,38 @@
         else state.queueIds=state.queueIds.filter(id=>allTasks.some(task=>String(task.id)===String(id)&&canSelectRobotTask(task)));
         const rows=visibleTasks(allTasks);state.visibleTaskIds=rows.filter(canSelectRobotTask).map(task=>String(task.id));state.visibleRowIds=rows.map(task=>String(task.id));list.replaceChildren();
         for(const task of rows){const id=String(task.id),row=el('label',`robot-task-row ${isActive(task)?'is-running':''}`),checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.dataset.taskId=id;checkbox.checked=state.queueIds.includes(id);checkbox.disabled=!canSelectRobotTask(task)||!!state.status?.running;checkbox.addEventListener('click',event=>event.stopPropagation());checkbox.addEventListener('change',()=>{if(checkbox.checked){if(!state.queueIds.includes(id))state.queueIds.push(id);}else state.queueIds=state.queueIds.filter(value=>value!==id);renderRobotTasks(allTasks);persistQueueSoon();});
-          const main=el('span','robot-task-main'),name=el('span','robot-task-name',task.source_name||'未命名门店'),sub=el('span','robot-task-sub',`${String(task.source_path||'').split('/').pop()||'二维码'}`),status=badgeFor(task),detail=el('button','task-open','详情');detail.type='button';detail.setAttribute('aria-label',`查看${task.source_name||'门店'}详情`);detail.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();openTaskDrawer(task);});main.append(name,sub);row.append(checkbox,main,status,el('span','task-time',timeLabel(task.updated_at)),detail);row.addEventListener('click',event=>{if(event.target===row||event.target===main||event.target===name||event.target===sub)openTaskDrawer(task);});list.append(row);}
+          const main=el('span','robot-task-main'),name=el('span','robot-task-name',task.source_name||'未命名门店'),sub=el('span','robot-task-sub',task.batch_name?`${task.batch_name} · ${task.version||'未发布'}`:`${String(task.source_path||'').split('/').pop()||'二维码'}`),status=badgeFor(task),detail=el('button','task-open','详情');detail.type='button';detail.setAttribute('aria-label',`查看${task.source_name||'门店'}详情`);detail.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();openTaskDrawer(task);});main.append(name,sub);row.append(checkbox,main,status,el('span','task-time',timeLabel(task.updated_at)),detail);row.addEventListener('click',event=>{if(event.target===row||event.target===main||event.target===name||event.target===sub)openTaskDrawer(task);});list.append(row);}
         $('tasks-empty').hidden=rows.length>0;select.replaceChildren(el('option','','选择一间门店'));select.firstChild.value='';for(const task of available){const option=el('option','',task.source_name||'未命名门店');option.value=String(task.id);select.append(option);}const attachedId=fromProfile?robotProfile?.selected_task_id:state.attachedId;if(attachedId&&available.some(task=>String(task.id)===String(attachedId)))select.value=String(attachedId);state.attachedId=select.value;
         list.scrollTop=scrollTop;if(allTasks.length)robotTasksInitialized=true;renderQueue(allTasks);updateRobotTaskSelection();syncRobotTaskMode();
       }
-      function renderQueue(tasks){const list=$('run-queue-list'),scrollTop=list.scrollTop;list.replaceChildren();const byId=new Map((tasks||[]).map(task=>[String(task.id),task]));$('queue-total').textContent=String(state.queueIds.length);if(!state.queueIds.length){list.append(el('li','queue-empty','队列为空'));return;}state.queueIds.forEach((id,index)=>{const task=byId.get(String(id));if(!task)return;const li=el('li','queue-item'),number=el('span','queue-number',String(index+1)),name=el('span','queue-name',task.source_name||'未命名门店'),actions=el('span','queue-actions');for(const [label,delta,disabled] of [['上移',-1,index===0],['下移',1,index===state.queueIds.length-1]]){const button=el('button','queue-move',label);button.type='button';button.disabled=disabled||!!state.status?.running;button.title=label;button.addEventListener('click',()=>{const target=index+delta;[state.queueIds[index],state.queueIds[target]]=[state.queueIds[target],state.queueIds[index]];renderRobotTasks(state.status?.tasks||[]);persistQueueSoon();});actions.append(button);}const remove=el('button','queue-remove','移除');remove.type='button';remove.disabled=!!state.status?.running;remove.addEventListener('click',()=>{state.queueIds=state.queueIds.filter(value=>value!==id);renderRobotTasks(state.status?.tasks||[]);persistQueueSoon();});actions.append(remove);li.append(number,name,badgeFor(task),actions);list.append(li);});list.scrollTop=scrollTop;}
-      function updateRobotTaskSelection(){const eligible=state.visibleTaskIds.map(id=>state.status?.tasks?.find(task=>String(task.id)===String(id))).filter(Boolean),checked=eligible.filter(task=>state.queueIds.includes(String(task.id)));$('robot-task-count').textContent=`执行队列 ${state.queueIds.length} 家`;$('robot-task-select-all').checked=eligible.length>0&&checked.length===eligible.length;$('robot-task-select-all').indeterminate=checked.length>0&&checked.length<eligible.length;$('robot-task-select-all').disabled=!!state.status?.running;syncStartButton();}
+      function renderQueue(tasks){const list=$('run-queue-list'),scrollTop=list.scrollTop;list.replaceChildren();const byId=new Map((tasks||[]).map(task=>[String(task.id),task]));
+        // 运行中（尤其跨批次重跑）队列就是本轮任务清单，不再显示为空的人工队列。
+        const activeRun=state.status?.run;
+        if(state.status?.running&&Array.isArray(activeRun?.task_list)&&activeRun.task_list.length){
+          const currentId=String(activeRun.current_task_id||''),doneIds=new Set((activeRun.processed_ids||[]).map(String));
+          $('queue-total').textContent=String(activeRun.task_list.length);
+          activeRun.task_list.forEach((item,index)=>{
+            const li=el('li','queue-item'),number=el('span','queue-number',String(index+1)),name=el('span','queue-name',item.name||'未命名门店');
+            const done=doneIds.has(String(item.id)),current=String(item.id)===currentId;
+            li.append(number,name,queueBadge(item,{done,current}));
+            if(current)li.classList.add('is-running');
+            list.append(li);
+          });
+          list.scrollTop=scrollTop;return;
+        }
+        $('queue-total').textContent=String(state.queueIds.length);if(!state.queueIds.length){list.append(el('li','queue-empty','队列为空'));return;}state.queueIds.forEach((id,index)=>{const task=byId.get(String(id));if(!task)return;const li=el('li','queue-item'),number=el('span','queue-number',String(index+1)),name=el('span','queue-name',task.source_name||'未命名门店'),actions=el('span','queue-actions');for(const [label,delta,disabled] of [['上移',-1,index===0],['下移',1,index===state.queueIds.length-1]]){const button=el('button','queue-move',label);button.type='button';button.disabled=disabled||!!state.status?.running;button.title=label;button.addEventListener('click',()=>{const target=index+delta;[state.queueIds[index],state.queueIds[target]]=[state.queueIds[target],state.queueIds[index]];renderRobotTasks(scopeTaskList());persistQueueSoon();});actions.append(button);}const remove=el('button','queue-remove','移除');remove.type='button';remove.disabled=!!state.status?.running;remove.addEventListener('click',()=>{state.queueIds=state.queueIds.filter(value=>value!==id);renderRobotTasks(scopeTaskList());persistQueueSoon();});actions.append(remove);li.append(number,name,badgeFor(task),actions);list.append(li);});list.scrollTop=scrollTop;}
+      function updateRobotTaskSelection(){const eligible=state.visibleTaskIds.map(id=>scopeTaskList().find(task=>String(task.id)===String(id))).filter(Boolean),checked=eligible.filter(task=>state.queueIds.includes(String(task.id)));$('robot-task-count').textContent=`执行队列 ${state.queueIds.length} 家`;$('robot-task-select-all').checked=eligible.length>0&&checked.length===eligible.length;$('robot-task-select-all').indeterminate=checked.length>0&&checked.length<eligible.length;$('robot-task-select-all').disabled=!!state.status?.running;syncStartButton();}
       function syncRobotTaskMode(){const automatic=$('robot-mode').value==='automatic';$('robot-task').style.display=automatic?'none':'';document.querySelector('.queue-panel').classList.toggle('attached-mode',!automatic);$('robot-task-hint').textContent=automatic?'按右侧队列逐店上传二维码、进入菜单并截图。':'请先打开该门店的小程序，再选择一间门店接管。';const id=$('robot-task').value,preview=$('source-preview');preview.hidden=automatic||!id;if(!automatic&&id)preview.src=`/api/source/${encodeURIComponent(id)}`;else preview.removeAttribute('src');syncStartButton();}
       function persistQueueSoon(){if(!robotProfileLoaded||state.status?.running)return;clearTimeout(state.queueSaveTimer);state.queueSaveTimer=setTimeout(()=>persistRobotProfile().catch(error=>toast(error.message)),250);}
-      $('robot-task-select-all').addEventListener('change',event=>{const selected=new Set(state.queueIds);if(event.target.checked){for(const id of state.visibleTaskIds){if(!selected.has(id))selected.add(id);}state.queueIds=[...selected];}else{const visible=new Set(state.visibleTaskIds);state.queueIds=state.queueIds.filter(id=>!visible.has(id));}renderRobotTasks(state.status?.tasks||[]);persistQueueSoon();});
-      for(const id of ['task-search','task-filter','task-sort'])$(id).addEventListener(id==='task-search'?'input':'change',()=>renderRobotTasks(state.status?.tasks||[]));
+      $('robot-task-select-all').addEventListener('change',event=>{const selected=new Set(state.queueIds);if(event.target.checked){for(const id of state.visibleTaskIds){if(!selected.has(id))selected.add(id);}state.queueIds=[...selected];}else{const visible=new Set(state.visibleTaskIds);state.queueIds=state.queueIds.filter(id=>!visible.has(id));}renderRobotTasks(scopeTaskList());persistQueueSoon();});
+      for(const id of ['task-search','task-filter','task-sort'])$(id).addEventListener(id==='task-search'?'input':'change',()=>renderRobotTasks(scopeTaskList()));
       $('robot-mode').addEventListener('change',()=>{syncRobotTaskMode();persistQueueSoon();});
       function canMarkTask(task){return ['needs_review','error','blocked','captured'].includes(task.status);}
       function renderTaskRejection(task){const host=$('drawer-rejection');host.replaceChildren();host.hidden=!task.reject_reason;if(!task.reject_reason)return;const reason=el('strong','',rejectionLabels[task.reject_reason]||'未记录原因'),detail=el('span','',task.reject_detail||'未填写备注'),undo=el('button','btn','撤销不合格');undo.type='button';undo.disabled=!!state.status?.running;undo.addEventListener('click',()=>undoTaskRejection(task.id,undo));host.append(reason,detail,undo);}
       function resetDebugRunExport(){const select=$('drawer-debug-run-select');select.replaceChildren();$('drawer-debug-run-export').href='#';$('drawer-debug-runs').hidden=true;}
       function addDebugRunExport(runId,startedAt){const select=$('drawer-debug-run-select'),id=String(runId);if(!Array.from(select.options).some(option=>option.value===id)){const option=document.createElement('option');option.value=id;option.textContent=(startedAt||'').slice(11,19)+' · '+id.slice(0,8);select.append(option);}if(!select.value)select.value=id;$('drawer-debug-runs').hidden=false;$('drawer-debug-run-export').href='/api/debug/runs/'+encodeURIComponent(select.value)+'/export';}
       $('drawer-debug-run-select').addEventListener('change',()=>{$('drawer-debug-run-export').href='/api/debug/runs/'+encodeURIComponent($('drawer-debug-run-select').value)+'/export';});
-      function openTaskDrawer(task){state.drawerReturnFocus=document.activeElement;state.drawerTaskId=String(task.id);$('drawer-timeline').open=false;$('drawer-actions').replaceChildren();resetDebugRunExport();$('drawer-title').textContent=task.source_name||'未命名门店';$('drawer-status').replaceChildren(badgeFor(task));$('drawer-message').textContent=(task.error_code?`[${({retryable:'可重试',store_unavailable:'门店不可采'})[task.group]||'需人工'}·${task.label||task.error_code}] `:'')+(task.message||'尚无运行消息');$('drawer-source').textContent=task.source_path||'—';$('drawer-output').textContent=task.output_dir||'尚未生成';renderTaskRejection(task);$('drawer-images').replaceChildren();$('task-drawer').hidden=false;document.querySelector('.drawer-body').scrollTop=0;$('task-drawer').querySelector('button[data-drawer-close]').focus();document.body.classList.add('drawer-open');syncDrawerNav();$('drawer-review').hidden=!!task.reject_reason||task.status==='needs_review';$('drawer-review').disabled=!!state.status?.running;$('drawer-reject').hidden=!!task.reject_reason||!canMarkTask(task);$('drawer-reject').disabled=!!state.status?.running;$('drawer-retry').hidden=!(isFail(task)||task.status==='captured');$('drawer-retry').textContent=task.reject_reason?'重新处理':'重新采集此店';$('drawer-retry').disabled=!!state.status?.running;api('/api/artifacts/'+encodeURIComponent(task.id)).then(result=>{const images=(result.files||[]).filter(file=>/^page-\d+\.png$/i.test(file.split('/').pop()));if(!images.length){$('drawer-images').append(el('div','drawer-empty','尚无已发布截图'));return;}for(const file of images){const figure=document.createElement('figure'),image=document.createElement('img'),caption=el('figcaption','',file.split('/').pop());image.loading='lazy';image.alt=(task.source_name||'门店')+' '+caption.textContent;image.src='/api/artifact/'+encodeURIComponent(task.id)+'/'+file.split('/').map(encodeURIComponent).join('/');figure.append(image,caption);$('drawer-images').append(figure);}}).catch(error=>$('drawer-images').append(el('div','drawer-empty',error.message)));}
+      function openTaskDrawer(task,navIds,navTasks){state.drawerReturnFocus=document.activeElement;state.drawerTaskId=String(task.id);state.drawerNavIds=Array.isArray(navIds)?navIds.map(String):null;state.drawerNavTasks=Array.isArray(navTasks)?new Map(navTasks.map(item=>[String(item.id),item])):null;$('drawer-timeline').open=false;$('drawer-actions').replaceChildren();resetDebugRunExport();$('drawer-title').textContent=task.source_name||'未命名门店';$('drawer-status').replaceChildren(badgeFor(task));$('drawer-message').textContent=(task.error_code?`[${({retryable:'可重试',store_unavailable:'门店不可采'})[task.group]||'需人工'}·${task.label||task.error_code}] `:'')+(task.message||'尚无运行消息');$('drawer-source').textContent=task.source_path||'—';$('drawer-output').textContent=task.output_dir||'尚未生成';renderTaskRejection(task);renderDrawerEvidence(task);$('drawer-materials').hidden=!(task.material_batch_id||task.batch_id);$('drawer-materials').disabled=!!state.status?.running;if(Array.isArray(navTasks))focusReviewRow(task.id);$('drawer-images').replaceChildren();$('task-drawer').hidden=false;document.querySelector('.drawer-body').scrollTop=0;$('task-drawer').querySelector('button[data-drawer-close]').focus();document.body.classList.add('drawer-open');syncDrawerNav();$('drawer-review').hidden=!!task.reject_reason||task.status==='needs_review';$('drawer-review').disabled=!!state.status?.running;$('drawer-reject').hidden=!!task.reject_reason||!canMarkTask(task);$('drawer-reject').disabled=!!state.status?.running;$('drawer-retry').hidden=!(isFail(task)||task.status==='captured');$('drawer-retry').textContent=task.reject_reason?'重新处理':'重新采集此店';$('drawer-retry').disabled=!!state.status?.running;api('/api/artifacts/'+encodeURIComponent(task.id)).then(result=>{const images=(result.files||[]).filter(file=>/^page-\d+\.png$/i.test(file.split('/').pop()));if(!images.length){$('drawer-images').append(el('div','drawer-empty','尚无已发布截图'));return;}for(const file of images){const figure=document.createElement('figure'),image=document.createElement('img'),caption=el('figcaption','',file.split('/').pop());image.loading='lazy';image.alt=(task.source_name||'门店')+' '+caption.textContent;image.src='/api/artifact/'+encodeURIComponent(task.id)+'/'+file.split('/').map(encodeURIComponent).join('/');figure.append(image,caption);$('drawer-images').append(figure);}}).catch(error=>$('drawer-images').append(el('div','drawer-empty',error.message)));}
       function appendDebugBlock(host,label,value){if(value===undefined||value===null||value===''||(Array.isArray(value)&&!value.length))return;const text=typeof value==='string'?value:JSON.stringify(value,null,2);if(!text||text==='{}'||text==='[]')return;const block=document.createElement('details'),content=document.createElement('pre');block.className='debug-block';block.append(el('summary','',label));content.className='debug-json';content.textContent=text;block.append(content);host.append(block);}
       async function loadTaskActions(before){
         const id=state.drawerTaskId, host=$('drawer-actions');
@@ -845,41 +973,247 @@
       }
       $('drawer-timeline').addEventListener('toggle',()=>{if($('drawer-timeline').open)loadTaskActions();});
       $('drawer-load-actions').addEventListener('click',()=>loadTaskActions());
+      // 判断截图（最近一次失败画面）与原始二维码：不合格详情和待检查详情共用同一套展示。
+      function renderDrawerEvidence(task){
+        const host=$('drawer-evidence');if(!host)return;host.replaceChildren();
+        const add=(url,caption)=>{
+          if(!url)return;
+          const figure=document.createElement('figure'),image=document.createElement('img');
+          image.loading='lazy';image.alt=caption;
+          image.addEventListener('error',()=>figure.remove());
+          image.src=url;
+          figure.append(image,el('figcaption','',caption));host.append(figure);
+        };
+        // 多个候选地址：加载失败就换下一个，全部失败才移除图片框。
+        const chain=(urls,caption)=>{
+          const figure=el('figure','drawer-figure'),image=new Image();
+          image.loading='lazy';image.alt=caption;let index=0;
+          image.addEventListener('error',()=>{index+=1;if(index<urls.length)image.src=urls[index];else figure.remove();});
+          image.src=urls[0];
+          figure.append(image,el('figcaption','',caption));host.append(figure);
+        };
+        add('/api/tasks/'+encodeURIComponent(task.id)+'/source','原始二维码');
+        if(task.reject_evidence)add('/api/rejections/tasks/'+encodeURIComponent(task.id)+'/evidence','判断截图');
+        api('/api/tasks/'+encodeURIComponent(task.id)+'/actions').then(result=>{
+          if(state.drawerTaskId!==String(task.id))return;
+          if(task.reject_evidence)return;
+          // 失败画面：取失败前后那一步的证据，跳过收尾动作（关小程序/关窗口），
+          // 否则会拿到清理阶段的微信聊天窗口，而不是真正卡住的页面。
+          const cleanup=new Set(['close_window','close_miniapp','restore_window','stop']);
+          const frames=(result.actions||[]).filter(action=>!cleanup.has(action.action))
+            .map(action=>String((action.details||{}).frame_evidence||'')).filter(Boolean);
+          const pageFile=frames.find(name=>/^page-\d+\.png$/.test(name));
+          const file=pageFile||frames[0];
+          // 失败画面按可用性依次回退：离线生成的现场缩略图 → 动作证据 → 运行目录最新画面。
+          // 顺序很关键：运行目录里已按“失败步骤”挑好一帧（page-* / ui-tars-*），
+          // 动作证据里的画面常常是关闭小程序之后的微信窗口，只能作为兜底。
+          const urls=['/api/action-evidence/'+encodeURIComponent(task.id+'000000000000')+'.png'];
+          urls.push('/api/tasks/'+encodeURIComponent(task.id)+'/last-frame');
+          if(file)urls.push('/api/action-evidence/'+encodeURIComponent(String(file).split('/').pop()));
+          chain(urls,'失败画面');
+          if(!host.children.length)host.append(el('div','drawer-empty','暂无判断截图与二维码'));
+        }).catch(()=>{if(!host.children.length)host.append(el('div','drawer-empty','暂无判断截图与二维码'));});
+      }
+      // 详情翻到哪家，列表就高亮并滚动到哪家；关闭后保留最后一次高亮。
+      function focusReviewRow(id){
+        const key=String(id);markReviewVisited(key);
+        if(highlightReviewRow(key))return;
+        const index=reviewRecordsCache.findIndex(item=>String(item.task_id)===key);
+        if(index<0)return;
+        const page=Math.floor(index/LIST_PAGE_SIZE)+1;
+        if(page!==reviewPage){reviewPage=page;void loadReviewQueue(true).then(()=>highlightReviewRow(key));}
+      }
+      function markReviewVisited(id){
+        reviewVisitedIds.add(String(id));
+        try{localStorage.setItem('review-visited',JSON.stringify([...reviewVisitedIds]));}catch(error){}
+        const row=document.querySelector('#review-list .quality-row[data-task-id="'+CSS.escape(String(id))+'"]');
+        if(row)row.classList.add('is-visited');
+      }
+      function highlightReviewRow(id){
+        reviewActiveId=String(id);
+        const rows=document.querySelectorAll('#review-list .quality-row');
+        rows.forEach(row=>row.classList.toggle('is-active',row.dataset.taskId===String(id)));
+        const row=document.querySelector('#review-list .quality-row[data-task-id="'+CSS.escape(String(id))+'"]');
+        if(row)row.scrollIntoView({block:'center',behavior:'smooth'});
+        return !!row;
+      }
+      $('drawer-materials').addEventListener('click',async event=>{
+        const id=state.drawerTaskId;if(!id)return;
+        await returnTaskToMaterials({task_id:id,store_name:$('drawer-title').textContent},event.currentTarget);
+        closeTaskDrawer();
+      });
       function closeTaskDrawer(){$('task-drawer').hidden=true;document.body.classList.remove('drawer-open');state.drawerTaskId=null;state.drawerReturnFocus?.focus();}
       document.querySelectorAll('[data-drawer-close]').forEach(button=>button.addEventListener('click',closeTaskDrawer));document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('task-rejection-dialog').open&&!$('task-drawer').hidden)closeTaskDrawer();});
       async function retryCaptureTask(id,button,returnToWorkbench=false){if(!id||state.status?.running)return;button.disabled=true;try{await api('/api/tasks/'+encodeURIComponent(id)+'/retry',{method:'POST',body:'{}'});if(!state.queueIds.includes(String(id)))state.queueIds.push(String(id));try{await persistRobotProfile();}catch(error){toast('任务已重置，队列设置暂未保存：'+error.message);}await poll();await loadRejections();if(returnToWorkbench)setPage('overview');toast(returnToWorkbench?'任务已加入队列，请在工作台开始采集':'任务已恢复到待处理并加入队列');}catch(error){toast(error.message);}finally{button.disabled=false;}}
       $('drawer-retry').addEventListener('click',event=>retryCaptureTask(state.drawerTaskId,event.currentTarget));
       // 详情翻店按当前列表的可见顺序切换；按钮不可用时置灰，避免跳到别处。
-      function drawerNavList(){const ids=Array.isArray(state.visibleRowIds)?state.visibleRowIds:[],index=ids.indexOf(String(state.drawerTaskId));return {ids,index};}
+      function drawerNavList(){const ids=Array.isArray(state.drawerNavIds)?state.drawerNavIds:(Array.isArray(state.visibleRowIds)?state.visibleRowIds:[]),index=ids.indexOf(String(state.drawerTaskId));return {ids,index};}
       function syncDrawerNav(){if($('task-drawer').hidden)return;const {ids,index}=drawerNavList();$('drawer-prev').disabled=index<=0;$('drawer-next').disabled=index<0||index>=ids.length-1;}
-      function stepDrawer(delta){const {ids,index}=drawerNavList(),targetId=ids[index+delta],task=(state.status?.tasks||[]).find(item=>String(item.id)===targetId);if(task)openTaskDrawer(task);}
+      function stepDrawer(delta){const {ids,index}=drawerNavList(),targetId=ids[index+delta];if(!targetId)return;const task=state.drawerNavTasks?.get(targetId)||scopeTaskList().find(item=>String(item.id)===targetId);if(task)openTaskDrawer(task,ids,[...state.drawerNavTasks?.values()||[]]);}
       $('drawer-prev').addEventListener('click',()=>stepDrawer(-1));
       $('drawer-next').addEventListener('click',()=>stepDrawer(1));
-      async function markTaskForReview(id,button){if(!id||state.status?.running)return;button.disabled=true;try{const result=await api('/api/tasks/'+encodeURIComponent(id)+'/mark-review',{method:'POST',body:'{}'});updateTaskLocally(result.task);await poll();const current=state.status?.tasks?.find(item=>String(item.id)===String(id))||result.task;$('drawer-status').replaceChildren(badgeFor(current));$('drawer-review').hidden=true;toast('已改为待检查');}catch(error){toast(error.message);}finally{button.disabled=false;}}
+      async function markTaskForReview(id,button){if(!id||state.status?.running)return;button.disabled=true;try{const result=await api('/api/tasks/'+encodeURIComponent(id)+'/mark-review',{method:'POST',body:'{}'});updateTaskLocally(result.task);await poll();const current=scopeTaskList().find(item=>String(item.id)===String(id))||result.task;$('drawer-status').replaceChildren(badgeFor(current));$('drawer-review').hidden=true;toast('已改为待检查');}catch(error){toast(error.message);}finally{button.disabled=false;}}
       $('drawer-review').addEventListener('click',event=>markTaskForReview(state.drawerTaskId,event.currentTarget));
-      function updateTaskLocally(task){if(!state.status?.tasks)return;const index=state.status.tasks.findIndex(item=>String(item.id)===String(task.id));if(index>=0)state.status.tasks[index]=task;}
+      function updateTaskLocally(task){if(state.status?.tasks){const index=state.status.tasks.findIndex(item=>String(item.id)===String(task.id));if(index>=0)state.status.tasks[index]=task;}if(Array.isArray(state.scopeTasks)){const index=state.scopeTasks.findIndex(item=>String(item.id)===String(task.id));if(index>=0)state.scopeTasks[index]=task;}}
       async function undoTaskRejection(id,button){if(!id||state.status?.running)return;button.disabled=true;try{const result=await api('/api/tasks/'+encodeURIComponent(id)+'/rejection/undo',{method:'POST',body:'{}'});updateTaskLocally(result.task);if(state.drawerTaskId===String(id)){ $('drawer-status').replaceChildren(badgeFor(result.task));renderTaskRejection(result.task);$('drawer-reject').hidden=!canMarkTask(result.task);$('drawer-reject').disabled=false;}await poll();await loadRejections();toast('已撤销不合格标记，任务保留原状态');}catch(error){toast(error.message);}finally{button.disabled=false;}}
-      $('drawer-reject').addEventListener('click',()=>{const task=state.status?.tasks?.find(item=>String(item.id)===String(state.drawerTaskId));if(!task||!canMarkTask(task)||state.status?.running)return;$('task-rejection-store').textContent=task.source_name||'未命名门店';$('task-rejection-reason').value='blur';$('task-rejection-detail').value='';$('task-rejection-error').hidden=true;$('task-rejection-error').textContent='';$('task-rejection-dialog').showModal();});
+      $('drawer-reject').addEventListener('click',()=>{const task=scopeTaskList().find(item=>String(item.id)===String(state.drawerTaskId));if(!task||!canMarkTask(task)||state.status?.running)return;$('task-rejection-store').textContent=task.source_name||'未命名门店';$('task-rejection-reason').value='blur';$('task-rejection-detail').value='';$('task-rejection-error').hidden=true;$('task-rejection-error').textContent='';$('task-rejection-dialog').showModal();});
       $('task-rejection-cancel').addEventListener('click',()=>$('task-rejection-dialog').close());
       $('task-rejection-dialog').addEventListener('cancel',event=>{if(state.status?.running)event.preventDefault();});
-      $('task-rejection-form').addEventListener('submit',async event=>{event.preventDefault();const id=state.drawerTaskId,reason=$('task-rejection-reason').value,detail=$('task-rejection-detail').value.trim(),submit=$('task-rejection-submit');if(!id)return;submit.disabled=true;$('task-rejection-error').hidden=true;try{const result=await api('/api/tasks/'+encodeURIComponent(id)+'/reject',{method:'POST',body:JSON.stringify({reason,detail})});updateTaskLocally(result.task);state.queueIds=state.queueIds.filter(value=>String(value)!==String(id));renderRobotTasks(state.status?.tasks||[]);try{await persistRobotProfile();}catch(error){toast('不合格已记录，队列设置暂未保存：'+error.message);}await poll();$('task-rejection-dialog').close();const current=state.status?.tasks?.find(item=>String(item.id)===String(id))||result.task;$('drawer-status').replaceChildren(badgeFor(current));renderTaskRejection(current);$('drawer-reject').hidden=true;$('drawer-retry').textContent='重新处理';await loadRejections();toast('已记录不合格原因');}catch(error){$('task-rejection-error').textContent=error.message;$('task-rejection-error').hidden=false;}finally{submit.disabled=false;}});
-      function qualityReasonCell(label, summary, detail){
+      $('task-rejection-form').addEventListener('submit',async event=>{event.preventDefault();const id=state.drawerTaskId,reason=$('task-rejection-reason').value,detail=$('task-rejection-detail').value.trim(),submit=$('task-rejection-submit');if(!id)return;submit.disabled=true;$('task-rejection-error').hidden=true;try{const result=await api('/api/tasks/'+encodeURIComponent(id)+'/reject',{method:'POST',body:JSON.stringify({reason,detail})});updateTaskLocally(result.task);state.queueIds=state.queueIds.filter(value=>String(value)!==String(id));renderRobotTasks(scopeTaskList());try{await persistRobotProfile();}catch(error){toast('不合格已记录，队列设置暂未保存：'+error.message);}await poll();$('task-rejection-dialog').close();const current=scopeTaskList().find(item=>String(item.id)===String(id))||result.task;$('drawer-status').replaceChildren(badgeFor(current));renderTaskRejection(current);$('drawer-reject').hidden=true;$('drawer-retry').textContent='重新处理';await loadRejections();toast('已记录不合格原因');}catch(error){$('task-rejection-error').textContent=error.message;$('task-rejection-error').hidden=false;}finally{submit.disabled=false;}});
+      // 不合格详情抽屉：与门店详情同一套右侧布局，翻页只在当前筛选结果内移动。
+      let rejectionDrawerRecords=[],rejectionDrawerKey='';
+      function openRejectionDrawer(record,records){
+        rejectionDrawerRecords=Array.isArray(records)&&records.length?records.slice():[record];
+        rejectionDrawerKey=qualityKey(record);
+        $('rejection-drawer').hidden=false;document.body.classList.add('drawer-open');
+        renderRejectionDrawer();focusRejectionRow(rejectionDrawerKey);
+        $('rejection-drawer').querySelector('button[data-rejection-close]')?.focus();
+      }
+      function closeRejectionDrawer(){
+        if($('rejection-drawer').hidden)return;
+        $('rejection-drawer').hidden=true;rejectionDrawerRecords=[];rejectionDrawerKey='';
+        if($('task-drawer').hidden)document.body.classList.remove('drawer-open');
+      }
+      function stepRejectionDrawer(delta){
+        const index=rejectionDrawerRecords.findIndex(item=>qualityKey(item)===rejectionDrawerKey),target=rejectionDrawerRecords[index+delta];
+        if(!target)return;rejectionDrawerKey=qualityKey(target);renderRejectionDrawer();focusRejectionRow(rejectionDrawerKey);
+      }
+      // 不合格清单的同一套联动：翻到哪条高亮哪条，看过的记录保留浅色底。
+      function focusRejectionRow(key){
+        key=String(key);markRejectionVisited(key);
+        if(highlightRejectionRow(key))return;
+        const index=qualityRecordsCache.findIndex(item=>qualityKey(item)===key);
+        if(index<0)return;
+        const page=Math.floor(index/LIST_PAGE_SIZE)+1;
+        if(page!==qualityPage){qualityPage=page;void loadRejections(true).then(()=>highlightRejectionRow(key));}
+      }
+      function markRejectionVisited(key){
+        rejectionVisitedIds.add(String(key));
+        try{localStorage.setItem('rejection-visited',JSON.stringify([...rejectionVisitedIds]));}catch(error){}
+        const row=document.querySelector('#quality-list .quality-row[data-key="'+CSS.escape(String(key))+'"]');
+        if(row)row.classList.add('is-visited');
+      }
+      function highlightRejectionRow(key){
+        qualityActiveKey=String(key);
+        document.querySelectorAll('#quality-list .quality-row').forEach(row=>row.classList.toggle('is-active',row.dataset.key===String(key)));
+        const row=document.querySelector('#quality-list .quality-row[data-key="'+CSS.escape(String(key))+'"]');
+        if(row)row.scrollIntoView({block:'center',behavior:'smooth'});
+        return !!row;
+      }
+      // 抽屉里改了人工确认状态时，列表行上的对号同步更新，不必等刷新。
+      function syncRejectionRowMark(record){
+        const row=document.querySelector('#quality-list .quality-row[data-key="'+CSS.escape(qualityKey(record))+'"]');
+        const mark=row?.querySelector('.quality-review-toggle');if(!mark)return;
+        const active=!!record.reviewed_at;
+        mark.textContent=active?'✓':'';mark.classList.toggle('is-reviewed',active);
+        mark.setAttribute('aria-pressed',String(active));
+        mark.title=active?'已人工确认确实不合格；点击取消':'点击标记为人工确认确实不合格';
+      }
+      function rejectionDrawerImage(host,url,caption){
+        if(!url)return;
+        const figure=document.createElement('figure'),image=document.createElement('img');
+        image.loading='lazy';image.alt=caption;
+        image.addEventListener('error',()=>figure.remove());
+        image.src=url;
+        figure.append(image,el('figcaption','',caption));host.append(figure);
+      }
+      function renderRejectionDrawer(){
+        const record=rejectionDrawerRecords.find(item=>qualityKey(item)===rejectionDrawerKey);
+        if(!record){closeRejectionDrawer();return;}
+        const index=rejectionDrawerRecords.indexOf(record);
+        $('rejection-prev').disabled=index<=0;$('rejection-next').disabled=index<0||index>=rejectionDrawerRecords.length-1;
+        $('rejection-drawer-title').textContent=record.store_name||'未命名门店';
+        $('rejection-drawer-source').textContent=record.source_label||(record.source_type==='capture'?'采集任务':'素材清洗');
+        $('rejection-drawer-source').className='quality-source '+(record.source_type==='capture'?'capture':'materials');
+        $('rejection-drawer-batch').textContent=record.batch_name||'未关联批次';
+        $('rejection-drawer-reason').textContent=record.reason_label||record.reason_code||'不合格';
+        $('rejection-drawer-time').textContent=timeLabel(record.marked_at||record.reviewed_at||'')||'—';
+        $('rejection-drawer-message').textContent=String(record.detail||'').trim()||'未记录详细原因';
+        const images=$('rejection-drawer-images');images.replaceChildren();
+        rejectionDrawerImage(images,record.source_type==='capture'&&record.evidence?'/api/rejections/tasks/'+encodeURIComponent(record.task_id)+'/evidence':'','采集失败时的画面');
+        rejectionDrawerImage(images,record.source_type==='capture'&&record.task_id?'/api/tasks/'+encodeURIComponent(record.task_id)+'/source':(record.batch_id&&record.store_id?'/api/materials/batches/'+encodeURIComponent(record.batch_id)+'/stores/'+encodeURIComponent(record.store_id)+'/selected':''),'当前使用的候选二维码');
+        const actions=$('rejection-drawer-actions');actions.replaceChildren();
+        const reviewed=!!record.reviewed_at;
+        const mark=el('button','btn'+(reviewed?' btn-primary':''),reviewed?'取消人工确认':'人工确认确实不合格');
+        mark.type='button';mark.setAttribute('aria-pressed',String(reviewed));
+        mark.addEventListener('click',async()=>{await toggleRejectionReview(record,mark);renderRejectionDrawer();});
+        actions.append(mark);
+        if(record.source_type==='materials'){
+          const review=el('button','btn btn-primary','继续处理');review.type='button';
+          review.addEventListener('click',async()=>{await reopenMaterialForReview(record,review);closeRejectionDrawer();});
+          const undo=el('button','btn','撤销不合格');undo.type='button';
+          undo.addEventListener('click',async()=>{await undoMaterialRejection(record,undo);closeRejectionDrawer();});
+          actions.append(review,undo);
+        }else{
+          const running=!!state.status?.running,retryable=['needs_review','needs_retry','error','blocked','captured'].includes(record.status);
+          const undo=el('button','btn','撤销不合格');undo.type='button';undo.disabled=running;
+          undo.title=running?'采集任务运行中，结束后可操作':'';
+          undo.addEventListener('click',async()=>{await undoTaskRejection(record.task_id,undo);closeRejectionDrawer();});
+          const back=el('button','btn','打回素材清洗');back.type='button';back.disabled=running;
+          back.title=running?'采集任务运行中，结束后可操作':'清除不合格并把素材决策恢复为待处理';
+          back.addEventListener('click',async()=>{await returnTaskToMaterials(record,back);closeRejectionDrawer();});
+          const retry=el('button','btn btn-primary',retryable?'重新采集':'处理中');retry.type='button';retry.disabled=running||!retryable;
+          retry.title=!retryable?'该任务当前状态不可重新采集':(running?'采集任务运行中，结束后可操作':'');
+          retry.addEventListener('click',async()=>{await retryCaptureTask(record.task_id,retry,true);closeRejectionDrawer();});
+          actions.append(undo,back,retry);
+        }
+      }
+      $('rejection-prev')?.addEventListener('click',()=>stepRejectionDrawer(-1));
+      $('rejection-next')?.addEventListener('click',()=>stepRejectionDrawer(1));
+      document.querySelectorAll('[data-rejection-close]').forEach(button=>button.addEventListener('click',closeRejectionDrawer));
+      document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('rejection-drawer').hidden)closeRejectionDrawer();});
+      function qualityKey(record){return `${record.source_type}:${record.task_id||''}:${record.batch_id||''}:${record.store_id||''}`;}
+      function qualityReasonCell(label, summary, detail, evidenceUrl='', qrUrl='', key=''){
         const cell=el('div','quality-reason');
         cell.append(el('strong','',label||'未记录原因'));
         // 原因正文默认直接展示（两行内），只有确实放不下时才收进“详情”。
         // 采集任务的 detail 就是 Agent/运行器给出的可读失败说明，不能只显示分类名。
         const text=String(detail||summary||'').trim();
-        if(!text)return cell;
         const limit=60;
-        const short=text.length>limit?text.slice(0,limit).trimEnd()+'…':text;
-        cell.append(el('span','quality-reason-summary',short));
-        if(text.length>limit){
-          const more=el('span','quality-detail','');more.hidden=true;more.textContent=text;
-          const toggle=el('button','quality-detail-toggle','详情');toggle.type='button';
-          toggle.addEventListener('click',event=>{event.stopPropagation();more.hidden=!more.hidden;toggle.textContent=more.hidden?'详情':'收起';});
-          cell.append(toggle,more);
+        if(text){
+          const short=text.length>limit?text.slice(0,limit).trimEnd()+'…':text;
+          cell.append(el('span','quality-reason-summary',short));
         }
+        const needsMore=text.length>limit||!!evidenceUrl||!!qrUrl;
+        if(!needsMore)return cell;
+        const more=el('div','quality-detail'+(evidenceUrl?' quality-detail-media':''),'');
+        more.hidden=!key||!qualityExpanded.has(key);
+        if(text.length>limit)more.append(el('p','quality-detail-text',text));
+        const mediaRow=el('div','quality-media-row');
+        if(qrUrl){
+          const qrWrap=el('div','quality-qr');
+          const qr=el('img','quality-qr-image');qr.loading='lazy';qr.alt='当前使用的候选二维码';qr.src=qrUrl;
+          qr.addEventListener('error',()=>{qrWrap.hidden=true;});
+          qrWrap.append(qr,el('span','quality-qr-label','当前使用的候选二维码'));
+          mediaRow.append(qrWrap);
+        }
+        if(evidenceUrl){
+          const image=el('img','quality-detail-image');image.loading='lazy';image.alt='Agent 判定时截图';image.src=evidenceUrl;mediaRow.append(image);
+        }
+        if(mediaRow.childElementCount)more.append(mediaRow);
+        const toggle=el('button','quality-detail-toggle',more.hidden?'详情':'收起');toggle.type='button';
+        toggle.addEventListener('click',event=>{event.stopPropagation();more.hidden=!more.hidden;if(key){if(more.hidden)qualityExpanded.delete(key);else qualityExpanded.add(key);}toggle.textContent=more.hidden?'详情':'收起';});
+        cell.append(toggle,more);
         return cell;
+      }
+      async function toggleRejectionReview(record,button){
+        const reviewed=!record.reviewed_at;
+        button.disabled=true;
+        try{
+          const payload={source_type:record.source_type,reviewed};
+          if(record.source_type==='capture')payload.task_id=record.task_id;
+          else{payload.batch_id=record.batch_id;payload.store_id=record.store_id;}
+          const result=await api('/api/rejections/review',{method:'POST',body:JSON.stringify(payload)});
+          record.reviewed_at=result.reviewed_at||'';
+          const active=!!record.reviewed_at;
+          button.textContent=active?'✓':'';
+          button.classList.toggle('is-reviewed',active);
+          button.setAttribute('aria-pressed',String(active));
+          button.title=active?'已人工确认确实不合格；点击取消':'点击标记为人工确认确实不合格';
+          syncRejectionRowMark(record);
+          toast(active?'已标记为人工确认不合格':'已取消人工确认标记');
+        }catch(error){toast(error.message);}
+        finally{button.disabled=false;}
       }
       async function loadRejections(quiet=false){
         const list=$('quality-list');if(!list)return;
@@ -897,37 +1231,69 @@
           for(const batch of batches)batchSelect.add(new Option(batch.name||batch.id,batch.id));
           batchSelect.value=selectedBatch==='all'||batches.some(batch=>batch.id===selectedBatch)?selectedBatch:'all';
           const records=Array.isArray(data.records)?data.records:[],summary=data.summary||{};
-          const pageCount=Math.max(1,Math.ceil(records.length/LIST_PAGE_SIZE));qualityPage=Math.min(qualityPage,pageCount);
-          const pageRecords=records.slice((qualityPage-1)*LIST_PAGE_SIZE,qualityPage*LIST_PAGE_SIZE);
-          $('quality-store-count').textContent=String(summary.stores||0);$('quality-material-count').textContent=String(summary.materials||0);$('quality-capture-count').textContent=String(summary.capture||0);$('quality-record-count').textContent=records.length+' 条记录';
-          renderPager('quality-pager',qualityPage,pageCount,records.length,page=>{qualityPage=page;void loadRejections(true);});
+          // 人工确认状态筛选：只影响清单展示与翻页，顶部统计仍按全部不合格记录。
+          const reviewFilter=$('quality-review')?.value||'all';
+          const visible=reviewFilter==='all'?records:records.filter(record=>reviewFilter==='reviewed'?!!record.reviewed_at:!record.reviewed_at);
+          qualityRecordsCache=visible;
+          const pageCount=Math.max(1,Math.ceil(visible.length/LIST_PAGE_SIZE));qualityPage=Math.min(qualityPage,pageCount);
+          const pageRecords=visible.slice((qualityPage-1)*LIST_PAGE_SIZE,qualityPage*LIST_PAGE_SIZE);
+          $('quality-store-count').textContent=String(summary.stores||0);$('quality-material-count').textContent=String(summary.materials||0);$('quality-capture-count').textContent=String(summary.capture||0);$('quality-record-count').textContent=visible.length+' 条记录';
+          renderPager('quality-pager',qualityPage,pageCount,visible.length,page=>{qualityPage=page;void loadRejections(true);});
+          // 静默刷新只在数据真正变化时重建；否则会重置滚动位置并收起已展开的详情。
+          const signature=JSON.stringify([qualityPage,pageRecords.map(record=>[record.source_type,record.task_id,record.batch_id,record.store_id,record.reviewed_at,record.marked_at,record.detail,record.status])]);
+          if(quiet&&signature===qualitySignature)return;
+          qualitySignature=signature;
+          const scrollTop=list.scrollTop;
           list.replaceChildren();
-          if(!records.length){list.append(el('div','empty','没有符合条件的不合格记录。'));return;}
+          if(!visible.length){list.append(el('div','empty','没有符合条件的不合格记录。'));return;}
           for(const record of pageRecords){
-            const row=el('article','quality-row'),head=el('div','quality-row-head'),title=el('strong','quality-title',record.store_name||'未命名门店'),source=el('span','quality-source '+(record.source_type==='capture'?'capture':'materials'),record.source_label||'来源未知');title.title=record.store_name||'';head.append(title,source);
+            const row=el('article','quality-row'),head=el('div','quality-row-head'),title=el('strong','quality-title',record.store_name||'未命名门店'),source=el('span','quality-source '+(record.source_type==='capture'?'capture':'materials'),record.source_label||'来源未知');title.title=record.store_name||'';
+            row.dataset.key=qualityKey(record);if(rejectionVisitedIds.has(qualityKey(record)))row.classList.add('is-visited');
+            row.addEventListener('click',event=>{if(event.target.closest('button,input,label,a'))return;openRejectionDrawer(record,qualityRecordsCache);});
+            const reviewed=!!record.reviewed_at,mark=el('button','quality-review-toggle'+(reviewed?' is-reviewed':''),reviewed?'✓':'');
+            mark.type='button';mark.title=reviewed?'已人工确认确实不合格；点击取消':'点击标记为人工确认确实不合格';mark.setAttribute('aria-pressed',String(reviewed));
+            mark.setAttribute('aria-label',(reviewed?'取消人工确认不合格：':'人工确认不合格：')+(record.store_name||'门店'));
+            mark.addEventListener('click',()=>toggleRejectionReview(record,mark));
+            head.append(mark,title,source);
             const meta=el('div','quality-row-meta');meta.append(el('span','',record.batch_name||'未关联素材批次'));
             const recordBadge=record.batch_id?batchBadge(batchWorkflow.get(String(record.batch_id))):null;if(recordBadge)meta.append(recordBadge);
             if(record.marked_at)meta.append(el('span','quality-row-time',timeLabel(record.marked_at)));
-            const reason=qualityReasonCell(record.reason_label, '', record.detail);
+            const reason=el('div','quality-reason');reason.append(el('strong','',record.reason_label||'不合格'));
+            const reasonSummary=String(record.detail||'').trim().split('\n')[0];
+            if(reasonSummary)reason.append(el('span','quality-reason-summary',reasonSummary.length>42?reasonSummary.slice(0,42)+'…':reasonSummary));
             const actions=el('div','quality-row-actions');
+            const detailButton=el('button','btn','详情');detailButton.type='button';
+            detailButton.addEventListener('click',()=>openRejectionDrawer(record,visible));actions.append(detailButton);
             if(record.source_type==='materials'){
               const review=el('button','btn btn-primary','继续处理');review.type='button';review.addEventListener('click',()=>reopenMaterialForReview(record,review));
               const undo=el('button','btn','撤销不合格');undo.type='button';undo.addEventListener('click',()=>undoMaterialRejection(record,undo));actions.append(review,undo);
             }else{
               const running=!!state.status?.running;
               const undo=el('button','btn','撤销不合格');undo.type='button';undo.disabled=running;undo.title=running?'采集任务运行中，结束后可操作':'';undo.addEventListener('click',()=>undoTaskRejection(record.task_id,undo));
-              const retryable=['needs_review','needs_retry','error','blocked','captured'].includes(record.status);const retry=el('button','btn btn-primary',retryable?'重新采集':'处理中');retry.type='button';retry.disabled=running||!retryable;retry.title=!retryable?'该任务当前状态不可重新采集':(running?'采集任务运行中，结束后可操作':'');retry.addEventListener('click',()=>retryCaptureTask(record.task_id,retry,true));actions.append(undo,retry);
+              const back=el('button','btn','打回素材清洗');back.type='button';back.disabled=running;back.title=running?'采集任务运行中，结束后可操作':'清除不合格并把素材决策恢复为待处理';back.addEventListener('click',()=>returnTaskToMaterials(record,back));
+              const retryable=['needs_review','needs_retry','error','blocked','captured'].includes(record.status);const retry=el('button','btn btn-primary',retryable?'重新采集':'处理中');retry.type='button';retry.disabled=running||!retryable;retry.title=!retryable?'该任务当前状态不可重新采集':(running?'采集任务运行中，结束后可操作':'');retry.addEventListener('click',()=>retryCaptureTask(record.task_id,retry,true));actions.append(undo,back,retry);
             }
             row.append(head,meta,reason,actions);list.append(row);
           }
+          list.scrollTop=scrollTop;
         }catch(error){
           if(requestId===qualityRequestSeq&&!quiet)list.replaceChildren(el('div','empty','读取失败：'+error.message));
         }finally{if(quiet)qualityRefreshBusy=false;}
       }
       async function reopenMaterialForReview(record,button){button.disabled=true;try{setPage('materials');window.dispatchEvent(new CustomEvent('materials-open-review',{detail:{batch_id:record.batch_id,store_id:record.store_id}}));toast('已打开门店修复页；不合格记录会保留到确认修复');}catch(error){toast(error.message);}finally{button.disabled=false;}}
       async function undoMaterialRejection(record,button){button.disabled=true;try{await api('/api/rejections/materials/'+encodeURIComponent(record.batch_id)+'/'+encodeURIComponent(record.store_id)+'/undo',{method:'POST',body:'{}'});await loadRejections();toast('已撤销不合格标记');}catch(error){toast(error.message);}finally{button.disabled=false;}}
+      async function returnTaskToMaterials(record,button){
+        if(!record.task_id||state.status?.running)return;
+        if(!confirm('确定把「'+(record.store_name||'该门店')+'」打回素材清洗？\n将清除不合格标记，素材决策恢复为待处理，采集任务置为已阻塞。'))return;
+        button.disabled=true;
+        try{
+          await api('/api/rejections/tasks/'+encodeURIComponent(record.task_id)+'/return-to-materials',{method:'POST',body:'{}'});
+          await loadRejections();await poll();
+          toast('已打回素材清洗，可在素材清洗重新确认二维码');
+        }catch(error){toast(error.message);}finally{button.disabled=false;}
+      }
       $('quality-refresh').addEventListener('click',()=>{qualityPage=1;void loadRejections();});
-      $('quality-batch').addEventListener('change',()=>{qualityPage=1;void loadRejections();});$('quality-source').addEventListener('change',()=>{qualityPage=1;void loadRejections();});$('quality-reason').addEventListener('change',()=>{qualityPage=1;void loadRejections();});
+      $('quality-batch').addEventListener('change',()=>{qualityPage=1;void loadRejections();});$('quality-source').addEventListener('change',()=>{qualityPage=1;void loadRejections();});$('quality-review').addEventListener('change',()=>{qualityPage=1;void loadRejections();});$('quality-reason').addEventListener('change',()=>{qualityPage=1;void loadRejections();});
       let qualitySearchTimer=null;$('quality-search').addEventListener('input',()=>{clearTimeout(qualitySearchTimer);qualitySearchTimer=setTimeout(()=>{qualityPage=1;void loadRejections();},220);});
       $('quality-export').addEventListener('click',async event=>{const button=event.currentTarget;if(button.disabled)return;button.disabled=true;const params=new URLSearchParams({batch_id:$('quality-batch').value,source:$('quality-source').value,reason:$('quality-reason').value,q:$('quality-search').value.trim()});try{const response=await fetch('/api/rejections/export.xlsx?'+params.toString(),{cache:'no-store'});if(!response.ok){let data={};try{data=await response.json();}catch{}throw new Error(data.detail||'导出失败');}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='不合格门店清单.xlsx';document.body.append(link);link.click();link.remove();URL.revokeObjectURL(url);toast('已导出当前筛选的不合格门店');}catch(error){toast(error.message);}finally{button.disabled=false;}});
       async function loadReviewQueue(quiet=false){
@@ -944,7 +1310,9 @@
           if(requestId!==reviewRequestSeq)return;
           reviewBatchOptions=Array.isArray(data.batches)?data.batches:[];
           renderReviewBatches();
-          const records=Array.isArray(data.records)?data.records:[],summary=data.summary||{};
+          // 已判不合格的门店归不合格清单，待检查清单不再混入；统计同步按过滤后数量展示。
+          const records=(Array.isArray(data.records)?data.records:[]).filter(item=>!item.reject_reason),summary=data.summary||{};
+          reviewRecordsCache=records;summary.stores=records.length;summary.retryable=records.length;
           const pageCount=Math.max(1,Math.ceil(records.length/LIST_PAGE_SIZE));reviewPage=Math.min(reviewPage,pageCount);
           const pageRecords=records.slice((reviewPage-1)*LIST_PAGE_SIZE,reviewPage*LIST_PAGE_SIZE);
           $('review-store-count').textContent=String(summary.stores||0);
@@ -956,8 +1324,14 @@
           for(const value of [...reviewSelected])if(!visible.has(value))reviewSelected.delete(value);
           list.replaceChildren();
           if(!records.length){list.append(el('div','empty','当前没有待检查门店。'));return;}
+          // 抽屉翻店只在本次筛选出的待检查记录内移动，不会串到已合格门店。
+          const reviewNavIds=records.map(item=>String(item.task_id));
+          const reviewNavTasks=records.map(item=>({id:item.task_id,source_name:item.store_name,status:item.status,message:item.message,stage:item.stage,reject_reason:item.reject_reason||'',error_code:item.error_code||'',source_path:item.source_path||'',output_dir:item.output_dir||''}));
           for(const record of pageRecords){
             const row=el('article','quality-row'),head=el('div','quality-row-head');
+            row.dataset.taskId=String(record.task_id);
+            if(reviewVisitedIds.has(String(record.task_id)))row.classList.add('is-visited');
+            row.addEventListener('click',event=>{if(event.target.closest('button,input,label,a'))return;openTaskDrawer({...record,id:record.task_id,source_name:record.store_name},reviewNavIds,reviewNavTasks);});
             const label=el('label','quality-title');label.style.display='flex';label.style.alignItems='center';label.style.gap='8px';
             const box=el('input');box.type='checkbox';box.dataset.task=String(record.task_id);box.checked=reviewSelected.has(String(record.task_id));
             box.addEventListener('change',()=>{if(box.checked)reviewSelected.add(String(record.task_id));else reviewSelected.delete(String(record.task_id));syncReviewSelection();});
@@ -968,7 +1342,7 @@
             if(record.updated_at)meta.append(el('span','quality-row-time',timeLabel(record.updated_at)));
             const detailText=[record.message,record.reject_reason].filter((value,index,all)=>value&&all.indexOf(value)===index).join('\n');
             const reason=qualityReasonCell(record.label||'待检查','',detailText);
-            const actions=el('div','quality-row-actions'),detail=el('button','btn','详情');detail.type='button';detail.addEventListener('click',()=>openTaskDrawer({...record,id:record.task_id,source_name:record.store_name}));actions.append(detail);
+            const actions=el('div','quality-row-actions'),detail=el('button','btn','详情');detail.type='button';detail.addEventListener('click',()=>openTaskDrawer({...record,id:record.task_id,source_name:record.store_name},reviewNavIds,reviewNavTasks));actions.append(detail);
             const retry=el('button','btn btn-primary','重跑');retry.type='button';retry.disabled=!!state.status?.running;retry.addEventListener('click',()=>rerunReviewTasks([record.task_id],retry));actions.append(retry);
             row.append(head,meta,reason,actions);list.append(row);
           }
@@ -1017,18 +1391,24 @@
       async function rerunReviewTasks(taskIds,button){
         if(!taskIds.length){toast('请先勾选要重跑的门店');return;}
         if(state.status?.running){toast('采集运行中，请先暂停或等待当前任务结束');return;}
+        // 待检查重跑属于跨批次自由选择：默认带时间名，提交前允许修改。
+        const name=runNameSupported()?await askRunName(defaultRunName(taskIds),'提交重跑'):'';
+        if(name===null)return;
         if(button)button.disabled=true;
         try{
-          await api('/api/reviews/pending/rerun',{method:'POST',body:JSON.stringify({task_ids:taskIds})});
+          await api('/api/reviews/pending/rerun',{method:'POST',body:JSON.stringify({task_ids:taskIds,...(name?{name}:{})})});
           reviewSelected.clear();await loadReviewQueue(true);await poll();toast(`已提交 ${taskIds.length} 家门店重跑`);
         }catch(error){toast(error.message);}finally{if(button)button.disabled=false;}
       }
       async function setReviewBatchesApproved(approved){
-        const ids=[...reviewBatchSelection];
-        if(!ids.length){toast('请先在“选择批次”里勾选批次');return;}
+        let ids=[...reviewBatchSelection];
+        if(!ids.length)ids=[...new Set((reviewBatchOptions||[]).map(batch=>batch.id).filter(Boolean))];
+        if(!ids.length){toast('当前列表没有可审核的原批次');return;}
+        if(!reviewBatchSelection.size&&!window.confirm(`未单独勾选批次，将对当前列表涉及的 ${ids.length} 个原批次${approved?'标记审核通过':'撤销审核通过'}？`))return;
         try{
-          for(const id of ids)await api(`/api/materials/batches/${encodeURIComponent(id)}/approve${approved?'':'/undo'}`,{method:'POST',body:'{}'});
-          toast(approved?'已标记为人工审核通过':'已撤销人工审核通过');await loadReviewQueue(true);
+          if(approved)await api('/api/reviews/approve',{method:'POST',body:JSON.stringify({batch_ids:ids})});
+          else for(const id of ids)await api(`/api/materials/batches/${encodeURIComponent(id)}/approve/undo`,{method:'POST',body:'{}'});
+          toast(approved?`已标记 ${ids.length} 个原批次为人工审核通过`:`已撤销 ${ids.length} 个批次的审核通过`);await loadReviewQueue(true);
         }catch(error){toast(error.message);}
       }
       $('review-refresh')?.addEventListener('click',()=>loadReviewQueue());
@@ -1239,9 +1619,57 @@
         }
         await runConnectionAction(check,action,button);
       }
-      async function poll(){if(state.polling)return;state.polling=true;try{renderStatus(await api('/api/status'));}catch(err){$('connection-dot').className='status-dot';$('connection-label').textContent='连接中断';$('sidebar-connection-label').textContent='本地服务已断开';$('poll-clock').textContent=err.message;}finally{state.polling=false;clearTimeout(state.statusPollTimer);state.statusPollTimer=state.status?.running?setTimeout(poll,3000):null;}}
+      async function poll(){if(state.polling)return;state.polling=true;try{renderStatus(await api('/api/status'));if(state.scope==='all')await loadCaptureQueue();}catch(err){$('connection-dot').className='status-dot';$('connection-label').textContent='连接中断';$('sidebar-connection-label').textContent='本地服务已断开';$('poll-clock').textContent=err.message;}finally{state.polling=false;clearTimeout(state.statusPollTimer);state.statusPollTimer=state.status?.running?setTimeout(poll,3000):null;}}
       async function scan(){const button=$('scan-btn');button.disabled=true;try{const r=await api('/api/scan',{method:'POST',body:'{}'});toast(`${r.material_release?.version||'当前输入目录'}扫描完成 · 新增 ${r.added??0} 项 · 当前共 ${r.current_total??0} 项`);await poll();}catch(err){toast(err.message);}finally{button.disabled=!!state.status?.running;}}
-      async function start(){if(!hasRobotSelection()){promptRobotTaskSelection();return;}const button=$('start-btn');button.disabled=true;$('preflight-error').classList.remove('visible');try{await persistRobotProfile();await poll();const result=await api('/api/start',{method:'POST',body:'{}'});renderStatus(result);void poll();toast(result.launch_mode==='cli'?'自动化引擎已启动，正在连接':'任务已准备，请按运行目录提示在 Studio 中启动');}catch(err){$('preflight-error').textContent=err.message;$('preflight-error').classList.add('visible');toast(err.message);}finally{syncStartButton();}}
+      function selectedTasksByIds(ids){const source=scopeTaskList();return ids.map(id=>source.find(task=>String(task.id)===String(id))).filter(Boolean);}
+      // 后端能力检测：旧服务的 run 没有 name 字段，此时不弹命名框也不传 name，避免参数被拒。
+      function runNameSupported(){return !!state.status?.run&&Object.prototype.hasOwnProperty.call(state.status.run,'name');}
+      // 默认任务名：同一素材批次沿用批次名+版本；跨批次自由选择按重跑时间命名。
+      function defaultRunName(ids){
+        const tasks=selectedTasksByIds(ids),pairs=[...new Set(tasks.map(task=>`${task.batch_name||''}|${task.version||''}`))];
+        if(tasks.length&&pairs.length===1&&tasks[0].batch_name)return [tasks[0].batch_name,tasks[0].version].filter(Boolean).join(' · ');
+        const now=new Date(),pad=value=>String(value).padStart(2,'0');
+        return `待检查重跑 · ${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+      }
+      function needsRunName(ids){
+        const tasks=selectedTasksByIds(ids),batches=new Set(tasks.map(task=>task.batch_name).filter(Boolean));
+        return tasks.length!==ids.length||batches.size>1||tasks.some(task=>!task.batch_name);
+      }
+      function askRunName(defaultName,confirmText='开始采集'){
+        const dialog=$('run-name-dialog'),input=$('run-name-input'),form=$('run-name-form');
+        if(!dialog||!input||!form)return Promise.resolve(defaultName);
+        return new Promise(resolve=>{
+          let settled=false;
+          const finish=value=>{if(settled)return;settled=true;if(dialog.open)dialog.close();resolve(value);};
+          input.value=defaultName;
+          $('run-name-confirm').textContent=confirmText;
+          $('run-name-cancel').onclick=()=>finish(null);
+          dialog.oncancel=event=>{event.preventDefault();finish(null);};
+          form.onsubmit=event=>{event.preventDefault();const value=input.value.trim();if(!value){input.focus();return;}finish(value);};
+          dialog.showModal();input.focus();input.select();
+        });
+      }
+      async function start(){
+        if(!hasRobotSelection()){promptRobotTaskSelection();return;}
+        const taskIds=state.queueIds.slice();
+        let runName='';
+        if(runNameSupported()&&needsRunName(taskIds)){
+          const value=await askRunName(defaultRunName(taskIds));
+          if(value===null)return;
+          runName=value;
+        }
+        const button=$('start-btn');
+        button.disabled=true;$('preflight-error').classList.remove('visible');
+        try{
+          if(state.scope!=='all')await persistRobotProfile();
+          await poll();
+          const result=await api('/api/capture/start',{method:'POST',body:JSON.stringify({mode:state.captureMode,task_ids:taskIds,...(runName?{name:runName}:{})})});
+          if(result.status)renderStatus(result.status);else await poll();
+          void poll();
+          toast(state.captureMode==='manual'?'半自动人工采集已启动：系统开店后，进入菜单按「开始截图」或 F8':'全自动 Agent 已启动，正在逐店扫码采集');
+        }catch(err){$('preflight-error').textContent=err.message;$('preflight-error').classList.add('visible');toast(err.message);}
+        finally{syncStartButton();}
+      }
       async function changeRun(action){
         if(state.runAction)return;
         if(action==='terminate'){
@@ -1268,17 +1696,40 @@
       async function retryTask(id,button){button.disabled=true;try{await api(`/api/tasks/${encodeURIComponent(id)}/retry`,{method:'POST',body:'{}'});toast('已提交重试');await poll();}catch(err){toast(err.message);}finally{button.disabled=false;}}
       window.addEventListener('materials-published',()=>void poll());
       $('scan-btn').addEventListener('click',scan);$('start-btn').addEventListener('click',start);$('resume-btn').addEventListener('click',resume);$('stop-btn').addEventListener('click',stop);$('terminate-btn').addEventListener('click',terminate);
+      document.querySelectorAll('[data-capture-mode]').forEach(button=>button.addEventListener('click',()=>{
+        if(state.status?.running)return toast('采集运行中，本轮模式已锁定；暂停或终止后可切换');
+        state.captureMode=button.dataset.captureMode;
+        syncCaptureModeButtons();
+        toast(state.captureMode==='manual'?'已切换为半自动人工；已勾选门店保持不变':'已切换为全自动 Agent；已勾选门店保持不变');
+      }));
+      $('workbench-scope').addEventListener('change',async event=>{
+        if(state.status?.running){event.target.value=state.scope;return toast('采集运行中，请在开始前切换批次范围');}
+        state.scope=event.target.value;
+        state.scopeTasks=null;
+        if(state.scope==='all')await loadCaptureQueue();else renderStatus(state.status);
+      });
+      $('manual-capture').addEventListener('click',()=>void manualAction('/api/manual/capture'));
+      $('manual-reject-btn').addEventListener('click',()=>void manualAction('/api/manual/reject',{reason:$('manual-reason').value,detail:''}));
+      $('manual-skip').addEventListener('click',()=>void manualAction('/api/manual/skip'));
+      $('manual-reason').addEventListener('change',()=>{api('/api/manual/reason',{method:'POST',body:JSON.stringify({reason:$('manual-reason').value})}).catch(error=>toast(error.message));});
+      document.addEventListener('keydown',event=>{
+        if($('manual-panel').hidden||!['F8','F9'].includes(event.key))return;
+        event.preventDefault();
+        if(event.key==='F8')void manualAction('/api/manual/capture');
+        else void manualAction('/api/manual/reject',{reason:$('manual-reason').value,detail:''});
+      });
       $('test-model-btn').addEventListener('click',async()=>{const btn=$('test-model-btn'),res=$('test-result');btn.disabled=true;res.className='test-result';res.textContent='正在连接…';res.classList.add('visible');try{const result=await api('/api/test-model',{method:'POST',body:'{}'});res.className=`test-result visible ${result.ok?'ok':'bad'}`;res.textContent=result.message|| (result.ok?'连接成功':'连接失败');$('model-status-title').textContent=result.ok?'连接测试成功':'连接测试未通过';$('model-status-subtitle').textContent=result.message||'';await refreshConnections();}catch(err){res.className='test-result visible bad';res.textContent=err.message;$('model-status-title').textContent='连接测试失败';$('model-status-subtitle').textContent=err.message;await refreshConnections();}finally{btn.disabled=false;}});
       for(const id of ['reveal-input','reveal-output'])$(id).addEventListener('click',async()=>{try{await api('/api/reveal',{method:'POST',body:JSON.stringify({path:id==='reveal-input'?'input':'output'})});}catch(err){toast(err.message);}});
       let robotProfile=null,robotProfileLoaded=false,robotTasksInitialized=false;
-      function canSelectRobotTask(task){return (!task.reject_reason||task.status==='pending')&&['pending','needs_review','needs_retry','error','blocked','captured'].includes(task.status);}
-      function fillRobot(p){robotProfile=p;robotProfileLoaded=true;for(const [id,key] of [['robot-launch-mode','launch_mode'],['robot-mode','mode'],['robot-miniapp','miniapp_selector'],['robot-wechat','wechat_selector'],['robot-preview','preview_selector'],['robot-paste','paste_shortcut'],['robot-send','send_key'],['robot-close','close_key'],['robot-input-x','wechat_input_x_ratio'],['robot-input-y','wechat_input_y_ratio'],['robot-scroll','scroll_units']])$(id).value=p[key]??'';$('robot-verified').checked=!!p.coordinates_verified;renderRobotTasks(state.status?.tasks||[],true);}
+      function scopeTaskList(){return state.scope==='all'&&Array.isArray(state.scopeTasks)?state.scopeTasks:(state.status?.tasks||[]);}
+      function canSelectRobotTask(task){if(task&&typeof task.runnable==='boolean')return task.runnable&&(!task.reject_reason||task.status==='pending');return (!task.reject_reason||task.status==='pending')&&['pending','needs_review','needs_retry','error','blocked','captured'].includes(task.status);}
+      function fillRobot(p){robotProfile=p;robotProfileLoaded=true;for(const [id,key] of [['robot-launch-mode','launch_mode'],['robot-mode','mode'],['robot-miniapp','miniapp_selector'],['robot-wechat','wechat_selector'],['robot-preview','preview_selector'],['robot-paste','paste_shortcut'],['robot-send','send_key'],['robot-close','close_key'],['robot-input-x','wechat_input_x_ratio'],['robot-input-y','wechat_input_y_ratio'],['robot-scroll','scroll_units']])$(id).value=p[key]??'';$('robot-verified').checked=!!p.coordinates_verified;renderRobotTasks(scopeTaskList(),true);}
       $('robot-task').addEventListener('change',()=>{state.attachedId=$('robot-task').value;syncRobotTaskMode();persistQueueSoon();});
       function buildRobotProfile(){const mode=$('robot-mode').value,selectedTaskIds=state.queueIds.map(String),selectedTaskId=$('robot-task').value;if(!robotProfileLoaded)throw new Error('自动化执行配置尚未读取完成，请稍后重试');return {launch_mode:$('robot-launch-mode').value,mode,selected_task_id:selectedTaskId,selected_task_ids:selectedTaskIds,miniapp_selector:$('robot-miniapp').value.trim(),wechat_selector:$('robot-wechat').value.trim(),preview_selector:$('robot-preview').value.trim(),paste_shortcut:$('robot-paste').value.trim(),send_key:$('robot-send').value.trim(),close_key:$('robot-close').value.trim(),wechat_input_x_ratio:Number($('robot-input-x').value),wechat_input_y_ratio:Number($('robot-input-y').value),scroll_units:Number($('robot-scroll').value),max_tasks:mode==='attached'?1:Math.max(1,Math.min(100,selectedTaskIds.length)),coordinates_verified:$('robot-verified').checked};}
       async function persistRobotProfile(){const previous=robotProfile,payload=buildRobotProfile(),saved=await api('/api/robot/profile',{method:'POST',body:JSON.stringify(payload)});const changed=previous&&['mode','wechat_selector','miniapp_selector','preview_selector'].some(key=>previous[key]!==saved[key]);robotProfile=saved;if(changed){state.connections=null;renderUncheckedConnections();}$('robot-save-message').textContent=' 已保存';return saved;}
       $('robot-form').addEventListener('submit',async event=>{event.preventDefault();try{await persistRobotProfile();await poll();}catch(err){$('robot-save-message').textContent=err.message;}});
       $('environment-refresh').addEventListener('click',()=>state.serviceDisconnected?retryLocalService():connectConnections(true));
-      renderUncheckedConnections();refreshConfig();api('/api/robot/profile').then(fillRobot).catch(err=>toast(err.message));poll();
+      $('workbench-scope').value=state.scope;renderUncheckedConnections();refreshConfig();api('/api/robot/profile').then(fillRobot).catch(err=>toast(err.message));poll();
       window.__materialsInit=(initialize)=>initialize({api,token:TOKEN});
       window.__consoleBridge={api,toast,setPage};
     })();
