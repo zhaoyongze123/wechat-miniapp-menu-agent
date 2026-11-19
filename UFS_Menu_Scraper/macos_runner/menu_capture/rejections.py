@@ -39,7 +39,9 @@ class RejectionService:
                 "reason_code": code,
                 "reason_label": REJECTION_REASONS.get(code, "未记录原因"),
                 "detail": task.get("reject_detail", ""),
+                "evidence": task.get("reject_evidence", ""),
                 "marked_at": task.get("rejected_at", ""),
+                "reviewed_at": task.get("reject_reviewed_at", ""),
                 "status": task["status"],
                 "stage": task["stage"],
                 "batch_id": task.get("material_batch_id", "") or "",
@@ -58,6 +60,7 @@ class RejectionService:
             "records": len(rows),
             "materials": sum(row["source_type"] == "materials" for row in rows),
             "capture": sum(row["source_type"] == "capture" for row in rows),
+            "reviewed": sum(bool(row.get("reviewed_at")) for row in rows),
         }
 
     def list(self, source: str = "all", reason: str = "all", query: str = "", batch_id: str = "all") -> dict:
@@ -103,6 +106,7 @@ class RejectionService:
             reject_reason=reason,
             reject_detail=detail.strip(),
             rejected_at=now(),
+            reject_reviewed_at="",
         )
         return self.tasks.get(task_id)
 
@@ -123,6 +127,7 @@ class RejectionService:
             reject_reason=reason,
             reject_detail=detail.strip(),
             rejected_at=now(),
+            reject_reviewed_at="",
         )
         self.tasks.event("人工标注标记为不合格", "warning", task_id)
         return self.tasks.get(task_id)
@@ -131,8 +136,57 @@ class RejectionService:
         task = self.tasks.get(task_id)
         if not task.get("reject_reason"):
             raise ValueError("该任务当前没有不合格标记")
-        self.tasks.update(task_id, reject_reason="", reject_detail="", rejected_at="")
+        self.tasks.update(task_id, reject_reason="", reject_detail="", rejected_at="", reject_evidence="",
+                          reject_reviewed_at="")
         return self.tasks.get(task_id)
+
+    def mark_reviewed(self, source_type: str, *, task_id: str = "", batch_id: str = "",
+                      store_id: str = "", reviewed: bool = True) -> dict:
+        """人工复核标记：只改复核结论，不改变任务状态或不合格原因。"""
+        if source_type == "capture":
+            task = self.tasks.get(task_id)
+            if not task.get("reject_reason"):
+                raise ValueError("该任务当前没有不合格记录")
+            self.tasks.update(task_id, reject_reviewed_at=now() if reviewed else "")
+            return {"ok": True, "reviewed_at": self.tasks.get(task_id)["reject_reviewed_at"]}
+        if source_type == "materials":
+            if not batch_id or not store_id:
+                raise ValueError("素材不合格记录缺少批次或门店编号")
+            store = self.materials.mark_rejection_reviewed(batch_id, store_id, reviewed)
+            return {"ok": True, "reviewed_at": (store.get("rejection") or {}).get("reviewed_at", "")}
+        raise ValueError("不合格来源无效")
+
+    def return_to_materials(self, task_id: str) -> dict:
+        """把采集不合格打回素材清洗：清不合格 + 决策回 pending + 任务置 blocked。
+
+        不新建批次也不新建发布；重新确认二维码后按原批次增量发布即可生成新的采集任务。
+        """
+        task = self.tasks.get(task_id)
+        if not task.get("reject_reason"):
+            raise ValueError("该任务当前没有不合格标记")
+        binding = self.tasks.task_material_binding(task_id)
+        batch_id = binding.get("batch_id", "")
+        if not batch_id:
+            raise ValueError("该任务未关联素材批次，无法打回素材清洗")
+        batch = self.materials.get_batch(batch_id)
+        stores = batch.get("stores") or []
+        store = next((item for item in stores if item.get("source_name") == task["source_name"]), None)
+        if store is None:
+            # 兜底：发布快照中的父目录名与素材目录名一致，可按目录后缀匹配。
+            folder = Path(task["source_path"]).parent.name
+            store = next((item for item in stores
+                          if str(item.get("source_folder") or "").endswith(folder)), None)
+        if store is None:
+            raise ValueError("未在素材批次中找到对应门店，无法打回素材清洗")
+        self.materials.decide_store(batch_id, store["store_id"], "pending")
+        self.tasks.update(
+            task_id, status="blocked", stage="returned_to_materials",
+            message="已打回素材清洗；请重新确认二维码后增量发布并重跑",
+            reject_reason="", reject_detail="", rejected_at="", reject_evidence="", reject_reviewed_at="", error_code="",
+        )
+        self.tasks.event("已打回素材清洗：等待重新确认二维码", "warning", task_id)
+        return {"ok": True, "task": self.tasks.get(task_id), "batch_id": batch_id,
+                "batch_name": binding.get("batch_name", ""), "store_id": store["store_id"]}
 
     @staticmethod
     def _validate_reason(reason: str, detail: str) -> None:
@@ -148,8 +202,8 @@ class RejectionService:
         workbook = Workbook(write_only=True)
         sheet = workbook.create_sheet("不合格门店")
         sheet.freeze_panes = "A2"
-        sheet.auto_filter.ref = f"A1:J{max(1, len(records) + 1)}"
-        headers = ["门店", "来源", "批次", "来源文件", "处理阶段", "不合格原因", "备注", "任务状态", "标记时间", "任务编号"]
+        sheet.auto_filter.ref = f"A1:K{max(1, len(records) + 1)}"
+        headers = ["门店", "来源", "批次", "来源文件", "处理阶段", "不合格原因", "备注", "任务状态", "标记时间", "任务编号", "人工确认"]
         header_font = Font(bold=True, color="FFFFFF")
         header_fill = PatternFill("solid", fgColor="167A70")
         header_cells = []
@@ -166,6 +220,7 @@ class RejectionService:
                 record["store_name"], record["source_label"], record["batch_name"],
                 record["source_item"], record["stage"], record["reason_label"],
                 record["detail"], record["status"], record["marked_at"], record["task_id"],
+                "✓ 已确认" if record.get("reviewed_at") else "",
             ]
             cells = []
             for value in values:
@@ -173,7 +228,7 @@ class RejectionService:
                 cell.data_type = "s"
                 cells.append(cell)
             sheet.append(cells)
-        for column, width in zip("ABCDEFGHIJ", (34, 14, 22, 28, 18, 24, 42, 18, 24, 22)):
+        for column, width in zip("ABCDEFGHIJK", (34, 14, 22, 28, 18, 24, 42, 18, 24, 22, 14)):
             sheet.column_dimensions[column].width = width
         output = BytesIO()
         workbook.save(output)

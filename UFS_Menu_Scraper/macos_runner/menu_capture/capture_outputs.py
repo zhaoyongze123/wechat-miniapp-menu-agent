@@ -51,6 +51,29 @@ def store_output_dir(output_root: str | Path, source_name: str, batch_id: str = 
     return parent / name
 
 
+def unqualified_store_dir(output_root: str | Path, source_name: str) -> Path:
+    """不合格归档中该门店的目录；与 archive_unqualified 使用同一命名规则。"""
+    return Path(output_root).expanduser().resolve() / _store_segment(source_name)[:120]
+
+
+def retire_store_dir(directory: str | Path) -> Path | None:
+    """把已被当前结果取代的门店目录移到同级 `_历史`，不删除文件。
+
+    同一门店只应出现在「合格」或「不合格」之一；重采成功或后来判不合格时，
+    旧结论目录必须让位，否则两个目录的数量会同时虚高。
+    """
+    current = Path(directory).expanduser()
+    if not current.is_dir() or current.is_symlink():
+        return None
+    history = current.parent / "_历史"
+    history.mkdir(parents=True, exist_ok=True)
+    target = history / current.name
+    if target.exists():
+        target = history / f"{current.name}-{datetime.now():%Y%m%d-%H%M%S-%f}"
+    shutil.move(str(current), str(target))
+    return target
+
+
 def archive_unqualified(output_root: str | Path, source_folder: str | Path, source_name: str, *,
                         status: str, stage: str, message: str, code: str = "") -> Path:
     """把不合格门店的原图整目录复制到不合格目录，并写一份人可读的门店信息。
@@ -58,7 +81,7 @@ def archive_unqualified(output_root: str | Path, source_folder: str | Path, sour
     原图只复制不移动，原始素材目录保持不变，便于复查与重新采集。
     """
     root = Path(output_root).expanduser().resolve()
-    destination = root / _store_segment(source_name)[:120]
+    destination = unqualified_store_dir(root, source_name)
     destination.mkdir(parents=True, exist_ok=True)
     source = Path(source_folder)
     copied = 0

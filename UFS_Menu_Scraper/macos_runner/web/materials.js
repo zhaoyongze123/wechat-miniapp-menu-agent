@@ -5,7 +5,7 @@
   const $ = (id) => document.getElementById(id);
   if (typeof window.__materialsInit !== 'function') return;
   window.__materialsInit(({ api, token }) => {
-    const state = { batches: [], batchId: '', batch: null, storeId: '', detail: null, selectionSeq: 0, imageLoadSeq: 0, filter: 'pending', search: '', selectedCandidate: null, selectedImageIndex: null, manualBox: null, manualBoxImageIndex: null, manualPreviewUrl: '', manualBoxBeforeDraw: null, manualImageBeforeDraw: null, manualPreviewBeforeDraw: '', selectedBeforeDraw: null, manualMode: false, repairMode: false, uploadMode: 'append', dragging: null, busy: false, files: [], pollTimer: null, selectedReleaseId: '', analysisDismissed: false, analysisStarted: '', analysisCloseTimer: null, reanalyzeMode: false, showRejected: false };
+    const state = { batches: [], batchId: '', batch: null, storeId: '', detail: null, selectionSeq: 0, imageLoadSeq: 0, filter: 'pending', search: '', selectedCandidate: null, selectedImageIndex: null, manualBox: null, manualBoxImageIndex: null, manualPreviewUrl: '', manualBoxBeforeDraw: null, manualImageBeforeDraw: null, manualPreviewBeforeDraw: '', selectedBeforeDraw: null, manualMode: false, repairMode: false, uploadMode: 'append', dragging: null, busy: false, files: [], pollTimer: null, selectedReleaseId: '', analysisDismissed: false, analysisStarted: '', analysisCloseTimer: null, reanalyzeMode: false, showRejected: false, rework: null, reworkFilter: 'all', reworkSearch: '', reworkSelected: new Set() };
     const purposeLabels = { ordering: '点餐', not_ordering: '非点餐', enterprise_wechat: '企业微信', conflict: '证据冲突', other: '其他', unknown: '未知' };
     const purposeSourceLabels = { payload_url: '二维码链接（URL）', payload_url_ocr: '餐饮域名 + 周边 OCR', payload_domain: '企业微信域名', local_ocr: '周边 OCR', vision_model: '视觉模型' };
     const statusLabels = { ready_to_analyze: '待分析', uploading: '上传中', queued: '排队分析', analyzing: '分析中', completed: '分析完成', failed: '分析失败', ready: '待确认', interrupted: '已中断', error: '分析失败' };
@@ -291,6 +291,77 @@
     }
     $('materials-show-list').addEventListener('click',()=>setReviewView(false));
     $('materials-show-review').addEventListener('click',()=>setReviewView(true));
+    // 全部批次返工：跨批次汇总，打回后在原批次重选码，再一次统一增量发布。
+    const REWORK_LABELS={pending:'待处理',rejected:'不合格',unpublished:'已选码待发布'};
+    const reworkKey=(record)=>`${record.batch_id}:${record.store_id}`;
+    function reworkRows(){const rows=state.rework?.records||[],q=state.reworkSearch.trim().toLocaleLowerCase();return rows.filter((r)=>(state.reworkFilter==='all'||r.category===state.reworkFilter)&&(!q||`${r.store_name} ${r.batch_name}`.toLocaleLowerCase().includes(q)));}
+    async function loadRework(){
+      try{
+        const result=await api('/api/materials/rework?batch_ids=all');
+        state.rework=result;
+        const keys=new Set((result.records||[]).filter((r)=>r.publishable).map(reworkKey));
+        state.reworkSelected=new Set([...state.reworkSelected].filter((key)=>keys.has(key)));
+        renderRework();
+      }catch(error){setError('materials-rework-error',error.message);}
+    }
+    function renderRework(){
+      const list=$('materials-rework-list'),scrollTop=list.scrollTop;list.replaceChildren();
+      const rows=reworkRows(),selectable=rows.filter((r)=>r.publishable);
+      if(!rows.length)list.append(node('div','materials-empty-filter','没有符合条件的门店。'));
+      for(const record of rows){
+        const row=node('label',`materials-rework-row${record.publishable?'':' is-readonly'}`);
+        const check=document.createElement('input');check.type='checkbox';check.disabled=!record.publishable||state.busy;
+        check.checked=state.reworkSelected.has(reworkKey(record));
+        check.addEventListener('change',()=>{const key=reworkKey(record);if(check.checked)state.reworkSelected.add(key);else state.reworkSelected.delete(key);updateReworkControls();});
+        const main=node('span','materials-rework-main');
+        main.append(node('strong','',record.store_name||'未命名门店'),node('span','materials-rework-meta',`${record.batch_name} · ${record.version||'未发布'}`),
+          node('span','materials-rework-reason',record.category==='rejected'?[record.reason_label||'未记录原因',record.reason_detail].filter(Boolean).join(' · '):record.category==='unpublished'?'已选新码，等待发布':'尚未选码'));
+        const actions=node('span','materials-rework-actions');
+        const open=node('button','btn','打开处理');open.type='button';open.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();$('materials-rework-dialog').close();window.dispatchEvent(new CustomEvent('materials-open-review',{detail:{batch_id:record.batch_id,store_id:record.store_id}}));});
+        actions.append(open);
+        if(record.category!=='pending'){
+          const back=node('button','btn btn-quiet','打回待处理');back.type='button';back.disabled=state.busy;
+          back.addEventListener('click',async(event)=>{event.preventDefault();event.stopPropagation();back.disabled=true;setError('materials-rework-error','');
+            try{await api('/api/materials/rework/return',{method:'POST',body:JSON.stringify({batch_id:record.batch_id,store_id:record.store_id})});await loadRework();await loadBatches(false);}
+            catch(error){setError('materials-rework-error',error.message);}finally{back.disabled=false;}});
+          actions.append(back);
+        }
+        row.append(check,main,node('span',`materials-rework-badge ${record.category}`,REWORK_LABELS[record.category]||record.category),actions);
+        list.append(row);
+      }
+      list.scrollTop=scrollTop;
+      const all=$('materials-rework-select-all');all.checked=selectable.length>0&&selectable.every((r)=>state.reworkSelected.has(reworkKey(r)));
+      all.indeterminate=!all.checked&&selectable.some((r)=>state.reworkSelected.has(reworkKey(r)));
+      $('materials-rework-count').textContent=`${rows.length} 家 · 可发布 ${selectable.length}`;
+      updateReworkControls();
+    }
+    function updateReworkControls(){
+      const count=state.reworkSelected.size;
+      $('materials-rework-publish').disabled=state.busy||!count;
+      $('materials-rework-publish').textContent=count?`发布已处理门店（${count}）`:'发布已处理门店';
+      $('materials-rework-hint').textContent=count?'按原批次分组，在各自最新快照上更新选中的门店；其余沿用上一版。':'勾选要发布的门店；未勾选的门店沿用上一版。';
+    }
+    async function publishRework(){
+      if(state.busy||!state.reworkSelected.size)return;
+      setBusy(true);setError('materials-rework-error','');setSuccess('materials-rework-success','');
+      try{
+        const result=await api('/api/materials/rework/publish',{method:'POST',body:JSON.stringify({store_ids:[...state.reworkSelected]})});
+        const ok=(result.results||[]).map((r)=>`${r.batch_name||r.batch_id} → ${r.version}${r.already_published?'（未变化，沿用）':''}`);
+        const failed=(result.errors||[]).map((e)=>`${e.batch_name||e.batch_id}：${e.error}`);
+        if(failed.length)setError('materials-rework-error','以下批次发布失败，可原样重试：'+failed.join('；'));
+        if(ok.length)setSuccess('materials-rework-success','已发布：'+ok.join('；'));
+        window.dispatchEvent(new Event('materials-published'));
+        state.reworkSelected.clear();
+        await loadRework();await loadBatches(false);
+      }catch(error){setError('materials-rework-error',error.message);}
+      finally{setBusy(false);updateReworkControls();}
+    }
+    $('materials-rework-open').addEventListener('click',async()=>{setError('materials-rework-error','');setSuccess('materials-rework-success','');state.reworkSelected.clear();$('materials-rework-dialog').showModal();await loadRework();});
+    $('materials-rework-close').addEventListener('click',()=>$('materials-rework-dialog').close());
+    document.querySelectorAll('[data-rework-filter]').forEach((button)=>button.addEventListener('click',()=>{state.reworkFilter=button.dataset.reworkFilter;document.querySelectorAll('[data-rework-filter]').forEach((b)=>b.classList.toggle('active',b===button));renderRework();}));
+    $('materials-rework-search').addEventListener('input',()=>{state.reworkSearch=$('materials-rework-search').value;renderRework();});
+    $('materials-rework-select-all').addEventListener('change',(event)=>{for(const record of reworkRows()){if(!record.publishable)continue;if(event.target.checked)state.reworkSelected.add(reworkKey(record));else state.reworkSelected.delete(reworkKey(record));}renderRework();});
+    $('materials-rework-publish').addEventListener('click',publishRework);
     async function selectStore(storeId, repairMode = false) {
       setReviewView(true);
       $('materials-review-body').scrollTop=0;

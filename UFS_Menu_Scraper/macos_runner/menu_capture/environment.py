@@ -457,15 +457,30 @@ class EnvironmentDiagnostics:
             transport = FileRobotTransport(work, capture_dir, poll_interval=0.05)
             discovered = transport.run({"action": "discover"}, timeout=35, process=process)
             windows = UiPathRunner._window_list(discovered.get("windows"))
+            # 保留本次枚举到的窗口摘要，选择器失效时可直接比对标题/类名，不必反复盲试。
+            result["windows"] = [
+                {"title": str(window.get("title") or ""), "app": str(window.get("app") or ""),
+                 "cls": str(window.get("cls") or ""), "position": window.get("position")}
+                for window in windows[:40]
+            ]
             if not windows:
                 result["uipath_accessibility"] = {
                     "status": "warning", "summary": "UiPath 已连接，但没有枚举到可用桌面窗口",
                     "detail": "请确认微信已打开，并在 UiPath 实测时保持桌面未锁定。",
                 }
             else:
+                detail = "这是 UiPath UIAutomation 实测；不引用 Python 服务进程权限。"
+                wechat_like = [window for window in windows
+                               if "weixin" in str(window.get("app") or "").casefold()
+                               or "wechat" in str(window.get("app") or "").casefold()]
+                if wechat_like:
+                    detail += " 微信窗口：" + "；".join(
+                        f"{window.get('title')} / {window.get('app')} / {window.get('cls')} / "
+                        f"{json.dumps(window.get('position') or {}, ensure_ascii=False)}"
+                        for window in wechat_like[:6])
                 result["uipath_accessibility"] = {
                     "status": "ready", "summary": "UiPath 成功枚举桌面窗口",
-                    "detail": "这是 UiPath UIAutomation 实测；不引用 Python 服务进程权限。",
+                    "detail": detail,
                 }
             profile = self.runner.readiness().get("profile", {})
             mode = profile.get("mode", "automatic")

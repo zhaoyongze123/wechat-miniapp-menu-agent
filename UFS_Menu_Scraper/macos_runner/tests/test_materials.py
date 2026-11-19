@@ -1142,3 +1142,123 @@ def test_mkdir_ok_does_not_stat_existing_dir(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "stat", deny)
     _mkdir_ok(target)
+
+
+def test_subset_publish_keeps_unselected_stores_and_reuses_unchanged_version(tmp_path: Path) -> None:
+    """跨批次统一发布：只更新勾选门店，其余沿用上一版；内容未变时复用原版本。"""
+    service, _, tasks, source, _ = _setup(tmp_path)
+    _png(source / "Shop A" / "code.png")
+    _png(source / "Shop B" / "code.png", color="blue")
+    batch = _analyze(service, source)
+    batch_id = batch["batch_id"]
+    a, b = batch["stores"]
+    service.decide_store(batch_id, a["store_id"], "confirm", image_index=0, candidate_index=0)
+    first = service.publish_snapshot(batch_id, name="门店集", version="v1.0.0", description="首发")
+    assert first["release"]["store_count"] == 1
+
+    # B 还没选码：待处理会出现在返工表里，不能发布。
+    rows = service.rework_records([batch_id])
+    assert any(row["store_id"] == b["store_id"] and row["category"] == "pending" for row in rows)
+
+    service.decide_store(batch_id, b["store_id"], "confirm", image_index=0, candidate_index=0)
+    assert any(row["store_id"] == b["store_id"] and row["category"] == "unpublished"
+               for row in service.rework_records([batch_id]))
+    second = service.publish_snapshot(batch_id, description="补一家", store_ids=[b["store_id"]], activate=False)
+    assert second["release"]["store_count"] == 2
+    assert second["release"]["version"] == "v1.0.1"
+    # 未勾选的 A 沿用上一版快照文件与版本，不重新裁剪。
+    assert (Path(second["input_dir"]) / "Shop A" / "二维码.png").is_file()
+    again = service.publish_snapshot(batch_id, description="补一家", store_ids=[b["store_id"]], activate=False)
+    assert again["snapshot_id"] == second["snapshot_id"]
+    assert again["release"]["version"] == "v1.0.1"
+    assert again["already_published"]
+    # 同一门店在当前快照里只有一个有效任务，重复发布不产生新任务。
+    effective = [row for row in tasks.tasks() if Path(second["input_dir"]) in Path(row["source_path"]).parents]
+    assert len(effective) == 2
+    # 已经与快照一致的门店不再出现在「已选码待发布」。
+    assert not any(row["store_id"] == b["store_id"] and row["category"] == "unpublished"
+                   for row in service.rework_records([batch_id]))
+
+
+def test_effective_capture_tasks_only_use_latest_snapshot(tmp_path: Path) -> None:
+    service, _, tasks, source, _ = _setup(tmp_path)
+    _png(source / "Shop A" / "code.png")
+    _png(source / "Shop B" / "code.png", color="blue")
+    batch = _analyze(service, source)
+    batch_id = batch["batch_id"]
+    a, b = batch["stores"]
+    service.decide_store(batch_id, a["store_id"], "confirm", image_index=0, candidate_index=0)
+    first = service.publish_snapshot(batch_id, description="首发", activate=False)
+    service.decide_store(batch_id, b["store_id"], "confirm", image_index=0, candidate_index=0)
+    second = service.publish_snapshot(batch_id, description="补一家", store_ids=[b["store_id"]], activate=False)
+
+    rows = service.effective_capture_tasks()
+    assert {row["source_name"] for row in rows} == {"Shop A", "Shop B"}
+    assert {row["version"] for row in rows} == {second["release"]["version"]}
+    assert {row["batch_id"] for row in rows} == {batch_id}
+    # 旧快照任务留在历史里，但不进入有效清单，避免重复计数。
+    old = {row["id"] for row in tasks.tasks() if Path(first["input_dir"]) in Path(row["source_path"]).parents}
+    assert old and old.isdisjoint({row["id"] for row in rows})
+
+
+def test_capture_round_and_new_version_clear_approval(tmp_path: Path) -> None:
+    """已通过的批次换版或重采后必须回到待审核。"""
+    service, _, tasks, source, _ = _setup(tmp_path)
+    _png(source / "Shop A" / "code.png")
+    _png(source / "Shop B" / "code.png", color="blue")
+    batch = _analyze(service, source)
+    batch_id = batch["batch_id"]
+    a, b = batch["stores"]
+    service.decide_store(batch_id, a["store_id"], "confirm", image_index=0, candidate_index=0)
+    first = service.publish_snapshot(batch_id, description="首发", activate=False)
+    service.set_approved(batch_id, True)
+    assert service.get_batch(batch_id)["workflow"]["stage"] == "approved"
+
+    task = next(row for row in tasks.tasks() if Path(first["input_dir"]) in Path(row["source_path"]).parents)
+    assert service.register_capture_round([task["id"]]) == [batch_id]
+    assert service.get_batch(batch_id)["workflow"]["stage"] != "approved"
+
+    service.set_approved(batch_id, True)
+    service.decide_store(batch_id, b["store_id"], "confirm", image_index=0, candidate_index=0)
+    service.publish_snapshot(batch_id, description="补一家", store_ids=[b["store_id"]], activate=False)
+    assert service.get_batch(batch_id)["workflow"]["stage"] != "approved"
+
+
+def test_rejection_review_mark_is_persistent_and_resets_with_new_reason(tmp_path: Path) -> None:
+    """不合格门店的人工确认标记：可反复切换，重新判原因时自动清空。"""
+    service, _, _, source, _ = _setup(tmp_path)
+    _png(source / "Shop A" / "code.png")
+    batch = _analyze(service, source)
+    batch_id, store_id = batch["batch_id"], batch["stores"][0]["store_id"]
+    service.decide_store(batch_id, store_id, "skip", reject_reason="not_ordering", reject_detail="门贴码")
+    assert service.mark_rejection_reviewed(batch_id, store_id, True)["rejection"]["reviewed_at"]
+    assert service.mark_rejection_reviewed(batch_id, store_id, False)["rejection"]["reviewed_at"] == ""
+    service.mark_rejection_reviewed(batch_id, store_id, True)
+    service.decide_store(batch_id, store_id, "skip", reject_reason="store_closed")
+    assert service.get_store(batch_id, store_id)["rejection"]["reviewed_at"] == ""
+    service.decide_store(batch_id, store_id, "confirm", image_index=0, candidate_index=0)
+    with pytest.raises(ValueError, match="没有不合格"):
+        service.mark_rejection_reviewed(batch_id, store_id, True)
+
+
+def test_manual_action_accepts_only_first_decision_per_store() -> None:
+    import threading
+
+    from menu_capture.uipath_runner import UiPathRunner
+
+    runner = object.__new__(UiPathRunner)
+    runner._manual_cond = threading.Condition()
+    runner._manual_state = {"task_id": "t1", "store_name": "Shop A", "index": 1, "total": 2,
+                            "stage": "waiting_human", "waiting": True, "decision": ""}
+    runner._manual_action = None
+    runner._manual_reason = "not_ordering"
+    runner._manual_last_result = ""
+    assert runner.manual_action("capture")["action"] == "capture"
+    with pytest.raises(ValueError, match="本店已处理"):
+        runner.manual_action("skip")
+    # 换店后动作通道重置，下一家仍然只接受第一次决定。
+    runner._set_manual_state({"id": "t2", "source_name": "Shop B"}, 1, 2, "waiting_human", waiting=True)
+    assert runner._manual_action is None
+    with pytest.raises(ValueError, match="有效"):
+        runner.manual_action("reject", "not-a-reason")
+    assert runner.manual_action("reject", "not_ordering")["action"] == "reject"

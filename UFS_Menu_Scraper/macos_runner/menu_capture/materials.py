@@ -42,6 +42,7 @@ REJECTION_REASONS = {
     "store_closed": "门店已关店 / 停业",
     "miniapp_unavailable": "小程序到期或未绑定",
     "scan_order_unsupported": "门店不支持扫码点餐",
+    "not_ordering": "非点餐码",
     "qr_external_web": "二维码指向外部网页（非小程序）",
     "menu_unavailable": "门店未配置菜单 / 无可用菜品",
     "phone_only": "需在手机上打开（桌面无法采集）",
@@ -394,7 +395,7 @@ class MaterialService:
                 "WHERE capture_rounds=0 AND EXISTS("
                 "SELECT 1 FROM runs r2 WHERE r2.material_batch_id=material_batches.id)")
             columns = {row["name"] for row in db.execute("PRAGMA table_info(material_decisions)")}
-            for name in ("reject_reason", "reject_detail", "rejected_at"):
+            for name in ("reject_reason", "reject_detail", "rejected_at", "reject_reviewed_at"):
                 if name not in columns:
                     db.execute(f"ALTER TABLE material_decisions ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
             # 管理列表按批次查询引用运行；索引避免每个批次都扫描完整 runs 表。
@@ -421,7 +422,8 @@ class MaterialService:
         code = row.get("reject_reason", "")
         if row["decision"] != "skipped" or not code:
             return None
-        return {"code": code, "label": REJECTION_REASONS[code], "detail": row.get("reject_detail", ""), "marked_at": row.get("rejected_at", "")}
+        return {"code": code, "label": REJECTION_REASONS[code], "detail": row.get("reject_detail", ""),
+                "marked_at": row.get("rejected_at", ""), "reviewed_at": row.get("reject_reviewed_at", "")}
 
     def create_local_batch(self, input_root: Path, *, name: str | None = None, description: str = "") -> dict:
         name, description = self._batch_metadata(name, description)
@@ -1547,7 +1549,111 @@ class MaterialService:
                     "UPDATE material_batches SET capture_rounds=capture_rounds+1,updated_at=? "
                     "WHERE id=? AND deleted_at=''", (stamp, batch_id),
                 )
+                # 已通过的批次重新采集后必须回到待审核，等新结果复核。
+                db.execute(
+                    "UPDATE material_batches SET manual_stage='',approved_at='' "
+                    "WHERE id=? AND (manual_stage='approved' OR approved_at<>'')", (batch_id,),
+                )
         return sorted(batch_ids)
+
+    def _latest_versions(self) -> dict[str, dict]:
+        """每个未删除批次的最新发布版本及其批次名称。"""
+        with self.task_store.connect() as db:
+            batches = {row["id"]: dict(row) for row in db.execute(
+                "SELECT id,name,created_at FROM material_batches WHERE deleted_at=''")}
+            latest: dict[str, dict] = {}
+            for row in db.execute("SELECT * FROM material_versions ORDER BY rowid").fetchall():
+                batch = batches.get(row["batch_id"])
+                if batch is None:
+                    continue
+                latest[row["batch_id"]] = {"version": dict(row), "batch": batch}
+        return latest
+
+    def effective_capture_tasks(self) -> list[dict]:
+        """跨批次有效任务：每家门店只取所属原批次最新发布快照里的任务。
+
+        旧版本任务留在历史运行里，但不再进入列表、统计、全选或开跑，避免同一门店重复计数。
+        """
+        snapshot_index: dict[str, dict] = {}
+        for batch_id, item in self._latest_versions().items():
+            version, batch = item["version"], item["batch"]
+            snapshot_index[version["snapshot_id"]] = {
+                "batch_id": batch_id, "batch_name": batch["name"] or batch_id,
+                "version": version["version"], "snapshot_id": version["snapshot_id"],
+            }
+        seen: set[tuple[str, str]] = set()
+        result: list[dict] = []
+        for task in self.task_store.tasks():
+            if task.get("archived_at"):
+                continue
+            meta = snapshot_index.get(Path(task["source_path"]).parent.parent.name)
+            if meta is None:
+                continue
+            key = (meta["batch_id"], task["source_name"])
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({**task, **meta,
+                           "reject_label": REJECTION_REASONS.get(task.get("reject_reason", ""), ""),
+                           "runnable": task["status"] in {"pending", "needs_review", "needs_retry", "error", "blocked"}})
+        return sorted(result, key=lambda row: (row["batch_name"], row["source_name"]))
+
+    def rework_records(self, batch_ids: list[str] | None = None) -> list[dict]:
+        """跨批次返工清单：待处理 / 不合格 / 已选码待发布，按原批次归属展示。"""
+        wanted = set(batch_ids) if batch_ids else None
+        latest = self._latest_versions()
+        manifests: dict[str, dict[str, tuple]] = {}
+        with self.task_store.connect() as db:
+            rows = [dict(row) for row in db.execute(
+                "SELECT * FROM material_decisions ORDER BY batch_id,source_folder,store_id")]
+            names = {row["id"]: row["name"] for row in db.execute(
+                "SELECT id,name FROM material_batches WHERE deleted_at=''")}
+        records: list[dict] = []
+        for row in rows:
+            batch_id = row["batch_id"]
+            if batch_id not in names or (wanted and batch_id not in wanted):
+                continue
+            decision = row["decision"]
+            if decision == "confirmed":
+                if batch_id not in manifests:
+                    entries: dict[str, tuple] = {}
+                    item = latest.get(batch_id)
+                    if item:
+                        marker = self.published_root / item["version"]["snapshot_id"] / ".materials-snapshot.json"
+                        if marker.is_file():
+                            manifest = json.loads(marker.read_text(encoding="utf-8"))
+                            entries = {entry["store_id"]: (entry["source_hash"], entry.get("box"))
+                                       for entry in manifest.get("stores", [])}
+                    manifests[batch_id] = entries
+                try:
+                    current = (row["selected_source_hash"], json.loads(row["selected_json"] or "{}").get("box"))
+                except ValueError:
+                    current = (row["selected_source_hash"], None)
+                # 与最新快照一致的门店没有待发布内容，不进返工表。
+                if manifests[batch_id].get(row["store_id"]) == current:
+                    continue
+                category = "unpublished"
+            else:
+                category = {"pending": "pending", "skipped": "rejected"}.get(decision, "pending")
+            code = row.get("reject_reason", "")
+            version = (latest.get(batch_id) or {}).get("version") or {}
+            records.append({
+                "batch_id": batch_id, "batch_name": names[batch_id] or batch_id,
+                "store_id": row["store_id"], "store_name": row["source_name"],
+                "source_folder": row["source_folder"], "decision": decision, "category": category,
+                "reason_code": code, "reason_label": REJECTION_REASONS.get(code, "") if code else "",
+                "reason_detail": row.get("reject_detail", ""), "updated_at": row["updated_at"],
+                "version": version.get("version", ""), "publishable": category == "unpublished",
+            })
+        return records
+
+    def return_rework_store(self, batch_id: str, store_id: str) -> dict:
+        """把选错码/不合格门店打回「待处理」，保留原批次，不新建批次或发布。"""
+        current = self.get_store(batch_id, store_id)
+        if current.get("decision") not in {"confirmed", "skipped", "pending"}:
+            raise ValueError("该门店当前没有可打回的决策")
+        self.decide_store(batch_id, store_id, "pending")
+        return self.get_store(batch_id, store_id)
 
     def set_approved(self, batch_id: str, approved: bool) -> dict:
         """兼容旧入口：审核通过/撤销等价于手工阶段 approved/自动。"""
@@ -1584,7 +1690,9 @@ class MaterialService:
                 "reason_code": code,
                 "reason_label": REJECTION_REASONS.get(code, "未记录原因"),
                 "detail": row.get("reject_detail", ""),
+                "evidence": "",
                 "marked_at": row.get("rejected_at") or row["updated_at"],
+                "reviewed_at": row.get("reject_reviewed_at", ""),
                 "status": "不合格",
                 "stage": "素材清洗",
                 "batch_id": row["batch_id"],
@@ -1739,12 +1847,27 @@ class MaterialService:
             rejected_at = _now() if decision == "skip" else ""
             if decision == "skip" and row["decision"] == "skipped" and not reject_reason:
                 rejected_at = row.get("rejected_at", "") or _now()
+            # 重新选择不合格原因等于一次新的结论，此前的人工确认标记必须清空。
+            reviewed_at = row.get("reject_reviewed_at", "") if decision == "skip" and not reject_reason else ""
             with self.task_store.connect() as db:
                 db.execute(
-                    "UPDATE material_decisions SET decision=?,selected_json=?,selected_source_hash=?,reject_reason=?,reject_detail=?,rejected_at=?,updated_at=? WHERE batch_id=? AND store_id=?",
+                    "UPDATE material_decisions SET decision=?,selected_json=?,selected_source_hash=?,reject_reason=?,reject_detail=?,rejected_at=?,reject_reviewed_at=?,updated_at=? WHERE batch_id=? AND store_id=?",
                     ("confirmed" if decision == "confirm" else "skipped" if decision == "skip" else "pending",
-                     json.dumps(selected, ensure_ascii=False), source_hash, reason_code, reason_detail, rejected_at, _now(), batch_id, store_id),
+                     json.dumps(selected, ensure_ascii=False), source_hash, reason_code, reason_detail, rejected_at,
+                     reviewed_at, _now(), batch_id, store_id),
                 )
+        return self.get_store(batch_id, store_id)
+
+    def mark_rejection_reviewed(self, batch_id: str, store_id: str, reviewed: bool) -> dict:
+        """人工复核不合格门店：标记/取消“确认确实不合格”，供清单与导出使用。"""
+        with self.task_store.connect() as db:
+            cursor = db.execute(
+                "UPDATE material_decisions SET reject_reviewed_at=?,updated_at=? "
+                "WHERE batch_id=? AND store_id=? AND decision='skipped'",
+                (_now() if reviewed else "", _now(), batch_id, store_id),
+            )
+            if not cursor.rowcount:
+                raise ValueError("该门店当前没有不合格记录")
         return self.get_store(batch_id, store_id)
 
     def accept_recommendations(self, batch_id: str, store_ids: list[str] | None = None) -> dict:
@@ -1788,7 +1911,9 @@ class MaterialService:
                     )
             return {"confirmed": len(confirmations)}
 
-    def publish_snapshot(self, batch_id: str, description: str = "", *, name: str | None = None, version: str | None = None, activate: bool = True) -> dict:
+    def publish_snapshot(self, batch_id: str, description: str = "", *, name: str | None = None,
+                         version: str | None = None, activate: bool = True,
+                         store_ids: list[str] | None = None) -> dict:
         if not isinstance(description, str) or len(description.strip()) > 200:
             raise ValueError("发布说明最多 200 字")
         description = description.strip()
@@ -1798,6 +1923,17 @@ class MaterialService:
                 raise ValueError("只有分析完成的批次可以发布")
             with self.task_store.connect() as db:
                 rows = [dict(row) for row in db.execute("SELECT * FROM material_decisions WHERE batch_id=? AND decision='confirmed' ORDER BY source_folder,store_id", (batch_id,))]
+                decision_names = {row["store_id"]: row["source_name"] for row in db.execute(
+                    "SELECT store_id,source_name FROM material_decisions WHERE batch_id=?", (batch_id,))}
+            selected_ids = None if store_ids is None else list(dict.fromkeys(store_ids))
+            if selected_ids is not None:
+                by_id = {row["store_id"]: row for row in rows}
+                unconfirmed = [store_id for store_id in selected_ids if store_id not in by_id]
+                if unconfirmed:
+                    sample = "、".join(decision_names.get(store_id, store_id) for store_id in unconfirmed[:5])
+                    more = f" 等 {len(unconfirmed)} 家" if len(unconfirmed) > 5 else ""
+                    raise ValueError(f"以下门店尚未确认二维码：{sample}{more}")
+                rows = [by_id[store_id] for store_id in selected_ids]
             if not rows:
                 raise ValueError("没有已人工确认的店铺；未发布任何素材")
             stores = [(row, json.loads(row["store_json"]), json.loads(row["selected_json"])) for row in rows]
@@ -1807,8 +1943,19 @@ class MaterialService:
                 sample = "、".join(missing[:5])
                 more = f" 等 {len(missing)} 家" if len(missing) > 5 else ""
                 raise ValueError(f"已确认但没有候选坐标：{sample}{more}；请撤销确认后重新分析")
+            existing = self.versions.records(batch_id)
+            # 增量发布：本次未勾选的门店沿用上一版快照条目，不重新裁剪也不丢门店。
+            previous_entries: list[dict] = []
+            if selected_ids is not None and existing:
+                marker = self.published_root / existing[0]["snapshot_id"] / ".materials-snapshot.json"
+                if marker.is_file():
+                    manifest = json.loads(marker.read_text(encoding="utf-8"))
+                    previous_entries = [entry for entry in manifest.get("stores", [])
+                                        if entry.get("store_id") not in set(selected_ids)]
             names: dict[str, str] = {}
-            fingerprint_items = []
+            for entry in previous_entries:
+                names[entry["source_name"]] = entry["source_folder"]
+            selected_items = []
             for row, store, selected in stores:
                 if row["source_name"] in names and names[row["source_name"]] != row["source_folder"]:
                     raise ValueError("已确认店铺中存在不同父路径的同名目录，拒绝发布")
@@ -1822,15 +1969,16 @@ class MaterialService:
                 self._verify_store_hashes(batch, store)
                 with Image.open(source) as original:
                     box = self._validate_box(self._source_box(selected, source), original.size)
-                fingerprint_items.append({
+                selected_items.append({
                     "store_id": row["store_id"], "source_folder": row["source_folder"],
                     "source_name": row["source_name"], "source_hash": row["selected_source_hash"],
                     "image_index": selected["image_index"], "candidate_index": selected["candidate_index"],
                     "box": box, "crop_margin_ratio": _selected_margin_ratio(selected),
                 })
+            fingerprint_items = selected_items + previous_entries
+            fingerprint_items.sort(key=lambda item: (item.get("source_folder", ""), item.get("store_id", "")))
             content = json.dumps(fingerprint_items, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
             # 对相同版本的重试必须先验证内容，防止覆盖已经发布的版本。
-            existing = self.versions.records(batch_id)
             legacy_fingerprint = hashlib.sha256(content).hexdigest()
             # 同内容在不同批次内仍需不同任务。已发布的本批次快照继续沿用旧 ID。
             if any(row["snapshot_id"] == legacy_fingerprint for row in existing):
@@ -1850,7 +1998,7 @@ class MaterialService:
                 raise ValueError("该版本已经发布，请填写新的版本号")
             snapshot = self.published_root / fingerprint
             already_published = snapshot.exists()
-            expected_artifact_paths = {f"{row['source_name']}/二维码.png" for row, _store, _selected in stores}
+            expected_artifact_paths = {f"{entry['source_name']}/二维码.png" for entry in fingerprint_items}
             if already_published:
                 self._validate_snapshot_marker(snapshot, fingerprint, expected_artifact_paths)
             else:
@@ -1867,6 +2015,13 @@ class MaterialService:
                         _mkdir_ok(artifact.parent)
                         _crop_candidate(source, self._source_box(selected, source), artifact, _selected_margin_ratio(selected))
                         artifact_hashes.append({"path": artifact.relative_to(temporary).as_posix(), "sha256": _sha256(artifact)})
+                    if previous_entries:
+                        previous_root = self.published_root / existing[0]["snapshot_id"]
+                        for entry in previous_entries:
+                            artifact = temporary / entry["source_name"] / "二维码.png"
+                            _mkdir_ok(artifact.parent)
+                            shutil.copyfile(previous_root / entry["source_name"] / "二维码.png", artifact)
+                            artifact_hashes.append({"path": artifact.relative_to(temporary).as_posix(), "sha256": _sha256(artifact)})
                     atomic_json(temporary / ".materials-snapshot.json", {"snapshot_id": fingerprint, "stores": fingerprint_items, "artifacts": artifact_hashes})
                     temporary.rename(snapshot)
                 except Exception:
@@ -1885,7 +2040,11 @@ class MaterialService:
                 reuse_roots = [self.published_root / row["snapshot_id"] for row in existing]
                 task_scan = self.task_store.scan(snapshot, reuse_sources=reuse_roots)
                 with self.task_store.connect() as db:
-                    self.versions.remember(db, batch_id, name.strip(), version, fingerprint, description, len(stores), activate=activate)
+                    self.versions.remember(db, batch_id, name.strip(), version, fingerprint, description, len(fingerprint_items), activate=activate)
+                    # 内容有变化（换码返工）时，此前的审核通过结论必须失效，等新结果复核。
+                    if fingerprint != (existing[0]["snapshot_id"] if existing else ""):
+                        db.execute("UPDATE material_batches SET manual_stage='',approved_at='' "
+                                   "WHERE id=? AND (manual_stage='approved' OR approved_at<>'')", (batch_id,))
             except Exception:
                 try:
                     previous["input_dir"] = previous_input
