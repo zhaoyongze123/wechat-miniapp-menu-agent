@@ -1,4 +1,4 @@
-# Windows 每用户启动器。守护进程只管理自己启动的采集进程，配置和离线结果保存在安装目录外。
+﻿# Windows 每用户启动器。守护进程只管理自己启动的采集进程，配置和离线结果保存在安装目录外。
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
@@ -12,7 +12,8 @@ $ErrorActionPreference = 'Stop'
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $sid = $identity.User.Value
 $taskName = "MenuCapture Worker - $sid"
-$homePath = Join-Path $env:LOCALAPPDATA 'MenuCapture'
+# 数据目录优先取 MENU_CAPTURE_HOME，便于把配置和结果放在非系统盘；默认仍使用用户本地应用数据目录。
+$homePath = if ($env:MENU_CAPTURE_HOME) { $env:MENU_CAPTURE_HOME } else { Join-Path $env:LOCALAPPDATA 'MenuCapture' }
 $logPath = Join-Path $homePath 'logs'
 $releaseFile = Join-Path $PSScriptRoot 'current-version'
 $stopFile = Join-Path $homePath 'stop-supervisor'
@@ -92,11 +93,9 @@ switch ($Action) {
         if (-not $Version) { throw '未指定安装版本。' }
         $temp = "$releaseFile.$PID.tmp"
         [IO.File]::WriteAllText($temp, $Version, [Text.Encoding]::ASCII)
-        if ([IO.File]::Exists($releaseFile)) {
-            [IO.File]::Replace($temp, $releaseFile, $null)
-        } else {
-            [IO.File]::Move($temp, $releaseFile)
-        }
+        # PowerShell 会把 Replace 的 $null 备份参数转成空字符串，升级时必然报“路径形式不合法”；
+        # 这里用 Move-Item -Force 覆盖旧的版本记录。
+        Move-Item -LiteralPath $temp -Destination $releaseFile -Force
         Remove-Item -LiteralPath $stopFile -Force -ErrorAction SilentlyContinue
         try {
             $taskAction = New-ScheduledTaskAction -Execute $powershell -Argument $watchArgs -WorkingDirectory $PSScriptRoot

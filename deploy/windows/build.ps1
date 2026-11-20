@@ -1,4 +1,4 @@
-# 在 Windows 构建机器上生成自包含安装包。运行安装包不需要本机预装这些构建工具。
+﻿# 在 Windows 构建机器上生成自包含安装包。运行安装包不需要本机预装这些构建工具。
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$')]
@@ -22,9 +22,31 @@ function Invoke-Checked {
 
 function Get-VerifiedFile {
     param([string]$Uri, [string]$Path, [string]$Sha256)
-    Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $Path
+    # 可选的本地下载缓存（MC_RUNTIME_CACHE）：GitHub 直连不稳定时，可按文件名复用已校验的副本。
+    $cacheDir = $env:MC_RUNTIME_CACHE
+    $cached = if ($cacheDir) { Join-Path $cacheDir ([IO.Path]::GetFileName($Path)) } else { $null }
+    if ($cached -and (Test-Path -LiteralPath $cached)) {
+        Copy-Item -LiteralPath $cached -Destination $Path -Force
+        if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ieq $Sha256) { return }
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    }
+    # 优先用 curl.exe 流式下载：PowerShell 5.1 的 Invoke-WebRequest 会把整个文件缓存在内存里，
+    # 走代理下载大文件时长时间不落盘、无法观察进度，也容易卡死。
+    $curl = (Get-Command 'curl.exe' -CommandType Application -ErrorAction SilentlyContinue).Source
+    if ($curl) {
+        $curlArgs = @('-fsSL', '--retry', '10', '--retry-all-errors', '--retry-delay', '2', '--connect-timeout', '30', '-C', '-', '-o', $Path)
+        if ($env:HTTPS_PROXY) { $curlArgs += @('--proxy', $env:HTTPS_PROXY) }
+        $curlArgs += $Uri
+        Invoke-Checked $curl $curlArgs
+    } else {
+        Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $Path
+    }
     if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ine $Sha256) {
         throw "Checksum does not match for $([IO.Path]::GetFileName($Path))."
+    }
+    if ($cached) {
+        New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+        Copy-Item -LiteralPath $Path -Destination $cached -Force
     }
 }
 
