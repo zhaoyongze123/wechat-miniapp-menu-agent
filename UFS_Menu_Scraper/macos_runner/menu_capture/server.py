@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hmac
 import json
 import logging
@@ -21,9 +23,10 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
-from urllib.parse import quote
+from typing import Annotated, Literal
+from urllib.parse import quote, urlsplit
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from PIL import Image
@@ -44,6 +47,10 @@ from .debug_log import DebugLog
 from .model_usage import UsageLedger
 from .annotation import AnnotationSession, RunnerExecutor
 from .instance_lock import InstanceLockedError, instance_lock
+from .shared import SharedConflict, SharedHub, WorkerUnauthorized
+from .shared_routes import register_shared_routes
+from .shared_worker import SharedWorker
+from .workbench_page import workbench_page
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +65,16 @@ def _rejection_store_code(text: str) -> str:
     return (match.group(1) if match else name).upper()
 
 
-def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
+def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
+               admin_password: str = "", allowed_hosts: tuple[str, ...] = ()) -> FastAPI:
+    if role not in {"standalone", "hub", "worker"} or (role == "hub" and not admin_password):
+        raise ValueError("共享后台需要指定有效角色和管理员密码")
     # 无论通过脚本、python -m 或 ASGI 工厂启动，都只在本进程内禁用环境代理。
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
         os.environ.pop(name, None)
     os.environ["NO_PROXY"] = "*"
     os.environ["no_proxy"] = "*"
-    configs = ConfigStore(root)
+    configs = ConfigStore(root, managed=role != "standalone" or bool(os.environ.get("MENU_CAPTURE_HOME")))
     store = TaskStore(root / "data/tasks.sqlite3")
     model_usage = UsageLedger(store)
     debug_log = DebugLog(root / "data", configs.load().debug_logging.max_storage_mb)
@@ -84,11 +94,16 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
     store.recover()
     control_lock = threading.RLock()
     materials = MaterialService(root / "data", configs, store)
+    hub = SharedHub(store, materials) if role == "hub" else None
+    worker = SharedWorker(root, store, runner.output_lock, control_lock) if role == "worker" else None
+    if worker:
+        runner.assignment_source = worker.source_root
+        store.bind_assignments = worker.bind_run
     rejections = RejectionService(store, materials)
     environment = EnvironmentDiagnostics(configs, runner, project_dir)
     connections = ConnectionManager(environment, control_lock, root)
     annotations = AnnotationSession(configs, store, profiles, RunnerExecutor(runner),
-                                    root=root.parent.parent, ocr_reader=image_ocr,
+                                    root=root if role != "standalone" else root.parent.parent, ocr_reader=image_ocr,
                                     rejector=rejections.mark_annotation_task,
                                     usage_ledger=model_usage)
     token = secrets.token_urlsafe(32)
@@ -109,12 +124,19 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app):
-        threading.Thread(target=_warm_local_ocr, name="ocr-warmup", daemon=True).start()
+        if role != "hub":
+            threading.Thread(target=_warm_local_ocr, name="ocr-warmup", daemon=True).start()
         # 常驻 1s 巡检：心跳回收 + 单通道调度；不依赖任何请求触发。
         materials.start_job_runner()
+        if worker:
+            worker.start()
+            if sys.platform == "win32":
+                connections.connect()
         try:
             yield
         finally:
+            if worker:
+                worker.close()
             try:
                 materials.shutdown()
             except Exception:
@@ -135,16 +157,54 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
     app.state.environment = environment
     app.state.connections = connections
     app.state.annotations = annotations
+    app.state.shared_hub = hub
+    app.state.shared_worker = worker
+    register_shared_routes(app, role, hub, worker, control_lock)
+
+    def admin_authorized(header: str) -> bool:
+        method, _, credentials = header.partition(" ")
+        if method.casefold() != "basic" or len(credentials) > 4096:
+            return False
+        try:
+            username, _, password = base64.b64decode(credentials, validate=True).partition(b":")
+        except (ValueError, binascii.Error):
+            return False
+        return username == b"admin" and hmac.compare_digest(password, admin_password.encode())
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
-        host = request.headers.get("host", "").split(":", 1)[0]
-        if host not in {"127.0.0.1", "localhost"}:
+        authority = request.headers.get("host", "").lower()
+        host = authority.split(":", 1)[0]
+        path = request.url.path
+        worker_protocol = role == "hub" and path.startswith("/api/shared/worker/")
+        hosts = {"127.0.0.1", "localhost"} | (set(allowed_hosts) if hub else set())
+        if host not in hosts:
             return JSONResponse({"detail": "只允许本机访问"}, status_code=403)
-        if request.method != "GET":
+        if hub and not worker_protocol and path != "/healthz" and not admin_authorized(request.headers.get("authorization", "")):
+            return JSONResponse({"detail": "请输入共享工作台管理员账号"}, status_code=401,
+                                headers={"WWW-Authenticate": 'Basic realm="Menu Capture"'})
+        if hub and (path in {"/api/start", "/api/scan", "/api/resume", "/api/ui-tars/trial", "/api/capture/start",
+                             "/api/reviews/pending/rerun", "/api/stop", "/api/terminate", "/api/select-directory",
+                             "/api/reveal", "/api/doctor"}
+                    or (request.method not in {"GET", "HEAD"}
+                        and path.startswith(("/api/annotation/", "/api/manual/", "/api/robot/",
+                                             "/api/environment", "/api/connections")))):
+            return JSONResponse({"detail": "请在已配对的 Windows 采集端执行此操作"}, status_code=409)
+        if worker and request.method not in {"GET", "HEAD"} and (
+            path in {"/api/start", "/api/scan", "/api/ui-tars/trial"}
+            or path.startswith(("/api/materials/", "/api/reviews/", "/api/rejections/"))
+            or re.fullmatch(r"/api/tasks/[^/]+/(reject|retry|mark-review|rejection/undo)", path)
+        ):
+            return JSONResponse({"detail": "请在共享工作台管理素材和审核结果"}, status_code=409)
+        if request.method not in {"GET", "HEAD"} and not worker_protocol:
             supplied = request.headers.get("x-capture-token", "")
             origin = request.headers.get("origin")
-            if not hmac.compare_digest(supplied, token) or (origin and origin != f"http://{request.headers.get('host')}"):
+            try:
+                origin_ok = not origin or (urlsplit(origin).netloc.lower() == authority
+                                           and urlsplit(origin).scheme in ({"http", "https"} if hub else {"http"}))
+            except ValueError:
+                origin_ok = False
+            if not hmac.compare_digest(supplied.encode(), token.encode()) or not origin_ok:
                 return JSONResponse({"detail": "本机操作令牌无效，请刷新控制台"}, status_code=403)
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
@@ -152,6 +212,14 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; connect-src 'self'"
         return response
+
+    @app.exception_handler(SharedConflict)
+    async def shared_conflict(request, exc):
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(WorkerUnauthorized)
+    async def worker_unauthorized(request, exc):
+        return JSONResponse({"detail": str(exc)}, status_code=401)
 
     @app.exception_handler(ValueError)
     async def value_error(request, exc):
@@ -182,9 +250,13 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         current_ids = {row["id"] for row in materials.effective_capture_tasks()
                        if row["status"] in {"needs_review", "needs_retry", "error", "blocked"}}
         candidates = [task for task in store.review_candidates() if task["id"] in current_ids]
-        batches = materials.list_batches()
-        workflow = {batch["batch_id"]: batch.get("workflow") or {} for batch in batches}
-        names = {batch["batch_id"]: batch.get("name") or batch["batch_id"] for batch in batches}
+        # 待检查入口只展示批次名和阶段。版本差异、素材计数留给批次管理页。
+        with store.connect() as db:
+            batches = [dict(row) for row in db.execute(
+                "SELECT id,name,capture_rounds,manual_stage,approved_at FROM material_batches WHERE deleted_at=''"
+            )]
+        workflow = {batch["id"]: materials.workflow_stage(batch) for batch in batches}
+        names = {batch["id"]: batch["name"] or batch["id"] for batch in batches}
         selected = set()
         if batch_ids and batch_ids != "all":
             selected = {value.strip() for value in batch_ids.split(",") if value.strip()}
@@ -250,7 +322,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
     @app.get("/assets/{name}")
     def material_assets(name: str):
         if name not in {"materials.js", "materials.css", "workspace.css", "model-usage.js", "model-usage.css",
-                        "annotation.js", "annotation.css", "task-center.js", "task-center.css"}:
+                        "annotation.js", "annotation.css", "task-center.js", "task-center.css",
+                        "shared-workbench.js"}:
             raise HTTPException(404, "资源不存在")
         return FileResponse(ROOT / "web" / name, headers={"Cache-Control": "no-cache"})
 
@@ -358,17 +431,34 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         return {"ids": ids, "processed": len(done), "done_ids": done}
 
     @app.get("/api/status")
-    def status():
+    def status(queue_page: Annotated[int | None, Query(ge=1)] = None,
+               queue_size: Annotated[int, Query(ge=1, le=100)] = 50,
+               queue_scope: Literal["all", "current"] = "all",
+               queue_q: Annotated[str, Query(max_length=300)] = "",
+               queue_filter: Literal["all", "pending", "running", "captured", "rejected", "review"] = "all",
+               queue_sort: Literal["source", "recent", "status"] = "source",
+               selected: Annotated[str, Query(max_length=9000)] = "",
+               include_events: bool = True):
         # 任务表保留历史；更换成清洗后的目录时，只展示当前素材集，避免旧照片继续可选。
         settings = configs.load()
         input_dir = settings.input_dir
         current_root = Path(input_dir).expanduser().resolve() if input_dir else None
         release = materials.active_release(current_root) if current_root else None
-        all_tasks = store.tasks()
-        tasks = [task | describe_failure(task.get("error_code", "")) for task in all_tasks
-                 if current_root and current_root in Path(task["source_path"]).resolve().parents]
-        ready = runner.last_readiness or {"ready": None, "issues": ["环境诊断可在设置中手动查看"], "launch_mode": profiles.load()["launch_mode"]}
-        run = store.latest_run()
+        paged = hub is not None and queue_page is not None
+        all_tasks = [] if paged else store.tasks()
+        if hub:
+            # 共享模式按各批次最新发布版本取数，不需要逐条解析旧任务的文件路径。
+            tasks = materials.effective_capture_tasks()
+            ready = {"ready": True, "issues": [], "launch_mode": "shared"}
+        else:
+            tasks = worker.tasks() if worker else [
+                task for task in all_tasks if current_root and current_root in Path(task["source_path"]).resolve().parents
+            ]
+            ready = runner.last_readiness or {"ready": None, "issues": ["环境诊断可在设置中手动查看"],
+                                              "launch_mode": profiles.load()["launch_mode"]}
+        if sys.platform == "win32" and not hub:
+            ready = ready | {"launch_mode": "native"}
+        run = None if paged else store.latest_run()
         if run:
             by_id = {task["id"]: task for task in all_tasks}
             ids = run["task_ids"]
@@ -397,7 +487,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
                     "SELECT store_json FROM material_decisions WHERE batch_id=? AND decision='skipped'",
                     (release["batch_id"],),
                 ).fetchall()
-            task_codes = {_rejection_store_code(task.get("source_name")) for task in tasks if task.get("reject_reason")}
+            task_codes = {_rejection_store_code(task.get("source_name")) for task in tasks if task.get("reject_reason")
+                          and (not paged or task.get("snapshot_id") == release["snapshot_id"])}
             material_codes = set()
             for row in rows:
                 try:
@@ -427,7 +518,18 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
                 all_material_codes.add(code)
         material_rejected_all = len(all_material_codes - capture_codes)
         launch_mode = ready.get("launch_mode", "manual")
-        return {"execution_engine": "UiPath", "launch_mode": launch_mode, "engine_ready": ready["ready"], "engine_message": "；".join(ready["issues"]) if ready["issues"] else ("已就绪，点击开始后由 UiPath CLI 自动启动 Main.xaml" if launch_mode == "cli" else "已就绪，等待手动在 Studio 运行 Main.xaml"),
+        engine, engine_message = {
+            "shared": ("共享工作台", "请将门店分配给已配对的 Windows 电脑"),
+            "native": ("Windows 原生", "本机 Windows 桌面采集已就绪"),
+            "cli": ("UiPath", "已就绪，点击开始后由 UiPath CLI 自动启动 Main.xaml"),
+        }.get(launch_mode, ("UiPath", "已就绪，等待手动在 Studio 运行 Main.xaml"))
+        queue = workbench_page(
+            tasks, snapshot=(release["snapshot_id"] if release else "") if queue_scope == "current" else None,
+            query=queue_q, status=queue_filter, sort=queue_sort, page=queue_page, size=queue_size,
+            selected_ids=set(selected.split(",")),
+        ) if paged else None
+        return {"execution_engine": engine, "launch_mode": launch_mode,
+                "engine_ready": ready["ready"], "engine_message": "；".join(ready["issues"]) or engine_message,
                 "robot_readiness": ready, "run_directory": str(getattr(runner, "run_directory", "") or ""),
                 "running": runner.running, "stop_requested": runner.stop.is_set(),
                 "run": run, "current_task": runner.current_task,
@@ -436,17 +538,19 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
                                                           release["batch_id"] if release else "",
                                                           release.get("batch_name", "") if release else ""))
                                      if settings.output_dir else ""),
-                "input_name": current_root.name if current_root else "",
-                "tasks": tasks, "counts": dict(Counter(t["status"] for t in tasks)),
+                "input_name": "本机分配" if worker else (current_root.name if current_root else ""),
+                "tasks": queue["records"] if queue else [task | describe_failure(task.get("error_code", "")) for task in tasks],
+                "counts": queue["counts"] if queue else dict(Counter(t["status"] for t in tasks)),
+                **({"queue": {key: value for key, value in queue.items() if key not in {"records", "counts"}}} if queue else {}),
                 "material_rejected": material_rejected, "material_rejected_all": material_rejected_all,
-                "events": store.events(),
+                "events": store.events() if include_events else [],
                 "manual": runner.manual_state() if runner.running else None}
 
     @app.get("/api/capture/queue")
     def capture_queue(batch_ids: str = "all", q: str = ""):
         """跨批次有效任务清单：列表、统计、全选和开跑共用这一份数据。"""
         wanted = None if batch_ids in {"", "all"} else [value for value in batch_ids.split(",") if value]
-        records = materials.effective_capture_tasks()
+        records = worker.tasks() if worker else materials.effective_capture_tasks()
         if wanted is not None:
             records = [row for row in records if row["batch_id"] in set(wanted)]
         needle = q.strip().casefold()
@@ -469,8 +573,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         }
 
     @app.get("/api/materials/batches")
-    def material_batches():
-        return {"batches": materials.list_batches()}
+    def material_batches(view: Literal["full", "options"] = "full"):
+        return {"batches": materials.batch_options() if view == "options" else materials.list_batches()}
 
     @app.get("/api/materials/batch-management")
     def manage_material_batches(deleted: bool = False):
@@ -506,6 +610,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
     def delete_material_batch(batch_id: str):
         with control_lock:
             try:
+                if hub:
+                    hub.require_unassigned(batch_id)
                 return {"ok": True, "batch": materials.batch_management.delete(batch_id)}
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from None
@@ -519,6 +625,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
     def purge_material_batch(batch_id: str):
         with control_lock:
             try:
+                if hub:
+                    hub.require_unassigned(batch_id)
                 return {"ok": True, **materials.batch_management.purge(batch_id)}
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from None
@@ -638,7 +746,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
                 "created_at": job["created_at"],
                 "updated_at": job["updated_at"],
             })
-        run = store.latest_run()
+        # 共享后台不执行桌面采集。迁移过来的本地轮次留在历史页，采集端分配以共享状态为准。
+        run = None if hub else store.latest_run()
         status = ""
         if run:
             status = "running" if runner.running else {"completed": "completed", "failed": "failed",
@@ -889,6 +998,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         with control_lock:
             fields = payload or {}
             materials.versions.validate(fields.get("name"), fields.get("version"), fields.get("description", ""))
+            if hub:
+                hub.protect_publish(batch_id, None)
             run = store.latest_run()
             can_activate = not runner.running and not (run and run["status"] in {"paused", "blocked", "interrupted"})
             result = materials.publish_snapshot(
@@ -952,6 +1063,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             idle()
             for batch_id, ids in groups.items():
                 try:
+                    if hub:
+                        hub.protect_publish(batch_id, ids)
                     result = materials.publish_snapshot(batch_id, description, store_ids=ids, activate=False)
                     results.append({
                         "batch_id": batch_id, "batch_name": names.get(batch_id, ""),
@@ -1066,12 +1179,17 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             return status()
 
     @app.post("/api/resume")
-    def resume():
+    def resume(payload: dict | None = None):
         with control_lock:
             idle()
             run = store.latest_run()
             if not run or run["status"] not in {"paused", "blocked", "interrupted"}:
                 raise HTTPException(409, "当前没有可恢复的暂停或阻塞批次")
+            payload = payload or {}
+            mode = payload.get("mode", "")
+            if payload and (set(payload) != {"mode"} or mode != "manual" or sys.platform != "win32"
+                            or run.get("capture_mode") != "auto" or run["status"] != "paused"):
+                raise ValueError("只有已暂停的 Windows 全自动批次可以切换半自动")
             profile = profiles.load()
             # 批量采集按本轮锁定的模式恢复，不再受当前机器人连接方式影响。
             if not run.get("capture_mode") and profile.get("mode") != run["mode"]:
@@ -1080,7 +1198,12 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             if not remaining:
                 raise HTTPException(409, "此批次没有尚未完成的门店")
             try:
-                runner.start(resume_run=run)
+                if worker:
+                    worker.check_start(remaining)
+                if mode:
+                    runner.start(resume_run=run, capture_mode=mode)
+                else:
+                    runner.start(resume_run=run)
             except (RuntimeError, ValueError) as exc:
                 raise HTTPException(409, str(exc)) from None
             return status()
@@ -1132,10 +1255,14 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             if run and run["status"] in {"paused", "blocked", "interrupted"}:
                 raise HTTPException(409, "请先继续或终止当前批次")
             try:
+                if worker:
+                    worker.check_start(unique_ids)
                 result = runner.start(ui_tars_trial=True, trial_task_ids=unique_ids,
                                       cross_batch=True, capture_mode=mode, run_name=name.strip())
             except (ValueError, RuntimeError) as exc:
                 raise HTTPException(400, str(exc)) from None
+            if worker:
+                return {**result, "status": status()}
             try:
                 # 采集轮次与审核失效跟随实际开跑，失败不影响已启动的批次。
                 materials.register_capture_round(unique_ids)
@@ -1326,12 +1453,16 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             raise ValueError("不合格原因参数无效")
         with control_lock:
             idle()
+            if hub:
+                hub.protect_task(task_id)
             return {"ok": True, "task": rejections.mark_task(task_id, payload["reason"], payload.get("detail", ""))}
 
     @app.post("/api/tasks/{task_id}/rejection/undo")
     def undo_task_rejection(task_id: str):
         with control_lock:
             idle()
+            if hub:
+                hub.protect_task(task_id)
             return {"ok": True, "task": rejections.undo_task(task_id)}
 
     @app.post("/api/rejections/tasks/{task_id}/return-to-materials")
@@ -1339,12 +1470,19 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         """把采集不合格打回素材清洗；不新建批次或发布。"""
         with control_lock:
             idle()
+            if hub:
+                hub.protect_task(task_id)
             return rejections.return_to_materials(task_id)
 
     @app.get("/api/rejections/tasks/{task_id}/evidence")
     def rejection_evidence(task_id: str):
         task = store.get(task_id)
         name = str(task.get("reject_evidence") or "")
+        if hub and Path(name).is_absolute():
+            path = Path(name).resolve()
+            if hub.root.resolve() not in path.parents or path.name != "evidence.png" or not path.is_file():
+                raise HTTPException(404, "不合格证据不存在")
+            return FileResponse(path, headers={"Cache-Control": "no-store"})
         if not re.fullmatch(r"[0-9a-f]{20}\.png", name):
             raise HTTPException(404)
         path = store.path.parent / "rejection-evidence" / name
@@ -1385,7 +1523,11 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
             raise ValueError("请选择 1 到 100 个原批次")
         results = []
         with control_lock:
-            for batch_id in dict.fromkeys(value.strip() for value in batch_ids):
+            selected = list(dict.fromkeys(value.strip() for value in batch_ids))
+            if hub:
+                for batch_id in selected:
+                    hub.require_unassigned(batch_id)
+            for batch_id in selected:
                 results.append(materials.set_approved(batch_id, True))
         return {"ok": True, "batches": results}
 
@@ -1397,6 +1539,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
     @app.post("/api/materials/batches/{batch_id}/approve")
     def approve_material_batch(batch_id: str):
         with control_lock:
+            if hub:
+                hub.require_unassigned(batch_id)
             return materials.set_approved(batch_id, True)
 
     @app.post("/api/materials/batches/{batch_id}/approve/undo")
@@ -1426,6 +1570,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
     def retry(task_id: str):
         with control_lock:
             idle()
+            if hub:
+                hub.protect_task(task_id)
             task = store.get(task_id)
             if task["status"] not in {"needs_review", "needs_retry", "error", "blocked", "captured"}:
                 raise ValueError("此任务还没有可重试或重新采集的结果")
@@ -1438,6 +1584,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         """人工把已有采集结果的门店改为待检查；不合格记录必须先撤销，避免状态自相矛盾。"""
         with control_lock:
             idle()
+            if hub:
+                hub.protect_task(task_id)
             task = store.get(task_id)
             if task.get("reject_reason"):
                 raise ValueError("请先撤销不合格标记，再改为待检查")
@@ -1460,7 +1608,10 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         path = (batch_output_dir(selected, release["batch_id"], release.get("batch_name", ""))
                 if payload["path"] == "output" and release else Path(selected))
         path.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["/usr/bin/open", str(path)], check=True)
+        if sys.platform == "win32":
+            os.startfile(path)
+        else:
+            subprocess.run(["/usr/bin/open", str(path)], check=True)
         return {"ok": True}
 
     @app.get("/api/artifacts/{task_id}")
@@ -1477,6 +1628,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
     def source_image(task_id: str):
         task = store.get(task_id)
         source = Path(task["source_path"]).resolve()
+        if worker and worker.source_root(task_id) and source.is_file():
+            return FileResponse(source)
         input_dir = configs.load().input_dir
         if not input_dir.strip():
             raise HTTPException(404, "尚未选择采集素材版本")
@@ -1519,6 +1672,8 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         with control_lock:
             if runner.running:
                 raise HTTPException(409, "自动采集运行中，请先暂停或终止后再进入人工标注")
+            if worker:
+                worker.check_start(task_ids)
             return annotations.start(task_ids)
 
     @app.post("/api/annotation/pause")
@@ -1588,7 +1743,11 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
         if set(payload) - {"reason", "detail"} or not isinstance(payload.get("reason"), str):
             raise ValueError("不合格原因无效")
         with control_lock:
-            return annotations.reject(payload["reason"], str(payload.get("detail", "")))
+            current = annotations.current_task
+            result = annotations.reject(payload["reason"], str(payload.get("detail", "")))
+            if worker and current:
+                worker.record_annotation(current["id"])
+            return result
 
     @app.post("/api/annotation/retry")
     def annotation_retry(payload: dict | None = None):
@@ -1624,14 +1783,21 @@ def create_app(root: Path = ROOT, desktop=None) -> FastAPI:
 
 def main():
     import uvicorn
-    ROOT.joinpath("data").mkdir(exist_ok=True)
+    home = Path(os.environ.get("MENU_CAPTURE_HOME") or ROOT).expanduser().resolve()
+    role = os.environ.get("MENU_CAPTURE_ROLE", "standalone")
+    host = os.environ.get("MENU_CAPTURE_BIND", "127.0.0.1") if role == "hub" else "127.0.0.1"
+    port = int(os.environ.get("MENU_CAPTURE_PORT", "8765"))
+    password = os.environ.get("MENU_CAPTURE_ADMIN_PASSWORD", "")
+    allowed_hosts = tuple(value.strip().lower() for value in os.environ.get("MENU_CAPTURE_ALLOWED_HOSTS", "").split(",")
+                          if value.strip())
+    home.joinpath("data").mkdir(parents=True, exist_ok=True)
     # 进程锁防止两个服务实例同时接管鼠标；不用新增桌面代理进程。
     try:
-        with instance_lock(ROOT / "data/runner.lock"):
+        with instance_lock(home / "data/runner.lock"):
             os.umask(0o077)
-            app = create_app()
+            app = create_app(home, role=role, admin_password=password, allowed_hosts=allowed_hosts)
             app.state.debug_log.install_service_logging()
-            uvicorn.run(app, host="127.0.0.1", port=8765, access_log=False, log_config=None)
+            uvicorn.run(app, host=host, port=port, access_log=False, log_config=None)
     except InstanceLockedError:
         raise SystemExit("本机控制台已运行，请打开 http://127.0.0.1:8765")
 

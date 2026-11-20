@@ -1459,7 +1459,15 @@ class MaterialService:
         store["selected_artifact"] = None
 
     def active_release(self, active_root: Path) -> dict | None:
-        return self.versions.active(active_root)
+        release = self.versions.active(active_root)
+        if release:
+            try:
+                batch = self._batch_row(release["batch_id"])
+            except ValueError:
+                # 批次在两次读取之间进入回收站时，不再展示其发布状态。
+                return None
+            release["workflow"] = self.workflow_stage(batch)
+        return release
 
     def _version_summary(self, batch: dict) -> dict:
         root = Path(self.configs.load().input_dir).expanduser().resolve()
@@ -1491,6 +1499,25 @@ class MaterialService:
             predicate = "" if include_deleted else "WHERE deleted_at=''"
             rows = [dict(row) for row in db.execute(f"SELECT * FROM material_batches {predicate} ORDER BY created_at DESC,id DESC")]
         return [self._batch_summary(row) for row in rows]
+
+    def batch_options(self) -> list[dict]:
+        """批次下拉框只读名称和阶段，避免加载识别结果、发布差异及历史运行。"""
+        with self.task_store.connect() as db:
+            rows = [dict(row) for row in db.execute(
+                "SELECT b.id,b.name,b.created_at,b.capture_rounds,b.manual_stage,b.approved_at,v.snapshot_id "
+                "FROM material_batches b LEFT JOIN material_versions v ON v.batch_id=b.id "
+                "AND v.id=(SELECT version_id FROM material_selection WHERE singleton=1) "
+                "WHERE b.deleted_at='' ORDER BY b.created_at DESC,b.id DESC"
+            )]
+        selected = next((row for row in rows if row["snapshot_id"]), None)
+        active_id = None
+        if selected:
+            root = Path(self.configs.load().input_dir).expanduser().resolve()
+            if root == (self.published_root / selected["snapshot_id"]).resolve():
+                active_id = selected["id"]
+        return [{"batch_id": row["id"], "name": self.versions.batch_name(row),
+                 "created_at": row["created_at"], "workflow": self.workflow_stage(row),
+                 "current_active": row["id"] == active_id} for row in rows]
 
     # 批次执行阶段：事实源是采集轮次和人工通过标记，避免再维护一套会与运行记录打架的状态机。
     _WORKFLOW_LABELS = {

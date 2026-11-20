@@ -4,8 +4,6 @@
 UiPath 的 NApplicationCard 会把它识别成 Chromium 浏览器，卡片内的窗口级目标
 （置前/截图/点击/输入）全部解析失败，因此这些动作改由本进程用 user32/gdi32 完成，
 回包字段与 FileRobotTransport 的约定保持一致。
-
-边界：只操作已校验的目标窗口，不主动结束无关进程；仅在 Windows 平台加载。
 """
 
 from __future__ import annotations
@@ -265,7 +263,6 @@ class WindowsDesktop:
             return {"ok": True, "action": "noop"}
         try:
             if action == "discover":
-                # 窗口发现也走本机枚举，UiPath Studio 不可用时批处理不会卡住。
                 return {"ok": True, "action": "discover", "windows": self._discover()}
             if action == "screenshot_desktop":
                 # 整屏取图不激活任何窗口，否则弹出的右键菜单会被抢焦点收起。
@@ -303,7 +300,7 @@ class WindowsDesktop:
                             "position": {"x": left, "y": top, "width": width, "height": height}})
         return windows
 
-    def _resolve(self, selector: str, expected_window_id: str | None = None) -> dict:
+    def _resolve(self, selector: str, expected_window_id: str | None = None, *, restore_minimized: bool = True) -> dict:
         try:
             expected = ET.fromstring(selector).attrib
         except ET.ParseError:
@@ -315,7 +312,7 @@ class WindowsDesktop:
         candidates = candidates_for_target()
         sized = [item for item in candidates
                  if item["visible"] and item["rect"][2] > 200 and item["rect"][3] > 200]
-        if not sized:
+        if not sized and restore_minimized:
             # 目标窗口可能被最小化（矩形变成 -32000/160x28）。这里是唯一匹配的目标，
             # 还原一次再取矩形，避免整批因为窗口被最小化而阻塞。
             iconic = [item for item in candidates if user32.IsIconic(item["hwnd"])]
@@ -523,7 +520,15 @@ class WindowsDesktop:
                 "target_window": {"app": "desktop", "title": "desktop", "class": "",
                                   "foreground": False, "capture_scope": "desktop"}}
 
-    def _print_window(self, hwnd, width: int, height: int):
+    def diagnostic_screenshot(self, selector: str, path: Path) -> tuple[int, int]:
+        """后台诊断只读目标窗口。无法取图时不抢焦点，不使用屏幕上覆盖它的其他内容。"""
+        window = self._resolve(selector, restore_minimized=False)
+        _, _, width, height = _rect(window["hwnd"])
+        image = self._print_window(window["hwnd"], width, height, allow_screen_fallback=False)
+        image.save(path)
+        return image.size
+
+    def _print_window(self, hwnd, width: int, height: int, *, allow_screen_fallback: bool = True):
         if width <= 0 or height <= 0:
             raise RuntimeError(f"目标窗口尺寸无效：{width}x{height}")
         screen = user32.GetDC(None)
@@ -542,6 +547,8 @@ class WindowsDesktop:
             info.bmiHeader.biBitCount = 32
             rows = gdi32.GetDIBits(memory, bitmap, 0, height, buffer, ctypes.byref(info), 0)
             if not printed or rows != height or _is_blank(buffer.raw):
+                if not allow_screen_fallback:
+                    raise RuntimeError("无法读取窗口像素，请打开微信主窗口并保持桌面未锁定")
                 # 被遮挡或 GPU 合成窗口拿不到内容时退回屏幕取图。
                 gdi32.BitBlt(memory, 0, 0, width, height, screen,
                              _rect(hwnd)[0], _rect(hwnd)[1], SRCCOPY)

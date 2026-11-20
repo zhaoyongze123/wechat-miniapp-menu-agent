@@ -1,10 +1,10 @@
 /* 素材与批次管理模块：上传/分析、门店决策、发布与激活、批次回收站与阶段维护。
-   由 index.html 通过 window.__materialsInit({api, token}) 初始化，只通过 HTTP 接口操作。 */
+   由 index.html 注入 HTTP 接口和共用批次下拉数据，进入素材页时再加载批次明细。 */
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
   if (typeof window.__materialsInit !== 'function') return;
-  window.__materialsInit(({ api, token }) => {
+  window.__materialsInit(({ api, token, loadBatchOptions }) => {
     const state = { batches: [], batchId: '', batch: null, storeId: '', detail: null, selectionSeq: 0, imageLoadSeq: 0, filter: 'pending', search: '', selectedCandidate: null, selectedImageIndex: null, manualBox: null, manualBoxImageIndex: null, manualPreviewUrl: '', manualBoxBeforeDraw: null, manualImageBeforeDraw: null, manualPreviewBeforeDraw: '', selectedBeforeDraw: null, manualMode: false, repairMode: false, uploadMode: 'append', dragging: null, busy: false, files: [], pollTimer: null, selectedReleaseId: '', analysisDismissed: false, analysisStarted: '', analysisCloseTimer: null, reanalyzeMode: false, showRejected: false, rework: null, reworkFilter: 'all', reworkSearch: '', reworkSelected: new Set() };
     const purposeLabels = { ordering: '点餐', not_ordering: '非点餐', enterprise_wechat: '企业微信', conflict: '证据冲突', other: '其他', unknown: '未知' };
     const purposeSourceLabels = { payload_url: '二维码链接（URL）', payload_url_ocr: '餐饮域名 + 周边 OCR', payload_domain: '企业微信域名', local_ocr: '周边 OCR', vision_model: '视觉模型' };
@@ -80,7 +80,7 @@
     }
     async function loadBatches(selectCurrent = true) {
       const previous = state.batchId;
-      const response = await api(url('/batches'));
+      const response = await loadBatchOptions();
       state.batches = Array.isArray(response.batches) ? response.batches : [];
       if (!state.batchId || !state.batches.some((b) => String(b.batch_id) === String(state.batchId))) state.batchId = (selectCurrent && previous && state.batches.some((b) => String(b.batch_id) === previous) ? previous : '') || String(state.batches.find((b)=>b.current_active)?.batch_id || state.batches[0]?.batch_id || '');
       renderBatchOptions();
@@ -98,7 +98,7 @@
     }
     function scheduleBatchPoll() {
       clearTimeout(state.pollTimer); state.pollTimer = null;
-      if (!state.batchId || document.hidden) return;
+      if (!materialsVisible() || !state.batchId || document.hidden) return;
       // 有未结束 job（含暂停/中断）就持续轮询，便于任务中心与弹窗同步计数。
       if (!jobOpen() && state.batch?.status !== 'uploading') return;
       state.pollTimer = window.setTimeout(refreshCurrentBatch, jobActive() ? 1000 : 3000);
@@ -108,7 +108,7 @@
       const requestedBatch = state.batchId;
       try {
         const data = await api(url(`/batches/${encodeURIComponent(requestedBatch)}`));
-        if (requestedBatch !== state.batchId) return;
+        if (requestedBatch !== state.batchId || !materialsVisible()) return;
         state.batch = data;
         const releases = Array.isArray(data.releases) ? data.releases : [];
         if (!releases.some((r) => String(r.release_id) === String(state.selectedReleaseId))) state.selectedReleaseId = String(releases[0]?.release_id || '');
@@ -1153,8 +1153,25 @@
       });
     }
     $('materials-manage-search').addEventListener('input',renderManagement);
-    async function refreshCurrentBatch() { if (!state.batchId || document.hidden) return; await refreshBatch(true); }
-    loadBatches(false).catch((err)=>setError('materials-batch-error',err.message));
+    function materialsVisible() { return $('page-materials').classList.contains('active'); }
+    async function refreshCurrentBatch() { if (!materialsVisible() || !state.batchId || document.hidden) return; await refreshBatch(true); }
+    let initialBatchLoad;
+    function enterMaterialsPage() {
+      // 从不合格清单跳转时，同行事件会先设置目标批次，避免抢先加载默认门店。
+      const selectionSeq = state.selectionSeq;
+      queueMicrotask(() => {
+        if (!materialsVisible() || initialBatchLoad || selectionSeq !== state.selectionSeq) return;
+        if (state.batchId && state.batch) { void refreshCurrentBatch(); return; }
+        initialBatchLoad = loadBatches(false)
+          .catch((err)=>setError('materials-batch-error',err.message))
+          .finally(()=>{initialBatchLoad=null;});
+      });
+    }
+    window.addEventListener('menu:page', event => {
+      if (event.detail === 'materials') enterMaterialsPage();
+      else { clearTimeout(state.pollTimer); state.pollTimer = null; }
+    });
+    if (materialsVisible()) enterMaterialsPage();
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) { clearTimeout(state.pollTimer); state.pollTimer = null; }
       else scheduleBatchPoll();

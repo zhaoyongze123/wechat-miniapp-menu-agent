@@ -419,7 +419,11 @@ function parseModelAction(rawArgs) {
   if (actionArgs.action === 'left_click') {
     inputs.reason = text(actionArgs.reason, 120);
     const targetName = text(actionArgs.target_name, 80);
-    if (targetName) inputs.target_name = targetName;
+    if (targetName) {
+      inputs.target_name = targetName;
+      // 宿主只对“有明确原文”的按钮做文字中心校正；图标按钮仍按模型坐标执行。
+      params.target_name = targetName;
+    }
   }
   return { type: method, inputs };
 }
@@ -801,6 +805,32 @@ function emitResult(outcome, reason, extra = {}) {
   send({ type: 'result', outcome, reason, frame_id: currentFrame, ...payload });
 }
 
+function modelUnavailable(error) {
+  // SDK 会包装网络异常。只认网络错误类型/状态码，不从模型正文或业务原因推断断线。
+  for (let depth = 0; error && depth < 5; depth++, error = error.cause) {
+    const name = error.constructor?.name;
+    const status = error.status ?? error.statusCode;
+    if (['APIConnectionError', 'APIConnectionTimeoutError'].includes(name)
+        || ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT',
+            'ENETDOWN', 'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT',
+            'UND_ERR_SOCKET'].includes(error.code)
+        || [401, 403, 408, 429].includes(status)
+        || (Number.isInteger(status) && status >= 500 && status < 600)) return true;
+  }
+  return false;
+}
+
+function modelUnavailableEvent(event) {
+  // SDK 0.3.1 在非流式入口把模型连接异常转换为自己生成的 error 终态。
+  // 只读这个框架终态的错误前缀，正常模型回复中的数字不参与断网判断。
+  const prefix = 'Sorry, an error occurred while processing your request: ';
+  if (event?.type !== 'assistant_message' || event.finishReason !== 'error'
+      || typeof event.content !== 'string' || !event.content.startsWith(prefix)) return false;
+  const detail = event.content.slice(prefix.length);
+  return /^(?:[A-Za-z]*Error:\s*)?(?:401|403|408|429|5\d{2})(?:\D|$)/.test(detail)
+    || /^(?:[A-Za-z]*Error:\s*)?(?:Connection error\.?|Request timed out\.?)$/i.test(detail);
+}
+
 function emitRuntimeReview(reason, diagnostic = {}) {
   emitResult('needs_review', reason, { source: 'runtime', diagnostic: { code: 'runtime', ...diagnostic } });
 }
@@ -982,6 +1012,10 @@ async function main() {
       const code = failure?.code || 'runtime';
       return emitRuntimeReview(`模型输出被拒绝（${code}）`, { code, raw: failure?.raw || '' });
     }
+    if (currentCall && modelUnavailableEvent(event)) {
+      trace({ type: 'error', at: now(), call_id: currentCall.id, code: 'model_unavailable', actions: actionCount });
+      return emitRuntimeReview('云模型暂不可用', { code: 'model_unavailable' });
+    }
     if (!terminal || event?.type !== 'assistant_message' || event.content !== terminalMarker || event.finishReason !== 'stop') {
       return emitRuntimeReview(`自动化未到达有效业务终态（已执行 ${actionCount} 个动作，步数上限 ${config.max_steps}）`,
         { code: 'no_terminal', actions: actionCount, max_steps: config.max_steps, raw: lastRawContent.slice(0, 800) });
@@ -991,6 +1025,10 @@ async function main() {
     if (terminal.menu_region) extra.menu_region = terminal.menu_region;
     emitResult(terminal.outcome, terminal.reason, extra);
   } catch (error) {
+    if (!failure && currentCall && modelUnavailable(error)) {
+      trace({ type: 'error', at: now(), call_id: currentCall.id, code: 'model_unavailable', actions: actionCount });
+      return emitRuntimeReview('云模型暂不可用', { code: 'model_unavailable' });
+    }
     const detail = text(error?.message, 200);
     trace({ type: 'error', at: now(), call_id: currentCall?.id ?? null, code: failure?.code || 'runtime', detail,
             actions: actionCount, ...rawRecord(lastRawContent) });

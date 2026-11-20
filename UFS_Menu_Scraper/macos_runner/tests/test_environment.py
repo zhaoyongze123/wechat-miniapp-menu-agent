@@ -3,11 +3,13 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from menu_capture import model as model_module
+from menu_capture import environment as environment_module, image_tools, window_contract
 from menu_capture.environment import EnvironmentDiagnostics, _item
 from menu_capture.server import create_app
 
@@ -45,6 +47,47 @@ def test_wechat_login_is_unknown_when_ocr_only_finds_app_name() -> None:
 
     assert login["status"] == "unknown"
     assert assistant["status"] == "unknown"
+
+
+def test_windows_diagnostics_use_original_window_pixels_without_uipath(tmp_path, monkeypatch):
+    windows_platform = SimpleNamespace(platform="win32")
+    monkeypatch.setattr(environment_module, "sys", windows_platform)
+    monkeypatch.setattr(window_contract, "sys", windows_platform)
+    commands = []
+    files = []
+
+    class FakeDesktop:
+        def execute(self, command):
+            commands.append(command["action"])
+            return {"ok": True, "windows": [
+                {"app": "Weixin.exe", "title": "微信", "cls": "QtMain", "position": {"width": 900, "height": 800}},
+            ]}
+
+        def diagnostic_screenshot(self, selector, path):
+            assert 'app="Weixin.exe"' in selector
+            files.append(path)
+            Image.new("RGB", (900, 800), "white").save(path)
+            return 900, 800
+
+    monkeypatch.setitem(sys.modules, "menu_capture.windows_desktop", SimpleNamespace(WindowsDesktop=FakeDesktop))
+    monkeypatch.setattr(image_tools, "image_ocr", lambda _path: [
+        {"text": "文件传输助手", "x": 500, "y": 20, "width": 90, "height": 18},
+    ])
+    monkeypatch.setattr(EnvironmentDiagnostics, "_windows_ocr_check", staticmethod(
+        lambda: _item("windows_ocr", "本机 OCR", "ready", "字库可用"),
+    ))
+    diagnostics = EnvironmentDiagnostics(SimpleNamespace(load=lambda: SimpleNamespace(
+        model=SimpleNamespace(base_url="", model=""))), SimpleNamespace(running=False), tmp_path)
+    monkeypatch.setattr(diagnostics, "_test_uipath_and_wechat",
+                        lambda: (_ for _ in ()).throw(AssertionError("不应访问 UiPath")))
+    monkeypatch.setattr(diagnostics, "_process_names", lambda: ["Weixin.exe"])
+
+    snapshot = diagnostics.run_test("windows_desktop")
+    checks = {value["id"]: value["status"] for value in snapshot["checks"]}
+    assert commands == ["discover"]
+    assert files and not any(path.exists() for path in files)
+    assert checks["windows_desktop"] == checks["windows_screenshot"] == checks["wechat_login"] == "ready"
+    assert not any(check_id.startswith("uipath") for check_id in checks)
 
 
 def test_screenshot_content_quality_rejects_black_frame(tmp_path: Path) -> None:

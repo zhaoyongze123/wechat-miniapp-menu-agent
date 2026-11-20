@@ -27,6 +27,7 @@ class TaskStore:
 
     def __init__(self, path: Path = ROOT / "data/tasks.sqlite3"):
         self.path = path
+        self.bind_assignments = None
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript("""
@@ -370,6 +371,8 @@ class TaskStore:
                 (run_id, mode, "running", json.dumps(task_ids, ensure_ascii=False), 0,
                  task_ids[0] if task_ids else "", message, stamp, stamp, capture_mode, name),
             )
+            if self.bind_assignments:
+                self.bind_assignments(db, run_id, task_ids)
             if material:
                 db.execute("UPDATE runs SET material_version_id=?,material_batch_id=?,material_version=?,material_snapshot=? WHERE id=?",
                            (material["id"], material["batch_id"], material["version"], material["snapshot_id"], run_id))
@@ -444,7 +447,7 @@ class TaskStore:
             db.execute("DELETE FROM publish_transactions WHERE task_id=?", (task_id,))
 
     def update_run(self, run_id: str, **changes) -> None:
-        allowed = {"status", "current_index", "current_task_id", "message"}
+        allowed = {"status", "current_index", "current_task_id", "message", "capture_mode"}
         if not changes or not set(changes) <= allowed:
             raise ValueError("无效的批次状态字段")
         changes["updated_at"] = now()

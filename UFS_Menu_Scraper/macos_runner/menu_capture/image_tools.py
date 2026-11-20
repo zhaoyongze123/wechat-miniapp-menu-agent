@@ -9,9 +9,9 @@ from PIL import Image
 
 
 def image_ocr(path: Path) -> list[dict]:
-    if sys.platform == "win32":
-        from .windows_image import image_ocr as windows_ocr
-        return windows_ocr(path)
+    if sys.platform == "win32" or sys.platform.startswith("linux"):
+        from .windows_image import image_ocr as tesseract_compatible_ocr
+        return tesseract_compatible_ocr(path)
     if sys.platform == "darwin":
         from .macos import MacDesktop, Frame, Window
         with Image.open(path) as image:
@@ -21,7 +21,7 @@ def image_ocr(path: Path) -> list[dict]:
 
 
 def qr_boxes(path: Path) -> list[dict]:
-    if sys.platform == "win32":
+    if sys.platform == "win32" or sys.platform.startswith("linux"):
         from .windows_image import qr_detections
         return [detection["box"] for detection in qr_detections(path)]
     if sys.platform == "darwin":

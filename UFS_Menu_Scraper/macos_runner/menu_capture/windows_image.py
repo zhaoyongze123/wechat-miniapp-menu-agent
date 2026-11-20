@@ -83,6 +83,7 @@ def _tesseract_ocr(path: Path) -> list[dict]:
             capture_output=True,
             input=image_path.read_bytes(),
             timeout=45,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("Tesseract OCR 超时（45 秒）") from exc

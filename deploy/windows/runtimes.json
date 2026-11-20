@@ -1,0 +1,30 @@
+{
+  "python": {
+    "version": "3.12.16",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.12.16%2B20261110-x86_64-pc-windows-msvc-install_only.tar.gz",
+    "sha256": "e23fe5b16926de1d81661b1a97352e89fb167549c55a6825796ccd0f32ec7f1b"
+  },
+  "node": {
+    "version": "22.23.5",
+    "url": "https://nodejs.org/dist/v22.23.5/node-v22.23.5-win-x64.zip",
+    "sha256": "4a191082e9706866830379d577d2cc8a50c776fcd9436a8d061b063ed0d9a0e3"
+  },
+  "tesseract": {
+    "version": "5.5.3",
+    "url": "https://github.com/tesseract-ocr/tesseract/releases/download/5.5.3/tesseract-ocr-w64-setup-5.5.3.20260724.exe",
+    "sha256": "bee9e3434bd94fd65387d9be28cd467a41f61b1275383b55b0f59a1331270ae4"
+  },
+  "installer_language": {
+    "url": "https://raw.githubusercontent.com/jrsoftware/issrc/is-6_5_4/Files/Languages/Unofficial/ChineseSimplified.isl",
+    "sha256": "fc1dbf303559cfefd47cf59eec7f1ad1c5fc6266ef8fa64569c13bc754adfeb4"
+  },
+  "tessdata": {
+    "version": "4.1.0",
+    "base_url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.1.0/",
+    "files": {
+      "chi_sim.traineddata": "a5fcb6f0db1e1d6d8522f39db4e848f05984669172e584e8d76b6b3141e1f730",
+      "eng.traineddata": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+      "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    }
+  }
+}

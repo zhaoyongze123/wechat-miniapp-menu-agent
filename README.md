@@ -73,21 +73,12 @@ npm ci --prefix ui_tars
 
 ### Windows
 
-在已登录、未锁屏的 Windows 桌面准备微信、UiPath Studio/Assistant、UiPath CLI、uv 和 Node.js 22.17.1+。
-微信 OCR 与自动扫码需要 Tesseract，并安装 `chi_sim`、`eng` 语言数据：将 `tesseract.exe` 加入 PATH，
-或把 `TESSERACT_CMD` 设为其绝对路径（可用 `tesseract --list-langs` 检查）。
+采集端在已登录的 Windows 桌面运行，使用 Win32 定位窗口、截图和发送输入。在双机模式中，
+A 机通过 Docker Compose 运行共享工作台，两台机器通过安装包部署采集端。操作人员登录微信，
+完成一次配对后即可接收管理员分配的门店。安装、离线操作、旧数据迁移与验收见 [双机部署和验收](deploy/README.md)。
 
-```powershell
-Set-Location UFS_Menu_Scraper/macos_runner
-.\启动菜单采集.ps1
-```
-
-配置模型与本机输入/输出目录。Windows 的选择器、快捷键与校准数据保存在 `uipath.windows.profile.json`。
-先手动打开一个微信小程序，用工作台的单店接管方式验证截图、点击、菜单交接与滚动采集；
-再录制微信主窗口与图片预览的选择器、校准聊天输入区，最后测试自动扫码与批量续跑。
-
-Windows 验收建议：先在单屏 100% 缩放完成单店，再测 125%/150% 缩放的截图与点击落点；
-最后用同一批素材在两端验证扫码、菜单输出与失败后的安全收尾。
+开发联调可在 `UFS_Menu_Scraper/macos_runner` 下运行 `启动菜单采集.ps1`。需预先准备 uv、
+Node.js、Tesseract 和 `chi_sim`、`eng`，自动导航还需要本机模型密钥。
 
 ## 使用流程
 

@@ -1,7 +1,3 @@
-"""配置模型与本地 JSON 存储：Settings 校验、原子写入、敏感字段分离。
-
-边界：只负责读写和校验配置，不推断业务默认值；secrets.local.json 与普通配置分开保存。
-"""
 from __future__ import annotations
 
 import json
@@ -99,13 +95,16 @@ def atomic_json(path: Path, value: dict) -> None:
 
 
 class ConfigStore:
-    def __init__(self, root: Path = ROOT):
+    def __init__(self, root: Path = ROOT, *, managed: bool = False):
         self.root = root
+        self.managed = managed
         self.path = root / "config.local.json"
         self.secret_path = root / "secrets.local.json"
 
     def load(self) -> Settings:
         if not self.path.exists():
+            if self.managed:
+                return Settings(input_dir="", output_dir=str(self.root / "output"))
             return Settings()
         return Settings.model_validate_json(self.path.read_text(encoding="utf-8"))
 

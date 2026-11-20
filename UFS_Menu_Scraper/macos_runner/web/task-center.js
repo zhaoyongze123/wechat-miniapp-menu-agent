@@ -1,5 +1,4 @@
-/* 统一任务中心：素材分析与采集运行共用一个入口，轮询 /api/tasks/active。
-   负责浮动面板、独立页面（#page-task-center）与任务详情弹窗；只读取接口，不发起采集。 */
+/* 统一任务中心：素材分析与采集运行共用一个入口，轮询 /api/tasks/active。 */
 (function () {
   'use strict';
   const STATUS = {

@@ -1,4 +1,4 @@
-"""UiPath 运行配置。真实选择器由使用者在 Studio 中标注，不从截图猜造。
+"""桌面运行配置。Windows 可从可见的微信窗口发现默认目标。
 
 内容：微信/小程序/预览选择器、输入区比例、快捷键、窗口尺寸与坐标校准结果。
 边界：这里只持久化人工校准的事实；运行时版面不匹配应显式报错，不自动改写配置。
@@ -19,7 +19,9 @@ from .window_contract import is_windows_wechat_app
 
 class RobotProfile(StrictModel):
     mode: Literal["attached", "automatic"] = "attached"
-    launch_mode: Literal["cli", "manual"] = "manual"
+    launch_mode: Literal["cli", "manual", "native"] = Field(
+        default_factory=lambda: "native" if sys.platform == "win32" else "manual",
+    )
     wechat_selector: str = ""
     miniapp_selector: str = ""
     preview_selector: str = ""
@@ -46,6 +48,16 @@ class RobotProfile(StrictModel):
     ))
     scroll_units: int = Field(default=6, ge=1, le=10)
     max_tasks: int = Field(default=1, ge=1, le=100)
+
+    @field_validator("launch_mode")
+    @classmethod
+    def platform_launch_mode(cls, value: str) -> str:
+        if sys.platform == "win32":
+            # 支持直接读取旧配置，Windows 不再使用其中的 UiPath 启动方式。
+            return "native"
+        if value == "native":
+            raise ValueError("原生桌面采集只支持 Windows")
+        return value
 
     @field_validator("wechat_selector", "miniapp_selector", "preview_selector")
     @classmethod

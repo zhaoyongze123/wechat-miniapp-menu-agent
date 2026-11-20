@@ -1,0 +1,148 @@
+# 在 Windows 构建机器上生成自包含安装包。运行安装包不需要本机预装这些构建工具。
+[CmdletBinding()]
+param(
+    [ValidatePattern('^\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$')]
+    [string]$Version = '0.1.0',
+    [string]$Output = (Join-Path $PSScriptRoot '..\artifacts')
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+Set-Item Env:UV_PYTHON_DOWNLOADS never
+$repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$runner = Join-Path $repo 'UFS_Menu_Scraper\macos_runner'
+$runtime = Get-Content (Join-Path $PSScriptRoot 'runtimes.json') -Raw | ConvertFrom-Json
+
+function Invoke-Checked {
+    param([string]$Program, [string[]]$Arguments)
+    & $Program @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$([IO.Path]::GetFileName($Program)) failed with exit code $LASTEXITCODE."
+    }
+}
+
+function Get-VerifiedFile {
+    param([string]$Uri, [string]$Path, [string]$Sha256)
+    Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $Path
+    if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ine $Sha256) {
+        throw "Checksum does not match for $([IO.Path]::GetFileName($Path))."
+    }
+}
+
+function Find-BuildCommand {
+    param([string]$Name, [string]$DefaultPath)
+    $command = Get-Command -Name $Name -CommandType Application -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    if (Test-Path -LiteralPath $DefaultPath -PathType Leaf) { return $DefaultPath }
+    throw "Missing Windows build tool: $Name"
+}
+
+$sevenZip = Find-BuildCommand '7z.exe' (Join-Path $env:ProgramFiles '7-Zip\7z.exe')
+$compiler = Find-BuildCommand 'ISCC.exe' (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')
+$uv = (Get-Command -Name 'uv.exe' -CommandType Application).Source
+$null = New-Item -ItemType Directory -Path $Output -Force
+$Output = (Resolve-Path $Output).Path
+$asset = Join-Path $Output "MenuCapture-Setup-$Version-win-x64.exe"
+if (Test-Path -LiteralPath $asset) { throw "Installer already exists: $asset" }
+$stage = Join-Path ([IO.Path]::GetTempPath()) ('menu-capture-build-' + [guid]::NewGuid().ToString('N'))
+$bundle = Join-Path $stage 'bundle'
+$null = New-Item -ItemType Directory -Path $bundle
+
+try {
+    $pythonTar = Join-Path $stage 'python.tar.gz'
+    Get-VerifiedFile $runtime.python.url $pythonTar $runtime.python.sha256
+    Invoke-Checked 'tar.exe' @('-xzf', $pythonTar, '-C', $bundle)
+    $pythonDir = Join-Path $bundle 'python'
+    $python = Join-Path $pythonDir 'python.exe'
+
+    # 应用本地使用构建机 Visual Studio 随附的可再发行 CRT，避免依赖用户机器预装 C++ 运行库。
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    $vs = (& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+    if (-not $vs) { throw 'Missing Visual Studio C++ redistributable files on the build machine.' }
+    $crtVersion = Get-ChildItem (Join-Path $vs 'VC\Redist\MSVC') -Directory |
+        Where-Object { Test-Path (Join-Path $_.FullName 'x64\Microsoft.VC143.CRT\msvcp140.dll') } |
+        Sort-Object { [version]$_.Name } -Descending |
+        Select-Object -First 1
+    if (-not $crtVersion) { throw 'Microsoft.VC143.CRT x64 files not found.' }
+    Copy-Item (Join-Path $crtVersion.FullName 'x64\Microsoft.VC143.CRT\*.dll') $pythonDir -Force
+
+    $requirements = Join-Path $stage 'requirements.txt'
+    Invoke-Checked $uv @('export', '--project', $runner, '--locked', '--no-dev', '--no-emit-project', '--output-file', $requirements)
+    Invoke-Checked $python @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-compile', '--only-binary=:all:', '--require-hashes', '-r', $requirements)
+    Get-ChildItem -LiteralPath $pythonDir -Filter '*.pdb' -Recurse -File | Remove-Item -Force
+
+    $nodeZip = Join-Path $stage 'node.zip'
+    Get-VerifiedFile $runtime.node.url $nodeZip $runtime.node.sha256
+    Expand-Archive -LiteralPath $nodeZip -DestinationPath $stage
+    $nodeArchiveRoot = Join-Path $stage "node-v$($runtime.node.version)-win-x64"
+    $nodeDir = Join-Path $bundle 'node'
+    New-Item -ItemType Directory -Path $nodeDir | Out-Null
+    Copy-Item -LiteralPath (Join-Path $nodeArchiveRoot 'node.exe'), (Join-Path $nodeArchiveRoot 'LICENSE') -Destination $nodeDir
+    $env:PATH = "$nodeDir;$env:PATH"
+
+    $ocrExe = Join-Path $stage 'tesseract-installer.exe'
+    Get-VerifiedFile $runtime.tesseract.url $ocrExe $runtime.tesseract.sha256
+    $ocrUnpack = Join-Path $stage 'tesseract-unpacked'
+    Invoke-Checked $sevenZip @('x', '-y', "-o$ocrUnpack", $ocrExe)
+    $ocrDir = Join-Path $bundle 'tesseract'
+    $tessdata = Join-Path $ocrDir 'tessdata'
+    New-Item -ItemType Directory -Path $tessdata -Force | Out-Null
+    Get-ChildItem -LiteralPath $ocrUnpack -File |
+        Where-Object { $_.Name -eq 'tesseract.exe' -or $_.Extension -in '.dll', '.txt', '.md' } |
+        Copy-Item -Destination $ocrDir
+    foreach ($file in $runtime.tessdata.files.PSObject.Properties) {
+        Get-VerifiedFile ($runtime.tessdata.base_url + $file.Name) (Join-Path $tessdata $file.Name) $file.Value
+    }
+    $env:TESSERACT_CMD = Join-Path $ocrDir 'tesseract.exe'
+    $env:TESSDATA_PREFIX = $tessdata
+
+    $app = Join-Path $bundle 'app'
+    $adapter = Join-Path $app 'ui_tars'
+    New-Item -ItemType Directory -Path $app, $adapter | Out-Null
+    foreach ($folder in 'menu_capture', 'web') {
+        Copy-Item -LiteralPath (Join-Path $runner $folder) -Destination $app -Recurse
+    }
+    Get-ChildItem -LiteralPath $app -Directory -Filter '__pycache__' -Recurse | Remove-Item -Recurse -Force
+    Get-ChildItem -LiteralPath (Join-Path $runner 'ui_tars') -File |
+        Where-Object { $_.Extension -in '.mjs', '.json' } |
+        Copy-Item -Destination $adapter
+    Copy-Item -LiteralPath (Join-Path $runner 'ui_tars\prompts') -Destination $adapter -Recurse
+    $npm = Join-Path $nodeArchiveRoot 'node_modules\npm\bin\npm-cli.js'
+    $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1'
+    Invoke-Checked (Join-Path $nodeDir 'node.exe') @($npm, 'ci', '--omit=dev', '--no-audit', '--no-fund', '--prefix', $adapter)
+
+    # 构建机也使用将要分发的可执行文件做校验；禁止回退到全局 Python、Node 或 OCR。
+    $env:PYTHONNOUSERSITE = '1'
+    Push-Location $app
+    try {
+        Invoke-Checked $python @('-c', 'import fastapi, cv2, zxingcpp, screeninfo, rapidocr_onnxruntime, menu_capture.server')
+        Invoke-Checked (Join-Path $nodeDir 'node.exe') @('--version')
+        Invoke-Checked $env:TESSERACT_CMD @('--version')
+        $languages = & $env:TESSERACT_CMD --list-langs
+        if ($LASTEXITCODE -ne 0 -or $languages -notcontains 'chi_sim' -or $languages -notcontains 'eng') {
+            throw 'Bundled Tesseract cannot load both chi_sim and eng.'
+        }
+        Push-Location $adapter
+        try {
+            Invoke-Checked (Join-Path $nodeDir 'node.exe') @('--input-type=module', '-e', "await import('@gui-agent/agent-sdk'); await import('./prompts/base.mjs'); await import('./prompts/business.mjs')")
+        } finally {
+            Pop-Location
+        }
+    } finally {
+        Pop-Location
+    }
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtimes.json') -Destination $bundle
+    Set-Content -LiteralPath (Join-Path $bundle 'vc-runtime-version.txt') -Value $crtVersion.Name -Encoding ASCII
+    $language = Join-Path $stage 'ChineseSimplified.isl'
+    Get-VerifiedFile $runtime.installer_language.url $language $runtime.installer_language.sha256
+    # Inno Setup 与 Windows PowerShell 5.1 需要 BOM 才能在任意系统代码页正确读取中文。
+    $utf8Bom = [Text.UTF8Encoding]::new($true)
+    $setup = Join-Path $stage 'setup.iss'
+    [IO.File]::WriteAllText($setup, [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'setup.iss')), $utf8Bom)
+    [IO.File]::WriteAllText((Join-Path $bundle 'Launch.ps1'), [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Launch.ps1')), $utf8Bom)
+    Invoke-Checked $compiler @("/DAppVersion=$Version", "/DBundleDir=$bundle", "/DLanguageFile=$language", "/O$Output", $setup)
+    $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+    Set-Content -LiteralPath "$asset.sha256" -Value "$hash  $([IO.Path]::GetFileName($asset))" -Encoding ASCII
+    Write-Host "Installer: $asset"
+} finally {
+    Remove-Item -LiteralPath $stage -Recurse -Force
+}

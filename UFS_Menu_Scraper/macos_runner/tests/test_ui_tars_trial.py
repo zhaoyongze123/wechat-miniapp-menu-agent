@@ -91,6 +91,7 @@ def model_server():
         responses: list[str | object] = []
         requests: list[dict] = []
         delay_seconds = 0.0
+        http_status = 200
 
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
@@ -100,6 +101,14 @@ def model_server():
                 "authorization": self.headers.get("Authorization"),
                 "body": body,
             })
+            if type(self).http_status != 200:
+                response = b'{"error":{"message":"model offline","type":"server_error"}}'
+                self.send_response(type(self).http_status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+                return
             usage = None
             if not type(self).responses:
                 content = ""
@@ -168,6 +177,23 @@ def _model(server, *, key="test-only-key") -> TrialModel:
     node = shutil.which("node")
     assert node
     return TrialModel(node, f"http://127.0.0.1:{server.server_port}/v1", key)
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="需要本机安装 Node.js 与 @gui-agent/agent-sdk")
+def test_real_agent_sdk_marks_provider_outage_as_runtime(model_server, tmp_path):
+    server, handler = model_server
+    handler.http_status = 503
+    observe, _frames = _frame_factory(tmp_path)
+
+    result, _ = run_navigation(
+        _model(server), "测试门店", 2, 4,
+        observe=observe, execute=lambda *_: pytest.fail("模型不可用时不得执行界面动作"),
+        check_stop=lambda: None, log_path=tmp_path / "adapter.log", trace_path=tmp_path / "trace.jsonl",
+    )
+
+    assert handler.requests
+    assert result["source"] == "runtime"
+    assert result["diagnostic"]["code"] == "model_unavailable"
 
 
 def _frame_factory(tmp_path: Path, *, width=320, height=200, window_width=None, window_height=None,

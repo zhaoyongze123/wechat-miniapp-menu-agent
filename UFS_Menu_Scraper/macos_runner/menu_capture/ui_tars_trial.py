@@ -1,10 +1,4 @@
-"""GUI Agent SDK 和 UiPath 的本机 IPC 与结果契约。
-
-关键流程：把当前帧与候选目标交给模型 → 校验模型动作（白名单、目标 ID、坐标换算）
-→ 通过子进程协议执行动作 → 回传新帧，直到 success / unqualified / needs_review。
-
-边界：模型只做导航决策，不核对店名、不接触二维码原图；动作参数与窗口契约在此统一校验。
-"""
+"""GUI Agent SDK 和 UiPath 的本机 IPC 与结果契约。"""
 
 from __future__ import annotations
 
@@ -179,6 +173,7 @@ def _run_agent(model: TrialModel, instruction: str, max_steps: int,
         with subprocess.Popen(
             [model.node, str(_ENTRY)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=log, env=child_env,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         ) as child:
             try:
                 return _exchange(child, config, observe, execute, check_stop)
@@ -800,13 +795,65 @@ def _checked_point(params, image_size):
     return x, y, width, height
 
 
+_OCR_CACHE: dict = {}
+# 只对“有明确屏幕原文”的动作按钮做文字定位校正；关闭/叉号等图标按钮仍使用模型坐标。
+# 命中条件同时要求文字匹配且离模型落点足够近，避免把点偏的点击强行挪到无关文字上。
+_CLICK_TEXT_HINTS = ("开始点餐", "去点餐", "立即点餐", "进入菜单", "查看菜单", "选好了", "开始下单")
+_CLICK_REFINE_RADIUS = 0.18
+_CLICK_REFINE_MIN_RADIUS = 36.0
+
+
+def _refine_click_point(frame: dict, x: float, y: float, target: str) -> tuple[float, float] | None:
+    """模型落点附近有同义文字框时，改为点文字框中心；否则返回 None 保留模型坐标。"""
+    label = (target or "").strip()
+    if not label:
+        return None
+    keyword = next((hint for hint in _CLICK_TEXT_HINTS if hint in label), "")
+    numeric = label if label.isdigit() else ""
+    if not keyword and not numeric:
+        return None
+    try:
+        rows = _frame_ocr_rows(_OCR_CACHE, str(frame.get("path") or ""), frame)
+    except Exception:
+        return None
+    width = float(frame.get("window_width") or 0)
+    height = float(frame.get("window_height") or 0)
+    if width <= 0 or height <= 0:
+        return None
+    radius = max(_CLICK_REFINE_MIN_RADIUS, _CLICK_REFINE_RADIUS * min(width, height))
+    best = None
+    for row in rows:
+        content = str(row.get("text") or "").strip()
+        if not content or float(row.get("confidence") or 0) < 0.5:
+            continue
+        if numeric:
+            if content != numeric:
+                continue
+        elif not (keyword in content or (len(content) >= 2 and content in keyword)):
+            continue
+        center_x = float(row["x"]) + float(row["width"]) / 2
+        center_y = float(row["y"]) + float(row["height"]) / 2
+        distance = math.hypot(center_x - x, center_y - y)
+        if distance > radius:
+            continue
+        if best is None or distance < best[0]:
+            best = (distance, center_x, center_y)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
 def _cmd_click(params, frame, image_size):
     x, y, width, height = _checked_point(params, image_size)
     if x > width * .55 and y < height * .045:
         # 右上角是小程序窗口胶囊（… / ◎），点中会退出小程序；本次不执行并明确告知 Agent。
         raise TrialActionRejected("点击落在窗口右上角胶囊保护区，会退出小程序；本次操作未执行，请换一个位置")
-    return {"action": "click", "x": x * frame["window_width"] / width,
-            "y": y * frame["window_height"] / height}
+    px = x * frame["window_width"] / width
+    py = y * frame["window_height"] / height
+    refined = _refine_click_point(frame, px, py, str(params.get("target_name") or ""))
+    if refined:
+        px, py = refined
+    return {"action": "click", "x": px, "y": py}
 
 
 def _cmd_scroll(params, frame, image_size):

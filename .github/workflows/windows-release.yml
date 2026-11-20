@@ -1,0 +1,87 @@
+# Windows 安装包构建及验收。v* 标签只组装待人工审阅的 GitHub Release 草稿。
+name: Windows 采集安装与共享后台
+on:
+  pull_request:
+    paths:
+      - 'deploy/**'
+      - 'UFS_Menu_Scraper/macos_runner/**'
+      - '.github/workflows/windows-release.yml'
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 安装包版本
+        default: '0.1.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.3'
+      - name: 验证双机分配和 Windows 原生执行契约
+        shell: pwsh
+        working-directory: UFS_Menu_Scraper/macos_runner
+        run: |
+          uv sync --frozen --python 3.12
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv run --frozen pytest -q tests/test_shared_workbench.py tests/test_windows_compat.py tests/test_environment.py
+      - name: 构建 Windows x64 安装包
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
+        run: |
+          $version = $env:BUILD_VERSION
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
+          ./deploy/windows/build.ps1 -Version $version
+      - name: 验证安装与进程恢复
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem deploy/artifacts -Filter '*.exe' -File | Select-Object -First 1
+          ./deploy/windows/smoke.ps1 -Installer $installer.FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: menu-capture-windows-x64
+          path: deploy/artifacts/
+          if-no-files-found: error
+
+  hub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 生成隔离环境口令
+        run: echo "MENU_CAPTURE_ADMIN_PASSWORD=$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+      - name: 验证共享后台容器和数据卷
+        run: |
+          docker compose -f deploy/compose.yaml up -d --build --wait
+          curl --fail http://127.0.0.1:8766/healthz
+          docker compose -f deploy/compose.yaml exec -T hub tesseract --list-langs | grep -w chi_sim
+          docker compose -f deploy/compose.yaml exec -T hub test -s /var/lib/menu-capture/data/tasks.sqlite3
+      - name: 容器日志
+        if: failure()
+        run: docker compose -f deploy/compose.yaml logs
+
+  draft:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, hub]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: menu-capture-windows-x64
+          path: release-assets
+      - name: 创建发布草稿
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft --generate-notes

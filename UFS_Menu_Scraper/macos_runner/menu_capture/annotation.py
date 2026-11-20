@@ -1,6 +1,6 @@
 """人工标注模式。
 
-复用已有的微信扫码打开流程与 UiPath 截图/点击能力，但在小程序打开后：
+复用平台桌面执行器的微信扫码、截图和点击能力，小程序打开后由人工标注：
 不调用视觉模型，也不执行任何本地规则判定；系统只给出可修改的候选类别与框选，
 点击必须由使用者确认，点击前后截图会作为规则样本归档。
 """
@@ -391,9 +391,7 @@ class RunnerExecutor:
         runner.run_id = None
         runner.run_directory = Path(run_directory)
         runner.output_directory = self.work_dir
-        runner.transport = runner.transport_factory(Path(run_directory), Path(output_root))
-        if hasattr(runner.transport, "retain_command_history"):
-            runner.transport.retain_command_history = runner.debug_log is None
+        runner.transport = runner.make_transport(Path(run_directory), Path(output_root))
         runner._cli_process = None
         runner._cli_metadata_path = runner._cli_log_path = runner._cli_args_path = None
         runner._cli_info = None
@@ -417,10 +415,15 @@ class RunnerExecutor:
     def await_startup(self) -> None:
         self.runner._await_cli_startup()
 
+    def prepare_profile(self, profile: dict) -> None:
+        self.runner.setup_native_windows_profile(profile)
+
     def ensure_safe_start(self, profile: dict, settle_seconds: float) -> None:
         self.runner._ensure_file_assistant(profile, self.work_dir, settle_seconds)
 
     def open_store(self, task: dict, profile: dict, work_dir: Path, settle_seconds: float) -> dict:
+        if self.runner.assignment_source is not None and not self.runner.assignment_source(task["id"]):
+            raise AnnotationError("该门店分配已收回，请返回工作台重新选择")
         return self.runner._open_source_automatic(task, profile, Path(work_dir), settle_seconds)
 
     def screenshot(self, selector: str, name: str) -> dict:
@@ -662,14 +665,16 @@ class AnnotationSession:
             tasks = {task_id: self.store.get(task_id) for task_id in ordered}
             settings = self.configs.load()
             profile = dict(self.profiles.load())
-            if profile.get("launch_mode", "cli") != "cli":
+            native = sys.platform == "win32"
+            if not native and profile.get("launch_mode", "cli") != "cli":
                 raise AnnotationError("人工标注需要通过 UiPath CLI 启动；请在设置中把启动方式切换为“通过 UiPath CLI 启动”后重试")
             # 强制重新观察当前微信窗口，避免沿用上一轮的小程序标题。
             profile["miniapp_selector"] = ""
             output_root = Path(settings.output_dir).expanduser().resolve()
             output_root.mkdir(parents=True, exist_ok=True)
             # 服务重启会丢失内存中的会话，但 UiPath CLI/执行器可能仍在运行并占住任务槽。
-            self._cleanup_orphaned_runs(output_root)
+            if not native:
+                self._cleanup_orphaned_runs(output_root)
             session_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
             work_dir = output_root / ANNOTATION_SESSIONS_DIR / session_id
             work_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -679,7 +684,7 @@ class AnnotationSession:
             run_dir.chmod(0o700)
             self.session_id = session_id
             self.status = "starting"
-            self.message = "正在启动 UiPath 并确认微信安全起点"
+            self.message = "正在连接 Windows 微信窗口" if native else "正在启动 UiPath 并确认微信安全起点"
             self.task_ids = ordered
             self.tasks = tasks
             self.index = 0
@@ -707,9 +712,11 @@ class AnnotationSession:
             self._save()
             try:
                 self.executor.attach(run_dir, output_root, work_dir, profile)
-                if profile.get("launch_mode", "cli") == "cli":
+                if not native:
                     self.executor.launch(run_dir, settings, profile, len(ordered))
                 self.executor.await_startup()
+                if native:
+                    self.executor.prepare_profile(profile)
                 # 不在首次打开前额外截图：open_store 自带“文件传输助手”校验，
                 # 少一条窗口命令可避免 macOS 置前尚未完成时的焦点竞态。
             except Exception as exc:

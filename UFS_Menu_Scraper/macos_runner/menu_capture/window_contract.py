@@ -35,6 +35,34 @@ def window_selector(window: dict, title: str) -> str:
     return ET.tostring(ET.Element("wnd", attrs), encoding="unicode", short_empty_elements=True)
 
 
+def select_wechat_selector(windows: list[dict]) -> str:
+    """从进程、窗口形状和标题识别微信主窗口，排除图片预览和小程序。"""
+    candidates = []
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        title = str(window.get("title") or "").strip()
+        app = str(window.get("app") or "")
+        app_name = app.casefold()
+        allowed_app = (is_windows_wechat_app(app) if sys.platform == "win32"
+                       else "wechat" in app_name or "xinwechat" in app_name or "微信" in app)
+        if not title or not allowed_app or title in {"图片和视频", "聊天记录"}:
+            continue
+        position = window.get("position") or {}
+        width, height = position.get("width", 0), position.get("height", 0)
+        has_dimensions = isinstance(width, (int, float)) and isinstance(height, (int, float))
+        if has_dimensions and width > 100 and height > 100 and width < height * 0.8:
+            continue
+        common_titles = ({"微信", "wechat", "weixin", "文件传输助手"}
+                         if sys.platform == "win32" else {"微信", "WeChat", "文件传输助手"})
+        preferred = (title.casefold() if sys.platform == "win32" else title) in common_titles
+        candidates.append((preferred, width * height if has_dimensions else 0, window, title))
+    if not candidates:
+        return ""
+    _, _, window, title = max(candidates, key=lambda item: item[:2])
+    return window_selector(window, title)
+
+
 def windows_selectors_overlap(target: str, configured: str) -> bool:
     """判断关闭目标是否可能是用户配置的聊天或图片预览窗口。"""
     if not configured:

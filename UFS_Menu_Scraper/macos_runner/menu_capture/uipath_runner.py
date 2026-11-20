@@ -43,7 +43,7 @@ from .model_usage import usage_context
 from .chat_anchor import find_store_name_matches
 from .chat_layout import ChatImageUnreadable, find_sent_text_bubbles
 from .failures import classify as classify_failure
-from .window_contract import is_windows_miniapp_app, is_windows_wechat_app, validate_target_window, window_selector, windows_app_name, windows_selectors_overlap
+from .window_contract import is_windows_miniapp_app, is_windows_wechat_app, select_wechat_selector, validate_target_window, window_selector, windows_app_name, windows_selectors_overlap
 from .close_icon_locator import refine_close_icon, locate_close_icon, refine_back_arrow
 from .checkbox_locator import refine_consent_checkbox
 from .scene_agent import SceneDecision
@@ -53,6 +53,7 @@ from .preview_locator import PreviewIconNotFound, locate_preview_recognize
 from .chat_image_locator import (ChatImageNotFound, locate_chat_image_bubble, locate_sent_image,
                                  match_preview_source)
 from .ui_tars_trial import GUI_PLUS_MODEL, TrialModel, TrialProtocolError, run_navigation, trial_model_from_env
+from .robot_profile import RobotProfile
 from .capture_outputs import (
     archive_unqualified, retire_store_dir, store_output_dir, unqualified_store_dir,
 )
@@ -258,12 +259,11 @@ def production_window_geometry(screen) -> dict:
 
 
 class FileRobotTransport:
-    """UiPath 与 Python 之间的一命令一回复文件 IPC。超时后绝不重发动作。"""
+    """统一校验 Windows 本机动作和 macOS 文件 IPC。超时后绝不重发动作。"""
 
     def __init__(self, run_directory: Path, output_directory: Path | None = None, poll_interval: float = 0.05,
                  local: Any | None = None):
-        # local 是平台本地桌面驱动（Windows 用 Win32）。UiPath 只保留窗口发现，
-        # 其余窗口级动作由驱动同步完成，回包与文件 IPC 完全同构。
+        # Windows 的发现、截图和动作都在本进程执行，与 macOS IPC 使用同一回执契约。
         self.local = local
         self.run_directory = Path(run_directory).expanduser().resolve()
         self.output_directory = Path(output_directory or run_directory).expanduser().resolve()
@@ -327,8 +327,9 @@ class FileRobotTransport:
                 raise ValueError("timeout 必须是正数")
             if cancel_event and cancel_event.is_set():
                 raise RobotCancelled("命令发送前已收到暂停")
-            if self.local is not None and payload["action"] in self.local.actions:
-                # 本地驱动同步执行：不能写 command.json，否则仍在轮询的 UiPath 会重复执行同一动作。
+            if self.local is not None:
+                if payload["action"] not in self.local.actions:
+                    raise RobotProtocolError(f"Windows 桌面驱动不支持 {payload['action']}")
                 if self.retain_command_history:
                     safe_payload = {key: value for key, value in payload.items() if key not in {"text", "key"}}
                     _atomic_write_json(self.run_directory / "last-command.json", safe_payload)
@@ -437,7 +438,8 @@ class FileRobotTransport:
 
     def request_stop(self) -> None:
         """替换仍排队的动作，通知手动运行的 Main 尽快退出；不等待、不重发原动作。"""
-        _atomic_write_json(self.command_path, {"id": str(uuid.uuid4()), "action": "stop"})
+        if self.local is None:
+            _atomic_write_json(self.command_path, {"id": str(uuid.uuid4()), "action": "stop"})
 
     def _remove_pending(self, command_id: str) -> None:
         try:
@@ -653,6 +655,9 @@ class UiPathRunner:
         self._manual_action: dict | None = None
         self._manual_reason = "not_ordering"
         self._manual_last_result = ""
+        # 共享采集端注入任务来源，只有已校验并落盘的分配包可进入桌面执行。
+        self.assignment_source: Callable[[str], str] | None = None
+        self._capture_start_index = 0
 
     @property
     def running(self) -> bool:
@@ -667,9 +672,10 @@ class UiPathRunner:
 
     def readiness(self, task_ids_override: list[str] | None = None, *, trial: bool = False,
                   trial_task_id: str | None = None, trial_source: str = "",
-                  trial_batch_sources: dict[str, str] | None = None) -> dict:
+                  trial_batch_sources: dict[str, str] | None = None, capture_mode: str = "") -> dict:
         issues: list[str] = []
         profile: dict = {}
+        native = sys.platform == "win32"
         try:
             parsed = json.loads(self.profile_path.read_text(encoding="utf-8"))
             if not isinstance(parsed, dict):
@@ -679,9 +685,15 @@ class UiPathRunner:
                 issues.append("profile 含有不支持的字段")
             profile = {key: value for key, value in parsed.items() if key in _PROFILE_FIELDS}
         except FileNotFoundError:
-            issues.append("尚未找到 uipath.profile.json")
+            if not native:
+                issues.append("尚未找到 uipath.profile.json")
         except (OSError, ValueError):
-            issues.append("uipath.profile.json 无法读取或不是有效 JSON")
+            issues.append("桌面配置无法读取或不是有效 JSON" if native else "uipath.profile.json 无法读取或不是有效 JSON")
+        if native:
+            profile = RobotProfile().model_dump() | profile
+            # Windows 默认版面由执行时归一到实测尺寸，运行前仍需核对聊天标题、
+            # 粘贴后内容及预览原图。用户已保存的选择器继续优先使用。
+            profile["launch_mode"] = "native"
         if trial_task_id:
             # 评测复用真实任务与执行器，接管参数仅作用于本次，不改批量队列和配置。
             profile.update(mode="attached", selected_task_id=trial_task_id, max_tasks=1)
@@ -692,18 +704,18 @@ class UiPathRunner:
         if mode not in {"attached", "automatic"}:
             issues.append("mode 只能是 attached 或 automatic")
         # automatic 会在扫码后通过 UiPath discover 取得本轮窗口，不能依赖店铺固定标题。
-        required_selectors = () if mode == "attached" else (
+        required_selectors = () if native or mode == "attached" else (
             "wechat_selector", "preview_selector"
         )
         for key in required_selectors:
             if not isinstance(profile.get(key), str) or not profile[key].strip():
                 issues.append(f"profile 缺少 {key}；请在 UiPath 中录制并填写实际 selector")
-        if mode == "automatic" and profile.get("coordinates_verified") is not True:
+        if not native and mode == "automatic" and profile.get("coordinates_verified") is not True:
             issues.append("坐标尚未由用户校准确认；自动化不会假设默认点击位置")
         launch_mode = profile.get("launch_mode", "manual")
-        if trial_batch_sources and launch_mode != "cli":
+        if not native and trial_batch_sources and launch_mode != "cli":
             issues.append("GUI Agent 全自动试验需要 UiPath CLI 启动方式")
-        if launch_mode not in {"cli", "manual"}:
+        if not native and launch_mode not in {"cli", "manual"}:
             issues.append("launch_mode 只能是 cli 或 manual")
         if launch_mode == "cli":
             if not cli_entry():
@@ -733,13 +745,13 @@ class UiPathRunner:
 
         try:
             settings = self.configs.load()
-            if not settings.input_dir or not settings.output_dir:
+            if (not settings.input_dir and not (trial_batch_sources or trial_source)) or not settings.output_dir:
                 issues.append("输入目录或输出目录尚未配置")
         except Exception:
             settings = None
             issues.append("配置服务设置无法读取")
 
-        if settings is not None:
+        if settings is not None and capture_mode != "manual":
             try:
                 trial_model_from_env(self.configs)
             except ValueError as exc:
@@ -767,7 +779,8 @@ class UiPathRunner:
                     issues.append(f"任务状态 {selected['status']} 不允许重新接管")
                 if settings is not None:
                     source_root = trial_batch_sources[selected_id] if trial_batch_sources else trial_source or settings.input_dir
-                    self._validate_source(selected, source_root)
+                    self._validate_source(selected, source_root,
+                                          trial_source=bool(trial_batch_sources) or bool(trial_source))
                 selected_tasks.append(selected)
             except Exception as exc:
                 if isinstance(exc, NeedsReview):
@@ -803,16 +816,75 @@ class UiPathRunner:
         return result
 
     def _registered_trial_source(self, task_id: str) -> str:
-        source = Path(self.store.get(task_id)["source_path"]).resolve()
+        if self.assignment_source is not None:
+            return self.assignment_source(task_id)
+        task = self.store.get(task_id) or {}
+        raw = str(task.get("source_path") or "").strip()
+        if not raw:
+            return ""
+        source = Path(raw).expanduser().resolve()
+        if not source.is_file():
+            return ""
         snapshot = source.parent.parent
-        published = (self.store.path.parent / "materials/published").resolve()
-        return str(snapshot) if snapshot.parent == published and self.store.material_binding(str(snapshot)) else ""
+        data_root = self.store.path.parent
+        published = (data_root / "materials/published").resolve()
+        if snapshot.parent == published and self.store.material_binding(str(snapshot)):
+            return str(snapshot)
+        # 共享后台与本机同机时，任务直接引用 D 盘发布快照，不再下载到 shared-inputs。
+        # 快照标记由发布流程生成：按快照 ID 与门店名确认登记，再用实际文件 hash 对齐任务。
+        marker = snapshot / ".materials-snapshot.json"
+        if marker.is_file():
+            try:
+                manifest = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                manifest = {}
+            registered = any(entry.get("source_name") == task.get("source_name")
+                             for entry in manifest.get("stores") or [])
+            if manifest.get("snapshot_id") == snapshot.name and registered:
+                try:
+                    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+                except OSError:
+                    digest = ""
+                if digest and digest == task.get("source_hash"):
+                    return str(snapshot)
+        # 双机模式下 Hub 把已发布素材下发并下载到本机 shared-inputs/<分配 ID>/source/，
+        # 这是登记素材的离线副本；联网校验不可靠时允许直接用它作为采集来源。
+        shared_inputs = (data_root / "shared-inputs").resolve()
+        if _inside(source, shared_inputs):
+            return str(source.parent.parent)
+        return ""
 
     def _has_published_output(self, task_id: str) -> bool:
         """门店是否已有可分发的发布结果：有 page-*.png 才算，空目录或旧路径不算。"""
         task = self.store.get(task_id) or {}
         output = str(task.get("output_dir") or "").strip()
         return bool(output) and Path(output).is_dir() and any(Path(output).glob("page-*.png"))
+
+    def make_transport(self, run_directory: Path, output_root: Path):
+        transport = self.transport_factory(run_directory, output_root)
+        if isinstance(transport, FileRobotTransport):
+            transport.retain_command_history = self.debug_log is None
+            if sys.platform == "win32":
+                from .windows_desktop import WindowsDesktop
+
+                transport.local = WindowsDesktop()
+        return transport
+
+    def setup_native_windows_profile(self, profile: dict) -> None:
+        """从当前可见微信主窗口建立默认选择器，验证和点击仍由现有流程负责。"""
+        if sys.platform != "win32" or all(profile.get(key) for key in ("wechat_selector", "preview_selector")):
+            return
+        if not profile.get("wechat_selector"):
+            windows = self._window_list(self._send({"action": "discover"}).get("windows"))
+            selected = select_wechat_selector(windows)
+            if not selected:
+                raise NeedsReview("请打开已登录的微信主窗口并进入文件传输助手", "wechat_context_lost")
+            profile["wechat_selector"] = selected
+        if not profile.get("preview_selector"):
+            app = ET.fromstring(profile["wechat_selector"]).get("app", "")
+            if not is_windows_wechat_app(app):
+                raise NeedsReview("微信主窗口选择器缺少有效的进程名", "wechat_context_lost")
+            profile["preview_selector"] = window_selector({"app": app}, "图片和视频")
 
     def start(self, resume_run: dict | None = None, *, ui_tars_trial: bool = False,
               trial_task_id: str | None = None, trial_task_ids: list[str] | None = None,
@@ -864,10 +936,10 @@ class UiPathRunner:
                 capture_mode = "auto"
             status = (self.readiness(task_ids_override=task_ids_override, trial=True,
                                      trial_task_id=trial_task_id, trial_source=trial_source,
-                                     trial_batch_sources=trial_batch_sources) if ui_tars_trial
+                                     trial_batch_sources=trial_batch_sources, capture_mode=capture_mode) if ui_tars_trial
                       else self.readiness(task_ids_override=task_ids_override))
             if not status["ready"]:
-                raise ValueError("UiPath 尚未就绪：" + "；".join(status["issues"]))
+                raise ValueError(f"{'Windows 桌面采集' if sys.platform == 'win32' else 'UiPath'}尚未就绪：" + "；".join(status["issues"]))
             profile = status["profile"]
             if capture_mode and not ui_tars_trial:
                 raise ValueError("采集模式只用于批量采集入口")
@@ -875,7 +947,7 @@ class UiPathRunner:
                 resume_run or profile["mode"] != "attached" or len(status["selected_task_ids"]) != 1
             ):
                 raise ValueError("GUI Agent 试验仅接管已打开小程序的单店任务")
-            model = trial_model_from_env(self.configs)
+            model = None if capture_mode == "manual" else trial_model_from_env(self.configs)
             self.stop_event.clear()
             self.pause_event.clear()
             task_ids = status["selected_task_ids"]
@@ -898,42 +970,37 @@ class UiPathRunner:
             run_directory.chmod(0o700)
             if ui_tars_trial:
                 output_dir.mkdir(mode=0o700)
+            launch_mode = profile.get("launch_mode", "manual")
+            native = launch_mode == "native"
             entry = {
                 "in_RunDirectory": str(run_directory),
                 "task_id": task["id"],
                 "selected_task_ids": task_ids,
                 "mode": profile["mode"],
-                "project_dir": str(self.project_dir),
-                "main_file": "Main.xaml",
+                "project_dir": "" if native else str(self.project_dir),
+                "main_file": None if native else "Main.xaml",
                 "idle_timeout_seconds": 600,
-                "startup_timeout_seconds": 300,
-                "launch_mode": profile.get("launch_mode", "manual"),
+                "startup_timeout_seconds": 5 if native else 300,
+                "launch_mode": launch_mode,
             }
             _atomic_write_json(run_directory / "entry.json", entry)
             self.run_directory, self.output_directory = run_directory, output_dir
             # 批次里每家店都会新建自己的暂存目录，白名单必须给整个暂存根；
             # trial 模式的截图落在 run_directory/ui-tars-trial 下，直接放行运行目录。
             transport_output = run_directory if ui_tars_trial else _staging_root(settings.output_dir)
-            self.transport = self.transport_factory(run_directory, Path(transport_output).expanduser().resolve())
-            if isinstance(self.transport, FileRobotTransport):
-                self.transport.retain_command_history = self.debug_log is None
-                if sys.platform == "win32":
-                    # 微信 4.x 的网页版/小程序窗口被 UiPath 当成 Chromium 浏览器，
-                    # 窗口级动作全部解析失败；改为本进程 Win32 直接执行，UiPath 只做发现。
-                    from .windows_desktop import WindowsDesktop
-
-                    self.transport.local = WindowsDesktop()
+            self.transport = self.make_transport(run_directory, Path(transport_output).expanduser().resolve())
             self._cli_process = None
             self._cli_metadata_path = self._cli_log_path = self._cli_args_path = None
             self._cli_info = None
             self._cli_reader_thread = None
             self.run_id = resume_run["id"] if resume_run else uuid.uuid4().hex
-            if profile.get("launch_mode", "manual") == "cli":
+            if sys.platform != "win32" and profile.get("launch_mode", "manual") == "cli":
                 self._launch_cli(run_directory, settings, profile, task_count=len(task_ids))
             if ui_tars_trial:
                 self._deadline = 0
                 self._ui_tars_trial_active = True
                 self._capture_mode = capture_mode
+                self._capture_start_index = start_index
                 self._pause_at_boundary = False
                 self.current_task = {"id": task["id"], "source_name": task["source_name"],
                                      "stage": "ui_tars_connecting", "mode": profile["mode"],
@@ -944,7 +1011,7 @@ class UiPathRunner:
                     label = "半自动人工采集" if capture_mode == "manual" else "全自动 Agent 采集"
                     if resume_run:
                         self.store.update_run(self.run_id, status="running", current_index=start_index,
-                                              current_task_id=task_ids[0], message=f"继续{label}")
+                                              capture_mode=capture_mode, current_task_id=task_ids[0], message=f"继续{label}")
                     else:
                         self.store.create_run(self.run_id, "automatic", task_ids,
                                               message=f"{label}已启动", material=None, capture_mode=capture_mode,
@@ -972,10 +1039,14 @@ class UiPathRunner:
                                       else self.store.material_binding(settings.input_dir),
                                       name=run_name.strip()[:80] or self.store.default_run_name(task_ids))
             self._deadline = 0
-            self.current_task = {"id": task["id"], "source_name": task["source_name"], "stage": "waiting_uipath", "mode": profile["mode"]}
-            launch_mode = profile.get("launch_mode", "manual")
-            start_message = "UiPath CLI 已启动 Main.xaml 并传入本轮 IPC 目录" if launch_mode == "cli" else "等待用户在 UiPath Studio 手动运行 Main.xaml"
-            self.store.update(task["id"], status="running", stage="waiting_uipath", message=start_message)
+            stage = "connecting" if launch_mode == "native" else "waiting_uipath"
+            self.current_task = {"id": task["id"], "source_name": task["source_name"], "stage": stage, "mode": profile["mode"]}
+            start_message = {
+                "native": "正在连接 Windows 微信桌面",
+                "cli": "UiPath CLI 已启动 Main.xaml 并传入本轮 IPC 目录",
+                "manual": "等待用户在 UiPath Studio 手动运行 Main.xaml",
+            }[launch_mode]
+            self.store.update(task["id"], status="running", stage=stage, message=start_message)
             self.store.event(start_message, task_id=task["id"])
             self.thread = threading.Thread(target=self._worker,
                                            args=(task, settings, profile, output_dir, model, task_ids, start_index, bool(resume_run)),
@@ -990,16 +1061,18 @@ class UiPathRunner:
                 "task_id": task["id"],
                 "in_RunDirectory": str(run_directory),
                 "entry_file": str(run_directory / "entry.json"),
-                "project_dir": str(self.project_dir),
-                "main_file": "Main.xaml",
-                "idle_timeout_seconds": 600,
-                "startup_timeout_seconds": 300,
+                "project_dir": entry["project_dir"],
+                "main_file": entry["main_file"],
+                "idle_timeout_seconds": entry["idle_timeout_seconds"],
+                "startup_timeout_seconds": entry["startup_timeout_seconds"],
                 "max_tasks": profile.get("max_tasks", 1),
                 "experimental_batch": bool(status.get("experimental_batch")),
                 "task_count": len(task_ids),
                 "run_id": self.run_id,
                 "resumed": bool(resume_run),
-                "message": ("UiPath CLI 正在启动 Main.xaml；启动握手上限 300 秒。" if launch_mode == "cli" else "请在 UiPath Studio 手动运行 Main.xaml（需在 300 秒内启动），并将 in_RunDirectory 参数设为返回路径；Python 不会自动打开 Studio。"),
+                "message": (start_message if launch_mode == "native" else
+                            "UiPath CLI 正在启动 Main.xaml；启动握手上限 300 秒。" if launch_mode == "cli" else
+                            "请在 UiPath Studio 手动运行 Main.xaml（需在 300 秒内启动），并将 in_RunDirectory 参数设为返回路径；Python 不会自动打开 Studio。"),
             }
 
     def pause(self) -> None:
@@ -1120,10 +1193,10 @@ class UiPathRunner:
                 self._manual_cond.wait(0.5)
 
     def _capture_run_progress(self, done: int, total: int, next_task_id: str) -> None:
-        """批量采集按门店推进进度；单店接管没有 run 行，直接跳过。"""
+        """仅在结果持久化后推进，恢复批次沿用原始门店下标。"""
         if not self.run_id or not self.store.get_run(self.run_id):
             return
-        # 自动与人工共用批次推进：文案必须跟随本轮真实模式，不能把自动采集写成人工。
+        done, total = done + self._capture_start_index, total + self._capture_start_index
         label = "半自动人工" if self._capture_mode == "manual" else "全自动 Agent"
         self.store.update_run(self.run_id, current_index=done, current_task_id=next_task_id,
                               message=f"{label} {done}/{total} 已完成；刷新页面可恢复当前进度")
@@ -1294,6 +1367,9 @@ class UiPathRunner:
             return
 
     def _await_cli_startup(self) -> None:
+        if sys.platform == "win32":
+            self._send({"action": "noop"}, timeout=5)
+            return
         try:
             self._handshake_cli()
         except (RobotCommandError, RobotTimeout) as exc:
@@ -1511,7 +1587,7 @@ class UiPathRunner:
 
     def _ui_tars_trial_worker(self, task: dict, settings, profile: dict, output_dir: Path,
                              model: TrialModel, batch_sources: dict[str, str] | None = None) -> None:
-        """一轮试验复用同一个 UiPath 实例，且只把结果写到试验目录。"""
+        """一轮采集复用同一个执行器，按门店提交后推进队列。"""
         summary = None
         summary_path = output_dir / "batch-result.json"
         try:
@@ -1532,11 +1608,19 @@ class UiPathRunner:
                 if self._pause_at_boundary:
                     summary.update(status="paused", reason="已请求暂停；在下一家开始前停止")
                     break
+                if self.assignment_source is not None and self._registered_trial_source(task_id) != source:
+                    summary.update(status="paused", reason="下一家门店的分配已收回或已变更；请结束本轮并刷新门店")
+                    break
                 task = self.store.get(task_id)
                 case_dir = output_dir / task_id
                 case_dir.mkdir(mode=0o700)
                 case_settings = settings.model_copy(update={"input_dir": source})
                 report = self._run_ui_tars_trial_case(task, case_settings, dict(profile), case_dir, model, automatic=True)
+                if sys.platform == "win32" and report.get("runtime_code") == "model_unavailable":
+                    # 模型断线属于批次暂停，门店保持原状态，恢复或切换模式后接着处理。
+                    summary.update(status="paused", reason="云模型暂不可用；已保留当前门店，可重试或改用半自动",
+                                   pause_reason="model_unavailable")
+                    break
                 # 试验批次与正式批次共用同一份事实源：先落库/发布，再判断能否继续下一家。
                 persisted = self._persist_trial_case(task, case_dir, report, case_settings)
                 summary["unstarted_task_ids"].pop(0)
@@ -1635,7 +1719,7 @@ class UiPathRunner:
         return "needs_review"
 
     def _manual_batch_worker(self, task: dict, settings, profile: dict, output_dir: Path,
-                             model: TrialModel, batch_sources: dict[str, str] | None = None) -> None:
+                             model: TrialModel | None, batch_sources: dict[str, str] | None = None) -> None:
         """半自动人工：系统负责扫码、开小程序、调窗口；人工决定何时截图或判不合格。
 
         与全自动共用扫码、窗口校准、滚动截图与跨店收尾；区别只在进入菜单后等待人工。
@@ -1664,6 +1748,9 @@ class UiPathRunner:
                 self._guard()
                 if self._pause_at_boundary:
                     summary.update(status="paused", reason="已请求暂停；在下一家开始前停止")
+                    break
+                if self.assignment_source is not None and self._registered_trial_source(task_id) != source:
+                    summary.update(status="paused", reason="下一家门店的分配已收回或已变更；请结束本轮并刷新门店")
                     break
                 current = self.store.get(task_id)
                 case_dir = output_dir / task_id
@@ -1894,7 +1981,11 @@ class UiPathRunner:
         try:
             report["material"] = self._trace_material.copy()
             self._guard()
-            self._validate_source(task, settings.input_dir)
+            source_root = settings.input_dir
+            if not source_root and trial:
+                # 试验批次没有本机输入目录，来源就是任务引用快照里的二维码文件。
+                source_root = str(Path(task["source_path"]).expanduser().resolve().parent.parent)
+            self._validate_source(task, source_root, trial_source=trial)
             if trial and not automatic:
                 with self._trace("uipath_startup"):
                     self._await_cli_startup()
@@ -2408,19 +2499,35 @@ class UiPathRunner:
         if not selector:
             raise NeedsReview("未配置微信主窗口 selector，无法校准窗口版面", purpose)
         width, height = _BATCH_WECHAT_FRAME
-        reply = self._send({"action": "resize", "selector": selector,
-                            "width": width, "height": height})
-        # 真实本机驱动会回读窗口矩形；驱动不回报尺寸时只能信任命令本身，不凭空阻断。
-        actual_width, actual_height = reply.get("window_width"), reply.get("window_height")
-        if actual_width is None or actual_height is None:
-            return
-        if abs(float(actual_width) - width) > 2 or abs(float(actual_height) - height) > 2:
-            raise NeedsReview(
-                f"微信主窗口未调整到 {width}×{height}（实际 {int(actual_width)}×{int(actual_height)}），未开始处理",
-                purpose)
+        last = (0, 0)
+        for attempt in range(3):
+            try:
+                reply = self._send({"action": "resize", "selector": selector,
+                                    "width": width, "height": height})
+            except (RobotCommandError, RobotTimeout):
+                reply = {}
+            # 真实本机驱动会回读窗口矩形；驱动不回报尺寸时只能信任命令本身，不凭空阻断。
+            actual_width, actual_height = reply.get("window_width"), reply.get("window_height")
+            if actual_width is None or actual_height is None:
+                return
+            last = (int(actual_width), int(actual_height))
+            if abs(actual_width - width) <= 2 and abs(actual_height - height) <= 2:
+                return
+            # 窗口被最小化/隐藏或句柄短暂失效时，SetWindowPos 只改还原尺寸、回读仍是 0×0；
+            # 先按 selector 还原窗口（会激活）再重设，第三次仍不符才判定环境异常。
+            if attempt < 2:
+                try:
+                    self._send({"action": "restore_window", "selector": selector})
+                except (RobotCommandError, RobotTimeout):
+                    pass
+                time.sleep(0.6 if attempt == 0 else 1.5)
+        raise NeedsReview(
+            f"微信主窗口未调整到 {width}×{height}（实际 {last[0]}×{last[1]}），未开始处理",
+            purpose)
 
     def _prepare_batch_wechat_frame(self, profile: dict) -> None:
         """批次开始前先校准一次版面；调不到就在开跑前暴露环境问题。"""
+        self.setup_native_windows_profile(profile)
         self._normalize_wechat_frame(profile, purpose="batch_window_frame")
 
     def _ensure_file_assistant(self, profile: dict, output_dir: Path, settle_seconds: float) -> None:
@@ -2863,11 +2970,14 @@ class UiPathRunner:
         self.store.update(task["id"], status="running", stage=stage, message=message)
         self.store.event(message, task_id=task["id"])
 
-    def _validate_source(self, task: dict, input_dir: str) -> Path:
+    def _validate_source(self, task: dict, input_dir: str, trial_source: bool = False) -> Path:
         if not input_dir:
             raise NeedsReview("请先选择用于采集的发布版本")
         root = Path(input_dir).expanduser().resolve()
-        if (root / ".materials-snapshot.json").is_file() and self.store.material_binding(input_dir) is None:
+        # 双机试验批次的来源快照由 Hub 分配，发布标记与文件 hash 已在分级校验里核对；
+        # 本机没有 material_versions 登记，不能套用单机版的“回收站/未发布”拦截。
+        if not trial_source and (root / ".materials-snapshot.json").is_file() \
+                and self.store.material_binding(input_dir) is None:
             raise NeedsReview("素材版本已移入回收站或尚未发布，请重新选择采集版本")
         source = Path(task["source_path"]).expanduser().resolve()
         if not source.is_file() or not _inside(source, root):
@@ -3612,7 +3722,8 @@ class UiPathRunner:
                     "key": profile["paste_shortcut"]})
         attached = self._await_image_attached(profile, output_dir, Path(task["source_path"]),
                                               baseline=empty_input)
-        sent_frame = self._press_send_until_cleared(profile, output_dir, empty_input)
+        # 大图发送后聊天区重绘慢，判定窗口放到 4s，避免把“已发出但还没刷新”误判成没发出。
+        sent_frame = self._press_send_until_cleared(profile, output_dir, empty_input, interval=4.0)
         mark("image_sent")
         if windows:
             # 每次发送后先把聊天滚到最新再截图：上一次运行可能停在聊天中部，
@@ -3795,6 +3906,12 @@ class UiPathRunner:
                     time.sleep(.5)
                 if attempt == 0:
                     # 第一次粘贴可能已被吞掉（焦点不在输入框），补贴前先点回输入框。
+                    # 但发送按钮已变绿说明图片其实已经附着了，只是缩略图判据没认出来；
+                    # 这时再粘一次会多附一张图，回车后就把同一张图发两遍。
+                    if self._send_button_active(Path(frame["path"])):
+                        trace.update(attempts=1, input_state=state, fallback="send_button_active",
+                                     elapsed_ms=round((time.monotonic() - started) * 1000))
+                        return frame
                     self._click_wechat_input(profile, frame)
                     self._send({"action": "key", "selector": profile["wechat_selector"],
                                 "key": profile["paste_shortcut"]})
@@ -3811,10 +3928,24 @@ class UiPathRunner:
         """回车发送，并确认输入框已清空。
 
         发送按钮变绿只代表微信已接收到粘贴，大图仍在后台解码时回车不会生效；
-        给了空基线时以“输入区回到空基线”为发送成功判据，未清空就再按一次回车。
-        输入框仍有附件说明消息没发出去，重复回车不会产生重复消息。
+        给了空基线时以“输入区回到空基线”为发送成功判据。
+        微信桌面端在空输入框按回车会把上一条消息重发一遍，所以补按回车之前必须
+        重新确认输入区里确实还有内容；截图判据拿不准时只等待，绝不盲按。
         """
-        for _ in range(attempts):
+        for attempt in range(attempts):
+            if attempt:
+                frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-state.png")
+                if baseline is None:
+                    if not self._send_button_active(Path(frame["path"])):
+                        return frame
+                else:
+                    state = self._input_content(Path(frame["path"]), Path(baseline["path"]))
+                    if state["kind"] == "empty":
+                        return frame
+                    if state["kind"] == "unknown":
+                        # 帧不可用（窗口重绘中、尺寸变化）时无法判断内容，等下一轮重新取证。
+                        time.sleep(interval)
+                        continue
             self._send({"action": "key", "selector": profile["wechat_selector"],
                         "key": profile["send_key"]})
             deadline = time.monotonic() + interval

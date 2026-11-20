@@ -52,8 +52,25 @@ def test_windows_profile_defaults_and_executable_validation(monkeypatch):
     profile = robot_profile.RobotProfile(wechat_selector="<wnd app='weixin.exe' title='微信' />")
     assert "[d(ctrl)]" in profile.paste_shortcut
     assert "[k(f4)]" in profile.close_key
+    assert profile.launch_mode == "native"
+    assert robot_profile.RobotProfile(launch_mode="cli").launch_mode == "native"
     with pytest.raises(ValidationError):
         robot_profile.RobotProfile(wechat_selector="<wnd app='FakeWeChat.exe' />")
+
+
+def test_windows_executor_does_not_fall_back_to_ipc(tmp_path):
+    class FakeNative:
+        actions = {"noop"}
+
+        def execute(self, command):
+            return {"ok": True, "action": command["action"]}
+
+    transport = uipath_runner.FileRobotTransport(tmp_path, local=FakeNative())
+    assert transport.run({"action": "noop"})["ok"]
+    with pytest.raises(uipath_runner.RobotProtocolError, match="Windows 桌面驱动"):
+        transport.run({"action": "discover"})
+    transport.request_stop()
+    assert not transport.command_path.exists()
 
 
 def test_windows_window_observation_preserves_class_and_checks_process(monkeypatch):

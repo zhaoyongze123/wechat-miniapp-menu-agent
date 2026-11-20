@@ -1,0 +1,31 @@
+# 一个 A 机、一个后台实例和一个本机卷；所有采集端经 HTTP API 使用同一状态。
+name: menu-capture
+services:
+  hub:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.hub
+    restart: unless-stopped
+    init: true
+    environment:
+      MENU_CAPTURE_ADMIN_PASSWORD: "${MENU_CAPTURE_ADMIN_PASSWORD:?请在 deploy/.env 中填写管理员口令}"
+      MENU_CAPTURE_ALLOWED_HOSTS: "${MENU_CAPTURE_ALLOWED_HOSTS:-}"
+    ports:
+      - "127.0.0.1:${MENU_CAPTURE_HOST_PORT:-8766}:8765"
+    volumes:
+      - hub-data:/var/lib/menu-capture
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8765/healthz', timeout=3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 15s
+volumes:
+  hub-data: {}

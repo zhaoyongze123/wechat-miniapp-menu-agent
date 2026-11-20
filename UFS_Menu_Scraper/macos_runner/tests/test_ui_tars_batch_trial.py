@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import menu_capture.uipath_runner as uipath_runner_module
 from fastapi.testclient import TestClient
@@ -23,6 +24,57 @@ def _published_task(root: Path, snapshot_id: str, shop_name: str) -> Path:
         json.dumps({"snapshot_id": snapshot_id}), encoding="utf-8"
     )
     return snapshot
+
+
+def test_windows_model_outage_pauses_current_store_and_can_resume_manually(tmp_path, monkeypatch):
+    monkeypatch.setattr(uipath_runner_module, "sys", SimpleNamespace(platform="win32"))
+    configs = ConfigStore(tmp_path)
+    store = TaskStore(tmp_path / "data/tasks.sqlite3")
+    snapshots = [_published_task(tmp_path / "data", char * 64, name)
+                 for char, name in (("a", "测试甲"), ("b", "测试乙"))]
+    for snapshot in snapshots:
+        store.scan(snapshot)
+    coords = {task["id"]: str(Path(task["source_path"]).parent.parent) for task in store.tasks()}
+    task_ids = list(coords)
+    configs.save({"output_dir": str(tmp_path / "output")})
+    profile = {"mode": "automatic", "launch_mode": "native", "max_tasks": 10}
+
+    class FakeDesktop:
+        def __init__(self, *_args):
+            pass
+
+        def request_stop(self):
+            pass
+
+    runner = UiPathRunner(configs, store, tmp_path / "profile.json", transport_factory=FakeDesktop)
+    runner.assignment_source = coords.get
+    runner.readiness = lambda **kwargs: {"ready": True, "issues": [], "profile": dict(profile),
+                                         "selected_task_ids": kwargs["task_ids_override"]}
+    runner._await_cli_startup = lambda: None
+    runner._prepare_batch_wechat_frame = lambda _: None
+    runner._run_ui_tars_trial_case = lambda *_args, **_kwargs: {
+        "runtime_code": "model_unavailable", "wechat_return": {"status": "ready"},
+    }
+    models_started = []
+    monkeypatch.setattr(uipath_runner_module, "trial_model_from_env",
+                        lambda *_: models_started.append(True) or SimpleNamespace(api_key="test"))
+
+    runner.start(ui_tars_trial=True, trial_task_ids=task_ids)
+    runner.thread.join(timeout=4)
+    assert not runner.running
+    paused = store.latest_run()
+    assert paused["status"] == "paused" and paused["current_index"] == 0
+    assert "云模型暂不可用" in paused["message"]
+    assert [store.get(task_id)["status"] for task_id in task_ids] == ["pending", "pending"]
+    switched = []
+    runner._manual_batch_worker = lambda task, _settings, _profile, _output, model, sources: switched.append(
+        (task["id"], model, list(sources)),
+    )
+    runner.start(resume_run=paused, capture_mode="manual")
+    runner.thread.join(timeout=4)
+    assert switched == [(task_ids[0], None, task_ids)]
+    assert models_started == [True]
+    assert store.latest_run()["capture_mode"] == "manual"
 
 
 def test_batch_trial_endpoint_passes_published_task_ids_without_touching_official_state(tmp_path, monkeypatch):

@@ -17,6 +17,8 @@ test('稳定段只含协议与动作表，同一输入逐字一致', () => {
 
 test('业务段单独维护并带版本号', () => {
   assert.match(BUSINESS_PROMPT, /点餐小程序导航经验/);
-  assert.match(BUSINESS_PROMPT, /死规则一/);
+  assert.match(BUSINESS_PROMPT, /终态判据/);
+  assert.match(BUSINESS_PROMPT, /确定性场景步骤/);
+  assert.match(BUSINESS_PROMPT, /交接/);
   assert.ok(Number.isInteger(BUSINESS_PROMPT_VERSION));
 });

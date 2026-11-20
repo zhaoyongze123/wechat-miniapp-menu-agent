@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -125,12 +126,17 @@ class ConnectionManager:
                 self._event("发现本机环境", "checking", "开始本轮连接检查；不会退出微信或重启正在执行的任务。")
                 cheap = self.environment.check(include_task_checks=False)
                 by_id = {c["id"]: c for c in cheap["checks"]}
-                for check_id, app in (("wechat_process", "/Applications/WeChat.app"),
-                                      ("uipath_assistant", str(Path.home() / "Applications/UiPath Assistant.app"))):
-                    if by_id.get(check_id, {}).get("status") in {"error", "warning"} and Path(app).exists():
-                        self._event("启动依赖", "checking", "正在打开微信" if check_id == "wechat_process" else "正在打开自动化引擎")
-                        subprocess.run(["open", "-g", "-a", app], capture_output=True, timeout=10, check=False)
-                if by_id.get("uipath_cli", {}).get("status") == "ready" and by_id.get("uipath_project", {}).get("status") == "ready":
+                if sys.platform == "win32":
+                    if by_id.get("wechat_process", {}).get("status") == "ready":
+                        self._event("桌面连接", "checking", "读取 Windows 微信窗口、截图和登录状态。")
+                        self.environment.run_test("windows_desktop")
+                elif sys.platform == "darwin":
+                    for check_id, app in (("wechat_process", "/Applications/WeChat.app"),
+                                          ("uipath_assistant", str(Path.home() / "Applications/UiPath Assistant.app"))):
+                        if by_id.get(check_id, {}).get("status") in {"error", "warning"} and Path(app).exists():
+                            self._event("启动依赖", "checking", "正在打开微信" if check_id == "wechat_process" else "正在打开自动化引擎")
+                            subprocess.run(["open", "-g", "-a", app], capture_output=True, timeout=10, check=False)
+                if sys.platform != "win32" and by_id.get("uipath_cli", {}).get("status") == "ready" and by_id.get("uipath_project", {}).get("status") == "ready":
                     permissions = self.environment.system_permissions() if hasattr(self.environment, "system_permissions") else {}
                     signature = tuple((key, value["status"]) for key, value in sorted(permissions.items()))
                     if signature != self._permission_signature:
@@ -213,7 +219,10 @@ class ConnectionManager:
                     "checked_at": min((r["checked_at"] for r in rows), default=raw["checked_at"]),
                     "actions": [] if status in {"ready", "checking"} else [reconnect]}
 
-        engine = module("engine", "自动化引擎", ["uipath_cli", "uipath_project", "uipath_accessibility", "uipath_screenshot"])
+        native = sys.platform == "win32"
+        engine_checks = (["windows_desktop", "windows_screenshot", "windows_ocr"] if native
+                         else ["uipath_cli", "uipath_project", "uipath_accessibility", "uipath_screenshot"])
+        engine = module("engine", "Windows 原生采集" if native else "自动化引擎", engine_checks)
         system = checks.get("uipath_system_accessibility", {})
         if engine["status"] not in {"ready", "checking"}:
             if system.get("status") == "warning":
@@ -223,12 +232,15 @@ class ConnectionManager:
                 engine["summary"] = "系统授权已开启，但自动化执行连接失败。"
                 engine["detail"] += "\n已区分 UIAutomation 宿主授权与 Robot 执行能力；不会要求反复开启同一个开关。"
         wechat_required = ["wechat_process", "wechat_login"]
-        try:
-            profile = json.loads(self.runner.profile_path.read_text(encoding="utf-8"))
-            if profile.get("mode") == "automatic":
-                wechat_required.append("file_transfer_assistant")
-        except (AttributeError, OSError, ValueError):
-            pass
+        if native:
+            wechat_required.append("file_transfer_assistant")
+        else:
+            try:
+                profile = json.loads(self.runner.profile_path.read_text(encoding="utf-8"))
+                if profile.get("mode") == "automatic":
+                    wechat_required.append("file_transfer_assistant")
+            except (AttributeError, OSError, ValueError):
+                pass
         wechat = module("wechat", "微信", wechat_required)
         if wechat["status"] not in {"ready", "checking"}:
             if checks.get("wechat_process", {}).get("status") == "ready" and engine["status"] != "ready":

@@ -168,9 +168,9 @@ def test_batch_frame_resizes_wechat_and_rejects_wrong_size(tmp_path: Path, monke
         return {"ok": True, "window_width": 999, "window_height": 749}
 
     monkeypatch.setattr(runner, "_send", send)
-    profile = {"wechat_selector": "<wnd title='微信' />"}
+    profile = {"wechat_selector": "<wnd app='Weixin.exe' title='微信' />"}
     runner._prepare_batch_wechat_frame(profile)
-    assert sent == [{"action": "resize", "selector": "<wnd title='微信' />",
+    assert sent == [{"action": "resize", "selector": profile["wechat_selector"],
                      "width": 999, "height": 749}]
 
     monkeypatch.setattr(runner, "_send",
@@ -268,8 +268,14 @@ class PagingActor(FakeActor):
         }
 
 @pytest.mark.parametrize("platform", ["darwin", "win32"])
-def test_attached_mode_waits_for_manual_main_and_publishes_agent_capture(tmp_path: Path, monkeypatch, platform) -> None:
+def test_attached_mode_opens_platform_transport_and_publishes_agent_capture(tmp_path: Path, monkeypatch, platform) -> None:
     monkeypatch.setattr(uipath_runner_module, "sys", SimpleNamespace(platform=platform))
+    if platform == "win32":
+        import ctypes
+
+        monkeypatch.setattr(ctypes, "windll",
+                            SimpleNamespace(user32=SimpleNamespace(GetSystemMetrics=lambda _index: 1080)),
+                            raising=False)
     runner, store, selected, other, _, output_root = _setup(tmp_path)
 
     def navigate(_model, _name, _people, _steps, *, observe, **_kwargs):
@@ -283,17 +289,18 @@ def test_attached_mode_waits_for_manual_main_and_publishes_agent_capture(tmp_pat
     started = runner.start()
     assert started["task_id"] == selected["id"]
     assert started["in_RunDirectory"] == str(runner.run_directory)
-    assert started["main_file"] == "Main.xaml"
-    assert started["startup_timeout_seconds"] == 300
+    native = platform == "win32"
+    assert started["main_file"] == (None if native else "Main.xaml")
+    assert started["startup_timeout_seconds"] == (5 if native else 300)
     assert (runner.run_directory / "entry.json").is_file()
-    assert started["message"].startswith("请在 UiPath Studio 手动运行")
+    assert started["message"].startswith("正在连接 Windows 微信桌面" if native else "请在 UiPath Studio 手动运行")
     assert runner.thread is not None
     runner.thread.join(timeout=5)
     assert not runner.thread.is_alive()
 
     record = store.get(selected["id"])
     assert record["status"] == "captured", record["message"]
-    assert runner.transport.run_timeouts[0] == 300
+    assert runner.transport.run_timeouts[0] == (5 if native else 300)
     assert runner.transport.stop_requested is True
     if platform == "win32":
         # Windows 不再走 capture_rect 快路径；准备阶段会用 resize 统一收窄加高小程序窗口。

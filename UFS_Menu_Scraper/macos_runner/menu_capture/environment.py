@@ -16,10 +16,12 @@ from typing import Any
 from .config import ConfigStore
 from .uipath_runner import FileRobotTransport, UiPathRunner
 from .uipath_cli import cli_entry
-from .window_contract import is_windows_wechat_app, window_selector
+from .window_contract import is_windows_wechat_app, select_wechat_selector
 
 
 _STATUS = {"checking", "ready", "warning", "error", "unknown"}
+_NATIVE_DESKTOP_TEST = [{"id": "test_windows_desktop", "label": "检测微信窗口与截图",
+                         "kind": "test", "target": "windows_desktop"}]
 _TEST_TTL_SECONDS = 15 * 60
 _SETTINGS_URLS = {
     "accessibility": "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
@@ -104,7 +106,10 @@ class EnvironmentDiagnostics:
         return self.snapshot(refresh=True, include_task_checks=include_task_checks)
 
     def run_test(self, test_id: str) -> dict:
-        if test_id not in {"model_service", "uipath_desktop", "wechat"}:
+        desktop_test = "windows_desktop" if sys.platform == "win32" else "uipath_desktop"
+        if test_id == "windows_desktop" and sys.platform != "win32":
+            raise ValueError("Windows 桌面诊断只支持 Windows")
+        if test_id not in {"model_service", "windows_desktop", "uipath_desktop", "wechat"}:
             raise ValueError("不支持此环境测试项")
         if self.runner.running:
             raise RuntimeError("采集运行中，不能同时执行环境测试")
@@ -112,13 +117,15 @@ class EnvironmentDiagnostics:
         with self._test_lock:
             if test_id == "model_service":
                 result = self._test_model()
+            elif sys.platform == "win32":
+                result = self._test_windows_and_wechat()
             else:
                 result = self._test_uipath_and_wechat()
         with self._lock:
-            self._tests[test_id] = result
-            if test_id == "wechat":
-                self._tests["uipath_desktop"] = result
-            if test_id == "uipath_desktop":
+            if test_id == "model_service":
+                self._tests[test_id] = result
+            else:
+                self._tests[desktop_test] = result
                 self._tests["wechat"] = result
             self._cheap_cache = None
         return self.snapshot(refresh=True, include_task_checks=False)
@@ -168,21 +175,40 @@ class EnvironmentDiagnostics:
     def _collect_cheap(self, *, include_task_checks: bool = True) -> dict:
         checked_at = _now()
         settings = self.configs.load()
-        checks = [
-            self._permission_check("python_accessibility", "辅助功能（本机配置服务）", "accessibility"),
-            self._permission_check("python_screen_recording", "屏幕录制（本机配置服务）", "screen_recording"),
-            self._automation_permission_unknown("python_automation", "自动化控制（本机配置服务）"),
-            self._wechat_process_check(),
-            self._assistant_process_check(),
-            self._cli_check(),
-            self._project_check(),
-        ]
+        if sys.platform == "win32":
+            checks = [self._wechat_process_check(), self._windows_ocr_check()]
+        else:
+            checks = [
+                self._permission_check("python_accessibility", "辅助功能（本机配置服务）", "accessibility"),
+                self._permission_check("python_screen_recording", "屏幕录制（本机配置服务）", "screen_recording"),
+                self._automation_permission_unknown("python_automation", "自动化控制（本机配置服务）"),
+                self._wechat_process_check(),
+                self._assistant_process_check(),
+                self._cli_check(),
+                self._project_check(),
+            ]
         if include_task_checks:
             checks.extend([
                 self._directory_check("input_directory", "素材目录读取", settings.input_dir, writable=False),
                 self._directory_check("output_directory", "输出目录写入", settings.output_dir, writable=True),
             ])
         return {"checked_at": checked_at, "checks": checks}
+
+    @staticmethod
+    def _windows_ocr_check() -> dict:
+        from .windows_image import _tesseract_command
+
+        try:
+            command = _tesseract_command()
+            proc = subprocess.run([command, "--list-langs"], capture_output=True, text=True,
+                                  errors="replace", timeout=5, check=True,
+                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            missing = {"chi_sim", "eng"} - set(proc.stdout.split())
+        except (RuntimeError, OSError, subprocess.SubprocessError):
+            return _item("windows_ocr", "本机 OCR", "error", "Tesseract 无法启动", "请重新安装或修复采集端。")
+        if missing:
+            return _item("windows_ocr", "本机 OCR", "error", "OCR 缺少语言文件：" + "、".join(sorted(missing)))
+        return _item("windows_ocr", "本机 OCR", "ready", "中文和英文 OCR 字库均可用")
 
     @staticmethod
     def _permission_check(check_id: str, name: str, permission: str) -> dict:
@@ -322,6 +348,19 @@ class EnvironmentDiagnostics:
 
     @staticmethod
     def _test_definitions() -> tuple[tuple[str, str, str, list[dict[str, str]]], ...]:
+        if sys.platform == "win32":
+            return (
+                ("windows_desktop", "Windows 微信窗口", "原生窗口枚举，需用运行微信的 Windows 用户登录。",
+                 _NATIVE_DESKTOP_TEST),
+                ("windows_screenshot", "Windows 窗口截图", "通过实际窗口像素判断截图是否可用。",
+                 _NATIVE_DESKTOP_TEST),
+                ("wechat_login", "微信登录状态", "通过微信窗口本地 OCR 判断。", _NATIVE_DESKTOP_TEST),
+                ("file_transfer_assistant", "文件传输助手窗口", "自动打开小程序前请切到文件传输助手。",
+                 _NATIVE_DESKTOP_TEST),
+                ("attached_miniapp", "已打开的小程序窗口", "仅单店接管时需要。", _NATIVE_DESKTOP_TEST),
+                ("model_service", "视觉模型多模态请求", "发送程序生成的测试色块图。",
+                 [{"id": "test_model", "label": "测试模型连接", "kind": "test", "target": "model_service"}]),
+            )
         return (
             ("uipath_system_accessibility", "UiPath 系统辅助功能授权", "官方 CLI 查询的宿主授权状态；与实际运行能力分开记录。",
              [{"id": "open_settings", "label": "打开辅助功能设置", "kind": "open_settings", "target": "accessibility"}]),
@@ -351,7 +390,8 @@ class EnvironmentDiagnostics:
             value = permissions[1][check_id]
             return _item(check_id, name, value["status"], value["summary"], value.get("detail", ""),
                          checked_at=value.get("checked_at"), actions=actions)
-        cached = self._tests.get("model_service" if check_id == "model_service" else "uipath_desktop")
+        desktop_test = "windows_desktop" if sys.platform == "win32" else "uipath_desktop"
+        cached = self._tests.get("model_service" if check_id == "model_service" else desktop_test)
         field = check_id
         if check_id == "model_service":
             configured = self._model_configured()
@@ -373,15 +413,19 @@ class EnvironmentDiagnostics:
 
     @staticmethod
     def _profile_check(readiness: dict) -> dict:
+        native = sys.platform == "win32"
+        name = "采集任务与 Windows 桌面配置" if native else "采集任务与 UiPath 配置"
         if readiness.get("ready"):
-            return _item("capture_profile", "采集任务与 UiPath 配置", "ready", "当前选择、来源文件和自动化参数通过静态检查",
+            return _item("capture_profile", name, "ready", "当前选择、来源文件和自动化参数通过静态检查",
                          "开始时仍会重新核对一次任务状态与来源文件。")
         issues = readiness.get("issues") or ["采集配置未就绪"]
-        return _item("capture_profile", "采集任务与 UiPath 配置", "error", "；".join(str(value) for value in issues)[:400],
-                     "请检查自动化方式、已选门店、窗口选择器和坐标校准。")
+        return _item("capture_profile", name, "error", "；".join(str(value) for value in issues)[:400],
+                     "请检查已选门店和采集设置。" if native else "请检查自动化方式、已选门店、窗口选择器和坐标校准。")
 
     def _blockers(self, checks: dict[str, dict], profile: dict, mode: str) -> list[str]:
-        required = ["input_directory", "output_directory", "model_service", "uipath_accessibility", "uipath_screenshot", "wechat_login"]
+        desktop_checks = (["windows_desktop", "windows_screenshot", "windows_ocr"] if sys.platform == "win32"
+                          else ["uipath_accessibility", "uipath_screenshot"])
+        required = ["input_directory", "output_directory", "model_service", *desktop_checks, "wechat_login"]
         if mode == "automatic":
             required.append("file_transfer_assistant")
         elif mode == "attached":
@@ -418,6 +462,72 @@ class EnvironmentDiagnostics:
                 "detail": f"错误类型：{type(exc).__name__}。{safe_message} 请检查接口地址、认证信息、模型名称和服务可达性。",
                 "transient": transient,
             }
+        return result
+
+    def _test_windows_and_wechat(self) -> dict:
+        from .image_tools import image_ocr
+        from .window_contract import is_windows_miniapp_app
+        from .windows_desktop import WindowsDesktop
+
+        result = {"at": time.monotonic(), "checked_at": _now()}
+        try:
+            desktop = WindowsDesktop()
+            reply = desktop.execute({"action": "discover"})
+            if not reply.get("ok"):
+                raise RuntimeError(reply.get("error") or "Windows 未返回窗口列表")
+            windows = UiPathRunner._window_list(reply.get("windows"))
+        except (OSError, RuntimeError) as exc:
+            result["windows_desktop"] = {
+                "status": "error", "summary": "Windows 窗口枚举失败", "detail": str(exc)[:240],
+            }
+            return result
+        result["windows"] = [window for window in windows
+                             if is_windows_wechat_app(window.get("app", ""))
+                             or is_windows_miniapp_app(window.get("app", ""))]
+        selector = self._find_wechat_selector(windows)
+        result["windows_desktop"] = {
+            "status": "ready" if selector else "warning",
+            "summary": "检测到微信主窗口" if selector else "未找到可见的微信主窗口",
+            "detail": "请使用当前 Windows 桌面用户打开微信并保持桌面未锁定。",
+        }
+        if not selector:
+            return result
+
+        # 原生探测不激活微信，不触发点击，临时图片也不进入任何采集产物。
+        with tempfile.TemporaryDirectory(prefix="menu-capture-windows-check-") as directory:
+            path = Path(directory) / "wechat.png"
+            try:
+                width, height = desktop.diagnostic_screenshot(selector, path)
+                if self._screenshot_content_quality(path)["near_black"]:
+                    raise RuntimeError("窗口截图接近全黑，请确认微信窗口可见")
+            except (OSError, RuntimeError) as exc:
+                result["windows_screenshot"] = {
+                    "status": "error", "summary": "无法取得可读的微信截图", "detail": str(exc)[:240],
+                }
+                return result
+            result["windows_screenshot"] = {
+                "status": "ready", "summary": "已验证微信窗口截图",
+                "detail": f"{width}×{height}，临时截图将在检测结束时删除。",
+            }
+            try:
+                result["wechat_login"], result["file_transfer_assistant"] = self._classify_wechat_screen(
+                    image_ocr(path), width, height,
+                )
+            except Exception as exc:
+                result["wechat_login"] = {
+                    "status": "unknown", "summary": "本地 OCR 无法确认微信登录", "detail": type(exc).__name__,
+                }
+            try:
+                miniapp = UiPathRunner._select_miniapp_selector(windows)
+                miniapp_path = Path(directory) / "miniapp.png"
+                desktop.diagnostic_screenshot(miniapp, miniapp_path)
+                if self._screenshot_content_quality(miniapp_path)["near_black"]:
+                    raise RuntimeError("小程序截图接近全黑")
+                result["attached_miniapp"] = {"status": "ready", "summary": "已验证小程序窗口截图"}
+            except (OSError, RuntimeError) as exc:
+                result["attached_miniapp"] = {
+                    "status": "warning", "summary": "没有可唯一识别并截图的小程序窗口", "detail": str(exc)[:240],
+                }
         return result
 
     def _test_uipath_and_wechat(self) -> dict:
@@ -642,34 +752,7 @@ class EnvironmentDiagnostics:
 
     @staticmethod
     def _find_wechat_selector(windows: list[dict]) -> str:
-        candidates = []
-        for window in windows:
-            if not isinstance(window, dict):
-                continue
-            title = str(window.get("title") or "").strip()
-            app = str(window.get("app") or "")
-            app_name = app.casefold()
-            allowed_app = (is_windows_wechat_app(app) if sys.platform == "win32"
-                           else "wechat" in app_name or "xinwechat" in app_name or "微信" in app)
-            if not title or not allowed_app:
-                continue
-            if title in {"图片和视频", "聊天记录"}:
-                continue
-            position = window.get("position") or {}
-            width, height = position.get("width", 0), position.get("height", 0)
-            # 小程序窗口通常是竖屏；微信聊天主窗口通常为横向。用窗口形状排除小程序，
-            # 再优先选出文件传输助手会话，避免把小程序误当成微信主窗口来判断登录。
-            if isinstance(width, (int, float)) and isinstance(height, (int, float)) and width > 100 and height > 100 and width < height * 0.8:
-                continue
-            priority = 2 if title in {"微信", "WeChat", "文件传输助手"} else 1
-            if sys.platform == "win32":
-                priority = 2 if title.casefold() in {"微信", "wechat", "weixin", "文件传输助手"} else 1
-            area = width * height if isinstance(width, (int, float)) and isinstance(height, (int, float)) else 0
-            candidates.append((priority, area, window, title, app))
-        if not candidates:
-            return ""
-        _, _, window, title, _ = max(candidates, key=lambda item: (item[0], item[1]))
-        return window_selector(window, title)
+        return select_wechat_selector(windows)
 
     @staticmethod
     def _classify_wechat_screen(rows: list[dict], width: int, height: int) -> tuple[dict, dict]:
