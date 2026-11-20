@@ -30,9 +30,13 @@
 
     /* 工作台共用的桌面视觉：以边线、字号和间距区分区域。 */
     :root {
-      --ink:#1d1d1f; --muted:#66666b; --line:#e6e6e9;
+      --ink:#1d1d1f; --muted:#6e6e73; --line:#e5e5ea;
       --paper:#fff; --canvas:#fff; --teal:#27272a; --teal-dark:#1d1d1f;
       --teal-pale:#ededf0; --shadow:none; --focus:#0071e3;
+      /* 统一视觉尺度：标题 24、小节 17、正文 14、表格 13、行高 50、按钮 36/42。 */
+      --fs-page:24px; --fs-section:17px; --fs-body:14px; --fs-table:13px; --fs-caption:12px;
+      --row-h:50px; --btn-h:36px; --btn-primary-h:42px;
+      --space-page:22px; --space-gap:14px;
     }
     .shell {grid-template-columns:200px minmax(0,1fr)}
     .sidebar {background:#f5f5f7;padding:26px 13px;gap:26px}
@@ -75,14 +79,15 @@
     .task-toolbar {padding:0 0 10px;grid-template-columns:minmax(100px,1fr) auto auto}
     .robot-task-toolbar {padding:0;margin:6px 0 10px}
     .task-columns,.robot-task-row {
-      display:grid;grid-template-columns:18px minmax(0,1fr) 112px 96px 44px;gap:10px;
+      display:grid;grid-template-columns:18px minmax(0,1fr) 118px 96px 44px;gap:10px;
       align-items:center;padding:10px 6px;
     }
     .task-columns {font-size:11px;color:var(--muted);background:#f5f5f7;border-radius:6px 6px 0 0}
     .robot-task-list {border:0;height:440px}
-    .robot-task-row {min-height:52px}
+    .robot-task-row {min-height:50px}
     .robot-task-name {color:var(--ink);font-size:13px}
-    .robot-task-sub,.task-time {color:var(--muted);font-size:11px}
+    .robot-task-sub,.task-time,.task-device {color:var(--muted);font-size:11px}
+    .task-device {overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .task-time {font-variant-numeric:tabular-nums}
     .task-open {background:transparent;border:0;color:#4e4e55;padding:6px 0}
     .task-open:hover {text-decoration:underline}
@@ -117,8 +122,8 @@
       .nav button span {display:inline}
       main {padding:22px 14px 32px}
       .topbar h1 {font-size:24px}
-      .task-columns,.robot-task-row {grid-template-columns:18px minmax(0,1fr) 86px 42px;gap:7px}
-      .task-time,.task-time-heading {display:none}
+      .task-columns,.robot-task-row {grid-template-columns:18px minmax(0,1fr) 84px 42px;gap:7px}
+      .task-device,.task-time,.task-time-heading {display:none}
       .task-open {display:block}
     }
     @media(prefers-reduced-motion:reduce) {
@@ -141,12 +146,10 @@
         <div><strong>菜单采集</strong><small>本地运行控制台</small></div>
       </div>
       <div><div class="nav-label">工作区</div><nav class="nav" aria-label="主导航">
-        <button class="active" data-page="overview" aria-label="工作台" title="工作台"><svg viewBox="0 0 24 24" fill="none"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/></svg><span>工作台</span></button>
-        <button data-page="rejections" aria-label="不合格清单" title="不合格清单"><svg viewBox="0 0 24 24" fill="none"><path d="M5 5.5h14v13H5z" stroke="currentColor" stroke-width="1.7"/><path d="M8 9h8M8 12h5M8 15h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="m16.5 14.5 3 3m0-3-3 3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>不合格清单</span></button>
-        <button data-page="review-queue" aria-label="待检查清单" title="待检查清单"><svg viewBox="0 0 24 24" fill="none"><path d="M5 5.5h14v13H5z" stroke="currentColor" stroke-width="1.7"/><path d="M8 9h8M8 12h8M8 15h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="m15 15.2 1.5 1.5L19 14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>待检查清单</span></button>
+        <button class="active" data-page="overview" aria-label="采集工作台" title="采集工作台"><svg viewBox="0 0 24 24" fill="none"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/></svg><span>采集工作台</span></button>
         <button data-page="materials" aria-label="素材清洗" title="素材清洗"><svg viewBox="0 0 24 24" fill="none"><path d="M4 5.5h16v13H4z" stroke="currentColor" stroke-width="1.7"/><path d="M7 15l3.2-3.3 2.2 2.1 2.1-2.2 2.5 3.4M8 9h.01" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>素材清洗</span></button>
-        <button data-page="annotation" aria-label="人工标注" title="人工标注"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v3M12 17v3M4 12h3M17 12h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="12" r="4.2" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="1" fill="currentColor"/></svg><span>人工标注</span></button>
-        <button data-page="task-center" aria-label="任务中心" title="任务中心"><svg viewBox="0 0 24 24" fill="none"><path d="M5 4.5h14v15H5z" stroke="currentColor" stroke-width="1.7"/><path d="M8 8.5h8M8 12h8M8 15.5h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>任务中心</span></button>
+        <button data-page="rejections" data-quality-nav aria-label="质量审核" title="质量审核"><svg viewBox="0 0 24 24" fill="none"><path d="M5 5.5h14v13H5z" stroke="currentColor" stroke-width="1.7"/><path d="M8 9h8M8 12h8M8 15h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="m15 15.2 1.5 1.5L19 14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>质量审核</span></button>
+        <button data-page="task-center" aria-label="任务中心" title="任务中心"><svg viewBox="0 0 24 24" fill="none"><path d="M5 4.5h14v15H5z" stroke="currentColor" stroke-width="1.7"/><path d="M8 8.5h8M8 12h8M8 15.5h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>任务中心</span><small id="worker-nav-progress" class="worker-nav-progress" hidden></small></button>
         <button data-page="settings" aria-label="设置" title="设置"><svg viewBox="0 0 24 24" fill="none"><path d="M12 8.3a3.7 3.7 0 1 0 0 7.4 3.7 3.7 0 0 0 0-7.4Z" stroke="currentColor" stroke-width="1.7"/><path d="m19.4 13.7 1.1.9-1.5 2.6-1.4-.5a7.8 7.8 0 0 1-1.7 1l-.3 1.5h-3l-.3-1.5a7.8 7.8 0 0 1-1.7-1l-1.4.5-1.5-2.6 1.1-.9a7 7 0 0 1 0-2l-1.1-.9 1.5-2.6 1.4.5a7.8 7.8 0 0 1 1.7-1l.3-1.5h3l.3 1.5a7.8 7.8 0 0 1 1.7 1l1.4-.5 1.5 2.6-1.1.9a7 7 0 0 1 0 2Z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/></svg><span>设置</span></button>
       </nav></div>
       <div class="side-foot" title="服务连接状态"><span class="dot" id="sidebar-connection-dot"></span><span id="sidebar-connection-label">连接中</span></div>
@@ -154,7 +157,7 @@
     <main>
       <header class="topbar">
         <div><div class="eyebrow" id="page-eyebrow">工作台 / 批次</div><h1 id="page-title">菜单采集</h1><p class="subtitle" id="page-subtitle"></p></div>
-        <div class="top-actions"><button class="btn btn-primary" id="materials-new-batch" type="button">新建批次</button><span class="pill" id="connection-status-pill"><i class="status-dot" id="connection-dot"></i><span id="connection-label">连接中</span></span><span class="pill" id="poll-clock">等待同步</span></div>
+        <div class="top-actions"><button class="btn btn-primary" id="materials-new-batch" type="button">新建批次</button><button class="pill sync-pill" id="worker-sync-pill" type="button" hidden><i class="status-dot" id="worker-sync-dot"></i><span id="worker-sync-text">同步状态</span></button><span class="pill" id="connection-status-pill"><i class="status-dot" id="connection-dot"></i><span id="connection-label">连接中</span></span><span class="pill" id="poll-clock">等待同步</span></div>
       </header>
 
 
@@ -171,7 +174,7 @@
             <p id="run-strip-message"></p>
           </div>
           <div class="checklist" id="preflight-list"></div><div class="check-error" id="preflight-error"></div>
-          <div class="current-task" id="current-task"><span class="label">当前门店 · <span id="current-stage"></span></span><strong id="current-name"></strong><span id="current-id"></span></div>
+          <div class="current-task" id="current-task"><span class="label">当前门店 · <span id="current-stage"></span></span><strong id="current-name"></strong><span id="current-meta"></span><span id="current-id"></span></div>
           <div class="manual-panel" id="manual-panel" hidden>
             <div class="manual-head"><span class="label">半自动人工 · <span id="manual-progress">0 / 0</span></span><strong id="manual-name">—</strong><span id="manual-stage" class="manual-stage"></span></div>
             <div class="manual-actions">
@@ -186,18 +189,23 @@
             <summary>本机运行日志</summary>
             <div class="log-list" id="workbench-debug-logs"></div>
           </details>
-          <div class="stats workbench-stats"><div class="stat"><span>待处理</span><strong id="count-pending">—</strong></div><div class="stat"><span>运行中</span><strong id="count-running">—</strong></div><div class="stat"><span>成功</span><strong id="count-completed">—</strong></div><div class="stat"><span>不合格</span><strong id="count-rejected">—</strong></div><div class="stat"><span>需人工审核</span><strong id="count-attention">—</strong></div></div>
+          <div class="stats workbench-stats"><span class="worker-stats-label">本机门店</span><button class="stat" type="button" data-stat-filter="pending"><span>待处理</span><strong id="count-pending">—</strong></button><button class="stat" type="button" data-stat-filter="running"><span>运行中</span><strong id="count-running">—</strong></button><button class="stat" type="button" data-stat-filter="captured"><span>已截图待复核</span><strong id="count-completed">—</strong></button><button class="stat" type="button" data-stat-filter="rejected"><span>不合格</span><strong id="count-rejected">—</strong></button><button class="stat" type="button" data-stat-filter="review"><span>待检查</span><strong id="count-attention">—</strong></button></div>
         </div>
         <div class="worker-connect-hint" id="worker-connect-hint" hidden>
           <div><strong>尚未连接共享工作台</strong><p class="card-desc">本机作为采集端，需要先在设置中填入工作台地址和配对码。</p></div>
           <button class="btn btn-primary" type="button" data-go="settings">前往设置连接</button>
         </div>
+        <section class="hub-devices" id="hub-devices" hidden aria-label="采集电脑状态">
+          <div class="hub-devices-head"><h2>采集电脑</h2><button class="btn" id="hub-device-manage" type="button">管理采集电脑</button></div>
+          <ul class="hub-device-list" id="hub-device-list"></ul>
+          <p class="hub-devices-empty" id="hub-devices-empty" hidden>尚未配对采集电脑。点右上角生成配对码。</p>
+        </section>
         <div class="workbench-grid section-gap">
           <section class="card task-browser" aria-label="门店素材列表">
-            <div class="table-head"><div><h2 class="stat-tip-host" tabindex="0">门店列表<span id="store-stats-tip" class="stat-tip" role="tooltip"></span></h2><p class="card-desc"></p></div><button class="btn" type="button" data-go="settings">设置</button></div>
-            <div class="task-toolbar"><input id="task-search" type="search" placeholder="搜索门店或来源图片" aria-label="搜索门店或来源图片"><select id="task-filter" aria-label="按状态筛选"><option value="all">全部状态</option><option value="pending">待处理</option><option value="running">运行中</option><option value="captured">成功</option><option value="rejected">不合格</option><option value="review">需人工审核</option></select><select id="task-sort" aria-label="列表排序"><option value="source">按门店名称</option><option value="recent">按最近更新</option><option value="status">按状态</option></select></div>
-            <div class="robot-task-toolbar"><label class="robot-task-select-all"><input id="robot-task-select-all" type="checkbox">全选当前列表</label><span id="robot-task-count" class="robot-task-count">执行队列 0 家</span></div>
-            <div class="task-columns" aria-hidden="true"><span></span><span>门店 / 素材</span><span>状态</span><span class="task-time-heading">更新时间</span><span></span></div>
+            <div class="table-head"><div><h2 class="stat-tip-host" tabindex="0"><span id="workbench-store-heading">门店列表</span><span id="store-stats-tip" class="stat-tip" role="tooltip"></span></h2><p class="card-desc"></p></div><button class="btn" type="button" data-go="settings">设置</button></div>
+            <div class="task-toolbar"><select id="hub-batch-filter" aria-label="按发布批次筛选" hidden><option value="">全部批次</option></select><select id="worker-batch-filter" aria-label="按清洗批次筛选" hidden><option value="">全部批次</option></select><input id="task-search" type="search" placeholder="搜索门店或来源图片" aria-label="搜索门店或来源图片"><select id="task-filter" aria-label="按状态筛选"><option value="all">全部状态</option><option value="pending">待处理</option><option value="running">运行中</option><option value="captured">已截图待复核</option><option value="rejected">不合格</option><option value="review">待检查</option></select><select id="task-sort" aria-label="列表排序"><option value="source">按门店名称</option><option value="recent">按最近更新</option><option value="status">按状态</option></select></div>
+            <div class="robot-task-toolbar"><label class="robot-task-select-all"><input id="robot-task-select-all" type="checkbox"><span id="robot-task-select-label">全选当前列表</span></label><button class="btn" id="hub-selection-clear" type="button" hidden>清空全部</button><span id="robot-task-count" class="robot-task-count">执行队列 0 家</span></div>
+            <div class="task-columns" aria-hidden="true"><span></span><span>门店 / 批次版本</span><span id="task-device-column">电脑</span><span>采集状态</span><span></span></div>
             <div id="robot-task-list" class="robot-task-list visible" role="group" aria-label="可选门店"></div>
             <div id="tasks-empty" class="empty">暂无门店</div>
             <nav id="robot-task-pagination" class="robot-task-pagination" aria-label="门店列表分页" hidden>
@@ -207,7 +215,7 @@
             </nav>
           </section>
           <aside id="queue-panel" class="card queue-panel" aria-label="执行队列">
-            <div class="queue-heading"><button class="btn queue-toggle" id="queue-close" type="button" aria-label="关闭执行队列">关闭</button><div><h2>执行队列</h2><p class="card-desc"></p></div><span class="queue-total" id="queue-total">0</span></div>
+            <div class="queue-heading"><button class="btn queue-toggle" id="queue-close" type="button" aria-label="关闭执行队列">关闭</button><div><h2 id="queue-title">执行队列</h2><p class="card-desc" id="queue-summary" hidden></p></div><span class="queue-total" id="queue-total">0</span></div>
             <div class="queue-settings"><label for="robot-mode">采集方式</label><select id="robot-mode"><option value="automatic">自动扫码并逐店处理</option><option value="attached">接管已打开的小程序（单店）</option></select><select id="robot-task" aria-label="接管模式门店"><option value="">选择一间门店</option></select><p class="card-desc" id="robot-task-hint">自动模式按队列逐店上传二维码并采集；接管模式只处理已打开的小程序。</p><img id="source-preview" alt="所选二维码素材" hidden></div>
             <ol id="run-queue-list" class="run-queue-list"><li class="queue-empty">队列为空</li></ol>
             <details class="queue-output"><summary>输出位置</summary><div class="quick-row"><span>输入</span><strong id="overview-input">尚未配置</strong></div><div class="quick-row"><span>输出</span><strong id="overview-output">尚未配置</strong></div><div class="folder-actions"><button class="btn" id="reveal-input" type="button">打开输入</button><button class="btn" id="reveal-output" type="button">打开输出</button></div></details>
@@ -216,18 +224,21 @@
         <button type="button" class="queue-backdrop" id="queue-backdrop" hidden aria-label="关闭执行队列"></button>
       </section>
       <dialog class="shared-dialog" id="shared-dialog" aria-labelledby="shared-dialog-title">
-        <header class="shared-header"><h2 id="shared-dialog-title">采集电脑和分配记录</h2><button class="btn" id="shared-dialog-close" type="button">关闭</button></header>
+        <header class="shared-header"><h2 id="shared-dialog-title" tabindex="-1">采集电脑</h2><button class="btn" id="shared-dialog-close" type="button">关闭</button></header>
         <div class="shared-dialog-body">
           <p class="shared-error" id="shared-dialog-error" role="alert" hidden></p>
           <form class="shared-assign-form" id="shared-assign-form" hidden>
-            <strong id="shared-assignment-count"></strong>
-            <p class="shared-copy" id="shared-assign-empty" hidden>当前没有已配对的电脑。先在「采集电脑与分配记录」中生成配对码。</p>
+            <ul id="shared-assign-conflicts" class="shared-list shared-conflicts" hidden aria-label="无法分配的门店"></ul>
+            <p class="shared-copy" id="shared-assignment-batches"></p>
+            <details id="shared-selection-details"><summary>查看已选门店</summary><ul id="shared-selection-list" class="shared-list"></ul></details>
+            <p class="shared-copy" id="shared-offline-target" hidden>这台电脑离线，分配后等待它上线下载。</p>
+            <p class="shared-copy" id="shared-assign-empty" hidden>当前没有已配对的电脑。先在「采集电脑」中添加设备。</p>
             <div class="field"><label for="shared-assign-worker">分给哪台电脑</label><select id="shared-assign-worker" required><option value="">请选择采集电脑</option></select></div>
             <div class="shared-form-actions"><button class="btn btn-primary" id="shared-assign-submit" type="submit" disabled>确认分配</button></div>
           </form>
           <div id="shared-manage-panel" hidden>
-            <section aria-labelledby="shared-devices-title">
-              <div class="shared-header"><h3 id="shared-devices-title">采集电脑</h3><button class="btn btn-primary" id="shared-pair-create" type="button">生成配对码</button></div>
+            <section id="shared-devices-panel" aria-label="采集电脑列表">
+              <div class="shared-header"><strong id="shared-device-total"></strong><button class="btn btn-primary" id="shared-pair-create" type="button">添加设备</button></div>
               <div class="shared-pair-result" id="shared-pair-result" hidden>
                 <div class="field"><label for="shared-pair-code">一次性配对码</label><input id="shared-pair-code" readonly></div>
                 <p id="shared-pair-expiry" class="shared-copy"></p>
@@ -235,12 +246,59 @@
               <p id="shared-devices-empty" class="shared-copy">还没有采集电脑连接。</p>
               <ul class="shared-list" id="shared-device-list"></ul>
             </section>
-            <section aria-labelledby="shared-assignments-title">
-              <h3 id="shared-assignments-title">门店分配记录</h3>
-              <p id="shared-assignments-empty" class="shared-copy">还没有分配记录。</p>
+            <section id="shared-device-detail" aria-label="设备详情" hidden>
+              <div class="shared-header"><button class="btn" id="shared-device-back" type="button">返回设备列表</button><button class="btn" id="shared-device-edit" type="button">编辑</button></div>
+              <dl class="shared-device-facts" id="shared-device-facts"></dl>
+              <form class="shared-device-edit" id="shared-device-edit-form" hidden>
+                <div class="field"><label for="shared-device-name">设备名称</label><input id="shared-device-name" required maxlength="64"></div>
+                <div class="field"><label for="shared-device-description">备注</label><textarea id="shared-device-description" rows="2" maxlength="500"></textarea></div>
+                <div class="shared-form-actions"><button class="btn" id="shared-device-edit-cancel" type="button">取消</button><button class="btn btn-primary" id="shared-device-edit-save" type="submit">保存</button></div>
+              </form>
+              <button class="btn" id="shared-device-tasks" type="button">查看负责的门店任务</button>
+              <div class="shared-device-management">
+                <h3>设备管理</h3>
+                <p class="shared-copy" id="shared-device-lifecycle-help"></p>
+                <button class="btn btn-danger" id="shared-device-revoke" type="button">解除配对</button>
+                <button class="btn btn-danger" id="shared-device-archive" type="button">从设备列表移除</button>
+              </div>
+            </section>
+            <section id="shared-record-panel" aria-label="门店分配记录" hidden>
+              <div class="shared-header"><button class="btn" id="shared-record-back" type="button">返回设备详情</button><button class="btn" id="shared-record-reassign" type="button" hidden>重新分配</button></div>
+              <div class="shared-record-filters">
+                <select id="shared-record-device" aria-label="按采集电脑筛选"><option value="">全部采集电脑</option></select>
+                <select id="shared-record-status" aria-label="按分配状态筛选"><option value="">全部分配状态</option><option value="assigned">待下载</option><option value="ready">已下载</option><option value="completed">后台已确认</option><option value="reclaimed">已收回</option><option value="history">旧结果留档</option></select>
+                <input id="shared-record-search" type="search" aria-label="搜索分配记录" placeholder="搜索门店、编号或批次">
+              </div>
+              <div class="shared-record-bulk" id="shared-record-bulk" hidden>
+                <label><input id="shared-record-select-page" type="checkbox"> 全选本页可回收任务</label>
+                <button class="btn" id="shared-record-reclaim" type="button" disabled>回收选中任务</button>
+              </div>
+              <p id="shared-record-error" class="shared-error" role="alert" hidden></p>
+              <p id="shared-assignments-empty" class="shared-copy">正在读取分配记录…</p>
               <ul class="shared-list" id="shared-assignment-list"></ul>
+              <div class="shared-record-pager" id="shared-record-pager" hidden>
+                <button class="btn" id="shared-record-prev" type="button">上一页</button>
+                <span id="shared-record-summary" aria-live="polite"></span>
+                <button class="btn" id="shared-record-next" type="button">下一页</button>
+              </div>
             </section>
           </div>
+        </div>
+      </dialog>
+      <dialog class="sync-dialog" id="worker-sync-dialog" aria-labelledby="worker-sync-title">
+        <header class="shared-header"><div><h2 id="worker-sync-title">同步状态</h2><p class="shared-copy" id="worker-sync-summary"></p></div><button class="btn" type="button" data-sync-close>关闭</button></header>
+        <div class="sync-dialog-body">
+          <p class="shared-error" id="worker-sync-error" role="status" hidden></p>
+          <section aria-labelledby="worker-sync-pending-title">
+            <h3 id="worker-sync-pending-title">待上传</h3>
+            <p class="shared-copy" id="worker-sync-pending-empty" hidden>没有待上传的采集结果。</p>
+            <ul class="shared-list" id="worker-sync-pending"></ul>
+          </section>
+          <section aria-labelledby="worker-sync-confirmed-title">
+            <h3 id="worker-sync-confirmed-title">最近确认</h3>
+            <p class="shared-copy" id="worker-sync-confirmed-empty" hidden>还没有后台确认的结果。</p>
+            <ul class="shared-list" id="worker-sync-confirmed"></ul>
+          </section>
         </div>
       </dialog>
         <div id="task-drawer" class="task-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden><div class="drawer-backdrop" data-drawer-close></div><section class="drawer-content"><header><div><p class="eyebrow">门店详情</p><h2 id="drawer-title">门店</h2></div><div class="drawer-head-actions"><button class="btn" type="button" id="drawer-review" hidden>改为待检查</button><button class="btn" type="button" data-drawer-close aria-label="关闭详情">关闭</button></div></header><button class="drawer-nav prev" id="drawer-prev" type="button" aria-label="上一家门店" title="上一家（←）">‹</button><button class="drawer-nav next" id="drawer-next" type="button" aria-label="下一家门店" title="下一家（→）">›</button><div class="drawer-body"><div id="drawer-status"></div><p id="drawer-message" class="drawer-message"></p><div id="drawer-evidence" class="drawer-images"></div><div id="drawer-rejection" class="quality-rejection-inline" hidden></div><div class="drawer-meta"><span>来源二维码</span><code id="drawer-source"></code><span>截图目录</span><code id="drawer-output"></code></div><details id="drawer-timeline" data-debug-only><summary>动作时间线</summary><div id="drawer-debug-runs" class="debug-run-export" hidden><select id="drawer-debug-run-select" aria-label="选择调试轮次"></select><a class="btn" id="drawer-debug-run-export" href="#" target="_blank" rel="noopener">导出调试包</a></div><button class="btn" id="drawer-load-actions" type="button">刷新记录</button><div id="drawer-actions"></div></details><div id="drawer-images" class="drawer-images"></div><div class="drawer-quality-actions"><button class="btn" id="drawer-materials" type="button" hidden>打回素材清洗</button><button class="btn btn-danger" id="drawer-reject" type="button" hidden>标记不合格</button><button class="btn btn-primary" id="drawer-retry" type="button">重新采集此店</button></div></div></section></div>
@@ -248,6 +306,10 @@
         <div id="rejection-drawer" class="task-drawer" role="dialog" aria-modal="true" aria-labelledby="rejection-drawer-title" hidden><div class="drawer-backdrop" data-rejection-close></div><section class="drawer-content"><header><div><p class="eyebrow">不合格详情</p><h2 id="rejection-drawer-title">门店</h2></div><div class="drawer-head-actions"><span class="quality-source" id="rejection-drawer-source"></span><button class="btn" type="button" data-rejection-close aria-label="关闭不合格详情">关闭</button></div></header><button class="drawer-nav prev" id="rejection-prev" type="button" aria-label="上一条不合格记录" title="上一条（←）">‹</button><button class="drawer-nav next" id="rejection-next" type="button" aria-label="下一条不合格记录" title="下一条（→）">›</button><div class="drawer-body"><div class="drawer-meta"><span>批次</span><code id="rejection-drawer-batch"></code><span>原因</span><code id="rejection-drawer-reason"></code><span>时间</span><code id="rejection-drawer-time"></code></div><p id="rejection-drawer-message" class="drawer-message"></p><div id="rejection-drawer-images" class="drawer-images"></div><div class="drawer-quality-actions" id="rejection-drawer-actions"></div></div></section></div>
 
       <section class="page" id="page-rejections" aria-labelledby="rejections-heading">
+        <div class="quality-tabs" role="tablist" aria-label="质量审核视图">
+          <button class="quality-tab" type="button" role="tab" aria-selected="true" data-quality-tab="rejections">不合格</button>
+          <button class="quality-tab" type="button" role="tab" aria-selected="false" data-quality-tab="review-queue">待检查</button>
+        </div>
         <div class="quality-overview">
           <div class="quality-card"><span>不合格门店</span><strong id="quality-store-count">0</strong></div>
           <div class="quality-card"><span>素材清洗</span><strong id="quality-material-count">0</strong></div>
@@ -267,6 +329,10 @@
       </section>
 
       <section class="page" id="page-review-queue" aria-labelledby="review-heading">
+        <div class="quality-tabs" role="tablist" aria-label="质量审核视图">
+          <button class="quality-tab" type="button" role="tab" aria-selected="false" data-quality-tab="rejections">不合格</button>
+          <button class="quality-tab" type="button" role="tab" aria-selected="true" data-quality-tab="review-queue">待检查</button>
+        </div>
         <div class="quality-overview">
           <div class="quality-card"><span>待检查门店</span><strong id="review-store-count">0</strong></div>
           <div class="quality-card"><span>涉及批次</span><strong id="review-batch-count">0</strong></div>
@@ -286,21 +352,27 @@
       </section>
 
       <section class="page" id="page-task-center" aria-labelledby="history-heading">
+        <section id="history-worker-activity" class="hub-devices history-worker-activity" hidden aria-labelledby="history-worker-heading">
+          <div class="hub-devices-head"><h2 id="history-worker-heading">采集电脑最近上报</h2><button class="btn" id="history-shared-records" type="button">查看分配与同步</button></div>
+          <ul class="shared-list" id="history-worker-list"></ul>
+          <p class="shared-copy" id="history-worker-empty" hidden>配对后可以在此查看采集电脑上报的运行进度。</p>
+        </section>
         <div class="quality-overview">
-          <div class="quality-card"><span>历史任务</span><strong id="history-total">0</strong></div>
-          <div class="quality-card"><span>进行中</span><strong id="history-running">0</strong></div>
+          <div class="quality-card"><span>全部任务</span><strong id="history-total">0</strong></div>
+          <div class="quality-card"><span>未结束</span><strong id="history-running">0</strong></div>
           <div class="quality-card"><span>已完成</span><strong id="history-completed">0</strong></div>
+          <div class="quality-record-count" id="history-terminated-label">已终止 0</div>
           <div class="quality-record-count" id="history-failed-label">失败/取消 0</div>
         </div>
         <section class="card quality-browser" aria-labelledby="history-heading">
           <div class="quality-toolbar">
-            <div><h2 id="history-heading">任务历史</h2><p class="card-desc">所有素材分析与采集运行记录，按开始时间倒序；浮层任务面板仍然保留。</p></div>
+            <div><h2 id="history-heading">任务历史</h2><p class="card-desc" id="history-scope"></p></div>
             <div class="quality-actions"><button class="btn" id="history-panel" type="button">运行面板</button><button class="btn" id="history-refresh" type="button">刷新</button></div>
           </div>
           <div class="quality-filters">
             <select id="history-kind" aria-label="任务类型"><option value="all">全部类型</option><option value="capture">采集运行</option><option value="materials">素材分析</option></select>
-            <select id="history-status" aria-label="任务状态"><option value="">全部状态</option><option value="running">进行中</option><option value="completed">已完成</option><option value="failed">失败/取消</option><option value="paused">已暂停</option></select>
-            <input id="history-search" type="search" placeholder="搜索批次或任务 ID" aria-label="搜索历史任务">
+            <select id="history-status" aria-label="任务状态"><option value="">全部状态</option><option value="running">未结束</option><option value="terminated">已终止</option><option value="completed">已完成</option><option value="failed">失败/取消</option><option value="paused">已暂停</option></select>
+            <input id="history-search" type="search" placeholder="搜索任务名、批次或任务 ID" aria-label="搜索历史任务">
           </div>
           <div class="quality-table-head history-head"><span>任务</span><span>批次 / 类型</span><span>结果</span><span>开始时间</span><span>操作</span></div>
           <div id="history-list" class="quality-list" aria-live="polite"><div class="empty">正在读取历史任务…</div></div>
@@ -499,7 +571,7 @@
             <div><h2 id="shared-heading">共享工作台</h2><p class="shared-copy" id="shared-summary" aria-live="polite"></p></div>
             <div class="shared-actions">
               <span class="pill shared-role" id="shared-role-pill" hidden></span>
-              <button class="btn" id="shared-manage" type="button" hidden>采集电脑与分配记录</button>
+              <button class="btn" id="shared-manage" type="button" hidden>管理采集电脑</button>
               <button class="btn shared-refresh" id="shared-refresh" type="button" title="重新读取共享工作台状态">刷新</button>
               <button class="btn shared-collapse" id="shared-collapse" type="button" aria-expanded="true" title="折叠或展开共享工作台">收起</button>
             </div>
@@ -523,21 +595,22 @@
 
         <div class="settings-layout">
           <form class="card form-card" id="config-form">
-            <div><h2>采集配置</h2><p class="card-desc">保存配置与开始采集相互独立。密钥仅在提交时发送。</p></div>
-            <div class="form-section"><div class="form-section-title">目录</div><div class="form-grid">
-              <div class="field"><label for="input-dir">输入目录</label><div class="field-inline"><input id="input-dir" name="input_dir" placeholder="尚未选择" autocomplete="off" readonly><button class="btn" id="select-input-dir" type="button">选择目录</button></div></div>
+            <div><h2 id="config-heading">采集配置</h2></div>
+            <div class="form-section"><div class="form-section-title" id="config-directory-heading">目录</div><div class="form-grid">
+              <div id="worker-input-source" class="field" hidden><span>任务来源</span><strong>由共享工作台分配</strong></div>
+              <div id="standalone-input-dir" class="field"><label for="input-dir">输入目录</label><div class="field-inline"><input id="input-dir" name="input_dir" placeholder="尚未选择" autocomplete="off" readonly><button class="btn" id="select-input-dir" type="button">选择目录</button></div></div>
               <div class="field"><label for="output-dir">输出目录</label><div class="field-inline"><input id="output-dir" name="output_dir" placeholder="尚未选择" autocomplete="off" readonly><button class="btn" id="select-output-dir" type="button">选择目录</button></div></div>
             </div></div>
-            <div class="form-section"><div class="form-section-title">模型服务</div><p class="card-desc">正式菜单导航使用百炼北京地域 GUI-Plus（gui-plus-2026-02-26）。视觉模型参数也供人工标注、素材处理和连接诊断使用。</p><div class="form-grid">
+            <div class="form-section"><div class="form-section-title" id="config-model-heading">模型服务</div><p class="card-desc" data-desktop-config>正式菜单导航使用百炼北京地域 GUI-Plus（gui-plus-2026-02-26）。视觉模型参数也供人工标注、素材处理和连接诊断使用。</p><div class="form-grid">
               <div class="field"><label for="provider">供应商</label><select id="provider" name="provider"><option value="openai_compatible">OpenAI 兼容接口</option><option value="anthropic">Anthropic</option></select></div>
               <div class="field"><label for="model-name">模型名称</label><input id="model-name" name="model" placeholder="例如：模型部署名称"></div>
               <div class="field full"><label for="base-url">接口地址</label><input id="base-url" name="base_url" placeholder="https://…" autocomplete="url"></div>
               <div class="field full"><label for="api-key">API 密钥</label><input id="api-key" name="api_key" type="password" placeholder="留空表示保留已保存的密钥" autocomplete="new-password"><div class="secret-note" id="key-note">密钥状态加载中。服务端不会在读取配置时返回密钥。</div></div>
               <div class="field"><label for="enable-thinking">模型思考模式</label><select id="enable-thinking"><option value="auto">服务默认</option><option value="off">关闭（支持该参数的兼容接口）</option><option value="on">开启</option></select></div><div class="field"><label for="timeout-seconds">请求超时（秒）</label><input id="timeout-seconds" type="number" min="1" step="1"></div>
-              <div class="field"><label for="people-count">就餐人数</label><input id="people-count" type="number" min="1" step="1"><div class="field-help">用于小程序要求选择人数时；采集始终逐个执行。</div></div>
-              <div class="field full"><label style="display:flex;align-items:center;gap:8px"><input id="auto-authorize" type="checkbox" style="width:auto">人工标注时提供授权操作建议</label><div class="field-help">仅用于人工标注建议。正式采集的导航与终态由 GUI Agent 按业务经验决定。</div></div>
+              <div class="field" data-desktop-config><label for="people-count">就餐人数</label><input id="people-count" type="number" min="1" step="1"><div class="field-help">用于小程序要求选择人数时；采集始终逐个执行。</div></div>
+              <div class="field full" data-desktop-config><label style="display:flex;align-items:center;gap:8px"><input id="auto-authorize" type="checkbox" style="width:auto">人工标注时提供授权操作建议</label><div class="field-help">仅用于人工标注建议。正式采集的导航与终态由 GUI Agent 按业务经验决定。</div></div>
             </div></div>
-            <div class="form-section"><div class="form-section-title">截图与循环参数</div><p class="card-desc">运行时自动调整窗口大小；实际滚动距离使用总览中的“滚动步数”。</p><div class="form-grid">
+            <div class="form-section" data-desktop-config><div class="form-section-title">截图与循环参数</div><p class="card-desc">运行时自动调整窗口大小；实际滚动距离使用总览中的“滚动步数”。</p><div class="form-grid">
               <div class="field"><label for="window-width">目标窗口宽度（预留）</label><input disabled id="window-width" type="number" min="1"></div><div class="field"><label for="window-height">目标窗口高度（预留）</label><input disabled id="window-height" type="number" min="1"></div>
               <div class="field"><label for="overlap-ratio">重叠比例（预留）</label><input disabled id="overlap-ratio" type="number" min="0" max="1" step="0.05"></div><div class="field"><label for="max-pages">最大页数</label><input id="max-pages" type="number" min="1"></div>
               <div class="field"><label for="max-agent-steps">最大 Agent 步数</label><input id="max-agent-steps" type="number" min="1"></div><div class="field"><label for="max-task-seconds">单任务上限（秒）</label><input id="max-task-seconds" type="number" min="1"></div>
@@ -548,8 +621,8 @@
           </form>
           <div class="grid settings-side">
             <div class="card side-card"><div class="card-head"><div><h2>模型连接</h2><p class="card-desc">使用已保存配置发起连接测试。</p></div></div><div class="model-status"><strong id="model-status-title">尚未检查</strong><span id="model-status-subtitle">先保存模型供应商、地址和密钥。</span></div><button class="btn" id="test-model-btn" style="width:100%;margin-top:12px">测试模型连接</button><div class="test-result" id="test-result"></div><button class="btn" type="button" id="model-usage-open" style="width:100%;margin-top:10px">查看模型用量</button></div>
-            <div class="card side-card"><div class="card-head"><div><h2>环境与连接</h2><p class="card-desc">权限状态以实际检测为准；请在此查看授权入口、连接测试和失败原因。</p></div></div><button class="btn" type="button" data-go="environment" style="width:100%">打开环境诊断</button></div>
-            <div class="card side-card"><div class="card-head"><div><h2>采集边界</h2></div></div><p class="card-desc" style="line-height:1.7">本工具一次运行一个任务。暂停请求在当前任务边界和循环检查点处理；不会通过重复触发操作来模拟暂停。完成后请检查截图覆盖率。</p></div>
+            <div class="card side-card advanced-tools-card"><div class="card-head"><div><h2>高级工具</h2><p class="card-desc">人工标注与环境诊断不在主导航中，需要时从这里打开。</p></div></div><div class="advanced-tools"><button class="btn" type="button" data-go="annotation" style="width:100%">人工标注</button><button class="btn" type="button" data-go="environment" style="width:100%">环境诊断</button></div></div>
+            <div class="card side-card" data-desktop-config><div class="card-head"><div><h2>采集边界</h2></div></div><p class="card-desc" style="line-height:1.7">本工具一次运行一个任务。暂停请求在当前任务边界和循环检查点处理；不会通过重复触发操作来模拟暂停。完成后请检查截图覆盖率。</p></div>
           </div>
         </div>
       </section>
@@ -678,11 +751,15 @@
           if(!sessionResponse.ok||typeof session?.token!=='string'||!session.token)throw originalError;
           TOKEN=session.token;({response,data}=await send());
         }
-        if(!response.ok)throw new Error(data?.detail || `请求失败（${response.status}）`);
+        if(!response.ok){
+          const error=new Error(data?.detail || `请求失败（${response.status}）`);
+          if(Array.isArray(data?.conflicts))error.conflicts=data.conflicts;
+          throw error;
+        }
         return data;
       }
       const sharedWorkbench=window.createSharedWorkbench({
-        api,toast,onChange:()=>void poll(),
+        api,toast,formatStore:workerStoreName,onChange:()=>void poll(),
         onAssigned:ids=>{
           const assigned=new Set(ids);
           state.queueIds=state.queueIds.filter(id=>!assigned.has(id));
@@ -759,9 +836,14 @@
         if(!pageIsAvailable(name))name='overview';
         if(syncLocation&&name!==activePageName)history.pushState({page:name},'',`${window.location.pathname}${window.location.search}#${name}`);
         activePageName=name;
+        document.body.dataset.currentPage=name;
         setQueueOpen(false);
         document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id===`page-${name}`));
-        document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===name));
+        document.querySelectorAll('.nav button').forEach(b=>{
+          const qualityActive=b.dataset.page==='rejections'&&name==='review-queue';
+          b.classList.toggle('active',b.dataset.page===name||qualityActive);
+        });
+        document.querySelectorAll('[data-quality-tab]').forEach(tab=>tab.setAttribute('aria-selected',String(tab.dataset.qualityTab===name)));
         document.querySelector('.engine-notice').hidden=['materials','environment'].includes(name);
         $('page-eyebrow').textContent=pageMeta[name][0];$('page-title').textContent=pageMeta[name][1];$('page-subtitle').textContent=pageMeta[name][2];
         syncQualityRefresh();
@@ -775,6 +857,7 @@
       }
       document.querySelectorAll('.nav button').forEach(b=>b.addEventListener('click',()=>setPage(b.dataset.page)));
       document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>setPage(b.dataset.go)));
+      document.querySelectorAll('[data-quality-tab]').forEach(tab=>tab.addEventListener('click',()=>setPage(tab.dataset.qualityTab)));
       window.addEventListener('popstate',()=>setPage(pageFromLocation(),false));
       const initialPage=pageFromLocation();
       if(window.location.hash!==`#${initialPage}`)history.replaceState({page:initialPage},'',`${window.location.pathname}${window.location.search}#${initialPage}`);
@@ -790,12 +873,20 @@
         $('queue-backdrop').hidden=!open;
         $('queue-toggle').setAttribute('aria-expanded',String(open));
         const panel=$('queue-panel');
-        if(open){panel.setAttribute('role','dialog');panel.setAttribute('aria-modal','true');$('queue-close').focus();}
+        if(open){
+          panel.setAttribute('role','dialog');panel.setAttribute('aria-modal','true');
+          panel.setAttribute('aria-labelledby','queue-title');$('queue-close').focus();
+          panel.querySelector('[aria-current="step"]')?.scrollIntoView({block:'nearest'});
+        }
         else {panel.removeAttribute('role');panel.removeAttribute('aria-modal');}
       }
       $('queue-toggle').addEventListener('click',()=>setQueueOpen($('queue-toggle').getAttribute('aria-expanded')!=='true'));
       for(const id of ['queue-close','queue-backdrop'])$(id).addEventListener('click',()=>{setQueueOpen(false);$('queue-toggle').focus();});
-      document.addEventListener('keydown',event=>{if(event.key==='Escape')setQueueOpen(false);});
+      document.addEventListener('keydown',event=>{
+        if(event.key==='Escape'&&$('queue-toggle').getAttribute('aria-expanded')==='true'){
+          setQueueOpen(false);$('queue-toggle').focus();
+        }
+      });
       for(const button of document.querySelectorAll('.nav button'))button.title=button.textContent.trim();
       window.matchMedia('(min-width:900px)').addEventListener('change',()=>setQueueOpen(false));
       document.addEventListener('keydown',event=>{
@@ -844,13 +935,151 @@
       function promptRobotTaskSelection(){setPage('overview');toast('请先从门店列表勾选要执行的门店');window.requestAnimationFrame(()=>$('task-search').focus({preventScroll:true}));}
       function syncStartButton(){const disabled=!sharedWorkbench.role()||!!state.status?.running||!!state.starting||!hasRobotSelection();$('start-btn').disabled=disabled;$('start-btn').setAttribute('aria-disabled',String(disabled));}
       const RUN_LABELS={running:'运行中',pause_requested:'暂停中',resuming:'恢复检查中',paused:'已暂停',blocked:'无法继续',failed:'已失败',interrupted:'需要检查',terminating:'正在终止',terminated:'已终止',completed:'已完成'};
+      // Hub 首页设备行：每台电脑一行，点击复用现有「采集电脑和分配记录」弹窗。
+      const HUB_ONLINE_MS=60000;
+      function hubTimeText(value){
+        const stamp=Date.parse(value||'');
+        return Number.isFinite(stamp)?new Date(stamp).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'尚未上线';
+      }
+      function syncHubDeviceStrip(){
+        const section=$('hub-devices');if(!section)return;
+        const hub=sharedWorkbench.role()==='hub';
+        section.hidden=!hub;
+        $('history-worker-activity').hidden=!hub;
+        $('history-heading').textContent=hub?'后台任务历史':'任务历史';
+        $('history-scope').textContent=hub?'下表统计后台素材分析和后台保留的采集运行记录。':'按开始时间倒序查看本机任务。';
+        $('config-heading').textContent=hub?'后台配置':'采集配置';
+        $('config-directory-heading').textContent=hub?'服务存储位置':'目录';
+        $('config-model-heading').textContent=hub?'后台模型服务':'模型服务';
+        if(!hub)return;
+        $('sidebar-connection-label').textContent='共享后台已连接';
+        const workers=sharedWorkbench.workers().filter(device=>!device.archived_at&&!device.revoked_at),records=sharedWorkbench.assignments(),list=$('hub-device-list');
+        const existing=new Map([...list.children].map(row=>[row.dataset.workerId,row]));
+        const retained=new Set();
+        workers.forEach((worker,index)=>{
+          const assignments=records.filter(record=>record.worker_id===worker.id&&['assigned','ready'].includes(record.status));
+          const stamp=Date.parse(worker.last_seen||''),online=Number.isFinite(stamp)&&Date.now()-stamp<HUB_ONLINE_MS;
+          let row=existing.get(worker.id);
+          if(!row){
+            row=el('li','hub-device-row');
+            row.dataset.workerId=worker.id;
+            row.tabIndex=0;
+            row.setAttribute('role','button');
+            row.append(el('i','status-dot'),el('strong','hub-device-name'),el('span','hub-device-state'),
+                       el('span','hub-device-meta'),el('span','hub-device-pending'));
+            const open=()=>sharedWorkbench.showManager(worker.id);
+            row.addEventListener('click',open);
+            row.addEventListener('keydown',event=>{
+              if(event.key==='Enter'||event.key===' '){event.preventDefault();open();}
+            });
+          }
+          retained.add(row);
+          row.setAttribute('aria-label',`查看 ${worker.name||worker.id} 的分配记录`);
+          row.classList.toggle('is-online',online);
+          const [dot,name,state,meta,pending]=row.children;
+          dot.classList.toggle('live',online);
+          name.textContent=worker.name||worker.id;
+          state.textContent=online?'在线':`最后在线 ${hubTimeText(worker.last_seen)}`;
+          const downloaded=assignments.filter(record=>record.status==='ready').length;
+          meta.textContent=`当前分配 ${assignments.length} 家 · 已下载 ${downloaded} 家`;
+          pending.textContent=`${online?'待上传':'上次报告待上传'} ${Number(worker.pending_uploads)||0} 家`;
+          pending.title='采集电脑最后一次上报的待上传数量';
+          if(list.children[index]!==row)list.insertBefore(row,list.children[index]||null);
+        });
+        for(const row of existing.values())if(!retained.has(row))row.remove();
+        $('hub-devices-empty').hidden=workers.length>0;
+        const activity=$('history-worker-list');
+        const activitySignature=JSON.stringify(workers.map(device=>[device.id,device.name,device.last_run,
+          Date.now()-Date.parse(device.last_seen||'')<HUB_ONLINE_MS]));
+        if(activity.dataset.devices!==activitySignature){
+          activity.dataset.devices=activitySignature;
+          activity.replaceChildren(...workers.map(device=>{
+            const row=el('li','shared-row');
+            const run=device.last_run;
+            const online=Date.now()-Date.parse(device.last_seen||'')<HUB_ONLINE_MS;
+            const mode=run?.mode==='auto'?'全自动':run?.mode==='manual'?'半自动':'';
+            const label=run?[mode,RUN_LABELS[run.status]||'状态待确认',`已处理 ${run.processed} / ${run.total} 家`].filter(Boolean).join(' · '):'尚未上报采集运行';
+            row.append(el('strong','',device.name||device.id),el('span','',label),
+              el('span','',run?`${online?'上报于':'离线 · 上次上报'} ${hubTimeText(run.reported_at)}`:(online?'在线':'离线')));
+            return row;
+          }));
+        }
+        $('history-worker-empty').hidden=!!workers.length;
+      }
+      // 采集端同步入口：正常时只显示「已同步」，有待上传或断线时才扩展状态。
+      let workerSyncSignature="";
+      function syncWorkerSync(){
+        const pill=$('worker-sync-pill');if(!pill)return;
+        const status=sharedWorkbench.snapshot(),worker=sharedWorkbench.role()==='worker';
+        pill.hidden=!worker;
+        if(!worker)return;
+        const pending=Number(status?.pending_uploads)||sharedWorkbench.assignments().filter(item=>item.status==='pending_upload').length;
+        const online=!!status?.online;
+        $('worker-sync-text').textContent=status?.credential_invalid?'配对已失效':!status?.paired?'未连接':online?(pending?`已连接 · 待上传 ${pending}`:'已同步'):(pending?`断开 · 待上传 ${pending}`:'连接中断');
+        $('worker-sync-dot').className=`status-dot${status?.paired&&online?' live':''}`;
+        pill.title=status?.error||'查看本机待上传与后台确认结果';
+        if($('worker-sync-dialog').open)renderWorkerSync();
+      }
+      // 同步详情只展示本机已有的可靠字段，不伪造逐文件上传进度。
+      function renderWorkerSync(){
+        const status=sharedWorkbench.snapshot(),records=sharedWorkbench.assignments();
+        const pending=records.filter(item=>item.status==='pending_upload'),confirmed=records.filter(item=>item.status==='completed');
+        const signature=JSON.stringify([status?.paired,status?.online,status?.error,pending,confirmed.slice(0,20)]);
+        if(signature===workerSyncSignature)return;
+        workerSyncSignature=signature;
+        $('worker-sync-summary').textContent=status?.credential_invalid?'配对已失效，待上传结果保存在本机。':status?.paired?(status.online?'本机与共享工作台连接正常。':'工作台暂不可达，已下载门店仍可继续采集。'):'本机尚未连接共享工作台。';
+        const error=$('worker-sync-error');error.textContent=status?.error||'';error.hidden=!status?.error;
+        const fill=(host,items,empty,detail)=>{
+          host.replaceChildren();empty.hidden=items.length>0;
+          for(const record of items){
+            const row=el('li','shared-row');
+            row.append(el('strong','',record.store||record.task_id));
+            const meta=[record.batch_name||record.batch_id,record.revision].filter(Boolean).join(' · ');
+            if(meta)row.append(el('span','',meta));
+            row.append(el('span','',detail(record)));
+            host.append(row);
+          }
+        };
+        fill($('worker-sync-pending'),pending,$('worker-sync-pending-empty'),record=>record.disposition==='history'?'旧结果待确认':'等待上传');
+        fill($('worker-sync-confirmed'),confirmed.slice(0,20),$('worker-sync-confirmed-empty'),record=>record.disposition==='history'?'后台留档':'后台已确认');
+      }
+      const CAPTURE_STAGE_LABELS={
+        ui_tars_connecting:'正在准备采集',ui_tars_navigation:'正在进入菜单',verifying_wechat:'正在发送二维码',
+        manual_opening:'正在扫码开店',manual_waiting:'等待人工进入菜单',manual_capturing:'正在滚动截图',
+        opening:'正在扫码开店',capturing:'正在滚动截图',returning:'正在返回微信',
+      };
+      function workerStoreName(value){
+        const raw=String(value||'');
+        const parts=raw.split(/__+/).map(part=>part.trim());
+        // 有些导入批次没有 LCA 列，城市和坐标仍用于识别原始文件夹格式。
+        const hasLca=/^LCA\d+$/i.test(parts[1]);
+        const nameIndex=hasLca?3:2;
+        if(parts.length<=nameIndex||!/^[A-Z]+\d+$/i.test(parts[0]))return {name:raw,code:''};
+        const tail=parts.at(-1);
+        const coordinates=/^[+-]?\d+(?:\.\s*\d+)?\s*[,，]\s*[+-]?\d+(?:\.\s*\d+)?$/.test(tail);
+        if(!hasLca&&(!coordinates||!/[市区县旗州盟]$/.test(parts[1])))return {name:raw,code:''};
+        return {name:parts.slice(nameIndex,coordinates?-1:undefined).join(' ').trim()||raw,code:parts[0]};
+      }
+      function workerRunView(s){
+        if(sharedWorkbench.role()!=='worker')return null;
+        const run=s?.run;
+        if(!s?.running&&!['paused','blocked','interrupted','resuming','pause_requested','terminating'].includes(run?.status))return null;
+        const ids=Array.isArray(run?.task_ids)?run.task_ids.map(String):[];
+        const processed=Math.min(ids.length,Math.max(0,Number(run?.processed??run?.current_index)||0));
+        const current=s.running?String(s.current_task?.id||run?.current_task_id||''):'';
+        return {ids,processed,current,results:run?.result_by_task||null};
+      }
       function renderStatus(s, updateTasks=true){
         s=s||{};state.status=s;
         const tasks=Array.isArray(s.tasks)?s.tasks:[],hub=sharedWorkbench.role()==='hub',worker=sharedWorkbench.role()==='worker';
         document.body.dataset.nativeDesktop=String(s.launch_mode==='native');
         const running=!hub&&!!s.running,run=hub?null:s.run||null;
         $('connection-dot').className=`status-dot ${running?'busy':'live'}`;$('connection-label').textContent=running?'采集中':'服务已连接';$('poll-clock').textContent=`同步于 ${new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
-        $('sidebar-connection-label').textContent='本地服务已连接';
+        $('sidebar-connection-label').textContent=hub?'共享后台已连接':'本地服务已连接';
+        syncHubDeviceStrip();
+        syncWorkerSync();
+        $('worker-input-source').hidden=!worker;
+        $('standalone-input-dir').hidden=worker;
         const resumable=!!run&&['paused','blocked','interrupted'].includes(run.status);$('run-state').textContent=running?(RUN_LABELS[run?.status]||'运行中'):run?(RUN_LABELS[run.status]||'等待运行'):hasRobotSelection()?(hub?'可分配':'可开始'):'等待选择门店';$('run-state').className=`run-state ${running?'running':run?.status==='completed'?'done':''}`;
         $('start-btn').textContent=hub?'分配已选门店':'开始批处理';$('start-btn').title=hub?'将勾选的门店交给指定采集电脑':'按当前范围勾选的门店，用选定模式开始采集';
         $('review-rerun').textContent=hub?'分配选中重跑':'重跑选中';
@@ -863,7 +1092,7 @@
         state.runModeId=run?.id;
         const listTasks=!worker&&state.scope==='all'&&Array.isArray(state.scopeTasks)?state.scopeTasks:tasks;
         const busy=!!state.runAction, phase=run?.status, single=(trial?s.current_task:run)?.mode==='attached';
-        $('run-heading').textContent=hub?'分配采集任务':(run&&!trial&&run.name)|| (running&&captureMode==='manual'?'半自动人工采集':running&&captureMode==='auto'?'全自动 Agent 采集':trial?(single?'GUI Agent 单店试验':'GUI Agent 批量试验'):run?(single?'单店采集':'批量采集'):'采集运行');
+        $('run-heading').textContent=hub?'分配采集任务':(run&&!trial&&run.name)|| (running&&captureMode==='manual'?'半自动人工采集':running&&captureMode==='auto'?(worker?'全自动采集':'全自动 Agent 采集'):trial?(single?'GUI Agent 单店试验':'GUI Agent 批量试验'):run?(single?'单店采集':'批量采集'):'采集运行');
         $('stop-btn').hidden=!running||single||(trial&&!captureMode);
         if(trial)$('run-state').textContent='运行中';
         if(running&&(single||trial))$('run-instruction').textContent=captureMode==='manual'?'人工进入菜单后按「开始截图」或 F8；不合格按 F9。暂停会在当前门店完成后生效。':'终止会在当前桌面动作结束后生效。';
@@ -874,11 +1103,13 @@
         $('scan-btn').disabled=running||busy;
         const material=s.material_release;
         $('overview-output').textContent=s.batch_output_dir||'尚未配置';
-        const releaseText=worker?'门店任务来自共享工作台':material
+        const batch=$('hub-batch-filter').selectedOptions[0];
+        const releaseText=hub&&state.scope==='all'?(batch?.value?batch.textContent:'各原批次最新发布版本')
+          :worker?'门店任务来自共享工作台':material
           ? ['当前采集素材',material.batch_name,material.version,`${material.store_count??tasks.length} 家`].filter(Boolean).join(' · ')
           : '当前采集素材 · '+(s.input_name||'未设置输入目录');
         $('active-material-release').replaceChildren(document.createTextNode(releaseText));
-        const releaseBadge=batchBadge(material?.workflow);
+        const releaseBadge=hub&&state.scope==='all'?null:batchBadge(material?.workflow);
         if(releaseBadge)$('active-material-release').append(releaseBadge);
 
         $('resume-btn').hidden=!resumable&&phase!=='resuming';
@@ -889,11 +1120,22 @@
         $('start-btn').hidden=resumable||running;
         $('engine-message').textContent=!hub&&s.engine_ready===false?(s.engine_message||'自动化引擎异常'):'';
         renderRunnerHelp(s);
-        const strip=$('run-strip');
-        strip.hidden=!run||trial;
-        if(run&&!trial){
+        const strip=$('run-strip'),workerRun=workerRunView(s);
+        const navProgress=$('worker-nav-progress');
+        navProgress.hidden=!workerRun?.ids.length;
+        if(workerRun?.ids.length)navProgress.textContent=`${workerRun.processed}/${workerRun.ids.length}`;
+        $('workbench-store-heading').textContent=worker?'本机门店':'门店列表';
+        $('task-device-column').textContent=worker?'下载与同步':'电脑';
+        $('history-panel').textContent=worker?'返回本轮采集':'运行面板';
+        $('history-panel').hidden=worker&&!workerRun;
+        if(worker){
+          document.querySelector('[data-stat-filter="pending"] span').textContent='待采集';
+          document.querySelector('[data-stat-filter="captured"] span').textContent='已截图待复核';
+        }
+        strip.hidden=!run||(worker?!workerRun?.ids.length:trial);
+        if(!strip.hidden){
           strip.dataset.phase=phase||'';
-          const total=Number(run.total)||(Array.isArray(run.task_ids)?run.task_ids.length:0);
+          const total=workerRun?.ids.length||Number(run.total)||(Array.isArray(run.task_ids)?run.task_ids.length:0);
           const saved=Math.min(total,Math.max(0,Number(run.captured)||0));
           const unqualified=Math.max(0,Number(run.unqualified)||0);
           const review=Math.max(0,Number(run.review)||0);
@@ -901,14 +1143,17 @@
           const processed=Math.min(total,Math.max(Number(run.processed)||0,saved+unqualified+review));
           const runningCount=running&&processed<total?1:0;
           const remaining=Math.max(0,total-processed-runningCount);
-          const percent=total?Math.min(100,Math.round(processed/total*100)):0;
-          $('run-strip-percent').textContent=`${percent}%`;
-          $('run-strip-done').textContent=`${processed} / ${total} 家`;
-          $('run-strip-count').textContent=`已保存 ${saved} · 不合格 ${unqualified} · 待检查 ${review} · 运行中 ${runningCount} · 待处理 ${remaining}`;
+          const shownProcessed=workerRun?.processed??processed;
+          const shownPercent=total?Math.min(100,Math.round(shownProcessed/total*100)):0;
+          $('run-strip-percent').textContent=`${shownPercent}%`;
+          $('run-strip-done').textContent=`已处理 ${shownProcessed} / ${total} 家`;
+          $('run-strip-count').textContent=workerRun
+            ?`剩余 ${total-shownProcessed} 家（含正在处理的门店）`
+            :`已保存 ${saved} · 不合格 ${unqualified} · 待检查 ${review} · 运行中 ${runningCount} · 待处理 ${remaining}`;
           const progress=$('run-strip').querySelector('.run-progress');
-          progress.setAttribute('aria-valuenow',String(percent));
-          progress.setAttribute('aria-valuetext',`${processed} / ${total} 家门店已有处理结果`);
-          $('run-progress-fill').style.width=`${percent}%`;
+          progress.setAttribute('aria-valuenow',String(shownPercent));
+          progress.setAttribute('aria-valuetext',`${shownProcessed} / ${total} 家门店已有处理结果`);
+          $('run-progress-fill').style.width=`${shownPercent}%`;
           const next=run.next_name?`继续后从「${run.next_name}」开始。`:'';
           const messages={
             pause_requested:'已请求暂停。当前门店处理完毕后，将在下一家开始前暂停。',
@@ -917,10 +1162,20 @@
             blocked:[run.message,run.mode==='automatic'?'确认微信已打开文件传输助手后，可重试恢复。':'确认目标小程序已打开后，可重试恢复。'].filter(Boolean).join(' '),
             terminated:single?'本店采集已结束，可重新发起采集。':'本轮已结束。已保存的截图仍可查看，可重新选择剩余门店采集。'
           };
-          $('run-strip-message').textContent=messages[phase]??run.message??'';
+          $('run-strip-message').textContent=messages[phase]??(worker&&phase==='running'?'':run.message??'');
         }
-        const current=s.current_task;$('current-task').classList.toggle('visible',!!current);if(current){$('current-name').textContent=current.source_name||'当前门店';$('current-stage').textContent=current.stage||'处理中';$('current-id').textContent=current.id?`任务 ${current.id}`:'';}
         renderScopeStats(listTasks);renderManual(s,running);
+        const current=s.current_task;
+        $('current-task').classList.toggle('visible',!!current&&(!worker||$('manual-panel').hidden));
+        if(current){
+          const task=tasks.find(item=>String(item.id)===String(current.id));
+          const rawName=current.source_name||task?.source_name||'当前门店';
+          const store=worker?workerStoreName(rawName):{name:rawName,code:''};
+          $('current-name').textContent=store.name;
+          $('current-stage').textContent=worker?(CAPTURE_STAGE_LABELS[current.stage]||'处理中'):(current.stage||'处理中');
+          $('current-meta').textContent=worker?[store.code,task?.batch_name,task?.version].filter(Boolean).join(' · '):'';
+          $('current-id').textContent=current.id?`任务 ${current.id}`:'';
+        }
         if(updateTasks)renderRobotTasks(listTasks);
         if(!hub||document.body.dataset.workbenchView==='debug')renderActivity(s.events||[]);
         syncStartButton();
@@ -937,13 +1192,12 @@
       function renderScopeStats(tasks){
         // 统计与列表同源：全部批次范围用有效任务清单，当前素材范围用当前快照任务。
         const counts=state.status?.queue?state.status.counts:null;
-        const taskRejected=counts?.rejected??tasks.filter(t=>t.reject_reason).length;
-        const materialRejected=Number((state.scope==='all'?state.status?.material_rejected_all:state.status?.material_rejected)||0);
-        const attention=counts?.attention??tasks.filter(t=>['needs_review','error','blocked','needs_retry'].includes(t.status)&&!t.reject_reason).length;
+        const taskRejected=counts?.rejected??tasks.filter(t=>captureOutcome(t)==='rejected').length;
+        const attention=counts?.attention??tasks.filter(t=>captureOutcome(t)==='review').length;
         $('count-pending').textContent=counts?(counts.pending||0):tasks.filter(t=>t.status==='pending').length;
         $('count-running').textContent=counts?(counts.running||0):tasks.filter(t=>t.status==='running').length;
-        $('count-completed').textContent=counts?(counts.captured||0):tasks.filter(t=>t.status==='captured').length;
-        $('count-rejected').textContent=taskRejected+materialRejected;
+        $('count-completed').textContent=counts?(counts.captured||0):tasks.filter(t=>captureOutcome(t)==='captured').length;
+        $('count-rejected').textContent=taskRejected;
         $('count-attention').textContent=attention;
       }
       function syncCaptureModeButtons(){
@@ -969,7 +1223,7 @@
         if($('manual-panel').hidden)return;
         const waiting=!!manual?.waiting&&running;
         $('manual-progress').textContent=manual?`${manual.index||0} / ${manual.total||0}`:'—';
-        $('manual-name').textContent=manual?.store_name||'等待下一家';
+        $('manual-name').textContent=(sharedWorkbench.role()==='worker'?workerStoreName(manual?.store_name).name:manual?.store_name)||'等待下一家';
         const labels={waiting_human:'等待人工进入菜单',capturing:'正在滚动截图',rejected:'已记录不合格',skipped:'已跳过',closed:'正在换店',opening:'正在扫码开店'};
         $('manual-stage').textContent=labels[manual?.stage]||(manual?'':'等待批次开始');
         $('manual-capture').disabled=!waiting||state.manualBusy;
@@ -988,7 +1242,7 @@
       }
       function hubQueueParams(){
         return new URLSearchParams({
-          queue_page:hubQueue.page,queue_scope:state.scope,queue_q:$('task-search').value,
+          queue_page:hubQueue.page,queue_scope:state.scope,queue_batch:$('hub-batch-filter').value,queue_q:$('task-search').value,
           queue_filter:$('task-filter').value,queue_sort:$('task-sort').value,
           selected:state.queueIds.join(','),include_events:document.body.dataset.workbenchView==='debug',
         }).toString();
@@ -1000,6 +1254,16 @@
         if(request!==hubQueue.request||params!==hubQueueParams()||activePageName!=='overview')return;
         const queue=result.queue;
         hubQueue.page=queue.page;
+        const batchFilter=$('hub-batch-filter'),selectedBatch=batchFilter.value;
+        const batches=queue.batches||[];
+        const batchSignature=JSON.stringify(batches);
+        if(batchFilter.dataset.options!==batchSignature){
+          batchFilter.dataset.options=batchSignature;
+          batchFilter.replaceChildren(new Option('全部发布批次',''),...batches.map(batch=>new Option(batch.name,batch.id)));
+          batchFilter.value=batches.some(batch=>batch.id===selectedBatch)?selectedBatch:'';
+        }
+        batchFilter.hidden=state.scope!=='all';
+        if(selectedBatch&&!batchFilter.value)return loadHubQueue();
         hubQueue.selected=new Map(queue.selected.map(task=>[String(task.id),task]));
         const assignmentLabels=[...result.tasks,...queue.selected].map(task=>sharedWorkbench.assignmentFor(task.id)?.label);
         const signature=JSON.stringify([queue,result.tasks,assignmentLabels,state.queueIds]);
@@ -1027,7 +1291,20 @@
         finally{state.manualBusy=false;void poll();}
       }
       const rejectionLabels={blur:'图片模糊 / 无法识别',invalid_qr:'二维码无效',store_mismatch:'二维码门店不一致',store_closed:'门店已关店 / 停业',miniapp_unavailable:'小程序到期或未绑定',scan_order_unsupported:'门店不支持扫码点餐',not_ordering:'非点餐码',qr_external_web:'二维码指向外部网页（非小程序）',menu_unavailable:'门店未配置菜单 / 无可用菜品',authorization_unavailable:'需要验证码 / 扫码授权',duplicate:'重复素材',other:'其他原因'};
-      function badgeFor(t){if(t.reject_reason)return el('span','badge badge-error','不合格');const cls=isActive(t)?'badge-running':isDone(t)?'badge-success':isFail(t)?'badge-error':'';return el('span','badge '+cls,TASK_STATUS_LABELS[t.status]||t.status||'未知');}
+      const CAPTURE_RESULT_LABELS={captured:'已截图待复核',review:'待检查',rejected:'不合格'};
+      function captureOutcome(task){
+        if(task.stage==='returned_to_materials')return '';
+        if(typeof task.capture_outcome==='string')return task.capture_outcome;
+        if(task.reject_reason)return 'rejected';
+        if(task.status==='captured')return 'captured';
+        return ['needs_review','needs_retry','error','blocked','failed'].includes(task.status)?'review':'';
+      }
+      function badgeFor(t){
+        if(t.stage==='returned_to_materials')return el('span','badge badge-error','待重新选码');
+        const result=captureOutcome(t);
+        const cls=result==='captured'?'badge-success':result==='rejected'?'badge-error':result==='review'||isActive(t)?'badge-running':'';
+        return el('span','badge '+cls,CAPTURE_RESULT_LABELS[result]||TASK_STATUS_LABELS[t.status]||t.status||'未知');
+      }
       function renderActivity(events){
         const target=$('overview-logs'),rows=[];
         for(const event of events.slice(-40).reverse()){
@@ -1039,7 +1316,20 @@
         target.replaceChildren(...rows);
         if(document.body.dataset.workbenchView==='debug')$('workbench-debug-logs').replaceChildren(...rows.map(row=>row.cloneNode(true)));
       }
-      function visibleTasks(tasks){const query=$('task-search').value.trim().toLocaleLowerCase(),filter=$('task-filter').value,sort=$('task-sort').value;let rows=tasks.filter(task=>{const text=`${task.source_name||''} ${task.source_path||''}`.toLocaleLowerCase();if(query&&!text.includes(query))return false;if(filter==='review'&&(!isFail(task)||task.reject_reason))return false;if(filter==='rejected'&&!task.reject_reason)return false;if(filter!=='all'&&filter!=='review'&&filter!=='rejected'&&task.status!==filter)return false;return true;});rows.sort((a,b)=>sort==='recent'?String(b.updated_at||'').localeCompare(String(a.updated_at||'')):sort==='status'?String(a.status).localeCompare(String(b.status))||String(a.source_name).localeCompare(String(b.source_name),'zh-CN'):String(a.source_name||'').localeCompare(String(b.source_name||''),'zh-CN'));return rows;}
+      function syncWorkerBatchFilter(tasks){
+        const select=$('worker-batch-filter');
+        select.hidden=sharedWorkbench.role()!=='worker';
+        if(select.hidden)return;
+        const batches=new Map(tasks.filter(task=>task.batch_id).map(task=>[task.batch_id,task.batch_name||task.batch_id]));
+        const signature=JSON.stringify([...batches]);
+        if(select.dataset.options===signature)return;
+        const selected=select.value;
+        select.replaceChildren(new Option('全部批次',''),...[...batches].map(([id,name])=>new Option(name,id)));
+        select.value=batches.has(selected)?selected:'';
+        select.dataset.options=signature;
+      }
+      $('worker-batch-filter').addEventListener('change',()=>renderRobotTasks(scopeTaskList()));
+      function visibleTasks(tasks){const query=$('task-search').value.trim().toLocaleLowerCase(),filter=$('task-filter').value,sort=$('task-sort').value;const batch=sharedWorkbench.role()==='worker'?$('worker-batch-filter').value:'';let rows=tasks.filter(task=>{if(batch&&task.batch_id!==batch)return false;const text=`${task.source_name||''} ${task.source_path||''}`.toLocaleLowerCase();if(query&&!text.includes(query))return false;if(['review','rejected','captured'].includes(filter))return captureOutcome(task)===filter;if(filter!=='all'&&task.status!==filter)return false;return true;});rows.sort((a,b)=>sort==='recent'?String(b.updated_at||'').localeCompare(String(a.updated_at||'')):sort==='status'?String(a.status).localeCompare(String(b.status))||String(a.source_name).localeCompare(String(b.source_name),'zh-CN'):String(a.source_name||'').localeCompare(String(b.source_name||''),'zh-CN'));return rows;}
       function reconcileHubSelection(tasks){
         const pageTasks=new Map(tasks.map(task=>[String(task.id),task]));
         const selected=new Map();
@@ -1065,6 +1355,7 @@
         if(hub)reconcileHubSelection(allTasks);
         else if(useProfile){const selected=Array.isArray(robotProfile?.selected_task_ids)?robotProfile.selected_task_ids.map(String):[];state.queueIds=[...new Set(selected.filter(id=>allTasks.some(task=>String(task.id)===id&&canSelectRobotTask(task))))];if(robotProfile?.mode!=='automatic'&&!state.queueIds.length&&robotProfile?.selected_task_id){const attached=allTasks.find(task=>String(task.id)===String(robotProfile.selected_task_id));if(attached&&canSelectRobotTask(attached))state.queueIds=[String(robotProfile.selected_task_id)];}}
         else state.queueIds=state.queueIds.filter(id=>allTasks.some(task=>String(task.id)===String(id)&&canSelectRobotTask(task)));
+        syncWorkerBatchFilter(allTasks);
         const rows=hub?allTasks:visibleTasks(allTasks);state.visibleTaskIds=rows.filter(canSelectRobotTask).map(task=>String(task.id));state.visibleRowIds=rows.map(task=>String(task.id));list.replaceChildren();
         for(const task of rows){const id=String(task.id),row=el('label',`robot-task-row ${isActive(task)?'is-running':''}`),checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.dataset.taskId=id;checkbox.checked=state.queueIds.includes(id);checkbox.disabled=!canSelectRobotTask(task)||!!state.status?.running;checkbox.addEventListener('click',event=>event.stopPropagation());checkbox.addEventListener('change',()=>{
           if(checkbox.checked&&hub&&state.queueIds.length>=HUB_SELECTION_LIMIT){
@@ -1075,9 +1366,21 @@
           renderSelectionChange(allTasks);persistQueueSoon();
         });
           const main=el('span','robot-task-main'),name=el('span','robot-task-name',task.source_name||'未命名门店'),sub=el('span','robot-task-sub',task.batch_name?`${task.batch_name} · ${task.version||'未发布'}`:`${String(task.source_path||'').split('/').pop()||'二维码'}`),status=badgeFor(task),detail=el('button','task-open','详情');
+          if(hub||sharedWorkbench.role()==='worker'){
+            const store=workerStoreName(task.source_name);
+            name.title=task.source_name||'';
+            name.textContent=store.name||'未命名门店';
+            if(store.code)sub.textContent=[store.code,task.batch_name,task.version].filter(Boolean).join(' · ');
+          }
           const assignment=sharedWorkbench.assignmentFor(task.id);
-          if(assignment?.label){sub.textContent+=` · ${assignment.label}`;sub.title=sub.textContent;}
-          detail.type='button';detail.setAttribute('aria-label',`查看${task.source_name||'门店'}详情`);detail.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();openTaskDrawer(task);});main.append(name,sub);row.append(checkbox,main,status,el('span','task-time',timeLabel(task.updated_at)),detail);row.addEventListener('click',event=>{if(event.target===row||event.target===main||event.target===name||event.target===sub)openTaskDrawer(task);});list.append(row);}
+          if(assignment?.label&&!hub){sub.textContent+=` · ${assignment.label}`;sub.title=sub.textContent;}
+          detail.type='button';detail.setAttribute('aria-label',`查看${task.source_name||'门店'}详情`);detail.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();openTaskDrawer(task);});main.append(name,sub);
+          const device=assignment?.workerName||(hub?'待分配':sharedWorkbench.role()==='worker'?'本机':'—');
+          const sync={'ready':'已下载','pending_upload':'待上传','completed':'后台已收到'};
+          const worker=sharedWorkbench.role()==='worker';
+          const deviceCell=el('span','task-device',worker?(sync[task.assignment_status]||'—'):hub&&assignment?`${device} · ${assignment.phase}`:device);
+          if(!worker)deviceCell.title=device?`执行电脑：${device}`:'尚未分配采集电脑';
+          row.append(checkbox,main,deviceCell,status,detail);row.addEventListener('click',event=>{if(event.target===row||event.target===main||event.target===name||event.target===sub)openTaskDrawer(task);});list.append(row);}
         $('tasks-empty').textContent=sharedWorkbench.role()==='worker'&&!allTasks.length?'等待共享工作台分配门店并下载二维码':'暂无门店';
         $('tasks-empty').hidden=rows.length>0;select.replaceChildren(el('option','','选择一间门店'));select.firstChild.value='';for(const task of available){const option=el('option','',task.source_name||'未命名门店');option.value=String(task.id);select.append(option);}const attachedId=fromProfile?robotProfile?.selected_task_id:state.attachedId;if(attachedId&&available.some(task=>String(task.id)===String(attachedId)))select.value=String(attachedId);state.attachedId=select.value;
         const pagination=hub?state.status?.queue:null;
@@ -1091,10 +1394,62 @@
         list.scrollTop=scrollTop;if(allTasks.length)robotTasksInitialized=true;
         renderQueue(hub?[...hubQueue.selected.values()]:allTasks);updateRobotTaskSelection();syncRobotTaskMode();
       }
-      function renderQueue(tasks){const list=$('run-queue-list'),scrollTop=list.scrollTop;list.replaceChildren();const byId=new Map((tasks||[]).map(task=>[String(task.id),task]));$('queue-total').textContent=String(state.queueIds.length);if(!state.queueIds.length){list.append(el('li','queue-empty','队列为空'));return;}state.queueIds.forEach((id,index)=>{const task=byId.get(String(id));if(!task)return;const li=el('li','queue-item'),number=el('span','queue-number',String(index+1)),name=el('span','queue-name',task.source_name||'未命名门店'),actions=el('span','queue-actions');for(const [label,delta,disabled] of [['上移',-1,index===0],['下移',1,index===state.queueIds.length-1]]){const button=el('button','queue-move',label);button.type='button';button.disabled=disabled||!!state.status?.running;button.title=label;button.addEventListener('click',()=>{const target=index+delta;[state.queueIds[index],state.queueIds[target]]=[state.queueIds[target],state.queueIds[index]];renderRobotTasks(scopeTaskList());persistQueueSoon();});actions.append(button);}const remove=el('button','queue-remove','移除');remove.type='button';remove.disabled=!!state.status?.running;remove.addEventListener('click',()=>{state.queueIds=state.queueIds.filter(value=>value!==id);renderRobotTasks(scopeTaskList());persistQueueSoon();});actions.append(remove);li.append(number,name,badgeFor(task),actions);list.append(li);});list.scrollTop=scrollTop;}
-      function updateRobotTaskSelection(){const eligible=state.visibleTaskIds,selected=new Set(state.queueIds),checked=eligible.filter(id=>selected.has(id));$('robot-task-count').textContent=`执行队列 ${state.queueIds.length} 家`;$('robot-task-select-all').checked=eligible.length>0&&checked.length===eligible.length;$('robot-task-select-all').indeterminate=checked.length>0&&checked.length<eligible.length;$('robot-task-select-all').disabled=!!state.status?.running||!eligible.length;syncStartButton();}
+      function renderWorkerRunQueue(view){
+        const list=$('run-queue-list');
+        $('queue-total').textContent=String(view.ids.length);
+        const summary=$('queue-summary');
+        summary.hidden=!view.ids.length;
+        summary.textContent=`已处理 ${view.processed} 家 · 剩余 ${view.ids.length-view.processed} 家`;
+        const tasks=new Map((state.status?.tasks||[]).map(task=>[String(task.id),task]));
+        const rows=view.ids.map((id,index)=>{
+          const task=tasks.get(id);
+          const current=id===view.current;
+          const store=workerStoreName(task?.source_name||(current?state.status?.current_task?.source_name:''));
+          const result=view.results?.[id]||(!view.results&&index<view.processed&&task?captureOutcome(task):'');
+          const label=current?'当前门店':CAPTURE_RESULT_LABELS[result]||
+            (!view.results&&index<view.processed?'已处理':task?'待处理':'待核对');
+          return [id,store.name||`门店 ${index+1}`,[store.code,task?.batch_name,task?.version].filter(Boolean).join(' · '),label,current];
+        });
+        const signature=JSON.stringify(rows);
+        if(list.dataset.runRows===signature)return;
+        list.dataset.runRows=signature;
+        const scrollTop=list.scrollTop;
+        if(!rows.length){
+          list.replaceChildren(el('li','queue-empty','正在读取本轮队列…'));
+          return;
+        }
+        list.replaceChildren(...rows.map(([_id,name,meta,label,current],index)=>{
+          const item=el('li',`queue-item worker-run-item${current?' is-current':''}`);
+          if(current)item.setAttribute('aria-current','step');
+          const store=el('span','worker-run-store');
+          store.append(el('strong','',name));
+          if(meta)store.append(el('small','',meta));
+          item.append(el('span','queue-number',String(index+1)),store,el('span','worker-run-item-state',label));
+          return item;
+        }));
+        list.scrollTop=scrollTop;
+      }
+      function renderQueue(tasks){
+        const role=sharedWorkbench.role(),hub=role==='hub',worker=role==='worker',view=workerRunView(state.status);
+        $('queue-title').textContent=view?'本轮队列':hub||worker?'已选门店':'执行队列';
+        $('queue-toggle').textContent=view?'查看本轮队列':hub?`查看已选（${state.queueIds.length}）`:worker?'查看已选门店':'执行队列';
+        $('queue-toggle').hidden=hub&&!state.queueIds.length;
+        if($('queue-toggle').hidden)setQueueOpen(false);
+        if(view){renderWorkerRunQueue(view);return;}
+        delete $('run-queue-list').dataset.runRows;
+        $('queue-summary').hidden=true;
+        const list=$('run-queue-list'),scrollTop=list.scrollTop;list.replaceChildren();const byId=new Map((tasks||[]).map(task=>[String(task.id),task]));$('queue-total').textContent=String(state.queueIds.length);if(!state.queueIds.length){list.append(el('li','queue-empty',worker?'尚未选择本轮门店':'队列为空'));return;}state.queueIds.forEach((id,index)=>{const task=byId.get(String(id));if(!task)return;const li=el('li','queue-item'),number=el('span','queue-number',String(index+1)),name=el('span','queue-name',(hub?workerStoreName(task.source_name).name:task.source_name)||'未命名门店'),actions=el('span','queue-actions');for(const [label,delta,disabled] of hub?[]:[['上移',-1,index===0],['下移',1,index===state.queueIds.length-1]]){const button=el('button','queue-move',label);button.type='button';button.disabled=disabled||!!state.status?.running;button.title=label;button.addEventListener('click',()=>{const target=index+delta;[state.queueIds[index],state.queueIds[target]]=[state.queueIds[target],state.queueIds[index]];renderRobotTasks(scopeTaskList());persistQueueSoon();});actions.append(button);}const remove=el('button','queue-remove','移除');remove.type='button';remove.disabled=!!state.status?.running;remove.addEventListener('click',()=>{state.queueIds=state.queueIds.filter(value=>value!==id);renderRobotTasks(scopeTaskList());persistQueueSoon();});actions.append(remove);li.append(number,name,badgeFor(task),actions);list.append(li);});list.scrollTop=scrollTop;}
+      function updateRobotTaskSelection(){const eligible=state.visibleTaskIds,selected=new Set(state.queueIds),checked=eligible.filter(id=>selected.has(id));$('robot-task-count').textContent=sharedWorkbench.role()==='worker'
+          ?(workerRunView(state.status)?'采集期间清单已锁定':`已选 ${state.queueIds.length} 家`)
+          :sharedWorkbench.role()==='hub'?`已选 ${state.queueIds.length} 家 · 本页 ${checked.length} 家`
+            :`执行队列 ${state.queueIds.length} 家`;
+        $('hub-selection-clear').hidden=sharedWorkbench.role()!=='hub'||!state.queueIds.length;$('robot-task-select-all').checked=eligible.length>0&&checked.length===eligible.length;$('robot-task-select-all').indeterminate=checked.length>0&&checked.length<eligible.length;$('robot-task-select-all').disabled=!!state.status?.running||!eligible.length;syncStartButton();}
       function syncRobotTaskMode(){const automatic=$('robot-mode').value==='automatic';$('robot-task').style.display=automatic?'none':'';document.querySelector('.queue-panel').classList.toggle('attached-mode',!automatic);$('robot-task-hint').textContent=automatic?'按右侧队列逐店上传二维码、进入菜单并截图。':'请先打开该门店的小程序，再选择一间门店接管。';const id=$('robot-task').value,preview=$('source-preview');preview.hidden=automatic||!id;if(!automatic&&id)preview.src=`/api/source/${encodeURIComponent(id)}`;else preview.removeAttribute('src');syncStartButton();}
       function persistQueueSoon(){if(!robotProfileLoaded||state.status?.running||sharedWorkbench.role()==='hub')return;clearTimeout(state.queueSaveTimer);state.queueSaveTimer=setTimeout(()=>persistRobotProfile().catch(error=>toast(error.message)),250);}
+      $('hub-selection-clear').addEventListener('click',()=>{
+        state.queueIds=[];
+        renderSelectionChange(scopeTaskList());
+      });
       $('robot-task-select-all').addEventListener('change',event=>{
         const selected=new Set(state.queueIds);
         if(event.target.checked){
@@ -1110,7 +1465,7 @@
         }
         renderSelectionChange(scopeTaskList());persistQueueSoon();
       });
-      for(const id of ['task-search','task-filter','task-sort'])$(id).addEventListener(id==='task-search'?'input':'change',()=>{
+      for(const id of ['task-search','task-filter','task-sort','hub-batch-filter'])$(id).addEventListener(id==='task-search'?'input':'change',()=>{
         if(sharedWorkbench.role()!=='hub')return renderRobotTasks(scopeTaskList());
         clearTimeout(hubQueue.filterTimer);
         hubQueue.filterTimer=setTimeout(()=>changeHubPage(1),id==='task-search'?180:0);
@@ -1121,7 +1476,7 @@
       function resetDebugRunExport(){const select=$('drawer-debug-run-select');select.replaceChildren();$('drawer-debug-run-export').href='#';$('drawer-debug-runs').hidden=true;}
       function addDebugRunExport(runId,startedAt){const select=$('drawer-debug-run-select'),id=String(runId);if(!Array.from(select.options).some(option=>option.value===id)){const option=document.createElement('option');option.value=id;option.textContent=(startedAt||'').slice(11,19)+' · '+id.slice(0,8);select.append(option);}if(!select.value)select.value=id;$('drawer-debug-runs').hidden=false;$('drawer-debug-run-export').href='/api/debug/runs/'+encodeURIComponent(select.value)+'/export';}
       $('drawer-debug-run-select').addEventListener('change',()=>{$('drawer-debug-run-export').href='/api/debug/runs/'+encodeURIComponent($('drawer-debug-run-select').value)+'/export';});
-      function openTaskDrawer(task,navIds,navTasks){state.drawerReturnFocus=document.activeElement;state.drawerTaskId=String(task.id);state.drawerNavIds=Array.isArray(navIds)?navIds.map(String):null;state.drawerNavTasks=Array.isArray(navTasks)?new Map(navTasks.map(item=>[String(item.id),item])):null;$('drawer-timeline').open=false;$('drawer-actions').replaceChildren();resetDebugRunExport();$('drawer-title').textContent=task.source_name||'未命名门店';$('drawer-status').replaceChildren(badgeFor(task));$('drawer-message').textContent=(task.error_code?`[${({retryable:'可重试',store_unavailable:'门店不可采'})[task.group]||'需人工'}·${task.label||task.error_code}] `:'')+(task.message||'尚无运行消息');$('drawer-source').textContent=task.source_path||'—';$('drawer-output').textContent=task.output_dir||'尚未生成';renderTaskRejection(task);renderDrawerEvidence(task);$('drawer-materials').hidden=!(task.material_batch_id||task.batch_id);$('drawer-materials').disabled=!!state.status?.running;if(Array.isArray(navTasks))focusReviewRow(task.id);$('drawer-images').replaceChildren();$('task-drawer').hidden=false;document.querySelector('.drawer-body').scrollTop=0;$('task-drawer').querySelector('button[data-drawer-close]').focus();document.body.classList.add('drawer-open');syncDrawerNav();$('drawer-review').hidden=!!task.reject_reason||task.status==='needs_review';$('drawer-review').disabled=!!state.status?.running;$('drawer-reject').hidden=!!task.reject_reason||!canMarkTask(task);$('drawer-reject').disabled=!!state.status?.running;$('drawer-retry').hidden=!(isFail(task)||task.status==='captured');$('drawer-retry').textContent=task.reject_reason?'重新处理':'重新采集此店';$('drawer-retry').disabled=!!state.status?.running;api('/api/artifacts/'+encodeURIComponent(task.id)).then(result=>{const images=(result.files||[]).filter(file=>/^page-\d+\.png$/i.test(file.split('/').pop()));if(!images.length){$('drawer-images').append(el('div','drawer-empty','尚无已发布截图'));return;}for(const file of images){const figure=document.createElement('figure'),image=document.createElement('img'),caption=el('figcaption','',file.split('/').pop());image.loading='lazy';image.alt=(task.source_name||'门店')+' '+caption.textContent;image.src='/api/artifact/'+encodeURIComponent(task.id)+'/'+file.split('/').map(encodeURIComponent).join('/');figure.append(image,caption);$('drawer-images').append(figure);}}).catch(error=>$('drawer-images').append(el('div','drawer-empty',error.message)));}
+      function openTaskDrawer(task,navIds,navTasks){state.drawerReturnFocus=document.activeElement;state.drawerTaskId=String(task.id);state.drawerNavIds=Array.isArray(navIds)?navIds.map(String):null;state.drawerNavTasks=Array.isArray(navTasks)?new Map(navTasks.map(item=>[String(item.id),item])):null;$('drawer-timeline').open=false;$('drawer-actions').replaceChildren();resetDebugRunExport();drawerHistoryKey='';selectDrawerTab('current');$('drawer-title').textContent=task.source_name||'未命名门店';$('drawer-status').replaceChildren(badgeFor(task));$('drawer-message').textContent=(task.error_code?`[${({retryable:'可重试',store_unavailable:'门店不可采'})[task.group]||'需人工'}·${task.label||task.error_code}] `:'')+(task.message||'尚无运行消息');$('drawer-source').textContent=task.source_path||'—';$('drawer-output').textContent=task.output_dir||'尚未生成';renderTaskRejection(task);renderDrawerEvidence(task);$('drawer-materials').hidden=!(task.material_batch_id||task.batch_id);$('drawer-materials').disabled=!!state.status?.running;if(Array.isArray(navTasks))focusReviewRow(task.id);$('drawer-images').replaceChildren();$('task-drawer').hidden=false;document.querySelector('.drawer-body').scrollTop=0;$('task-drawer').querySelector('button[data-drawer-close]').focus();document.body.classList.add('drawer-open');syncDrawerNav();$('drawer-review').hidden=!!task.reject_reason||task.status==='needs_review';$('drawer-review').disabled=!!state.status?.running;$('drawer-reject').hidden=!!task.reject_reason||!canMarkTask(task);$('drawer-reject').disabled=!!state.status?.running;$('drawer-retry').hidden=!(isFail(task)||task.status==='captured');$('drawer-retry').textContent=task.reject_reason?'重新处理':'重新采集此店';$('drawer-retry').disabled=!!state.status?.running;api('/api/artifacts/'+encodeURIComponent(task.id)).then(result=>{const images=(result.files||[]).filter(file=>/^page-\d+\.png$/i.test(file.split('/').pop()));if(!images.length){$('drawer-images').append(el('div','drawer-empty','尚无已发布截图'));return;}for(const file of images){const figure=document.createElement('figure'),image=document.createElement('img'),caption=el('figcaption','',file.split('/').pop());image.loading='lazy';image.alt=(task.source_name||'门店')+' '+caption.textContent;image.src='/api/artifact/'+encodeURIComponent(task.id)+'/'+file.split('/').map(encodeURIComponent).join('/');figure.append(image,caption);$('drawer-images').append(figure);}}).catch(error=>$('drawer-images').append(el('div','drawer-empty',error.message)));}
       function appendDebugBlock(host,label,value){if(value===undefined||value===null||value===''||(Array.isArray(value)&&!value.length))return;const text=typeof value==='string'?value:JSON.stringify(value,null,2);if(!text||text==='{}'||text==='[]')return;const block=document.createElement('details'),content=document.createElement('pre');block.className='debug-block';block.append(el('summary','',label));content.className='debug-json';content.textContent=text;block.append(content);host.append(block);}
       async function loadTaskActions(before){
         const id=state.drawerTaskId, host=$('drawer-actions');
@@ -1243,6 +1598,92 @@
         closeTaskDrawer();
       });
       function closeTaskDrawer(){$('task-drawer').hidden=true;document.body.classList.remove('drawer-open');state.drawerTaskId=null;state.drawerReturnFocus?.focus();}
+      // 门店详情分区：现有渲染节点按职责移入三个 Tab，ids 与业务逻辑保持不变。
+      let drawerTab='current',drawerHistoryKey='';
+      const DRAWER_STATUS_LABELS={captured:'已截图待复核',needs_review:'需检查',needs_retry:'需重试',pending:'待处理',running:'运行中',error:'错误',blocked:'已阻止',failed:'失败'};
+      function selectDrawerTab(key){
+        drawerTab=key;
+        document.querySelectorAll('#task-drawer [data-drawer-tab]').forEach(tab=>{
+          const active=tab.dataset.drawerTab===key;
+          tab.classList.toggle('is-active',active);
+          tab.setAttribute('aria-selected',String(active));
+        });
+        document.querySelectorAll('#task-drawer [data-drawer-pane]').forEach(pane=>{pane.hidden=pane.dataset.drawerPane!==key;});
+        if(key==='history')void loadDrawerHistory();
+      }
+      function setupDrawerTabs(){
+        const body=document.querySelector('#task-drawer .drawer-body');
+        if(!body||body.querySelector('[data-drawer-tab]'))return;
+        const bar=el('div','drawer-tabs');bar.setAttribute('role','tablist');bar.setAttribute('aria-label','门店详情视图');
+        const panes={};
+        for(const [key,label] of [['current','当前结果'],['history','历史记录'],['diagnostics','诊断证据']]){
+          const tab=el('button','drawer-tab',label);
+          tab.type='button';tab.setAttribute('role','tab');tab.dataset.drawerTab=key;
+          tab.addEventListener('click',()=>selectDrawerTab(key));
+          bar.append(tab);
+          const pane=el('div','drawer-pane');pane.dataset.drawerPane=key;panes[key]=pane;
+        }
+        // 当前结果保留失败画面优先的既有渲染顺序。
+        panes.current.append($('drawer-status'),$('drawer-message'),$('drawer-evidence'),$('drawer-rejection'),$('drawer-images'));
+        const history=el('div','drawer-history');history.id='drawer-history';panes.history.append(history);
+        const meta=document.querySelector('#task-drawer .drawer-meta');
+        if(meta)panes.diagnostics.append(meta);
+        panes.diagnostics.append($('drawer-timeline'));
+        body.prepend(bar);
+        bar.after(panes.current,panes.history,panes.diagnostics);
+        // 操作栏固定在抽屉底部，不随 Tab 切换。
+        const actions=document.querySelector('#task-drawer .drawer-quality-actions');
+        if(actions)body.append(actions);
+        selectDrawerTab('current');
+      }
+      async function loadDrawerHistory(){
+        const id=state.drawerTaskId,host=$('drawer-history');
+        if(!id||!host)return;
+        const task=scopeTaskList().find(item=>String(item.id)===String(id))||state.drawerNavTasks?.get(String(id))||{};
+        const stamp=task.updated_at||task.finished_at||'',key=[id,task.status||'',stamp].join(':');
+        if(drawerHistoryKey===key)return;
+        drawerHistoryKey=key;
+        const assignment=sharedWorkbench.assignmentFor(id);
+        const device=assignment?String(assignment.label||'').split(' · ').pop():(sharedWorkbench.role()==='worker'?'本机':'—');
+        const summary=el('dl','drawer-history-summary');
+        for(const [label,value] of [
+          ['状态',DRAWER_STATUS_LABELS[task.status]||task.status||'—'],
+          ['批次与版本',[task.batch_name,task.version].filter(Boolean).join(' · ')||'—'],
+          ['执行电脑',device||'—'],
+          ['最近更新',stamp?String(stamp).slice(5,16).replace('T',' '):'—'],
+        ])summary.append(el('dt','',label),el('dd','',value));
+        const attempts=el('div','drawer-history-attempts');
+        attempts.append(el('p','drawer-message','正在读取历次采集…'));
+        host.replaceChildren(el('h3','drawer-section-title','本次门店'),summary,el('h3','drawer-section-title','历次采集'),attempts);
+        try{
+          const {actions}=await api('/api/tasks/'+encodeURIComponent(id)+'/actions');
+          if(state.drawerTaskId!==id)return;
+          // 动作按运行与尝试分组，得到每轮采集的时间和失败数，不新增后端接口。
+          const groups=new Map();
+          for(const row of actions||[]){
+            const groupKey=`${row.run_id||''}:${row.attempt_id||''}`;
+            const group=groups.get(groupKey)||{start:'',count:0,failed:0};
+            group.count+=1;
+            if(row.result==='error')group.failed+=1;
+            if(!group.start||(row.started_at&&row.started_at<group.start))group.start=row.started_at||'';
+            groups.set(groupKey,group);
+          }
+          const rows=[...groups.values()].sort((a,b)=>String(b.start).localeCompare(String(a.start)));
+          attempts.replaceChildren();
+          if(!rows.length){attempts.append(el('p','drawer-message','尚无采集记录。'));return;}
+          for(const row of rows){
+            const line=el('div','drawer-history-run');
+            line.append(
+              el('span','drawer-history-time',row.start?String(row.start).slice(5,16).replace('T',' '):'—'),
+              el('span','drawer-history-meta',`${row.count} 个动作${row.failed?` · ${row.failed} 个失败`:''}`),
+            );
+            attempts.append(line);
+          }
+        }catch(error){
+          if(state.drawerTaskId===id)attempts.replaceChildren(el('p','drawer-message',error.message));
+        }
+      }
+      setupDrawerTabs();
       document.querySelectorAll('[data-drawer-close]').forEach(button=>button.addEventListener('click',closeTaskDrawer));document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('task-rejection-dialog').open&&!$('task-drawer').hidden)closeTaskDrawer();});
       async function retryCaptureTask(id,button,returnToWorkbench=false){if(!id||state.status?.running)return;button.disabled=true;try{await api('/api/tasks/'+encodeURIComponent(id)+'/retry',{method:'POST',body:'{}'});if(!state.queueIds.includes(String(id)))state.queueIds.push(String(id));try{await persistRobotProfile();}catch(error){toast('任务已重置，队列设置暂未保存：'+error.message);}await poll();await loadRejections();if(returnToWorkbench)setPage('overview');toast(returnToWorkbench?'任务已加入队列，请在工作台开始采集':'任务已恢复到待处理并加入队列');}catch(error){toast(error.message);}finally{button.disabled=false;}}
       $('drawer-retry').addEventListener('click',event=>retryCaptureTask(state.drawerTaskId,event.currentTarget));
@@ -1591,7 +2032,9 @@
       }
       async function rerunReviewTasks(taskIds,button){
         if(!taskIds.length){toast('请先勾选要重跑的门店');return;}
-        if(sharedWorkbench.role()==='hub'){sharedWorkbench.showAssignments(taskIds);return;}
+        if(sharedWorkbench.role()==='hub'){
+          sharedWorkbench.showAssignments(taskIds,reviewRecordsCache.map(task=>({...task,id:task.task_id,source_name:task.store_name})));return;
+        }
         if(state.status?.running){toast('采集运行中，请先暂停或等待当前任务结束');return;}
         // 待检查重跑属于跨批次自由选择：默认带时间名，提交前允许修改。
         const name=runNameSupported()?await askRunName(defaultRunName(taskIds),'提交重跑'):'';
@@ -1627,7 +2070,7 @@
         syncReviewSelection();
       });
       let reviewSearchTimer=null;$('review-search')?.addEventListener('input',()=>{clearTimeout(reviewSearchTimer);reviewSearchTimer=setTimeout(()=>{reviewPage=1;void loadReviewQueue();},220);});
-      const HISTORY_STATUS={queued:'排队中',running:'运行中',pause_requested:'暂停中',paused:'已暂停',interrupted:'已中断',completed:'已完成',failed:'失败',cancelled:'已取消'};
+      const HISTORY_STATUS={queued:'排队中',running:'运行中',pause_requested:'暂停中',paused:'已暂停',interrupted:'已中断',completed:'已完成',failed:'失败',cancelled:'已取消',terminated:'已终止',stopped:'已停止',blocked:'待恢复',resuming:'恢复中',terminating:'终止中'};
       function ensureHistoryDialog(){
         if(historyDialog)return historyDialog;
         historyDialog=el('dialog','task-detail');
@@ -1640,18 +2083,19 @@
       }
       async function openHistoryDetail(record){
         const dialog=ensureHistoryDialog();
-        dialog.__title.textContent=record.title||record.id;
+        dialog.__title.textContent=historyTaskTitle(record);
         dialog.__meta.replaceChildren(el('span','',[HISTORY_STATUS[record.status]||record.status,record.kind==='capture'?'采集运行':'素材分析',record.created_at?timeLabel(record.created_at):''].filter(Boolean).join(' · ')));
         dialog.__body.replaceChildren(el('div','empty','正在读取…'));
         dialog.showModal();
         try{
           const data=await api(`/api/tasks/history/${record.kind}/${encodeURIComponent(record.id)}`);
           dialog.__body.replaceChildren();
+          if(data.counts?.unknown)dialog.__body.append(el('p','task-sub',`${data.counts.unknown} 家旧记录缺少本轮结果`));
           if(data.message)dialog.__body.append(el('p','task-sub',data.message));
           if(Array.isArray(data.tasks)&&data.tasks.length){
             for(const task of data.tasks){
               const row=el('div','history-detail-row');
-              row.append(el('span','',task.store_name||task.task_id),el('span','',task.label||task.status));
+              row.append(el('span','',[workerStoreName(task.store_name).name||task.task_id,task.batch_name,task.version].filter(Boolean).join(' · ')),el('span','',task.label||task.status));
               if(task.message)row.title=task.message;
               dialog.__body.append(row);
             }
@@ -1666,6 +2110,7 @@
           }
         }catch(error){dialog.__body.replaceChildren(el('div','empty','读取失败：'+error.message));}
       }
+      function historyTaskTitle(record){return record.kind==='capture'&&record.title==='automatic'?'全自动采集':record.title||record.id;}
       async function loadHistory(reset=false){
         if(reset)historyPage=1;
         const list=$('history-list');if(!list)return;
@@ -1684,6 +2129,7 @@
           $('history-running').textContent=String(summary.running||0);
           $('history-completed').textContent=String(summary.completed||0);
           $('history-failed-label').textContent='失败/取消 '+(summary.failed||0);
+          $('history-terminated-label').textContent='已终止/停止 '+(summary.terminated||0);
           historyPage=Number(data.page)||1;
           renderPager('history-pager',historyPage,Number(data.page_count)||1,Number(data.summary?.total)||0,page=>{historyPage=page;void loadHistory();});
           const records=Array.isArray(data.records)?data.records:[];
@@ -1691,15 +2137,23 @@
           if(!records.length){list.append(el('div','empty','没有符合条件的历史任务。'));return;}
           for(const record of records){
             const row=el('article','quality-row history-row'),head=el('div','quality-row-head');
-            const title=el('strong','quality-title',record.title||record.id);title.title=record.id;
+            const title=el('strong','quality-title',historyTaskTitle(record));title.title=record.id;
             const kind=el('span','quality-source '+(record.kind==='capture'?'capture':'materials'),record.kind==='capture'?'采集运行':'素材分析');
             head.append(title,kind);
             const meta=el('div','quality-row-meta');
-            meta.append(el('span','',record.batch_name||'未关联批次'));
+            const batches=record.batches||[];
+            const batchLabel=batches.length>1?`涉及 ${batches.length} 个批次`:record.batch_name||'批次未记录';
+            const batchInfo=el('span','',batchLabel);
+            batchInfo.title=batches.map(batch=>[batch.name,...batch.versions].join(' · ')).join('，');
+            meta.append(batchInfo);
             const badge=record.batch_id?batchBadge(batchWorkflow.get(String(record.batch_id))):null;if(badge)meta.append(badge);
             const counts=el('div','history-counts'),value=record.counts||{};
             if(record.kind==='capture'){
-              counts.append(el('span','','成功 '+(value.done||0)),el('span','','待检查 '+(value.attention||0)),el('span','','失败 '+(value.failed||0)));
+              if(value.unknown)counts.append(el('span','','旧记录未保存当轮结果'));
+              if(!value.unknown||value.recorded)counts.append(
+                el('span','',`已处理 ${value.recorded||0} / ${value.total||0}`),
+                el('span','','已截图待复核 '+(value.done||0)),el('span','','待检查 '+(value.attention||0)),
+                el('span','','不合格 '+(value.rejected||0)));
             }else{
               counts.append(el('span','',`完成 ${value.done||0} / ${value.total||0}`),el('span','','失败 '+(value.failed||0)));
             }
@@ -1715,7 +2169,10 @@
       $('history-refresh')?.addEventListener('click',()=>void loadHistory());
       $('history-kind')?.addEventListener('change',()=>void loadHistory(true));
       $('history-status')?.addEventListener('change',()=>void loadHistory(true));
-      $('history-panel')?.addEventListener('click',()=>window.__taskCenterOpen?.());
+      $('history-panel')?.addEventListener('click',()=>{
+        if(sharedWorkbench.role()==='worker')setPage('overview');
+        else window.__taskCenterOpen?.();
+      });
       let historySearchTimer=null;$('history-search')?.addEventListener('input',()=>{clearTimeout(historySearchTimer);historySearchTimer=setTimeout(()=>void loadHistory(true),220);});
       async function refreshConfig(){try{const c=await api('/api/config');fillConfig(c);}catch(err){$('connection-label').textContent='配置读取失败';$('connection-dot').className='status-dot';toast(err.message);}}
       const ENV_STATUS_LABELS={checking:'检测中',ready:'正常',warning:'需处理',error:'异常',unknown:'未知'};
@@ -1826,6 +2283,8 @@
         state.polling=true;
         try{
           await sharedWorkbench.refresh();
+          syncHubDeviceStrip();
+          syncWorkerSync();
           if(!pageIsAvailable(activePageName))setPage('overview');
           if(sharedWorkbench.role()==='hub'){
             if(activePageName==='overview')await loadHubQueue();
@@ -1836,7 +2295,7 @@
           }
         }catch(err){
           $('connection-dot').className='status-dot';$('connection-label').textContent='连接中断';
-          $('sidebar-connection-label').textContent='本地服务已断开';$('poll-clock').textContent=err.message;
+          $('sidebar-connection-label').textContent=sharedWorkbench.role()==='hub'?'共享后台已断开':'本地服务已断开';$('poll-clock').textContent=err.message;
         }finally{
           state.polling=false;clearTimeout(state.statusPollTimer);
           if(!document.hidden&&(state.status?.running||sharedWorkbench.role()!=='standalone')){
@@ -1876,7 +2335,7 @@
       async function start(){
         if(!hasRobotSelection()){promptRobotTaskSelection();return;}
         const taskIds=state.queueIds.slice();
-        if(sharedWorkbench.role()==='hub'){sharedWorkbench.showAssignments(taskIds);return;}
+        if(sharedWorkbench.role()==='hub'){sharedWorkbench.showAssignments(taskIds,[...hubQueue.selected.values()]);return;}
         let runName='';
         if(runNameSupported()&&needsRunName(taskIds)){
           const value=await askRunName(defaultRunName(taskIds));
@@ -1922,6 +2381,23 @@
       async function retryTask(id,button){button.disabled=true;try{await api(`/api/tasks/${encodeURIComponent(id)}/retry`,{method:'POST',body:'{}'});toast('已提交重试');await poll();}catch(err){toast(err.message);}finally{button.disabled=false;}}
       window.addEventListener('materials-published',()=>void poll());
       $('scan-btn').addEventListener('click',scan);$('start-btn').addEventListener('click',start);$('resume-btn').addEventListener('click',resume);$('stop-btn').addEventListener('click',stop);$('terminate-btn').addEventListener('click',terminate);
+      $('hub-device-manage').addEventListener('click',()=>sharedWorkbench.showManager());
+      $('worker-sync-pill').addEventListener('click',()=>{renderWorkerSync();$('worker-sync-dialog').showModal();});
+      document.querySelectorAll('[data-sync-close]').forEach(button=>button.addEventListener('click',()=>$('worker-sync-dialog').close()));
+      $('worker-sync-dialog').addEventListener('click',event=>{if(event.target===$('worker-sync-dialog'))$('worker-sync-dialog').close();});
+      // 统计卡与状态筛选联动：再次点击已选中的卡片回到全部状态。
+      function syncStatFilter(){
+        const value=$('task-filter').value;
+        document.querySelectorAll('.workbench-stats .stat[data-stat-filter]').forEach(stat=>stat.classList.toggle('is-active',stat.dataset.statFilter===value));
+      }
+      document.querySelectorAll('.workbench-stats .stat[data-stat-filter]').forEach(stat=>stat.addEventListener('click',()=>{
+        const select=$('task-filter'),value=stat.dataset.statFilter;
+        select.value=select.value===value?'all':value;
+        select.dispatchEvent(new Event('change',{bubbles:true}));
+        syncStatFilter();
+      }));
+      $('task-filter').addEventListener('change',syncStatFilter);
+      syncStatFilter();
       document.querySelectorAll('[data-capture-mode]').forEach(button=>button.addEventListener('click',()=>{
         if(state.status?.running)return toast('采集运行中，本轮模式已锁定；暂停或终止后可切换');
         state.captureMode=button.dataset.captureMode;
@@ -1931,6 +2407,7 @@
       $('workbench-scope').addEventListener('change',async event=>{
         if(state.status?.running){event.target.value=state.scope;return toast('采集运行中，请在开始前切换批次范围');}
         state.scope=event.target.value;
+        $('hub-batch-filter').value='';
         state.scopeTasks=null;
         if(sharedWorkbench.role()==='hub')return changeHubPage(1);
         if(state.scope==='all')await loadCaptureQueue();else renderStatus(state.status);
@@ -1956,6 +2433,7 @@
       async function persistRobotProfile(){const previous=robotProfile,payload=buildRobotProfile(),saved=await api('/api/robot/profile',{method:'POST',body:JSON.stringify(payload)});const changed=previous&&['mode','wechat_selector','miniapp_selector','preview_selector'].some(key=>previous[key]!==saved[key]);robotProfile=saved;if(changed){state.connections=null;renderUncheckedConnections();}$('robot-save-message').textContent=' 已保存';return saved;}
       $('robot-form').addEventListener('submit',async event=>{event.preventDefault();try{await persistRobotProfile();await poll();}catch(err){$('robot-save-message').textContent=err.message;}});
       $('environment-refresh').addEventListener('click',()=>state.serviceDisconnected?retryLocalService():connectConnections(true));
+      $('history-shared-records').addEventListener('click',()=>sharedWorkbench.showRecords());
       $('workbench-scope').value=state.scope;renderUncheckedConnections();refreshConfig();api('/api/robot/profile').then(fillRobot).catch(err=>toast(err.message));poll();
       window.__materialsInit=(initialize)=>initialize({api,token:TOKEN,loadBatchOptions:ensureBatchWorkflow});
       window.__consoleBridge={api,toast,setPage};

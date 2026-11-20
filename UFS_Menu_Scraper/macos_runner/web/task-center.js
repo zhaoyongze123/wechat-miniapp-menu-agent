@@ -6,6 +6,10 @@
     interrupted: '已中断', completed: '已完成', failed: '失败', cancelled: '已取消',
   };
   const SOURCE = { materials: '素材', capture: '采集' };
+  const CAPTURE_NAMES = { automatic: '全自动采集', attached: '单店采集', manual: '半自动采集' };
+  const taskTitle = (task) => task.source==='capture'
+    ? CAPTURE_NAMES[task.title] || task.title || CAPTURE_NAMES[task.kind] || '采集任务'
+    : task.title || task.id;
   const POLL_MS = 2000;
 
   window.__taskCenterInit = function init({ api, toast, setPage }) {
@@ -26,8 +30,9 @@
       const collapsed = panel.classList.toggle('collapsed');
       toggle.textContent = collapsed ? '展开' : '收起';
     });
-    // 侧边栏「任务中心」入口：展开面板并高亮，避免面板被其他浮层遮住时找不到。
+    // 侧边栏「任务中心」入口：有活跃任务时展开面板并高亮。
     const openPanel = () => {
+      if (panel.hidden) return;
       panel.classList.remove('collapsed');
       toggle.textContent = '收起';
       panel.classList.add('flash');
@@ -91,8 +96,8 @@
 
     function renderList(tasks) {
       lastTasks = tasks;
-      // 面板常驻：没有任务时也保留入口，避免用户既看不到历史任务也找不到暂停/取消。
-      panel.hidden = false;
+      // 没有活跃任务时收起常驻面板，历史统一走任务中心页面。
+      panel.hidden = tasks.length === 0;
       list.replaceChildren();
       countLabel.textContent = tasks.length ? `${tasks.length} 个任务` : '暂无进行中的任务';
       if (!tasks.length) {
@@ -113,7 +118,7 @@
         main.className = 'task-main';
         const title = document.createElement('span');
         title.className = 'task-title';
-        title.textContent = task.title || task.id;
+        title.textContent = taskTitle(task);
         const sub = document.createElement('span');
         sub.className = 'task-sub';
         sub.textContent = subtitle(task) || task.kind;
@@ -134,7 +139,7 @@
 
     function renderDetail(job) {
       const task = job.source ? job : current;
-      q('title').textContent = task.title || task.id;
+      q('title').textContent = taskTitle(task);
       const percent = percentOf(task);
       q('fill').style.width = `${percent}%`;
       q('progress').textContent = task.progress?.total

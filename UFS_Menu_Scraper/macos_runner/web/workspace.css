@@ -942,3 +942,155 @@ body[data-workbench-role="worker"][data-workbench-paired="false"] :is(.workbench
 .workbench-run .run-collapse:hover { background:#f5f5f7; }
 .workbench-run.collapsed > *:not(.run-top) { display:none; }
 .workbench-run.collapsed #run-instruction { display:none; }
+
+/* —— 统一视觉规范：标题 24、小节 17、正文 14、表格 13；常规按钮 36、主按钮 42。 —— */
+main { padding:0 var(--space-page,22px); }
+.topbar h1 { font-size:var(--fs-page,24px); }
+.card h2 { font-size:var(--fs-section,17px); }
+.btn { min-height:var(--btn-h,36px); font-size:var(--fs-caption,12px); }
+.btn-primary { min-height:var(--btn-primary-h,42px); padding:9px 16px; }
+/* 主按钮比常规按钮高一档，但选中态与并排操作仍保持基线对齐。 */
+.run-controls .btn-primary,
+.quality-actions .btn-primary,
+.materials-batch-actions .btn-primary { min-height:var(--btn-primary-h,42px); }
+.robot-task-row { min-height:var(--row-h,50px); }
+.task-device { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:11px; }
+
+/* 质量审核双 Tab：不合格与待检查共用同一入口，底层页面与数据逻辑不变。 */
+.quality-tabs { display:flex; gap:2px; margin-bottom:14px; border-bottom:1px solid var(--line); }
+.quality-tab { position:relative; padding:9px 14px; border:0; background:none; color:var(--muted); font-size:13px; font-weight:600; cursor:pointer; }
+.quality-tab:hover { color:var(--ink); }
+.quality-tab[aria-selected="true"] { color:var(--ink); }
+.quality-tab[aria-selected="true"]::after { content:""; position:absolute; right:10px; bottom:-1px; left:10px; height:2px; border-radius:2px; background:var(--ink); }
+
+/* Hub 首页设备行：每台电脑一行，点击沿用现有分配弹窗。 */
+.hub-devices { flex:none; display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+.hub-devices[hidden] { display:none; }
+.hub-devices-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.hub-devices-head h2 { margin:0; font-size:15px; letter-spacing:-.01em; }
+.hub-device-list { display:grid; margin:0; padding:0; overflow:hidden; border:1px solid var(--line); border-radius:10px; background:#fff; list-style:none; }
+.hub-device-row { display:grid; grid-template-columns:10px minmax(110px,1.1fr) minmax(130px,1fr) 100px 110px; align-items:center; gap:12px; min-height:46px; padding:8px 14px; border-top:1px solid #eef1ef; cursor:pointer; }
+.hub-device-row:first-child { border-top:0; }
+.hub-device-row:hover { background:#fbfcfb; }
+.hub-device-row:focus-visible { outline:2px solid var(--teal); outline-offset:-2px; }
+.hub-device-name { overflow:hidden; min-width:0; font-size:13px; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
+.hub-device-state,.hub-device-meta,.hub-device-pending { overflow:hidden; color:var(--muted); font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+.hub-device-pending { text-align:right; }
+.hub-devices-empty { margin:0; padding:12px 14px; border:1px dashed var(--line); border-radius:10px; color:var(--muted); font-size:12px; }
+
+/* 门店详情三分区：复用现有节点，仅调整信息层级。 */
+.drawer-tabs { position:sticky; top:-18px; z-index:3; display:flex; gap:2px; margin:-18px -24px 0; padding:8px 24px 0; border-bottom:1px solid var(--line); background:#fff; }
+.drawer-tab { padding:9px 12px 10px; border:0; border-bottom:2px solid transparent; background:none; color:var(--muted); font:inherit; font-size:13px; font-weight:600; cursor:pointer; }
+.drawer-tab:hover { color:var(--ink); }
+.drawer-tab.is-active { border-bottom-color:var(--teal); color:var(--teal-dark); }
+.drawer-pane { display:flex; flex-direction:column; gap:12px; }
+.drawer-pane[hidden] { display:none; }
+.drawer-section-title { margin:4px 0 0; color:#53615d; font-size:12px; font-weight:700; }
+.drawer-history-summary { display:grid; grid-template-columns:80px minmax(0,1fr); gap:6px 12px; margin:0; font-size:12px; }
+.drawer-history-summary dt { color:var(--muted); }
+.drawer-history-summary dd { margin:0; color:var(--ink); overflow-wrap:anywhere; }
+.drawer-history-run { display:flex; justify-content:space-between; gap:12px; padding:8px 0; border-top:1px solid #edf0ef; font-size:12px; }
+.drawer-history-run:first-child { border-top:0; }
+.drawer-history-time { color:#53615d; font-variant-numeric:tabular-nums; }
+.drawer-history-meta { color:var(--muted); }
+/* 详情操作栏固定在抽屉底部，不随 Tab 或长截图滚动。 */
+#task-drawer .drawer-quality-actions { position:sticky; bottom:0; z-index:3; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; margin:0 -24px -18px; padding:12px 24px 18px; border-top:1px solid var(--line); background:#fff; }
+
+/* 采集端同步入口与同步详情：只展示本机已有的可靠字段。 */
+.sync-pill { cursor:pointer; }
+.sync-pill:hover { background:#f8faf9; }
+.sync-dialog { width:min(520px,94vw); max-height:80vh; padding:0; overflow:hidden; border:0; border-radius:14px; box-shadow:0 20px 60px rgba(24,52,45,.18); }
+.sync-dialog::backdrop { background:rgba(24,38,36,.32); }
+.sync-dialog .shared-header { margin:0; padding:18px 20px 12px; border-bottom:1px solid var(--line); }
+.sync-dialog-body { display:grid; gap:16px; padding:16px 20px 20px; overflow-y:auto; }
+.sync-dialog-body section { display:grid; gap:6px; }
+.sync-dialog-body h3 { margin:0; font-size:13px; }
+
+/* 统计卡可点击筛选：点击在对应状态与全部之间切换。 */
+.workbench-stats .stat[data-stat-filter] { padding:4px 8px; border:1px solid transparent; border-radius:8px; background:none; color:inherit; font:inherit; text-align:left; cursor:pointer; }
+.workbench-stats .stat[data-stat-filter]:hover { background:#f5f5f7; }
+.workbench-stats .stat[data-stat-filter].is-active { border-color:var(--line); background:#f5f5f7; }
+.workbench-stats .stat[data-stat-filter].is-active strong { color:var(--ink); }
+
+/* 设置页高级工具入口：人工标注与环境诊断不再占用主导航。 */
+.advanced-tools { display:grid; gap:8px; }
+body[data-workbench-role="hub"] :is(.advanced-tools-card,[data-desktop-config],#select-input-dir,#select-output-dir,#task-filter option[value="running"]) { display:none!important; }
+body[data-workbench-role="hub"] .task-toolbar { display:flex; flex-wrap:wrap; }
+body[data-workbench-role="hub"] #task-search { flex:1 1 180px; }
+#history-scope:not(:empty) { display:block; margin-top:6px; }
+.history-worker-activity { margin-bottom:16px; }
+.history-worker-activity .shared-row { grid-template-columns:minmax(72px,.5fr) minmax(0,2fr) minmax(0,1fr); }
+.history-worker-activity .shared-row span { overflow-wrap:anywhere; }
+@media (max-width:640px) {
+  .history-worker-activity .shared-row { grid-template-columns:minmax(0,1fr); gap:4px; }
+}
+.shared-conflicts { max-height:160px; overflow:auto; color:var(--red); }
+.shared-conflicts li { padding:5px 0; overflow-wrap:anywhere; }
+.shared-record-filters { display:flex; flex-wrap:wrap; gap:8px; }
+#shared-manage-panel > section { margin:0; padding:0; border:0; }
+#shared-device-list > li { grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) auto; }
+#shared-device-list strong, .shared-device-facts dd { overflow-wrap:anywhere; }
+.shared-device-facts { margin:0; display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; padding:12px 0; }
+.shared-device-facts > div { min-width:0; }
+.shared-device-facts dt { color:var(--muted); font-size:12px; }
+.shared-device-facts dd { margin:4px 0 0; font-weight:600; white-space:pre-wrap; }
+.shared-device-edit { display:grid; gap:10px; padding:12px; border:1px solid var(--line); border-radius:8px; }
+.shared-device-edit textarea { min-height:70px; }
+.shared-device-management { margin-top:6px; padding:12px 0 0; border-top:1px solid var(--line); }
+.shared-device-management h3 { margin-bottom:6px; font-size:14px; }
+.shared-device-management .btn { margin-top:8px; }
+.shared-record-bulk { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+.shared-record-bulk label { color:var(--muted); }
+.shared-record-bulk input, .shared-assignment-row input { width:auto; accent-color:var(--teal); }
+.shared-assignment-row { grid-template-columns:24px minmax(0,1.6fr) minmax(0,.7fr) minmax(0,.7fr) auto; }
+.shared-assignment-row .shared-history { grid-column:2 / -1; }
+@media (max-width:560px) {
+  .shared-assignment-row { grid-template-columns:24px minmax(0,1fr) auto; }
+  .shared-assignment-row > :is(.shared-assignment-worker,.shared-assignment-status) { grid-column:2; }
+}
+.shared-record-filters :is(input,select) { min-width:0; padding:7px 9px; font:inherit; color:var(--ink); background:#fff; border:1px solid var(--line); border-radius:8px; }
+#shared-record-search { flex:1 1 165px; }
+.shared-record-pager { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; color:var(--muted); }
+.shared-assignment-name strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* 采集端只保留当前状态适用的操作；批次级终止与导入入口由工作台承担。 */
+body[data-workbench-role="worker"] #terminate-btn { display:none!important; }
+
+/* 采集端执行队列默认折叠，点击“执行队列”以右侧浮层展开。 */
+body:is([data-workbench-role="hub"],[data-workbench-role="worker"]) #page-overview .workbench-grid { grid-template-columns:minmax(0,1fr); }
+.worker-stats-label,.worker-nav-progress { display:none; }
+body[data-workbench-role="worker"] .worker-stats-label { display:inline; align-self:center; color:var(--muted); }
+body:is([data-workbench-role="hub"],[data-workbench-role="worker"]) button[data-stat-filter="running"],
+body[data-workbench-role="worker"] .task-center { display:none; }
+body[data-workbench-role="worker"]:not([data-current-page="overview"]) .worker-nav-progress:not([hidden]) {
+  display:inline; margin-left:auto; color:var(--muted); font-variant-numeric:tabular-nums;
+}
+body[data-workbench-role="worker"] #worker-batch-filter:not([hidden]) { max-width:180px; }
+body[data-workbench-role="worker"] .task-toolbar { display:flex; flex-wrap:wrap; }
+body[data-workbench-role="worker"] #task-search { flex:1 1 180px; }
+body[data-workbench-role="worker"] #queue-summary { margin:4px 0 0; }
+body[data-workbench-role="worker"] #run-strip-done { font-size:14px; }
+#current-meta:empty,
+body[data-workbench-role="worker"]:not([data-workbench-view="debug"]) #current-id { display:none; }
+body[data-workbench-role="worker"] .queue-item.worker-run-item {
+  display:grid; grid-template-columns:24px minmax(0,1fr) auto; gap:8px; align-items:start; padding:9px 8px;
+}
+.worker-run-item.is-current { background:#eef5fd; border-radius:8px; }
+.worker-run-store { min-width:0; overflow-wrap:anywhere; }
+.worker-run-store small { display:block; margin-top:3px; color:var(--muted); }
+.worker-run-item-state { white-space:nowrap; color:var(--muted); font-size:12px; }
+.worker-run-item.is-current .worker-run-item-state { color:var(--action); }
+body:is([data-workbench-role="hub"],[data-workbench-role="worker"]) .queue-toggle:not([hidden]) { display:inline-flex; }
+body:is([data-workbench-role="hub"],[data-workbench-role="worker"]) .queue-panel { display:none; position:fixed; z-index:51; top:0; right:0; bottom:0; width:min(360px,92vw); padding:20px; border-left:1px solid var(--line); background:#fff; box-shadow:-8px 0 24px rgba(0,0,0,.14); }
+body:is([data-workbench-role="hub"],[data-workbench-role="worker"]) .queue-open .queue-panel { display:flex; }
+body:is([data-workbench-role="hub"],[data-workbench-role="worker"]) .queue-backdrop:not([hidden]) { display:block; position:fixed; inset:0; z-index:50; border:0; background:rgba(0,0,0,.25); }
+@media (max-width:600px) {
+  .hub-device-row { grid-template-columns:10px minmax(0,1fr) 100px; }
+  .hub-device-state,.hub-device-meta { display:none; }
+}
+
+
+#worker-input-source:not([hidden]) strong { display:block; margin-top:6px; }
+#hub-selection-clear[hidden],#worker-input-source[hidden],#standalone-input-dir[hidden] { display:none; }
+#shared-record-device { flex:0 1 auto; }
+.history-counts { flex-wrap:wrap; }
