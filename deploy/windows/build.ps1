@@ -20,6 +20,15 @@ function Invoke-Checked {
     }
 }
 
+function Get-MirrorUri {
+    param([string]$Uri)
+    # raw.githubusercontent.com 在部分网络下直连会被重置；jsDelivr 提供同仓库同提交的镜像，内容仍以哈希校验为准。
+    if ($Uri -match '^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$') {
+        return "https://cdn.jsdelivr.net/gh/$($Matches[1])/$($Matches[2])@$($Matches[3])/$($Matches[4])"
+    }
+    return $null
+}
+
 function Get-VerifiedFile {
     param([string]$Uri, [string]$Path, [string]$Sha256)
     # 可选的本地下载缓存（MC_RUNTIME_CACHE）：GitHub 直连不稳定时，可按文件名复用已校验的副本。
@@ -33,13 +42,25 @@ function Get-VerifiedFile {
     # 优先用 curl.exe 流式下载：PowerShell 5.1 的 Invoke-WebRequest 会把整个文件缓存在内存里，
     # 走代理下载大文件时长时间不落盘、无法观察进度，也容易卡死。
     $curl = (Get-Command 'curl.exe' -CommandType Application -ErrorAction SilentlyContinue).Source
-    if ($curl) {
-        $curlArgs = @('-fsSL', '--retry', '10', '--retry-all-errors', '--retry-delay', '2', '--connect-timeout', '30', '-C', '-', '-o', $Path)
-        if ($env:HTTPS_PROXY) { $curlArgs += @('--proxy', $env:HTTPS_PROXY) }
-        $curlArgs += $Uri
-        Invoke-Checked $curl $curlArgs
-    } else {
-        Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $Path
+    function Invoke-Download {
+        param([string]$DownloadUri)
+        if ($curl) {
+            $curlArgs = @('-fsSL', '--retry', '10', '--retry-all-errors', '--retry-delay', '2', '--connect-timeout', '30', '-C', '-', '-o', $Path)
+            if ($env:HTTPS_PROXY) { $curlArgs += @('--proxy', $env:HTTPS_PROXY) }
+            $curlArgs += $DownloadUri
+            Invoke-Checked $curl $curlArgs
+        } else {
+            Invoke-WebRequest -UseBasicParsing -Uri $DownloadUri -OutFile $Path
+        }
+    }
+    try {
+        Invoke-Download $Uri
+    } catch {
+        $mirror = Get-MirrorUri $Uri
+        if (-not $mirror) { throw }
+        Write-Host "Download failed, retrying via mirror: $mirror"
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        Invoke-Download $mirror
     }
     if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ine $Sha256) {
         throw "Checksum does not match for $([IO.Path]::GetFileName($Path))."
