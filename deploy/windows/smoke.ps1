@@ -4,7 +4,9 @@ param([Parameter(Mandatory)][string]$Installer)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $Installer = (Resolve-Path $Installer).Path
-$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('menu-capture-smoke-' + [guid]::NewGuid().ToString('N'))
+# 安装器同样受 260 字符路径上限约束；测试目录用短前缀，避免 releases\...\node_modules 深层文件装不进去。
+$tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
+$testRoot = Join-Path $tempRoot ('mcs-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
 $install = Join-Path $testRoot 'Programs\MenuCapture'
 $localData = Join-Path $testRoot 'LocalAppData'
 $homePath = Join-Path $localData 'MenuCapture'
@@ -48,10 +50,10 @@ function Install-TestWorker {
     Write-Host "Install #${Index} exit code: $($process.ExitCode)"
     if ($process.ExitCode -ne 0) {
         if (Test-Path -LiteralPath $installLog) {
-            Write-Host "Installer log head ($installLog):"
-            Get-Content -LiteralPath $installLog -TotalCount 120
-            Write-Host "Installer log tail ($installLog):"
-            Get-Content -LiteralPath $installLog -Tail 60
+            $entries = Get-Content -LiteralPath $installLog
+            Write-Host "Installer log ($installLog): $($entries.Count) lines"
+            # 创建/删除目录会占满日志，只保留其余行，失败原因（如 Could not create directory）才不会被淹没。
+            $entries | Where-Object { $_ -notmatch 'Creating directory:|Deleting directory:' }
         }
         throw "Installer #$Index exit code $($process.ExitCode)."
     }
