@@ -4,7 +4,9 @@ param([Parameter(Mandatory)][string]$Installer)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $Installer = (Resolve-Path $Installer).Path
-$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('menu-capture-smoke-' + [guid]::NewGuid().ToString('N'))
+# 安装器同样受 260 字符路径上限约束；测试目录用短前缀，避免 releases\...\node_modules 深层文件装不进去。
+$tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
+$testRoot = Join-Path $tempRoot ('mcs-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
 $install = Join-Path $testRoot 'Programs\MenuCapture'
 $localData = Join-Path $testRoot 'LocalAppData'
 $homePath = Join-Path $localData 'MenuCapture'
@@ -39,14 +41,26 @@ function Assert-WorkerHealthy {
 }
 
 function Install-TestWorker {
+    param([int]$Index)
+    # 每次安装单独一份日志：重装时安装器会先卸载旧版本，两份日志混在一起会掩盖真正的失败原因。
+    $installLog = Join-Path $testRoot "install-$Index.log"
     $process = Start-Process -FilePath $Installer -Wait -PassThru -ArgumentList @(
-        '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=""$install""", "/LOG=""$log"""
+        '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=""$install""", "/LOG=""$installLog"""
     )
-    if ($process.ExitCode -ne 0) { throw "Installer exit code $($process.ExitCode)." }
+    Write-Host "Install #${Index} exit code: $($process.ExitCode)"
+    if ($process.ExitCode -ne 0) {
+        if (Test-Path -LiteralPath $installLog) {
+            $entries = Get-Content -LiteralPath $installLog
+            Write-Host "Installer log ($installLog): $($entries.Count) lines"
+            # 创建/删除目录会占满日志，只保留其余行，失败原因（如 Could not create directory）才不会被淹没。
+            $entries | Where-Object { $_ -notmatch 'Creating directory:|Deleting directory:' }
+        }
+        throw "Installer #$Index exit code $($process.ExitCode)."
+    }
 }
 
 try {
-    Install-TestWorker
+    Install-TestWorker -Index 1
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $task = Get-ScheduledTask -TaskName "MenuCapture Worker - $sid" -ErrorAction SilentlyContinue
     $fallback = Join-Path ([Environment]::GetFolderPath('Startup')) '菜单采集后台.lnk'
@@ -57,12 +71,12 @@ try {
     $first = Assert-WorkerHealthy
     Stop-Process -Id $first.ProcessId -Force
     $second = Assert-WorkerHealthy -PreviousProcessId $first.ProcessId
-    Install-TestWorker
+    Install-TestWorker -Index 2
     if ((Get-Content -LiteralPath $marker).Trim() -ne 'preserve') { throw 'Reinstall removed local state.' }
     Write-Host "Installer boots the worker, supervisor restarted $($first.ProcessId) as $($second.ProcessId), and reinstall preserved data."
 } catch {
     foreach ($path in @($log, (Join-Path $homePath 'logs\launcher.log'), (Join-Path $homePath 'logs\service.stderr.log'))) {
-        if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Tail 40 }
+        if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Tail 200 }
     }
     throw
 } finally {
