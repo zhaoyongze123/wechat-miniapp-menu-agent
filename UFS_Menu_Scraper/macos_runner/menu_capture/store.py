@@ -527,6 +527,11 @@ class TaskStore:
             db.execute("UPDATE runs SET " + ",".join(f"{key}=?" for key in changes) + " WHERE id=?",
                        (*changes.values(), run_id))
 
+    def rename_run(self, run_id: str, name: str) -> None:
+        """只改展示名称；进度、执行时间、批次和结果各自维护，避免与运行线程的写入互相覆盖。"""
+        with self.connect() as db:
+            db.execute("UPDATE runs SET name=? WHERE id=?", (name, run_id))
+
     def request_run_state(self, run_id: str, status: str, message: str) -> None:
         # 批次可能在请求抵达时刚好结束，终态由工作线程保留。
         with self.connect() as db:
