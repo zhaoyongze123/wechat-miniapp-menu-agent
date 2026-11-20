@@ -1372,7 +1372,24 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         files = [path for path in candidates if path.is_file()]
         if not files:
             raise HTTPException(404, "没有可用截图")
-        newest = max(files, key=lambda path: path.stat().st_mtime)
+        # 只取最近一次尝试的画面：旧批次的成功页和本轮收尾截图都不能冒充当前失败画面。
+        def attempt(path: Path) -> Path:
+            parts = path.parts
+            if "ui-tars-trial" in parts:
+                return Path(*parts[:parts.index("ui-tars-trial") + 1])
+            for marker in (".uipath-runs", ".uipath-staging"):
+                if marker in parts:
+                    return Path(*parts[:parts.index(marker) + 2])
+            return path.parent
+
+        groups: dict[Path, list[Path]] = {}
+        for path in files:
+            groups.setdefault(attempt(path), []).append(path)
+        latest = max(groups, key=lambda key: max(path.stat().st_mtime for path in groups[key]))
+        scoped = groups[latest]
+        cleanup = re.compile(r"(after-close|^wechat-|^desktop|zzz-failure)", re.I)
+        usable = [path for path in scoped if not cleanup.search(path.name)] or scoped
+        newest = max(usable, key=lambda path: path.stat().st_mtime)
         return FileResponse(newest, media_type="image/png", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/tasks/{task_id}/actions")

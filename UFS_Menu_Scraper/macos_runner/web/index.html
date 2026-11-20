@@ -1205,11 +1205,10 @@
             .map(action=>String((action.details||{}).frame_evidence||'')).filter(Boolean);
           const pageFile=frames.find(name=>/^page-\d+\.png$/.test(name));
           const file=pageFile||frames[0];
-          // 失败画面按可用性依次回退：离线生成的现场缩略图 → 动作证据 → 运行目录最新画面。
-          // 顺序很关键：运行目录里已按“失败步骤”挑好一帧（page-* / ui-tars-*），
-          // 动作证据里的画面常常是关闭小程序之后的微信窗口，只能作为兜底。
-          const urls=['/api/action-evidence/'+encodeURIComponent(task.id+'000000000000')+'.png'];
-          urls.push('/api/tasks/'+encodeURIComponent(task.id)+'/last-frame');
+          // 失败画面按可用性依次回退：最新一次运行的最后一帧 → 离线现场缩略图 → 动作证据。
+          // 离线缩略图是历史快照，重复跑过的门店会过期，必须排在最新画面之后。
+          const urls=['/api/tasks/'+encodeURIComponent(task.id)+'/last-frame'];
+          urls.push('/api/action-evidence/'+encodeURIComponent(task.id+'000000000000')+'.png');
           if(file)urls.push('/api/action-evidence/'+encodeURIComponent(String(file).split('/').pop()));
           chain(urls,'失败画面');
           if(!host.children.length)host.append(el('div','drawer-empty','暂无判断截图与二维码'));
