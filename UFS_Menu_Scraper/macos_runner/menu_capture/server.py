@@ -795,6 +795,16 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             })
         return {"tasks": items}
 
+    def capture_run_title(run: dict, total: int, batch_name: str) -> str:
+        """任务名以显式保存值为准；旧占位名按可信模式和数量生成，避免历史记录都叫 automatic。"""
+        saved = (run.get("name") or "").strip()
+        if saved and saved != "automatic":
+            return saved
+        if batch_name:
+            return batch_name
+        label = {"auto": "全自动采集", "manual": "半自动采集"}.get(run.get("capture_mode") or "", "批量采集")
+        return f"{label} · {total} 家" if total else label
+
     def capture_history_row(run: dict, recorded: list[dict], task_index: dict) -> dict:
         """旧轮次保留门店明细和批次信息，轮次结果仅采用当时留存的记录。"""
         batch_id = run.get("material_batch_id") or ""
@@ -823,8 +833,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                             "message": result.get("message", ""), "reject_reason": result.get("reject_reason", "")})
         batch_list = list(batches.values())
         batch_name = batch_list[0]["name"] if len(batch_list) == 1 else ""
-        title = run.get("name") or batch_name or ("半自动采集" if run.get("capture_mode") == "manual" else "全自动采集")
+        title = capture_run_title(run, len(ids), batch_name)
         return {"kind": "capture", "id": run["id"], "title": title, "mode": run.get("mode", ""),
+                "name": (run.get("name") or ""),
                 "batch_id": batch_list[0]["id"] if len(batch_list) == 1 else "",
                 "batch_name": batch_name, "batches": batch_list,
                 "status": run.get("status", ""), "created_at": run.get("created_at", ""),
@@ -930,6 +941,21 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                     "message": job.get("message", "") or job.get("error", ""),
                     "counts": job.get("counts", {}), "events": job.get("events", [])}
         raise HTTPException(404, "任务类型不存在")
+
+    @app.patch("/api/tasks/history/capture/{run_id}")
+    def rename_capture_run(run_id: str, payload: dict):
+        """只改任务展示名称；ID、进度、执行时间、批次和历史结果保持原字段。"""
+        name = payload.get("name")
+        if not isinstance(name, str):
+            raise ValueError("任务名称无效")
+        name = name.strip()
+        if not 1 <= len(name) <= 64:
+            raise ValueError("任务名称需为 1 到 64 个字符")
+        if store.get_run(run_id) is None:
+            raise HTTPException(404, "运行记录不存在")
+        store.rename_run(run_id, name)
+        results = store.capture_run_results([run_id]).get(run_id, [])
+        return capture_history_row(store.get_run(run_id), results, capture_history_task_index())
 
     @app.get("/api/materials/batches/{batch_id}")
     def material_batch(batch_id: str):
