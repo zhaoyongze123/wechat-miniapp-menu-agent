@@ -43,7 +43,9 @@ $null = New-Item -ItemType Directory -Path $Output -Force
 $Output = (Resolve-Path $Output).Path
 $asset = Join-Path $Output "MenuCapture-Setup-$Version-win-x64.exe"
 if (Test-Path -LiteralPath $asset) { throw "Installer already exists: $asset" }
-$stage = Join-Path ([IO.Path]::GetTempPath()) ('menu-capture-build-' + [guid]::NewGuid().ToString('N'))
+# ISCC 编译器不支持超过 260 字符的源路径；构建目录放在短路径下，避免 node_modules 深层文件打包失败。
+$tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
+$stage = Join-Path $tempRoot ('mc-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
 $bundle = Join-Path $stage 'bundle'
 $null = New-Item -ItemType Directory -Path $bundle
 
@@ -109,6 +111,16 @@ try {
     $npm = Join-Path $nodeArchiveRoot 'node_modules\npm\bin\npm-cli.js'
     $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1'
     Invoke-Checked (Join-Path $nodeDir 'node.exe') @($npm, 'ci', '--omit=dev', '--no-audit', '--no-fund', '--prefix', $adapter)
+
+    # 安装包只保留运行时文件：测试快照、source map 和类型声明不参与运行，还会撑大体积并产生超长路径。
+    Get-ChildItem -LiteralPath $adapter -Recurse -Force -Directory -Filter '__image_snapshots__' |
+        Remove-Item -Recurse -Force
+    Get-ChildItem -LiteralPath $adapter -Recurse -Force -File |
+        Where-Object {
+            $_.Extension -eq '.map' -or
+            $_.Name -like '*.d.ts' -or $_.Name -like '*.d.mts' -or $_.Name -like '*.d.cts'
+        } |
+        Remove-Item -Force
 
     # 构建机也使用将要分发的可执行文件做校验；禁止回退到全局 Python、Node 或 OCR。
     $env:PYTHONNOUSERSITE = '1'
