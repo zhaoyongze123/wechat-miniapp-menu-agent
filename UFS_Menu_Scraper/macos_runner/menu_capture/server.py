@@ -323,9 +323,18 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     def material_assets(name: str):
         if name not in {"materials.js", "materials.css", "workspace.css", "model-usage.js", "model-usage.css",
                         "annotation.js", "annotation.css", "task-center.js", "task-center.css",
-                        "shared-workbench.js"}:
+                        "shared-workbench.js", "task-center-vue-loader.js"}:
             raise HTTPException(404, "资源不存在")
         return FileResponse(ROOT / "web" / name, headers={"Cache-Control": "no-cache"})
+
+    @app.get("/vue/{name}")
+    def vue_assets(name: str):
+        """Vue 试点构建产物：固定文件名、同源加载，不依赖 CDN 或开发服务器。"""
+        base = (ROOT / "web" / "vue").resolve()
+        target = (base / name).resolve()
+        if target.suffix not in {".js", ".css"} or not target.is_relative_to(base) or not target.is_file():
+            raise HTTPException(404, "资源不存在")
+        return FileResponse(target, headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/model-usage")
     def model_usage_report(date_from: str | None = None, date_to: str | None = None,

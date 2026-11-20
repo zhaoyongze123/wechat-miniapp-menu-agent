@@ -1,0 +1,18 @@
+{
+  "name": "menu-capture-task-center",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "工作台任务中心（Vue 3 试点）。构建产物直接提交到 macos_runner/web/vue/，运行时不需要 npm。",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "element-plus": "2.8.8",
+    "vue": "3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "5.2.1",
+    "vite": "5.4.11"
+  }
+}

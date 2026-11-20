@@ -351,7 +351,9 @@
         </section>
       </section>
 
-      <section class="page" id="page-task-center" aria-labelledby="history-heading">
+      <section class="page" id="page-task-center" aria-label="任务中心">
+        <div id="task-center-vue"><div class="empty">正在加载新版任务中心…</div></div>
+        <div id="task-center-legacy" hidden>
         <section id="history-worker-activity" class="hub-devices history-worker-activity" hidden aria-labelledby="history-worker-heading">
           <div class="hub-devices-head"><h2 id="history-worker-heading">采集电脑最近上报</h2><button class="btn" id="history-shared-records" type="button">查看分配与同步</button></div>
           <ul class="shared-list" id="history-worker-list"></ul>
@@ -367,7 +369,7 @@
         <section class="card quality-browser" aria-labelledby="history-heading">
           <div class="quality-toolbar">
             <div><h2 id="history-heading">任务历史</h2><p class="card-desc" id="history-scope"></p></div>
-            <div class="quality-actions"><button class="btn" id="history-panel" type="button">运行面板</button><button class="btn" id="history-refresh" type="button">刷新</button></div>
+            <div class="quality-actions"><button class="btn" id="history-use-vue" type="button" style="display:none">使用新版</button><button class="btn" id="history-panel" type="button">运行面板</button><button class="btn" id="history-refresh" type="button">刷新</button></div>
           </div>
           <div class="quality-filters">
             <select id="history-kind" aria-label="任务类型"><option value="all">全部类型</option><option value="capture">采集运行</option><option value="materials">素材分析</option></select>
@@ -378,6 +380,7 @@
           <div id="history-list" class="quality-list" aria-live="polite"><div class="empty">正在读取历史任务…</div></div>
           <div class="quality-pager" id="history-pager"></div>
         </section>
+        </div>
       </section>
 
       <section class="page" id="page-environment" aria-labelledby="environment-heading">
@@ -851,7 +854,8 @@
         window.dispatchEvent(new CustomEvent('menu:page',{detail:name}));
         if(name==='rejections')void loadRejections();
         if(name==='review-queue')void loadReviewQueue();
-        if(name==='task-center')void loadHistory();
+        // 新版任务中心挂载时不重复请求旧版数据；加载失败或回切时由加载器显式触发。
+        if(name==='task-center'&&!window.__vueTaskCenterActive?.()&&!window.__vueTaskCenterEnabled?.())void loadHistory();
         if(name==='overview'&&sharedWorkbench.role()==='hub')void refreshHubQueue();
         if(name==='settings')void sharedWorkbench.refresh();
       }
@@ -2436,13 +2440,16 @@
       $('history-shared-records').addEventListener('click',()=>sharedWorkbench.showRecords());
       $('workbench-scope').value=state.scope;renderUncheckedConnections();refreshConfig();api('/api/robot/profile').then(fillRobot).catch(err=>toast(err.message));poll();
       window.__materialsInit=(initialize)=>initialize({api,token:TOKEN,loadBatchOptions:ensureBatchWorkflow});
-      window.__consoleBridge={api,toast,setPage};
+      // 新版任务中心复用的桥接对象：沿用同一套鉴权请求、提示与页面切换。
+      window.__consoleBridge={api,toast,setPage,sharedWorkbench,storeLabel:workerStoreName};
+      window.__loadLegacyHistory=()=>void loadHistory();
     })();
   </script>
   <script src="/assets/materials.js"></script>
   <script src="/assets/task-center.js"></script>
   <script src="/assets/model-usage.js"></script>
   <script src="/assets/annotation.js"></script>
+  <script src="/assets/task-center-vue-loader.js"></script>
         <dialog id="run-name-dialog" aria-labelledby="run-name-title"><form id="run-name-form"><h2 id="run-name-title">任务名称</h2><p id="run-name-copy" class="card-desc">跨批次执行的名称会显示在任务中心与历史记录中，可按需修改。</p><label for="run-name-input">任务名称</label><input id="run-name-input" maxlength="80" required autocomplete="off"><div class="quality-dialog-actions"><button class="btn" id="run-name-cancel" type="button">取消</button><button class="btn btn-primary" id="run-name-confirm" type="submit">开始采集</button></div></form></dialog>
 </body>
 </html>
