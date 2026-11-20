@@ -72,7 +72,7 @@
         />
       </div>
 
-      <div v-loading="loading" class="vtc-table-wrap" element-loading-text="正在读取历史任务…">
+      <div ref="tableWrap" v-loading="loading" class="vtc-table-wrap" element-loading-text="正在读取历史任务…">
         <div v-if="loadError" class="vtc-empty" role="alert">
           <strong>任务历史读取失败</strong>
           <span>{{ loadError }}</span>
@@ -81,48 +81,91 @@
         <table v-else class="vtc-table">
           <thead>
             <tr>
-              <th scope="col">任务</th>
-              <th scope="col">批次 / 类型</th>
-              <th scope="col">结果</th>
-              <th scope="col">开始时间</th>
+              <th scope="col" class="vtc-col-title">任务名称</th>
+              <th scope="col" class="vtc-col-batch">批次范围</th>
+              <th scope="col" class="vtc-col-status">任务状态</th>
+              <th scope="col" class="vtc-col-result">结果摘要</th>
+              <th scope="col" class="vtc-time">开始时间</th>
               <th scope="col" class="vtc-col-action">操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="record in records" :key="`${record.kind}:${record.id}`">
-              <td>
-                <strong class="vtc-title" :title="record.id">{{ displayTitle(record) }}</strong>
-                <span class="vtc-sub">{{ record.id }}</span>
-              </td>
-              <td>
-                <span class="vtc-batch" :title="batchTitle(record)">{{ batchLabel(record) }}</span>
-                <span class="vtc-kind" :class="record.kind">{{ kindLabel(record.kind) }}</span>
-              </td>
-              <td>
-                <div v-if="record.kind === 'capture'" class="vtc-counts">
-                  <span v-if="record.counts?.unknown" class="vtc-note">旧记录未保存当轮结果</span>
-                  <template v-else>
-                    <span>已处理 {{ record.counts?.recorded || 0 }} / {{ record.counts?.total || 0 }}</span>
-                    <span>已截图待复核 {{ record.counts?.done || 0 }}</span>
-                    <span>待检查 {{ record.counts?.attention || 0 }}</span>
-                    <span>不合格 {{ record.counts?.rejected || 0 }}</span>
+            <template v-for="record in records" :key="`${record.kind}:${record.id}`">
+              <tr>
+                <td class="vtc-col-title">
+                  <strong class="vtc-title" :title="`${displayTitle(record)} · ${record.id}`">
+                    {{ displayTitle(record) }}
+                  </strong>
+                  <span v-if="showKindTag" class="vtc-kind" :class="record.kind">{{ kindLabel(record.kind) }}</span>
+                </td>
+                <td class="vtc-col-batch">
+                  <button
+                    v-if="batchList(record).length > 1"
+                    type="button"
+                    class="vtc-batch-toggle"
+                    :aria-expanded="isExpanded(record)"
+                    @click="toggleExpand(record)"
+                  >
+                    <span>{{ batchLabel(record) }}</span>
+                    <span class="vtc-caret" :class="{ open: isExpanded(record) }" aria-hidden="true">⌄</span>
+                  </button>
+                  <template v-else-if="batchList(record).length === 1">
+                    <span class="vtc-batch" :title="batchTitle(record)">{{ batchList(record)[0].name }}</span>
+                    <span class="vtc-versions">
+                      <span
+                        v-for="version in batchList(record)[0].versions || []"
+                        :key="version"
+                        class="vtc-version"
+                      >{{ version }}</span>
+                    </span>
                   </template>
-                </div>
-                <div v-else class="vtc-counts">
-                  <span>完成 {{ record.counts?.done || 0 }} / {{ record.counts?.total || 0 }}</span>
-                  <span>失败 {{ record.counts?.failed || 0 }}</span>
-                </div>
-                <span class="vtc-badge" :class="`tone-${statusOf(record.status).tone}`">
-                  {{ statusOf(record.status).label }}
-                </span>
-              </td>
-              <td class="vtc-time">{{ formatTime(record.created_at) }}</td>
-              <td class="vtc-col-action">
-                <el-button size="small" @click="openDetail(record)">详情</el-button>
-              </td>
-            </tr>
+                  <span v-else-if="record.batch_name" class="vtc-batch" :title="record.batch_name">
+                    {{ record.batch_name }}
+                  </span>
+                  <span v-else class="vtc-empty-cell">—</span>
+                </td>
+                <td class="vtc-col-status">
+                  <span class="vtc-badge" :class="`tone-${statusOf(record.status).tone}`">
+                    {{ statusOf(record.status).label }}
+                  </span>
+                </td>
+                <td class="vtc-col-result">
+                  <div v-if="record.kind === 'capture'" class="vtc-result">
+                    <span>已处理 {{ record.counts?.recorded || 0 }} / {{ record.counts?.total || 0 }}</span>
+                    <span>
+                      已截图待复核 {{ record.counts?.done || 0 }} · 待检查 {{ record.counts?.attention || 0 }} ·
+                      不合格 {{ record.counts?.rejected || 0 }}
+                    </span>
+                    <span v-if="record.counts?.unknown" class="vtc-note">
+                      旧记录未保存当轮结果（{{ record.counts.unknown }} 家）
+                    </span>
+                  </div>
+                  <div v-else class="vtc-result">
+                    <span>已分析 {{ record.counts?.done || 0 }} / {{ record.counts?.total || 0 }}</span>
+                    <span v-if="record.counts?.failed" class="vtc-note">分析失败 {{ record.counts.failed }}</span>
+                  </div>
+                </td>
+                <td class="vtc-time">{{ formatTime(record.created_at) }}</td>
+                <td class="vtc-col-action">
+                  <el-button size="small" @click="openDetail(record)">详情</el-button>
+                </td>
+              </tr>
+              <tr v-if="isExpanded(record)" class="vtc-expand-row">
+                <td colspan="6">
+                  <ul class="vtc-batch-detail">
+                    <li v-for="batch in batchList(record)" :key="batch.id">
+                      <span class="vtc-batch-name">{{ batch.name }}</span>
+                      <span v-for="version in batch.versions || []" :key="version" class="vtc-version">
+                        {{ version }}
+                      </span>
+                      <span class="vtc-batch-stores">{{ batch.stores }} 家门店</span>
+                    </li>
+                  </ul>
+                </td>
+              </tr>
+            </template>
             <tr v-if="!records.length">
-              <td colspan="5">
+              <td colspan="6">
                 <div class="vtc-empty">
                   <strong>{{ hasFilters ? '没有符合条件的任务' : '还没有任务记录' }}</strong>
                   <span>{{ hasFilters ? '调整类型、状态或搜索关键词后再试。' : '开始一次采集或素材分析后，这里会按时间倒序列出。' }}</span>
@@ -158,7 +201,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import TaskDetailDialog from './components/TaskDetailDialog.vue'
 import { KIND_LABEL, statusOf } from './lib/constants'
 import { formatTime } from './lib/format'
@@ -182,10 +225,13 @@ const loadError = ref('')
 const devices = ref([])
 const selected = ref(null)
 const detailOpen = ref(false)
+const tableWrap = ref(null)
+const expanded = ref(new Set())
 
 let loadSeq = 0
 let searchTimer = null
 let hubTimer = null
+let savedScroll = 0
 
 const counts = computed(() => ({
   total: Number(summary.value.total) || 0,
@@ -196,9 +242,16 @@ const counts = computed(() => ({
 }))
 const isHub = computed(() => role.value === 'hub')
 const hasFilters = computed(() => kind.value !== 'all' || status.value !== 'all' || keyword.value.trim() !== '')
-const scopeText = computed(() => (isHub.value
-  ? '下表统计后台素材分析和后台保留的采集运行记录。'
-  : '按开始时间倒序查看本机任务。'))
+// 混排时才需要类型标签；筛选单一类型后名称列不再重复说明。
+const showKindTag = computed(() => kind.value === 'all')
+const scopeText = computed(() => {
+  const base = isHub.value
+    ? '下表统计后台素材分析和后台保留的采集运行记录。'
+    : '按开始时间倒序查看本机任务。'
+  return hasFilters.value
+    ? `${base}统计卡只计算当前筛选命中的 ${counts.value.total} 条任务。`
+    : base
+})
 
 function kindLabel(value) {
   return KIND_LABEL[value] || value
@@ -208,15 +261,34 @@ function displayTitle(record) {
   return record.title || record.id
 }
 
+function batchList(record) {
+  return Array.isArray(record.batches) ? record.batches : []
+}
+
 function batchLabel(record) {
-  const batches = Array.isArray(record.batches) ? record.batches : []
-  if (batches.length > 1) return `涉及 ${batches.length} 个批次`
-  return record.batch_name || '批次未记录'
+  return `涉及 ${batchList(record).length} 个批次`
 }
 
 function batchTitle(record) {
-  const batches = Array.isArray(record.batches) ? record.batches : []
-  return batches.map(batch => [batch.name, ...(batch.versions || [])].filter(Boolean).join(' · ')).join('，')
+  return batchList(record)
+    .map(batch => [batch.name, ...(batch.versions || [])].filter(Boolean).join(' · '))
+    .join('，')
+}
+
+function recordKey(record) {
+  return `${record.kind}:${record.id}`
+}
+
+function isExpanded(record) {
+  return expanded.value.has(recordKey(record))
+}
+
+function toggleExpand(record) {
+  const next = new Set(expanded.value)
+  const key = recordKey(record)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expanded.value = next
 }
 
 async function load(reset = false) {
@@ -238,6 +310,8 @@ async function load(reset = false) {
     records.value = Array.isArray(data.records) ? data.records : []
     summary.value = data.summary || {}
     page.value = Number(data.page) || 1
+    // 列表刷新后旧的展开状态不再对应同一行，直接收起。
+    expanded.value = new Set()
   } catch (error) {
     if (requestId !== loadSeq) return
     records.value = []
@@ -269,9 +343,18 @@ function clearFilters() {
 }
 
 function openDetail(record) {
+  // 关闭详情后要回到原来的滚动位置，尤其是从第 2 页下方打开时。
+  savedScroll = tableWrap.value?.scrollTop || 0
   selected.value = record
   detailOpen.value = true
 }
+
+watch(detailOpen, (open) => {
+  if (open) return
+  void nextTick(() => {
+    if (tableWrap.value) tableWrap.value.scrollTop = savedScroll
+  })
+})
 
 function onRenamed(updated) {
   if (!updated) return

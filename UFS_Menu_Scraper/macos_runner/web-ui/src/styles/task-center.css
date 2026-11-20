@@ -217,7 +217,7 @@
 }
 .vtc-table {
   width: 100%;
-  min-width: 840px;
+  min-width: 900px;
   border-collapse: collapse;
 }
 .vtc-table th {
@@ -249,7 +249,7 @@
 }
 .vtc-title {
   display: block;
-  max-width: 260px;
+  max-width: 230px;
   overflow: hidden;
   color: #273632;
   font-size: 12.5px;
@@ -257,50 +257,122 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.vtc-sub {
-  display: block;
-  max-width: 260px;
-  overflow: hidden;
-  margin-top: 2px;
-  color: #98a39f;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
+.vtc-col-title {
+  width: 24%;
+}
+.vtc-col-batch {
+  width: 20%;
+}
+.vtc-col-status {
+  width: 106px;
+}
+.vtc-col-result {
+  width: 30%;
 }
 .vtc-batch {
   display: block;
-  max-width: 220px;
+  max-width: 200px;
   overflow: hidden;
   color: #45534f;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.vtc-batch-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #2b6f63;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.vtc-batch-toggle:hover,
+.vtc-batch-toggle:focus-visible {
+  color: var(--teal-dark, #0c6d5e);
+  text-decoration: underline;
+  outline: none;
+}
+.vtc-caret {
+  display: inline-block;
+  font-size: 11px;
+  line-height: 1;
+  transition: transform 0.16s ease;
+}
+.vtc-caret.open {
+  transform: rotate(180deg);
+}
+.vtc-versions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.vtc-version {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #f1f4f2;
+  color: #60706a;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.vtc-empty-cell {
+  color: #a2ada9;
+}
 .vtc-kind {
   display: inline-flex;
   align-items: center;
-  margin-top: 4px;
-  padding: 2px 7px;
+  margin-left: 6px;
+  padding: 1px 7px;
   border-radius: 999px;
   background: var(--teal-pale, #e8f5f1);
   color: var(--teal-dark, #0c6d5e);
   font-size: 10px;
+  vertical-align: 1px;
   white-space: nowrap;
 }
 .vtc-kind.capture {
   background: var(--amber-pale, #fff4e4);
   color: var(--amber, #a96818);
 }
-.vtc-counts {
+.vtc-result {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+  flex-direction: column;
+  gap: 2px;
   color: #5f6b66;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
-.vtc-counts .vtc-note {
+.vtc-result .vtc-note {
   color: var(--amber, #a96818);
+}
+.vtc-expand-row td {
+  padding: 0 14px 11px;
+  background: #fafcfb;
+}
+.vtc-batch-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+  padding: 9px 12px;
+  border-left: 2px solid #cbe6e1;
+  list-style: none;
+}
+.vtc-batch-detail li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #45534f;
+  font-size: 11px;
+}
+.vtc-batch-detail .vtc-batch-name {
+  font-weight: 600;
+}
+.vtc-batch-stores {
+  color: var(--muted, #74817e);
 }
 .vtc-time {
   color: #6b7874;
@@ -358,8 +430,14 @@
 .vtc-badge.tone-danger::before {
   background: var(--red, #ba4d45);
 }
-.vtc-counts + .vtc-badge {
-  margin-top: 6px;
+/* 窄屏优先保住名称、批次、状态与结果摘要，开始时间可在详情中查看。 */
+@media (max-width: 1180px) {
+  .vtc-table {
+    min-width: 720px;
+  }
+  .vtc-table .vtc-time {
+    display: none;
+  }
 }
 .vtc-empty {
   display: flex;
@@ -565,10 +643,6 @@
 @media (max-width: 1100px) {
   .vtc-table {
     min-width: 640px;
-  }
-  .vtc-table th:nth-child(4),
-  .vtc-table td:nth-child(4) {
-    display: none;
   }
 }
 
