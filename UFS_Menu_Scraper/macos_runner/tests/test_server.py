@@ -145,3 +145,18 @@ def test_artifact_endpoint_rejects_traversal_outside_task_output(tmp_path: Path)
         symlink_response = client.get(f"/api/artifact/{record['id']}/linked.json")
         assert symlink_response.status_code == 404
         assert "outside" not in symlink_response.text
+
+
+def test_vue_asset_route_only_serves_built_files(tmp_path: Path) -> None:
+    """Vue 试点产物只通过 /vue/ 暴露 js/css，且不允许越出构建目录。"""
+    app = create_app(tmp_path, desktop=FakeDesktop())
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    assert client.get("/assets/task-center-vue-loader.js").status_code == 200
+    assert client.get("/vue/task-center.css").status_code == 200
+    assert client.get("/vue/task-center.js").status_code == 200
+
+    # 只允许 js/css，目录内的其他文件（例如 index.html 或临时文件）不对外。
+    assert client.get("/vue/index.html").status_code == 404
+    assert client.get("/vue/not-exists.js").status_code == 404
+    assert client.get("/vue/%2e%2e/index.html").status_code == 404

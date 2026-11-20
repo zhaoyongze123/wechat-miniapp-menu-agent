@@ -823,6 +823,11 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-vi
 #page-task-center .quality-overview { flex:0 0 auto; }
 #page-task-center .quality-browser { display:flex; flex:1; flex-direction:column; min-height:0; }
 #page-task-center .quality-list { flex:1; min-height:0; max-height:none; }
+/* 任务中心试点：新版与旧版共用外层容器，隐藏的一方不参与布局。 */
+#page-task-center.active > #task-center-vue,
+#page-task-center.active > #task-center-legacy { display:flex; flex:1; flex-direction:column; gap:14px; min-height:0; min-width:0; }
+#page-task-center > #task-center-vue[hidden],
+#page-task-center > #task-center-legacy[hidden] { display:none !important; }
 /* 工作台双模式：开跑前选模式，运行后本轮锁定。 */
 .capture-mode { display:inline-flex; gap:0; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
 .capture-mode .capture-mode-btn { border:0; border-radius:0; min-height:36px; padding:7px 12px; background:transparent; }
