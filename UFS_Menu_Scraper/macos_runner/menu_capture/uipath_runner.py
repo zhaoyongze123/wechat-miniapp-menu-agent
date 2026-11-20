@@ -49,6 +49,7 @@ from .checkbox_locator import refine_consent_checkbox
 from .scene_agent import SceneDecision
 from .target_candidates import build_text_candidates
 from .store import TaskStore
+from .capture_results import waiting_for_materials
 from .preview_locator import PreviewIconNotFound, locate_preview_recognize
 from .chat_image_locator import (ChatImageNotFound, locate_chat_image_bubble, locate_sent_image,
                                  match_preview_source)
@@ -775,7 +776,7 @@ class UiPathRunner:
         for selected_id in task_ids:
             try:
                 selected = self.store.get(selected_id)
-                if selected["status"] not in {"pending", "needs_review", "needs_retry", "error", "blocked", "captured"}:
+                if waiting_for_materials(selected) or selected["status"] not in {"pending", "needs_review", "needs_retry", "error", "blocked", "captured"}:
                     issues.append(f"任务状态 {selected['status']} 不允许重新接管")
                 if settings is not None:
                     source_root = trial_batch_sources[selected_id] if trial_batch_sources else trial_source or settings.input_dir
@@ -816,6 +817,8 @@ class UiPathRunner:
         return result
 
     def _registered_trial_source(self, task_id: str) -> str:
+        if waiting_for_materials(self.store.get(task_id) or {}):
+            return ""
         if self.assignment_source is not None:
             return self.assignment_source(task_id)
         task = self.store.get(task_id) or {}
@@ -1917,7 +1920,8 @@ class UiPathRunner:
                 os.chmod(destination, 0o600)
                 reject_evidence = destination.name
             message = f"人工判定不合格：{REJECTION_REASONS.get(reason, reason)}"
-            self.store.update(task["id"], status="needs_review", stage="manual_rejected",
+            self.store.update(task["id"], capture_run_id=self.run_id or "", attempt_outcome="rejected",
+                              status="needs_review", stage="manual_rejected",
                               message=message,
                               error_code="manual_rejected", reject_reason=reason, reject_detail=detail,
                               rejected_at=datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -2716,7 +2720,8 @@ class UiPathRunner:
             # 保留 captured 事实，失败原因只写入消息与事件，避免“有输出却显示需检查”。
             preserved = f"本次重跑未完成，保留此前已发布截图（{message[:200]}）"
             try:
-                self.store.update(task["id"], status="captured", stage="captured",
+                self.store.update(task["id"], capture_run_id=self.run_id or "", attempt_outcome="review",
+                                  attempt_message=message, status="captured", stage="captured",
                                   message=preserved, error_code="")
                 atomic_json(output_dir / "result.json", {"task_id": task["id"], "status": "captured",
                                                         "stage": "captured", "message": preserved,
@@ -2743,8 +2748,9 @@ class UiPathRunner:
                 "reject_evidence": reject_evidence,
             }
         try:
-            self.store.update(task["id"], status=status, stage=stage, message=message,
-                              error_code=code, **reject)
+            self.store.update(task["id"], capture_run_id=self.run_id or "",
+                              attempt_outcome="rejected" if reject_reason else "captured" if status == "captured" else "review",
+                              status=status, stage=stage, message=message, error_code=code, **reject)
             atomic_json(output_dir / "result.json", {"task_id": task["id"], "status": status, "stage": stage,
                                                     "message": message, "error_code": code,
                                                     "reject_reason": reject_reason})
@@ -3041,7 +3047,8 @@ class UiPathRunner:
             had_previous = destination.exists()
             if had_previous and not destination.is_dir():
                 raise ValueError("门店输出路径已存在且不是文件夹")
-            self.store.begin_publish(task["id"], root, staging, destination, backup, had_previous)
+            self.store.begin_publish(task["id"], root, staging, destination, backup, had_previous,
+                                     run_id=self.run_id or "")
             try:
                 if had_previous:
                     os.replace(destination, backup)

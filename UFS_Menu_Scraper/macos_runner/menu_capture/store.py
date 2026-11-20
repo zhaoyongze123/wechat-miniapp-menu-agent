@@ -49,6 +49,13 @@ class TaskStore:
                     current_task_id TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, name TEXT NOT NULL DEFAULT ''
                 );
+                CREATE TABLE IF NOT EXISTS capture_run_results (
+                    run_id TEXT NOT NULL, task_id TEXT NOT NULL, store_name TEXT NOT NULL,
+                    batch_id TEXT NOT NULL DEFAULT '', batch_name TEXT NOT NULL DEFAULT '',
+                    version TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '',
+                    reject_reason TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(run_id, task_id)
+                );
                 CREATE TABLE IF NOT EXISTS run_actions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL,
                     task_id TEXT NOT NULL, attempt_id TEXT NOT NULL, stage TEXT NOT NULL,
@@ -67,6 +74,8 @@ class TaskStore:
             for column in ("material_version_id", "material_batch_id", "material_version", "material_snapshot"):
                 if column not in {row["name"] for row in db.execute("PRAGMA table_info(runs)")}:
                     db.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            if "run_id" not in {row["name"] for row in db.execute("PRAGMA table_info(publish_transactions)")}:
+                db.execute("ALTER TABLE publish_transactions ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
             # 本轮采集模式：auto=全自动 Agent，manual=半自动人工；空值代表历史批次。
             if "capture_mode" not in {row["name"] for row in db.execute("PRAGMA table_info(runs)")}:
                 db.execute("ALTER TABLE runs ADD COLUMN capture_mode TEXT NOT NULL DEFAULT ''")
@@ -218,6 +227,15 @@ class TaskStore:
                         db.execute("UPDATE tasks SET status='pending',stage='queued',message=? WHERE id=?",
                                    ("此前结果已被替换或移除，请重新采集", current["id"]))
                 if count and reusable:
+                    # 同批次重发其他门店时，待修门店的旧码在新快照中仍不可采集。
+                    blocked = any(db.execute(
+                        "SELECT 1 FROM tasks WHERE source_path=? AND source_hash=? AND stage='returned_to_materials'",
+                        (str(old_root / relative), digest),
+                    ).fetchone() for old_root in reusable)
+                    if blocked:
+                        db.execute("UPDATE tasks SET status='blocked',stage='returned_to_materials',message=? WHERE id=?",
+                                   ("待重新选码并发布", current["id"]))
+                        continue
                     # 仅继承同一清洗批次中、同门店且二维码字节相同的成功结果。
                     for old_root in reusable:
                         old_path = old_root / image.relative_to(source)
@@ -280,7 +298,7 @@ class TaskStore:
                     ORDER BY a2.id DESC LIMIT 1
                 )
                 LEFT JOIN material_batches b ON b.id=br.material_batch_id
-                WHERE t.status IN ('needs_review','needs_retry','error','blocked')
+                WHERE t.status IN ('needs_review','needs_retry','error','blocked','failed')
                   AND COALESCE(t.reject_reason,'')=''
                   AND COALESCE(t.archived_at,'')=''
                   AND (b.id IS NULL OR b.deleted_at='')
@@ -341,7 +359,8 @@ class TaskStore:
             """, (task_id,)).fetchone()
         return dict(row) if row else {"batch_id": "", "batch_name": ""}
 
-    def update(self, task_id: str, **changes) -> None:
+    def update(self, task_id: str, *, capture_run_id: str = "",
+               attempt_outcome: str = "", attempt_message: str = "", **changes) -> None:
         allowed = {"status", "stage", "message", "output_dir", "reject_reason", "reject_detail", "rejected_at",
                    "reject_evidence", "reject_reviewed_at", "error_code"}
         if not changes or not set(changes) <= allowed:
@@ -361,6 +380,10 @@ class TaskStore:
                 "UPDATE tasks SET " + ",".join(f"{key}=?" for key in changes) + " WHERE id=?",
                 (*changes.values(), task_id),
             )
+            if capture_run_id and attempt_outcome:
+                self._record_capture_result(db, capture_run_id, task_id, attempt_outcome,
+                                            changes.get("reject_reason", ""),
+                                            attempt_message or changes.get("message", ""))
 
     def create_run(self, run_id: str, mode: str, task_ids: list[str], message: str = "批次已启动", *, material: dict | None = None,
                    capture_mode: str = "", name: str = "") -> dict:
@@ -376,7 +399,53 @@ class TaskStore:
             if material:
                 db.execute("UPDATE runs SET material_version_id=?,material_batch_id=?,material_version=?,material_snapshot=? WHERE id=?",
                            (material["id"], material["batch_id"], material["version"], material["snapshot_id"], run_id))
+            self._capture_run_members(db, run_id, task_ids, material)
         return self.get_run(run_id)
+
+    @staticmethod
+    def _capture_run_members(db, run_id: str, task_ids: list[str], material: dict | None) -> None:
+        """冻结本轮门店名和来源版本；后续同步、重跑或换版不会改变这份归属。"""
+        has_worker = db.execute("SELECT 1 FROM sqlite_master WHERE name='worker_assignments'").fetchone()
+        has_versions = db.execute("SELECT 1 FROM sqlite_master WHERE name='material_versions'").fetchone()
+        assigned = {}
+        if has_worker:
+            assigned = {row["task_id"]: dict(row) for row in db.execute(
+                "SELECT task_id,batch_id,batch_name,revision AS version FROM worker_assignments WHERE run_id=? ORDER BY rowid",
+                (run_id,))}
+        versions = {}
+        if has_versions:
+            versions = {row["snapshot_id"]: dict(row) for row in db.execute(
+                "SELECT v.snapshot_id,v.batch_id,b.name AS batch_name,v.version FROM material_versions v "
+                "JOIN material_batches b ON b.id=v.batch_id ORDER BY v.rowid")}
+        rows = []
+        # 一轮常规限制为 300 家，逐店查询还能兼容更早的自定义长批次。
+        for task_id in dict.fromkeys(task_ids):
+            task = db.execute("SELECT source_name,source_path FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if task is None:
+                continue
+            snapshot = Path(task["source_path"]).parent.parent.name
+            context = assigned.get(task_id) or versions.get(snapshot) or material or {}
+            rows.append((run_id, task_id, task["source_name"], context.get("batch_id", ""),
+                         context.get("batch_name", ""), context.get("version", "")))
+        db.executemany("INSERT INTO capture_run_results(run_id,task_id,store_name,batch_id,batch_name,version)"
+                       " VALUES(?,?,?,?,?,?)", rows)
+
+    @staticmethod
+    def _record_capture_result(db, run_id: str, task_id: str, outcome: str,
+                               reject_reason: str, message: str) -> None:
+        # 采集结果和门店状态同一事务写入。运行恢复可更新本轮同一家，历史轮次独立保存。
+        db.execute("UPDATE capture_run_results SET outcome=?,reject_reason=?,message=? WHERE run_id=? AND task_id=?",
+                   (outcome, reject_reason, message, run_id, task_id))
+
+    def capture_run_results(self, run_ids: list[str]) -> dict[str, list[dict]]:
+        if not run_ids:
+            return {}
+        indexed: dict[str, list[dict]] = {}
+        placeholders = ",".join("?" for _ in run_ids)
+        with self.connect() as db:
+            for row in db.execute(f"SELECT * FROM capture_run_results WHERE run_id IN ({placeholders})", run_ids):
+                indexed.setdefault(row["run_id"], []).append(dict(row))
+        return indexed
 
     def material_binding(self, source: str) -> dict | None:
         if not source or not (Path(source) / ".materials-snapshot.json").is_file():
@@ -444,6 +513,9 @@ class TaskStore:
                     error_code='',reject_reason='',reject_detail='',rejected_at='',reject_reviewed_at='',updated_at=? WHERE id=?""",
                 (message, path, stamp, task_id),
             )
+            publication = db.execute("SELECT run_id FROM publish_transactions WHERE task_id=?", (task_id,)).fetchone()
+            if publication and publication["run_id"]:
+                self._record_capture_result(db, publication["run_id"], task_id, "captured", "", message)
             db.execute("DELETE FROM publish_transactions WHERE task_id=?", (task_id,))
 
     def update_run(self, run_id: str, **changes) -> None:
@@ -494,11 +566,11 @@ class TaskStore:
         return [self._run_dict(row) for row in rows]
 
     def begin_publish(self, task_id: str, output_root: Path, staging: Path, destination: Path,
-                      backup: Path, had_previous: bool) -> None:
+                      backup: Path, had_previous: bool, *, run_id: str = "") -> None:
         with self.connect() as db:
             db.execute(
-                "INSERT OR REPLACE INTO publish_transactions(task_id,output_root,staging,destination,backup,had_previous,phase,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                (task_id, str(output_root), str(staging), str(destination), str(backup), int(had_previous), "prepared", now()),
+                "INSERT OR REPLACE INTO publish_transactions(task_id,output_root,staging,destination,backup,had_previous,phase,updated_at,run_id) VALUES(?,?,?,?,?,?,?,?,?)",
+                (task_id, str(output_root), str(staging), str(destination), str(backup), int(had_previous), "prepared", now(), run_id),
             )
 
     def update_publish(self, task_id: str, phase: str) -> None:
