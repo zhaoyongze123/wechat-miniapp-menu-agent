@@ -44,9 +44,20 @@ jobs:
           ./deploy/windows/build.ps1 -Version $version
       - name: 验证安装与进程恢复
         shell: pwsh
+        env:
+          BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
         run: |
+          $version = $env:BUILD_VERSION
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
           $installer = Get-ChildItem deploy/artifacts -Filter '*.exe' -File | Select-Object -First 1
-          ./deploy/windows/smoke.ps1 -Installer $installer.FullName
+          ./deploy/windows/smoke.ps1 -Installer $installer.FullName -Version $version
+      - name: 上传验收日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: menu-capture-smoke-logs
+          path: ${{ runner.temp }}/menu-capture-smoke-logs-*
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
           name: menu-capture-windows-x64
