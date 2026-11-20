@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 import threading
+from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import urlsplit
 from zipfile import ZIP_STORED, ZipFile
@@ -16,7 +17,7 @@ from zipfile import ZIP_STORED, ZipFile
 import httpx
 
 from .config import atomic_json
-from .shared import IMAGE_SUFFIXES, MAX_RESULT_SIZE, MAX_SOURCE_SIZE, safe_artifact
+from .shared import IMAGE_SUFFIXES, MAX_RESULT_SIZE, MAX_SOURCE_SIZE, REPORTED_RUN_STATUSES, safe_artifact
 from .store import TaskStore, now
 
 
@@ -66,6 +67,7 @@ class SharedWorker:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.online = False
+        self._hub_reports_runs = False
         self.error = ""
         with self.store.connect() as db:
             db.executescript("""
@@ -77,6 +79,7 @@ class SharedWorker:
                     disposition TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS worker_assignment_task ON worker_assignments(task_id,status);
+                CREATE INDEX IF NOT EXISTS worker_assignment_source ON worker_assignments(source_hash);
             """)
 
     def start(self) -> None:
@@ -142,6 +145,7 @@ class SharedWorker:
             """))
         return {"role": "worker", "paired": bool(self.connection), "online": self.online,
                 "name": self.connection.get("name", ""), "error": self.error,
+                "credential_invalid": bool(self.connection.get("invalid")),
                 "pending_uploads": sum(row["status"] == "pending_upload" for row in assignments),
                 "assignments": assignments}
 
@@ -171,6 +175,8 @@ class SharedWorker:
         return str(path.parent.parent) if path.is_file() else ""
 
     def check_start(self, task_ids: list[str]) -> None:
+        if self.connection.get("invalid"):
+            raise ValueError("采集电脑的配对已失效，请联系管理员")
         self.prepare_results()
         if any(not self.source_root(task_id) for task_id in task_ids):
             raise ValueError("请只选择本机已下载、可离线采集的门店")
@@ -247,6 +253,56 @@ class SharedWorker:
                     self._queue_result(dict(row), task)
                 self._wake.set()
 
+    def _cached_sources(self, assigned: dict) -> list[Path]:
+        # 采集器仍按各自分配目录处理；可直接从旧分配的本地文件复用相同内容。
+        with self.store.connect() as db:
+            rows = db.execute("SELECT id,source_suffix FROM worker_assignments WHERE source_hash=? ORDER BY rowid DESC",
+                              (assigned["source_hash"],)).fetchall()
+        return [self._source_path(assigned), *(self._source_path(row) for row in rows if row["id"] != assigned["id"])]
+
+    @staticmethod
+    def _copy_source(blocks: Iterable[bytes], target: Path, expected_hash: str) -> bool:
+        digest = hashlib.sha256()
+        size = 0
+        with target.open("wb") as stream:
+            for block in blocks:
+                size += len(block)
+                if size > MAX_SOURCE_SIZE:
+                    return False
+                digest.update(block)
+                stream.write(block)
+            if digest.hexdigest() != expected_hash:
+                return False
+            stream.flush()
+            os.fsync(stream.fileno())
+        return True
+
+    def _cache_source(self, assigned: dict, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, filename = tempfile.mkstemp(dir=path.parent)
+        os.close(fd)
+        temporary = Path(filename)
+        try:
+            for cached in self._cached_sources(assigned):
+                try:
+                    source = cached.open("rb")
+                except (FileNotFoundError, PermissionError):
+                    continue
+                with source:
+                    valid = self._copy_source(iter(lambda: source.read(256 * 1024), b""),
+                                              temporary, assigned["source_hash"])
+                if valid:
+                    temporary.replace(path)
+                    return
+            with self._http.stream("GET", self._url(f"/assignments/{assigned['id']}/source"),
+                                   headers=self._headers) as response:
+                response.raise_for_status()
+                if not self._copy_source(response.iter_bytes(), temporary, assigned["source_hash"]):
+                    raise ValueError("二维码内容不完整或超过缓存大小限制，稍后重试")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def _download(self, assigned: dict) -> None:
         for key in ("id", "source_hash"):
             if not re.fullmatch(r"[0-9a-f]{32}" if key == "id" else r"[0-9a-f]{64}", str(assigned.get(key, ""))):
@@ -254,29 +310,7 @@ class SharedWorker:
         if assigned.get("source_suffix") not in IMAGE_SUFFIXES:
             raise ValueError("后台返回了不支持的二维码文件")
         path = self._source_path(assigned)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        digest = hashlib.sha256()
-        size = 0
-        fd, filename = tempfile.mkstemp(dir=path.parent)
-        temporary = Path(filename)
-        try:
-            with os.fdopen(fd, "wb") as stream:
-                with self._http.stream("GET", self._url(f"/assignments/{assigned['id']}/source"),
-                                       headers=self._headers) as response:
-                    response.raise_for_status()
-                    for block in response.iter_bytes():
-                        size += len(block)
-                        if size > MAX_SOURCE_SIZE:
-                            raise ValueError("二维码文件超过缓存大小限制")
-                        digest.update(block)
-                        stream.write(block)
-                stream.flush()
-                os.fsync(stream.fileno())
-            if digest.hexdigest() != assigned["source_hash"]:
-                raise ValueError("二维码下载不完整，稍后重试")
-            temporary.replace(path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        self._cache_source(assigned, path)
         with self.control_lock, self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             busy = db.execute("""
@@ -303,16 +337,38 @@ class SharedWorker:
                     :source_hash,:source_suffix,'ready',:created_at)
             """, assigned)
 
+    def _run_summary(self) -> dict | None:
+        run = self.store.latest_run()
+        if not run or run["status"] not in REPORTED_RUN_STATUSES:
+            return None
+        total = len(run["task_ids"])
+        return {
+            "status": run["status"], "mode": run.get("capture_mode") or "",
+            "processed": max(0, min(total, int(run["current_index"]))), "total": total,
+        }
+
     def _heartbeat(self) -> set[str]:
         with self.store.connect() as db:
             ready = [row["id"] for row in db.execute("SELECT id FROM worker_assignments WHERE status='ready'")]
             pending = db.execute("SELECT COUNT(*) FROM worker_assignments WHERE status='pending_upload'").fetchone()[0]
         active = None
+        summary = self._run_summary() if self._hub_reports_runs else None
         for start in range(0, max(len(ready), 1), 1000):
-            response = self._http.post(self._url("/sync"), headers=self._headers,
-                                       json={"ready_ids": ready[start:start + 1000], "pending_uploads": pending})
+            payload = {"ready_ids": ready[start:start + 1000], "pending_uploads": pending}
+            if start == 0 and summary is not None:
+                payload["run_summary"] = summary
+            response = self._http.post(self._url("/sync"), headers=self._headers, json=payload)
+            # Hub 回滚后可能拒绝新字段。改用旧格式，确保任务下载与补传继续。
+            if response.status_code == 400 and "run_summary" in payload:
+                del payload["run_summary"]
+                response = self._http.post(self._url("/sync"), headers=self._headers, json=payload)
             response.raise_for_status()
-            active = response.json()["assignments"]
+            sync = response.json()
+            self._hub_reports_runs = sync.get("supports_run_summary") is True
+            active = sync["assignments"]
+            name = sync.get("worker_name")
+            if isinstance(name, str) and name:
+                self.connection["name"] = name
         active_ids = {row["id"] for row in active}
         with self.control_lock:
             self.prepare_results()
@@ -345,8 +401,18 @@ class SharedWorker:
                 if disposition not in {"accepted", "history"}:
                     raise ValueError("后台未确认此结果")
             except (httpx.HTTPStatusError, OSError, ValueError, KeyError) as exc:
-                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500:
-                    raise
+                if isinstance(exc, httpx.HTTPStatusError):
+                    response = exc.response
+                    if response.status_code >= 500:
+                        raise
+                    if response.status_code == 401:
+                        # 凭证失效时保留整个补传队列，避免逐包重复发送。
+                        try:
+                            detail = response.json().get("detail")
+                        except (ValueError, AttributeError):
+                            detail = None
+                        if detail in ("采集端凭证无效", "采集电脑已解除配对"):
+                            raise
                 self.error = "有采集结果尚未同步，请检查后台或本机磁盘空间"
                 continue
             with self.store.connect() as db:
@@ -360,11 +426,25 @@ class SharedWorker:
             self.error = ""
             with self.control_lock:
                 self.prepare_results()
-            self._upload_pending()
+            if not self.connection.get("invalid"):
+                self._upload_pending()
             self._heartbeat()
+            if self.connection.pop("invalid", None):
+                atomic_json(self.credentials, self.connection)
         except (httpx.HTTPError, OSError, ValueError, KeyError) as exc:
             self.online = False
-            if isinstance(exc, (httpx.HTTPError, KeyError)):
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
+                if not self.connection.get("invalid"):
+                    self.connection["invalid"] = True
+                    try:
+                        atomic_json(self.credentials, self.connection)
+                    except OSError:
+                        self.error = "配对已失效，本机无法保存连接状态。请联系管理员。"
+                        return
+                self.error = "采集电脑的配对已失效，本机结果仍保留。请联系管理员。"
+            elif self.connection.get("invalid"):
+                self.error = "采集电脑的配对已失效，本机结果仍保留。请联系管理员。"
+            elif isinstance(exc, (httpx.HTTPError, KeyError)):
                 self.error = "共享工作台暂不可达，已下载门店可继续采集"
             else:
                 self.error = str(exc)[:200]

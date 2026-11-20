@@ -14,18 +14,23 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from .materials import REJECTION_REASONS, MaterialService
 from .store import TaskStore, now
+from .capture_results import capture_outcome
 
 
 class RejectionService:
     """只提供统一视图和导出，不创建另一套工单或审核状态。"""
 
-    def __init__(self, tasks: TaskStore, materials: MaterialService):
+    def __init__(self, tasks: TaskStore, materials: MaterialService, *, current_only: bool = False):
         self.tasks = tasks
         self.materials = materials
+        self.current_only = current_only
 
     def _all(self) -> list[dict]:
         rows = self.materials.rejections()
+        current = {task["id"] for task in self.materials.effective_capture_tasks()} if self.current_only else None
         for task in self.tasks.rejections():
+            if (current is not None and task["id"] not in current) or capture_outcome(task) != "rejected":
+                continue
             code = task.get("reject_reason", "")
             source_path = Path(task["source_path"])
             rows.append({

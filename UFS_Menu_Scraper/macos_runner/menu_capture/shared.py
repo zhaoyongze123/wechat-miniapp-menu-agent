@@ -15,6 +15,7 @@ from zipfile import BadZipFile, ZipFile
 
 from PIL import Image
 
+from .capture_results import waiting_for_materials
 from .materials import REJECTION_REASONS, MaterialService
 from .store import TaskStore
 
@@ -23,10 +24,16 @@ MAX_ARTIFACT_SIZE = 32 * 1024**2
 MAX_SOURCE_SIZE = 32 * 1024**2
 ACTIVE = ("assigned", "ready")
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+REPORTED_RUN_STATUSES = {"running", "pause_requested", "paused", "resuming", "blocked", "interrupted",
+                         "terminating", "terminated", "completed", "failed"}
 
 
 class SharedConflict(ValueError):
     """并发、版本或分配状态已变化，操作可以在刷新后重试。"""
+
+    def __init__(self, message: str, *, conflicts: list[dict] | None = None):
+        super().__init__(message)
+        self.conflicts = conflicts
 
 
 class WorkerUnauthorized(ValueError):
@@ -78,6 +85,16 @@ class SharedHub:
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL,
                     last_seen TEXT NOT NULL, pending_uploads INTEGER NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS shared_worker_profiles (
+                    worker_id TEXT PRIMARY KEY REFERENCES shared_workers(id),
+                    description TEXT NOT NULL DEFAULT '', paired_at TEXT NOT NULL DEFAULT '',
+                    revoked_at TEXT NOT NULL DEFAULT '', archived_at TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS shared_worker_runs (
+                    worker_id TEXT PRIMARY KEY REFERENCES shared_workers(id),
+                    status TEXT NOT NULL, mode TEXT NOT NULL,
+                    processed INTEGER NOT NULL, total INTEGER NOT NULL, reported_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS shared_pairing (
                     code_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL
                 );
@@ -99,8 +116,16 @@ class SharedHub:
 
     def status(self, *, include_history: bool = True) -> dict:
         with self.store.connect() as db:
-            workers = [dict(row) for row in db.execute(
-                "SELECT id,name,last_seen,pending_uploads FROM shared_workers ORDER BY name,id")]
+            workers = [dict(row) for row in db.execute("""
+                SELECT w.id,w.name,w.last_seen,w.pending_uploads,COALESCE(p.description,'') AS description,
+                       COALESCE(p.paired_at,'') AS paired_at,COALESCE(p.revoked_at,'') AS revoked_at,
+                       COALESCE(p.archived_at,'') AS archived_at
+                FROM shared_workers w LEFT JOIN shared_worker_profiles p ON p.worker_id=w.id
+                ORDER BY w.name,w.id
+            """)]
+            runs = {row["worker_id"]: dict(row) for row in db.execute("SELECT * FROM shared_worker_runs")}
+            for worker in workers:
+                worker["last_run"] = runs.get(worker["id"])
             assignments = [dict(row) for row in db.execute("""
                 SELECT a.*, COALESCE(r.disposition, '') AS disposition, COALESCE(r.message, '') AS result_message
                 FROM shared_assignments a LEFT JOIN shared_results r ON a.id=r.assignment_id
@@ -128,10 +153,14 @@ class SharedHub:
             db.execute("INSERT INTO shared_pairing VALUES(?,?)", (_token_hash(code), expires))
         return {"code": code, "expires_at": expires}
 
-    def pair(self, code: str, name: str) -> dict:
-        name = str(name or "").strip()
-        if not name or len(name) > 64 or any(ord(char) < 32 for char in name):
+    @staticmethod
+    def _worker_name(name: str) -> str:
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 64 or any(ord(char) < 32 for char in name):
             raise ValueError("电脑名称应为 1 至 64 个字符")
+        return name.strip()
+
+    def pair(self, code: str, name: str) -> dict:
+        name = self._worker_name(name)
         if not isinstance(code, str) or not re.fullmatch(r"[\w-]{12}", code, flags=re.ASCII):
             raise ValueError("配对码无效或已过期")
         worker_id, token = secrets.token_hex(16), secrets.token_urlsafe(32)
@@ -141,9 +170,114 @@ class SharedHub:
                               (_token_hash(code), utc_stamp()))
             if not used.rowcount:
                 raise ValueError("配对码无效或已过期")
-            db.execute("INSERT INTO shared_workers VALUES(?,?,?,?,0)",
-                       (worker_id, name, _token_hash(token), utc_stamp()))
+            stamp = utc_stamp()
+            db.execute("INSERT INTO shared_workers VALUES(?,?,?,?,0)", (worker_id, name, _token_hash(token), stamp))
+            db.execute("INSERT INTO shared_worker_profiles(worker_id,paired_at) VALUES(?,?)", (worker_id, stamp))
         return {"id": worker_id, "name": name, "token": token}
+
+    @staticmethod
+    def _worker(db, worker_id: str):
+        worker = db.execute("""
+            SELECT w.id,w.name,p.revoked_at,p.archived_at
+            FROM shared_workers w LEFT JOIN shared_worker_profiles p ON p.worker_id=w.id WHERE w.id=?
+        """, (worker_id,)).fetchone()
+        if not worker:
+            raise ValueError("采集电脑不存在")
+        return worker
+
+    def edit_worker(self, worker_id: str, name: str, description: str) -> dict:
+        name = self._worker_name(name)
+        if not isinstance(description, str) or len(description.strip()) > 500:
+            raise ValueError("备注最多 500 个字符")
+        with self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if self._worker(db, worker_id)["archived_at"]:
+                raise SharedConflict("此设备已从设备列表移除")
+            db.execute("UPDATE shared_workers SET name=? WHERE id=?", (name, worker_id))
+            db.execute("""
+                INSERT INTO shared_worker_profiles(worker_id,description) VALUES(?,?)
+                ON CONFLICT(worker_id) DO UPDATE SET description=excluded.description
+            """, (worker_id, description.strip()))
+        return {"id": worker_id, "name": name, "description": description.strip()}
+
+    def revoke_worker(self, worker_id: str) -> dict:
+        with self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            worker = self._worker(db, worker_id)
+            stamp = worker["revoked_at"] or utc_stamp()
+            if not worker["revoked_at"]:
+                if db.execute("""
+                    SELECT 1 FROM shared_assignments WHERE worker_id=? AND status IN ('assigned','ready') LIMIT 1
+                """, (worker_id,)).fetchone():
+                    raise SharedConflict("还有未结束的分配，请等待同步或先回收任务")
+                # 轮换旧凭证，即使临时回滚 Hub，也无法再使用原设备令牌。
+                db.execute("UPDATE shared_workers SET token_hash=? WHERE id=?",
+                           (_token_hash(secrets.token_urlsafe(32)), worker_id))
+                db.execute("""
+                    INSERT INTO shared_worker_profiles(worker_id,revoked_at) VALUES(?,?)
+                    ON CONFLICT(worker_id) DO UPDATE SET revoked_at=excluded.revoked_at
+                """, (worker_id, stamp))
+        return {"id": worker_id, "revoked_at": stamp}
+
+    def archive_worker(self, worker_id: str) -> dict:
+        with self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            worker = self._worker(db, worker_id)
+            if not worker["revoked_at"]:
+                raise SharedConflict("请先解除配对，再从设备列表移除")
+            stamp = worker["archived_at"] or utc_stamp()
+            db.execute("UPDATE shared_worker_profiles SET archived_at=? WHERE worker_id=?", (stamp, worker_id))
+        return {"id": worker_id, "archived_at": stamp}
+
+    def assignment_records(self, *, worker_id: str, phase: str, query: str, page: int, size: int) -> dict:
+        where = ["1=1"]
+        params = []
+        if worker_id:
+            where.append("a.worker_id=?")
+            params.append(worker_id)
+        if phase == "history":
+            where.append("r.disposition='history'")
+        elif phase:
+            where.append("a.status=? AND COALESCE(r.disposition,'')<>'history'")
+            params.append(phase)
+        if query.strip():
+            where.append("instr(lower(a.store || ' ' || a.batch_name || ' ' || a.revision || ' ' || a.task_id), lower(?))>0")
+            params.append(query.strip())
+        source = ("FROM shared_assignments a JOIN shared_workers w ON w.id=a.worker_id "
+                  "LEFT JOIN shared_results r ON r.assignment_id=a.id WHERE " + " AND ".join(where))
+        with self.store.connect() as db:
+            if worker_id:
+                self._worker(db, worker_id)
+            total = db.execute("SELECT COUNT(*) " + source, params).fetchone()[0]
+            pages = max(1, (total + size - 1) // size)
+            page = min(page, pages)
+            records = [dict(row) for row in db.execute(
+                "SELECT a.id,a.task_id,a.worker_id,w.name AS worker_name,a.store,a.batch_name,a.revision,a.status,"
+                "COALESCE(r.disposition,'') AS disposition,COALESCE(r.message,'') AS result_message " +
+                source + " ORDER BY a.created_at DESC,a.id LIMIT ? OFFSET ?", (*params, size, (page - 1) * size))]
+        return {"records": records, "total": total, "page": page, "pages": pages}
+
+    def reclaim_many(self, assignment_ids: list[str]) -> dict:
+        if (not isinstance(assignment_ids, list) or not 1 <= len(assignment_ids) <= 300
+                or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{32}", value) for value in assignment_ids)):
+            raise ValueError("请选择 1 至 300 条待回收分配")
+        ids = list(dict.fromkeys(assignment_ids))
+        effective = self.materials.effective_capture_tasks()
+        with self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            placeholders = ",".join("?" for _ in ids)
+            rows = db.execute(
+                f"SELECT batch_id,store FROM shared_assignments WHERE status IN ('assigned','ready') AND id IN ({placeholders})",
+                ids).fetchall()
+            if len(rows) != len(ids):
+                raise SharedConflict("部分任务已同步或已回收，请刷新后重新选择")
+            db.execute(f"UPDATE shared_assignments SET status='reclaimed' WHERE id IN ({placeholders})", ids)
+        stores = {(row["batch_id"], row["store"]) for row in rows}
+        tasks = [{key: task.get(key) for key in ("id", "source_name", "batch_name", "version")}
+                 for task in effective
+                 if (task["batch_id"], task["source_name"]) in stores and task["runnable"]
+                 and not waiting_for_materials(task)]
+        return {"count": len(ids), "tasks": tasks}
 
     def authenticate(self, token: str) -> str:
         if not token or len(token) > 100:
@@ -172,23 +306,37 @@ class SharedHub:
             raise ValueError("请选择 1 至 300 家已发布门店")
         tasks = {task["id"]: task for task in self.materials.effective_capture_tasks()}
         selected = []
+        conflicts = []
         for task_id in dict.fromkeys(task_ids):
             task = tasks.get(task_id)
-            if not task or not task["runnable"]:
-                raise SharedConflict("所选门店已换版或当前状态不可采集，请刷新队列")
-            selected.append((task, self._source(task).suffix.lower()))
+            if task and waiting_for_materials(task):
+                conflicts.append({"task_id": task_id, "reason": "materials"})
+            elif not task:
+                conflicts.append({"task_id": task_id, "reason": "revision"})
+            elif not task["runnable"]:
+                conflicts.append({"task_id": task_id, "reason": "unavailable"})
+            else:
+                try:
+                    selected.append((task, self._source(task).suffix.lower()))
+                except SharedConflict:
+                    conflicts.append({"task_id": task_id, "reason": "source"})
         rows = []
         stamp = utc_stamp()
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            if not db.execute("SELECT 1 FROM shared_workers WHERE id=?", (worker_id,)).fetchone():
-                raise ValueError("采集电脑不存在，请先配对")
+            if self._worker(db, worker_id)["revoked_at"]:
+                raise SharedConflict("采集电脑已解除配对，请选择有效设备")
+            # 在同一个写事务核对占用，整次提交全部通过后才生成分配记录。
+            for task, _ in selected:
+                owner = db.execute("""
+                    SELECT w.name FROM shared_assignments a JOIN shared_workers w ON w.id=a.worker_id
+                    WHERE a.batch_id=? AND a.store=? AND a.status IN ('assigned','ready')
+                """, (task["batch_id"], task["source_name"])).fetchone()
+                if owner:
+                    conflicts.append({"task_id": task["id"], "reason": "assigned", "worker_name": owner["name"]})
+            if conflicts:
+                raise SharedConflict(f"{len(conflicts)} 家门店暂时无法分配，本次提交未生效", conflicts=conflicts)
             for task, suffix in selected:
-                if db.execute("""
-                    SELECT 1 FROM shared_assignments WHERE batch_id=? AND store=?
-                    AND status IN ('assigned','ready')
-                """, (task["batch_id"], task["source_name"])).fetchone():
-                    raise SharedConflict(f"{task['source_name']} 已分配，需等待同步或先收回")
                 record = {
                     "id": secrets.token_hex(16), "task_id": task["id"], "worker_id": worker_id,
                     "batch_id": task["batch_id"], "batch_name": task["batch_name"], "store": task["source_name"],
@@ -241,24 +389,46 @@ class SharedHub:
         if binding:
             self.require_unassigned(binding["batch_id"], {task["source_name"]})
 
-    def sync(self, worker_id: str, ready_ids: list[str], pending_uploads: int) -> dict:
+    def sync(self, worker_id: str, ready_ids: list[str], pending_uploads: int,
+             run_summary: dict | None = None) -> dict:
         if (not isinstance(ready_ids, list) or len(ready_ids) > 1000
                 or any(not isinstance(value, str) or len(value) != 32 for value in ready_ids)
                 or type(pending_uploads) is not int or not 0 <= pending_uploads <= 10000):
             raise ValueError("采集端同步参数无效")
+        if run_summary is not None:
+            if (not isinstance(run_summary, dict) or set(run_summary) != {"status", "mode", "processed", "total"}
+                    or not isinstance(run_summary["status"], str) or run_summary["status"] not in REPORTED_RUN_STATUSES
+                    or run_summary["mode"] not in ("auto", "manual", "")
+                    or any(type(run_summary[key]) is not int for key in ("processed", "total"))
+                    or not 0 <= run_summary["processed"] <= run_summary["total"] <= 10000):
+                raise ValueError("采集端轮次摘要无效")
+        stamp = utc_stamp()
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            worker = self._worker(db, worker_id)
+            if worker["revoked_at"]:
+                raise WorkerUnauthorized("采集电脑已解除配对")
             db.execute("UPDATE shared_workers SET last_seen=?,pending_uploads=? WHERE id=?",
-                       (utc_stamp(), pending_uploads, worker_id))
+                       (stamp, pending_uploads, worker_id))
+            if run_summary is not None:
+                db.execute("""
+                    INSERT INTO shared_worker_runs(worker_id,status,mode,processed,total,reported_at)
+                    VALUES (?,?,?,?,?,?)
+                    ON CONFLICT(worker_id) DO UPDATE SET status=excluded.status,mode=excluded.mode,
+                        processed=excluded.processed,total=excluded.total,reported_at=excluded.reported_at
+                """, (worker_id, run_summary["status"], run_summary["mode"], run_summary["processed"],
+                      run_summary["total"], stamp))
             db.executemany("UPDATE shared_assignments SET status='ready' WHERE id=? AND worker_id=? AND status='assigned'",
                            ((assignment_id, worker_id) for assignment_id in ready_ids))
             rows = [dict(row) for row in db.execute(
                 "SELECT * FROM shared_assignments WHERE worker_id=? AND status IN ('assigned','ready') "
                 "ORDER BY rowid", (worker_id,))]
-        return {"assignments": rows}
+        return {"assignments": rows, "supports_run_summary": True, "worker_name": worker["name"]}
 
     def assignment(self, worker_id: str, assignment_id: str) -> dict:
         with self.store.connect() as db:
+            if self._worker(db, worker_id)["revoked_at"]:
+                raise WorkerUnauthorized("采集电脑已解除配对")
             row = db.execute("SELECT * FROM shared_assignments WHERE worker_id=? AND id=?",
                              (worker_id, assignment_id)).fetchone()
         if not row:

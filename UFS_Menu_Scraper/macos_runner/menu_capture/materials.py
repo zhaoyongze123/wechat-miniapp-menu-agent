@@ -35,6 +35,8 @@ from .store import TaskStore
 
 logger = logging.getLogger(__name__)
 
+from .capture_results import waiting_for_materials
+
 REJECTION_REASONS = {
     "blur": "图片模糊 / 无法识别",
     "invalid_qr": "二维码无效",
@@ -1622,7 +1624,8 @@ class MaterialService:
             seen.add(key)
             result.append({**task, **meta,
                            "reject_label": REJECTION_REASONS.get(task.get("reject_reason", ""), ""),
-                           "runnable": task["status"] in {"pending", "needs_review", "needs_retry", "error", "blocked"}})
+                           "runnable": (not waiting_for_materials(task)
+                                        and task["status"] in {"pending", "needs_review", "needs_retry", "error", "blocked"})})
         return sorted(result, key=lambda row: (row["batch_name"], row["source_name"]))
 
     def rework_records(self, batch_ids: list[str] | None = None) -> list[dict]:

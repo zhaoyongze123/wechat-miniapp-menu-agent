@@ -35,6 +35,7 @@ from starlette.background import BackgroundTask
 from .config import ConfigStore, ROOT
 from .capture_outputs import batch_output_dir
 from .failures import describe as describe_failure
+from .capture_results import CAPTURE_RESULT_LABELS, capture_outcome, waiting_for_materials
 from .store import TaskStore
 from .uipath_runner import UiPathRunner
 from .robot_profile import ProfileStore
@@ -99,7 +100,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     if worker:
         runner.assignment_source = worker.source_root
         store.bind_assignments = worker.bind_run
-    rejections = RejectionService(store, materials)
+    rejections = RejectionService(store, materials, current_only=role == "hub")
     environment = EnvironmentDiagnostics(configs, runner, project_dir)
     connections = ConnectionManager(environment, control_lock, root)
     annotations = AnnotationSession(configs, store, profiles, RunnerExecutor(runner),
@@ -215,7 +216,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
 
     @app.exception_handler(SharedConflict)
     async def shared_conflict(request, exc):
-        return JSONResponse({"detail": str(exc)}, status_code=409)
+        body = {"detail": str(exc)}
+        if exc.conflicts is not None:
+            body["conflicts"] = exc.conflicts
+        return JSONResponse(body, status_code=409)
 
     @app.exception_handler(WorkerUnauthorized)
     async def worker_unauthorized(request, exc):
@@ -247,9 +251,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         """待检查清单：跨批次读取任务状态，同一门店只保留最新一条。"""
         # 与批次管理、工作台保持同一口径：只取未删除批次的最新发布快照任务，
         # 旧版本遗留的失败任务不进入清单，避免同一门店重复计数或被重跑旧素材。
-        current_ids = {row["id"] for row in materials.effective_capture_tasks()
-                       if row["status"] in {"needs_review", "needs_retry", "error", "blocked"}}
-        candidates = [task for task in store.review_candidates() if task["id"] in current_ids]
+        current_tasks = {row["id"]: row for row in materials.effective_capture_tasks()
+                         if capture_outcome(row) == "review"}
+        candidates = current_tasks.values()
         # 待检查入口只展示批次名和阶段。版本差异、素材计数留给批次管理页。
         with store.connect() as db:
             batches = [dict(row) for row in db.execute(
@@ -263,7 +267,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         normalized = query.strip().casefold()
         records = []
         for task in candidates:
-            batch_id = task.get("material_batch_id") or ""
+            batch_id = current_tasks[task["id"]]["batch_id"]
             if selected and batch_id not in selected:
                 continue
             if normalized and normalized not in (task.get("source_name") or "").casefold():
@@ -287,14 +291,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 "batch_name": task.get("material_batch_name") or names.get(batch_id, ""),
                 "workflow": workflow.get(batch_id, {}),
             })
-        latest: dict[str, dict] = {}
-        for record in records:
-            key = _rejection_store_code(record["store_name"])
-            if key not in latest or record["updated_at"] > latest[key]["updated_at"]:
-                latest[key] = record
-        deduplicated = sorted(latest.values(), key=lambda row: (row["updated_at"], row["store_name"]), reverse=True)
+        # 有效任务清单已按原批次和门店归属取最新版，保留显示编号相近的各条任务。
+        records.sort(key=lambda row: (row["updated_at"], row["store_name"]), reverse=True)
         options = {}
-        for record in deduplicated:
+        for record in records:
             if record["batch_id"]:
                 options[record["batch_id"]] = {
                     "id": record["batch_id"],
@@ -302,14 +302,14 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                     "workflow": record["workflow"],
                 }
         return {
-            "records": deduplicated,
+            "records": records,
             "batches": sorted(options.values(), key=lambda item: (item["name"], item["id"])),
             "summary": {
-                "stores": len(deduplicated),
+                "stores": len(records),
                 "batches": len(options),
-                "needs_review": sum(row["status"] == "needs_review" for row in deduplicated),
+                "needs_review": sum(row["status"] == "needs_review" for row in records),
                 # 清单里的门店都已落定，可以直接批量重跑；单独保留该字段方便前端展示。
-                "retryable": len(deduplicated),
+                "retryable": len(records),
             },
         }
 
@@ -434,6 +434,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     def status(queue_page: Annotated[int | None, Query(ge=1)] = None,
                queue_size: Annotated[int, Query(ge=1, le=100)] = 50,
                queue_scope: Literal["all", "current"] = "all",
+               queue_batch: Annotated[str, Query(max_length=128)] = "",
                queue_q: Annotated[str, Query(max_length=300)] = "",
                queue_filter: Literal["all", "pending", "running", "captured", "rejected", "review"] = "all",
                queue_sort: Literal["source", "recent", "status"] = "source",
@@ -479,6 +480,16 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                        task_list=[{"id": task_id, "name": by_id.get(task_id, {}).get("source_name", ""),
                                    "status": by_id.get(task_id, {}).get("status", "")} for task_id in ids],
                        next_name=by_id.get(ids[processed], {}).get("source_name", "") if processed < len(ids) else "")
+        if run:
+            recorded = store.capture_run_results([run["id"]]).get(run["id"], [])
+            if any(row["outcome"] for row in recorded):
+                outcomes = Counter(row["outcome"] for row in recorded)
+                processed_ids = [row["task_id"] for row in recorded if row["outcome"]]
+                run.update(processed=len(processed_ids), processed_ids=processed_ids,
+                           result_by_task={row["task_id"]: row["outcome"] for row in recorded if row["outcome"]},
+                           captured=outcomes["captured"], review=outcomes["review"],
+                           unqualified=outcomes["rejected"], remaining=len(run["task_ids"])-len(processed_ids))
+        tasks = [task | {"capture_outcome": capture_outcome(task)} for task in tasks]
         # 素材清洗拒绝的门店可能没有采集任务，控制台必须与不合格清单同口径计入。
         material_rejected = 0
         if release:
@@ -526,7 +537,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         queue = workbench_page(
             tasks, snapshot=(release["snapshot_id"] if release else "") if queue_scope == "current" else None,
             query=queue_q, status=queue_filter, sort=queue_sort, page=queue_page, size=queue_size,
-            selected_ids=set(selected.split(",")),
+            selected_ids=set(selected.split(",")), batch_id=queue_batch,
         ) if paged else None
         return {"execution_engine": engine, "launch_mode": launch_mode,
                 "engine_ready": ready["ready"], "engine_message": "；".join(ready["issues"]) or engine_message,
@@ -784,36 +795,74 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             })
         return {"tasks": items}
 
+    def capture_history_row(run: dict, recorded: list[dict], task_index: dict) -> dict:
+        """旧轮次保留门店明细和批次信息，轮次结果仅采用当时留存的记录。"""
+        batch_id = run.get("material_batch_id") or ""
+        index = {row["task_id"]: row for row in recorded}
+        outcomes = Counter(row["outcome"] for row in recorded)
+        batches = {}
+        entries = []
+        ids = run.get("task_ids") or []
+        for task_id in ids:
+            result = index.get(task_id, {})
+            task = task_index.get(task_id, {})
+            source_batch = result.get("batch_id") or task.get("batch_id") or batch_id
+            name = result.get("batch_name") or task.get("batch_name") or source_batch
+            version = result.get("version") or task.get("version") or ""
+            if source_batch:
+                batch = batches.setdefault(source_batch, {"id": source_batch, "name": name, "versions": [], "stores": 0})
+                batch["stores"] += 1
+                if version and version not in batch["versions"]:
+                    batch["versions"].append(version)
+            outcome = result.get("outcome", "")
+            label = CAPTURE_RESULT_LABELS.get(outcome, "未记录结果" if not result else "未处理")
+            if result and not outcome and task_id == run.get("current_task_id") and run["status"] == "running":
+                label = "正在处理"
+            entries.append({"task_id": task_id, "store_name": result.get("store_name") or task.get("source_name", ""),
+                            "batch_name": name, "version": version, "status": outcome, "label": label,
+                            "message": result.get("message", ""), "reject_reason": result.get("reject_reason", "")})
+        batch_list = list(batches.values())
+        batch_name = batch_list[0]["name"] if len(batch_list) == 1 else ""
+        title = run.get("name") or batch_name or ("半自动采集" if run.get("capture_mode") == "manual" else "全自动采集")
+        return {"kind": "capture", "id": run["id"], "title": title, "mode": run.get("mode", ""),
+                "batch_id": batch_list[0]["id"] if len(batch_list) == 1 else "",
+                "batch_name": batch_name, "batches": batch_list,
+                "status": run.get("status", ""), "created_at": run.get("created_at", ""),
+                "updated_at": run.get("updated_at", ""), "message": run.get("message", ""),
+                "counts": {"total": len(ids), "done": outcomes["captured"], "attention": outcomes["review"],
+                           "rejected": outcomes["rejected"], "recorded": sum(outcomes[key] for key in CAPTURE_RESULT_LABELS),
+                           "unknown": len(ids)-len(recorded), "failed": 0},
+                "tasks": entries}
+
+    def capture_history_task_index() -> dict:
+        # 在采集端按分配记录补充旧轮次来源；在共享后台按当前发布快照提取批次。
+        tasks = {task["id"]: task for task in store.tasks()}
+        if worker:
+            with store.connect() as db:
+                assigned = db.execute("SELECT task_id,batch_id,batch_name,revision AS version FROM worker_assignments ORDER BY rowid")
+                for row in assigned:
+                    if row["task_id"] in tasks:
+                        tasks[row["task_id"]].update(dict(row))
+        else:
+            for row in materials.effective_capture_tasks():
+                if row["id"] in tasks:
+                    tasks[row["id"]] = row
+        return tasks
+
     @app.get("/api/tasks/history")
     def task_history(kind: str = "all", status: str = "", q: str = "", page: int = 1, page_size: int = 20):
         """任务中心历史页：采集运行与素材分析任务统一成同一结构，按时间倒序分页。"""
         page = max(1, int(page))
         page_size = min(100, max(5, int(page_size)))
-        task_index = {task["id"]: task for task in store.tasks()}
         rows: list[dict] = []
         if kind in ("all", "capture"):
-            for run in store.run_history(500):
-                tasks = [task_index[task_id] for task_id in run.get("task_ids", []) if task_id in task_index]
-                statuses = Counter(task["status"] for task in tasks)
-                batch_id = run.get("material_batch_id", "")
-                rows.append({
-                    "kind": "capture",
-                    "id": run["id"],
-                    "title": run.get("name") or (store.material_batch_name(batch_id) if batch_id else "未关联批次"),
-                    "batch_id": batch_id,
-                    "batch_name": store.material_batch_name(batch_id) if batch_id else "未关联批次",
-                    "mode": run.get("mode", ""),
-                    "status": run.get("status", ""),
-                    "created_at": run.get("created_at", ""),
-                    "updated_at": run.get("updated_at", ""),
-                    "message": run.get("message", ""),
-                    "counts": {
-                        "total": len(tasks),
-                        "done": statuses.get("captured", 0),
-                        "attention": sum(statuses.get(key, 0) for key in ("needs_review", "needs_retry", "error", "blocked")),
-                        "failed": statuses.get("failed", 0),
-                    },
-                })
+            runs = store.run_history(500)
+            results = store.capture_run_results([run["id"] for run in runs])
+            task_index = capture_history_task_index()
+            for run in runs:
+                item = capture_history_row(run, results.get(run["id"], []), task_index)
+                item.pop("tasks")
+                rows.append(item)
         if kind in ("all", "materials"):
             for job in materials.jobs.history(500):
                 rows.append({
@@ -834,18 +883,17 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                         "failed": int(job.get("failed_stores") or 0),
                     },
                 })
+        active = {"queued", "running", "pause_requested", "paused", "interrupted", "blocked", "resuming", "terminating"}
+        aborted = {"terminated", "stopped"}
+        errors = {"failed", "cancelled"}
         if status:
-            if status == "running":
-                active = {"queued", "running", "pause_requested", "paused", "interrupted"}
-                rows = [row for row in rows if row["status"] in active]
-            elif status == "failed":
-                rows = [row for row in rows if row["status"] in {"failed", "cancelled"}]
-            else:
-                rows = [row for row in rows if row["status"] == status]
+            matched = {"running": active, "failed": errors, "terminated": aborted}.get(status, {status})
+            rows = [row for row in rows if row["status"] in matched]
         normalized = q.strip().casefold()
         if normalized:
             rows = [row for row in rows
-                    if normalized in (row["title"] + row["batch_name"] + row["id"]).casefold()]
+                    if normalized in (" ".join([row["title"], row["batch_name"], row["id"],
+                                           *(batch["name"] for batch in row.get("batches", []))])).casefold()]
         rows.sort(key=lambda row: row["created_at"], reverse=True)
         total = len(rows)
         page_count = max(1, (total + page_size - 1) // page_size)
@@ -855,10 +903,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             "records": rows[start:start + page_size],
             "summary": {
                 "total": total,
-                "running": sum(row["status"] in {"queued", "running", "pause_requested", "paused", "interrupted"}
-                               for row in rows),
+                "running": sum(row["status"] in active for row in rows),
                 "completed": sum(row["status"] == "completed" for row in rows),
-                "failed": sum(row["status"] in {"failed", "cancelled"} for row in rows),
+                "failed": sum(row["status"] in errors for row in rows),
+                "terminated": sum(row["status"] in aborted for row in rows),
             },
             "page": page,
             "page_size": page_size,
@@ -872,25 +920,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             run = store.get_run(item_id)
             if run is None:
                 raise HTTPException(404, "运行记录不存在")
-            task_index = {task["id"]: task for task in store.tasks()}
-            tasks = []
-            for task_id in run.get("task_ids", []):
-                task = task_index.get(task_id)
-                if task is None:
-                    continue
-                failure = describe_failure(task.get("error_code", ""))
-                tasks.append({
-                    "task_id": task_id,
-                    "store_name": task.get("source_name", ""),
-                    "status": task.get("status", ""),
-                    "label": "已采集" if task.get("status") == "captured" else failure["label"],
-                    "message": task.get("message", ""),
-                })
-            batch_id = run.get("material_batch_id", "")
-            return {"kind": "capture", "id": item_id, "title": store.material_batch_name(batch_id) if batch_id else "未关联批次",
-                    "mode": run.get("mode", ""), "status": run.get("status", ""),
-                    "created_at": run.get("created_at", ""), "updated_at": run.get("updated_at", ""),
-                    "message": run.get("message", ""), "tasks": tasks}
+            results = store.capture_run_results([item_id]).get(item_id, [])
+            return capture_history_row(run, results, capture_history_task_index())
         if kind == "materials":
             job = materials.job_detail(item_id, events=True)
             return {"kind": "materials", "id": item_id, "title": _batch_name(job["batch_id"]),
@@ -1590,6 +1621,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             if hub:
                 hub.protect_task(task_id)
             task = store.get(task_id)
+            if waiting_for_materials(task):
+                raise HTTPException(409, "该门店待重新选码并发布")
             if task["status"] not in {"needs_review", "needs_retry", "error", "blocked", "captured"}:
                 raise ValueError("此任务还没有可重试或重新采集的结果")
             # 重试开始不等于问题已经解决；不合格记录保留到新一轮成功采集。

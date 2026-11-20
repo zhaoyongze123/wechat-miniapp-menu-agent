@@ -1,11 +1,12 @@
 """共享工作台的管理员接口与采集端协议，浏览器会话和电脑凭证各自鉴权。"""
 
 from pathlib import Path
+from typing import Annotated, Literal
 import os
 import re
 import tempfile
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -47,6 +48,38 @@ def register_shared_routes(app: FastAPI, role: str, hub: SharedHub | None,
     @app.post("/api/shared/pairing")
     def pairing():
         return hub.pairing_code()
+
+    @app.patch("/api/shared/workers/{worker_id}")
+    def edit_worker(worker_id: str, payload: dict):
+        if set(payload) != {"name", "description"}:
+            raise ValueError("设备编辑参数无效")
+        with control_lock:
+            return hub.edit_worker(worker_id, payload["name"], payload["description"])
+
+    @app.post("/api/shared/workers/{worker_id}/revoke")
+    def revoke_worker(worker_id: str):
+        with control_lock:
+            return hub.revoke_worker(worker_id)
+
+    @app.post("/api/shared/workers/{worker_id}/archive")
+    def archive_worker(worker_id: str):
+        with control_lock:
+            return hub.archive_worker(worker_id)
+
+    @app.get("/api/shared/assignments")
+    def assignment_records(worker_id: Annotated[str, Query(max_length=64)] = "",
+                           phase: Literal["", "assigned", "ready", "completed", "reclaimed", "history"] = "",
+                           q: Annotated[str, Query(max_length=240)] = "",
+                           page: Annotated[int, Query(ge=1)] = 1,
+                           size: Annotated[int, Query(ge=1, le=100)] = 30):
+        return hub.assignment_records(worker_id=worker_id, phase=phase, query=q, page=page, size=size)
+
+    @app.post("/api/shared/assignments/reclaim")
+    def reclaim_many(payload: dict):
+        if set(payload) != {"assignment_ids"}:
+            raise ValueError("回收参数无效")
+        with control_lock:
+            return hub.reclaim_many(payload["assignment_ids"])
 
     @app.post("/api/shared/assignments")
     def assign(payload: dict):
@@ -91,9 +124,10 @@ def register_shared_routes(app: FastAPI, role: str, hub: SharedHub | None,
     @app.post("/api/shared/worker/sync")
     def sync(request: Request, payload: dict):
         worker_id = computer(request)
-        if set(payload) != {"ready_ids", "pending_uploads"}:
+        required = {"ready_ids", "pending_uploads"}
+        if not required <= payload.keys() <= required | {"run_summary"}:
             raise ValueError("同步参数无效")
-        return hub.sync(worker_id, payload["ready_ids"], payload["pending_uploads"])
+        return hub.sync(worker_id, payload["ready_ids"], payload["pending_uploads"], payload.get("run_summary"))
 
     @app.get("/api/shared/worker/assignments/{assignment_id}/source")
     def source(request: Request, assignment_id: str):

@@ -84,6 +84,10 @@ def test_task_history_lists_capture_runs(tmp_path: Path):
         task_id = db.execute("SELECT id FROM tasks ORDER BY id").fetchone()["id"]
         db.execute("UPDATE tasks SET status='captured' WHERE id=?", (task_id,))
     app.state.store.create_run("run-history-1", "full", [task_id])
+    # 历史按当轮留存结果统计，不再从门店当前状态回算。
+    app.state.store.update(task_id, capture_run_id="run-history-1", attempt_outcome="captured",
+                           status="captured")
+    app.state.store.update_run("run-history-1", status="completed")
     client = TestClient(app, base_url="http://127.0.0.1")
     data = client.get("/api/tasks/history").json()
     assert data["summary"]["total"] == 1
@@ -92,4 +96,4 @@ def test_task_history_lists_capture_runs(tmp_path: Path):
     assert record["counts"]["done"] == 1
     detail = client.get("/api/tasks/history/capture/run-history-1").json()
     assert len(detail["tasks"]) == 1
-    assert detail["tasks"][0]["label"] == "已采集"
+    assert detail["tasks"][0]["label"] == "已截图待复核"
