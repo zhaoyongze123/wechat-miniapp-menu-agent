@@ -42,7 +42,14 @@ function Install-TestWorker {
     $process = Start-Process -FilePath $Installer -Wait -PassThru -ArgumentList @(
         '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=""$install""", "/LOG=""$log"""
     )
-    if ($process.ExitCode -ne 0) { throw "Installer exit code $($process.ExitCode)." }
+    if ($process.ExitCode -ne 0) {
+        # 卸载步骤会覆盖安装日志尾部，失败时先保留安装器自己的输出再抛错。
+        if (Test-Path -LiteralPath $log) {
+            Write-Host "Installer log ($log):"
+            Get-Content -LiteralPath $log -Tail 200
+        }
+        throw "Installer exit code $($process.ExitCode)."
+    }
 }
 
 try {
@@ -62,7 +69,7 @@ try {
     Write-Host "Installer boots the worker, supervisor restarted $($first.ProcessId) as $($second.ProcessId), and reinstall preserved data."
 } catch {
     foreach ($path in @($log, (Join-Path $homePath 'logs\launcher.log'), (Join-Path $homePath 'logs\service.stderr.log'))) {
-        if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Tail 40 }
+        if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Tail 200 }
     }
     throw
 } finally {
