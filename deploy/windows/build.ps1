@@ -43,25 +43,39 @@ function Get-VerifiedFile {
     # 走代理下载大文件时长时间不落盘、无法观察进度，也容易卡死。
     $curl = (Get-Command 'curl.exe' -CommandType Application -ErrorAction SilentlyContinue).Source
     function Invoke-Download {
-        param([string]$DownloadUri)
+        param([string]$DownloadUri, [bool]$UseProxy)
         if ($curl) {
-            $curlArgs = @('-fsSL', '--retry', '10', '--retry-all-errors', '--retry-delay', '2', '--connect-timeout', '30', '-C', '-', '-o', $Path)
-            if ($env:HTTPS_PROXY) { $curlArgs += @('--proxy', $env:HTTPS_PROXY) }
+            $curlArgs = @('-fsSL', '--retry', '5', '--retry-all-errors', '--retry-delay', '2', '--connect-timeout', '30', '-C', '-', '-o', $Path)
+            if ($UseProxy) { $curlArgs += @('--proxy', $env:HTTPS_PROXY) } else { $curlArgs += @('--noproxy', '*') }
             $curlArgs += $DownloadUri
             Invoke-Checked $curl $curlArgs
         } else {
             Invoke-WebRequest -UseBasicParsing -Uri $DownloadUri -OutFile $Path
         }
     }
-    try {
-        Invoke-Download $Uri
-    } catch {
-        $mirror = Get-MirrorUri $Uri
-        if (-not $mirror) { throw }
-        Write-Host "Download failed, retrying via mirror: $mirror"
-        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-        Invoke-Download $mirror
+    # 代理和直连、原始地址和 CDN 镜像都试一遍：任一来源可用即可，内容仍以 SHA-256 为准。
+    $mirror = Get-MirrorUri $Uri
+    $attempts = @()
+    if ($env:HTTPS_PROXY) { $attempts += @{ Uri = $Uri; Proxy = $true } }
+    $attempts += @{ Uri = $Uri; Proxy = $false }
+    if ($mirror) {
+        if ($env:HTTPS_PROXY) { $attempts += @{ Uri = $mirror; Proxy = $true } }
+        $attempts += @{ Uri = $mirror; Proxy = $false }
     }
+    $downloaded = $false
+    $lastError = $null
+    foreach ($attempt in $attempts) {
+        try {
+            Invoke-Download $attempt.Uri $attempt.Proxy
+            $downloaded = $true
+            break
+        } catch {
+            $lastError = $_
+            Write-Host "Download failed ($($attempt.Uri), proxy=$($attempt.Proxy)): $($_.Exception.Message)"
+            Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if (-not $downloaded) { throw "Could not download $Uri. $($lastError.Exception.Message)" }
     if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ine $Sha256) {
         throw "Checksum does not match for $([IO.Path]::GetFileName($Path))."
     }
