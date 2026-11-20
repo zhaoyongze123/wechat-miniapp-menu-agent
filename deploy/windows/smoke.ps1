@@ -39,21 +39,26 @@ function Assert-WorkerHealthy {
 }
 
 function Install-TestWorker {
+    param([int]$Index)
+    # 每次安装单独一份日志：重装时安装器会先卸载旧版本，两份日志混在一起会掩盖真正的失败原因。
+    $installLog = Join-Path $testRoot "install-$Index.log"
     $process = Start-Process -FilePath $Installer -Wait -PassThru -ArgumentList @(
-        '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=""$install""", "/LOG=""$log"""
+        '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=""$install""", "/LOG=""$installLog"""
     )
+    Write-Host "Install #${Index} exit code: $($process.ExitCode)"
     if ($process.ExitCode -ne 0) {
-        # 卸载步骤会覆盖安装日志尾部，失败时先保留安装器自己的输出再抛错。
-        if (Test-Path -LiteralPath $log) {
-            Write-Host "Installer log ($log):"
-            Get-Content -LiteralPath $log -Tail 200
+        if (Test-Path -LiteralPath $installLog) {
+            Write-Host "Installer log head ($installLog):"
+            Get-Content -LiteralPath $installLog -TotalCount 120
+            Write-Host "Installer log tail ($installLog):"
+            Get-Content -LiteralPath $installLog -Tail 60
         }
-        throw "Installer exit code $($process.ExitCode)."
+        throw "Installer #$Index exit code $($process.ExitCode)."
     }
 }
 
 try {
-    Install-TestWorker
+    Install-TestWorker -Index 1
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $task = Get-ScheduledTask -TaskName "MenuCapture Worker - $sid" -ErrorAction SilentlyContinue
     $fallback = Join-Path ([Environment]::GetFolderPath('Startup')) '菜单采集后台.lnk'
@@ -64,7 +69,7 @@ try {
     $first = Assert-WorkerHealthy
     Stop-Process -Id $first.ProcessId -Force
     $second = Assert-WorkerHealthy -PreviousProcessId $first.ProcessId
-    Install-TestWorker
+    Install-TestWorker -Index 2
     if ((Get-Content -LiteralPath $marker).Trim() -ne 'preserve') { throw 'Reinstall removed local state.' }
     Write-Host "Installer boots the worker, supervisor restarted $($first.ProcessId) as $($second.ProcessId), and reinstall preserved data."
 } catch {
