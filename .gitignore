@@ -44,3 +44,73 @@ UFS_Menu_Scraper/macos_runner/data/*
 !UFS_Menu_Scraper/macos_runner/data/debug-logs/
 UFS_Menu_Scraper/macos_runner/output/*
 !UFS_Menu_Scraper/macos_runner/output/playwright/
+
+# 本机运行目录、部署产物与备份（不入库）
+/_archive/
+/.acceptance/
+/backup/
+/build/
+/data/
+/runtime/
+/hub-data/
+/hub-deploy/
+/hub-web/
+
+# 采集端运行数据与输出（含 debug 日志，全部不入库）
+UFS_Menu_Scraper/macos_runner/data/
+UFS_Menu_Scraper/macos_runner/输出/
+UFS_Menu_Scraper/macos_runner/web/frames/
+
+# 编辑备份、临时文件与日志
+*.bak
+*.bak-*
+*.orig
+*.rej
+*.tmp
+*.log
+
+# 一次性诊断/分析脚本（保留本地，不入库）
+UFS_Menu_Scraper/macos_runner/batch_pending.py
+UFS_Menu_Scraper/macos_runner/batch_state.py
+UFS_Menu_Scraper/macos_runner/capture_report.py
+UFS_Menu_Scraper/macos_runner/capture_report2.py
+UFS_Menu_Scraper/macos_runner/check_*.py
+UFS_Menu_Scraper/macos_runner/classify_failures.py
+UFS_Menu_Scraper/macos_runner/debug_reason.py
+UFS_Menu_Scraper/macos_runner/diag_*.py
+UFS_Menu_Scraper/macos_runner/eval_26q3.py
+UFS_Menu_Scraper/macos_runner/final_report.py
+UFS_Menu_Scraper/macos_runner/find_*.py
+UFS_Menu_Scraper/macos_runner/inspect_*.py
+UFS_Menu_Scraper/macos_runner/list_*.py
+UFS_Menu_Scraper/macos_runner/monitor_*.py
+UFS_Menu_Scraper/macos_runner/precreate_dirs.py
+UFS_Menu_Scraper/macos_runner/profile_state.py
+UFS_Menu_Scraper/macos_runner/reanalyze*.py
+UFS_Menu_Scraper/macos_runner/reason_*.py
+UFS_Menu_Scraper/macos_runner/replay_*.py
+UFS_Menu_Scraper/macos_runner/repro_*.py
+UFS_Menu_Scraper/macos_runner/rerun_all.py
+UFS_Menu_Scraper/macos_runner/restart_3300.py
+UFS_Menu_Scraper/macos_runner/stage_debug.py
+UFS_Menu_Scraper/macos_runner/status_snapshot.py
+UFS_Menu_Scraper/macos_runner/summarize_boxes.py
+UFS_Menu_Scraper/macos_runner/trigger_reanalyze.py
+UFS_Menu_Scraper/macos_runner/upload_group.py
+UFS_Menu_Scraper/macos_runner/verify_*.py
+UFS_Menu_Scraper/macos_runner/qr_detector/weapp_*.mjs
+UFS_Menu_Scraper/auto_pipeline_400.log
+UFS_Menu_Scraper/run_auto_pipeline_400.bat
+
+# 本机运维脚本与批处理入口（按需再单独入库）
+/ops/
+UFS_Menu_Scraper/macos_runner/run_all_batches.py
+UFS_Menu_Scraper/macos_runner/run_all_batches2.py
+UFS_Menu_Scraper/macos_runner/run_auto_pipeline.bat
+UFS_Menu_Scraper/macos_runner/scripts/retry_head7.py
+UFS_Menu_Scraper/macos_runner/start_all.py
+UFS_Menu_Scraper/macos_runner/start_capture2.py
+UFS_Menu_Scraper/macos_runner/stop_capture.py
+
+# 本地设计/调研文档草稿（定稿后再入库）
+UFS_Menu_Scraper/docs/
