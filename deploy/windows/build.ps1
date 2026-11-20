@@ -41,7 +41,9 @@ function Get-VerifiedFile {
     }
     # 优先用 curl.exe 流式下载：PowerShell 5.1 的 Invoke-WebRequest 会把整个文件缓存在内存里，
     # 走代理下载大文件时长时间不落盘、无法观察进度，也容易卡死。
-    $curl = (Get-Command 'curl.exe' -CommandType Application -ErrorAction SilentlyContinue).Source
+    # runner 上可能同时存在 System32 与 Git 自带的 curl.exe，Get-Command 会返回多条，必须取第一条。
+    $curlCommand = Get-Command 'curl.exe' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    $curl = if ($curlCommand) { $curlCommand.Source } else { $null }
     function Invoke-Download {
         param([string]$DownloadUri, [bool]$UseProxy)
         if ($curl) {
