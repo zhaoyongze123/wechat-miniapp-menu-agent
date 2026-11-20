@@ -1,4 +1,4 @@
-# 在 Windows 构建机器上生成自包含安装包。运行安装包不需要本机预装这些构建工具。
+﻿# 在 Windows 构建机器上生成自包含安装包。运行安装包不需要本机预装这些构建工具。
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$')]
@@ -20,11 +20,70 @@ function Invoke-Checked {
     }
 }
 
+function Get-MirrorUri {
+    param([string]$Uri)
+    # raw.githubusercontent.com 在部分网络下直连会被重置；jsDelivr 提供同仓库同提交的镜像，内容仍以哈希校验为准。
+    if ($Uri -match '^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)$') {
+        return "https://cdn.jsdelivr.net/gh/$($Matches[1])/$($Matches[2])@$($Matches[3])/$($Matches[4])"
+    }
+    return $null
+}
+
 function Get-VerifiedFile {
     param([string]$Uri, [string]$Path, [string]$Sha256)
-    Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $Path
+    # 可选的本地下载缓存（MC_RUNTIME_CACHE）：GitHub 直连不稳定时，可按文件名复用已校验的副本。
+    $cacheDir = $env:MC_RUNTIME_CACHE
+    $cached = if ($cacheDir) { Join-Path $cacheDir ([IO.Path]::GetFileName($Path)) } else { $null }
+    if ($cached -and (Test-Path -LiteralPath $cached)) {
+        Copy-Item -LiteralPath $cached -Destination $Path -Force
+        if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ieq $Sha256) { return }
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    }
+    # 优先用 curl.exe 流式下载：PowerShell 5.1 的 Invoke-WebRequest 会把整个文件缓存在内存里，
+    # 走代理下载大文件时长时间不落盘、无法观察进度，也容易卡死。
+    # runner 上可能同时存在 System32 与 Git 自带的 curl.exe，Get-Command 会返回多条，必须取第一条。
+    $curlCommand = Get-Command 'curl.exe' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    $curl = if ($curlCommand) { $curlCommand.Source } else { $null }
+    function Invoke-Download {
+        param([string]$DownloadUri, [bool]$UseProxy)
+        if ($curl) {
+            $curlArgs = @('-fsSL', '--retry', '5', '--retry-all-errors', '--retry-delay', '2', '--connect-timeout', '30', '-C', '-', '-o', $Path)
+            if ($UseProxy) { $curlArgs += @('--proxy', $env:HTTPS_PROXY) } else { $curlArgs += @('--noproxy', '*') }
+            $curlArgs += $DownloadUri
+            Invoke-Checked $curl $curlArgs
+        } else {
+            Invoke-WebRequest -UseBasicParsing -Uri $DownloadUri -OutFile $Path
+        }
+    }
+    # 代理和直连、原始地址和 CDN 镜像都试一遍：任一来源可用即可，内容仍以 SHA-256 为准。
+    $mirror = Get-MirrorUri $Uri
+    $attempts = @()
+    if ($env:HTTPS_PROXY) { $attempts += @{ Uri = $Uri; Proxy = $true } }
+    $attempts += @{ Uri = $Uri; Proxy = $false }
+    if ($mirror) {
+        if ($env:HTTPS_PROXY) { $attempts += @{ Uri = $mirror; Proxy = $true } }
+        $attempts += @{ Uri = $mirror; Proxy = $false }
+    }
+    $downloaded = $false
+    $lastError = $null
+    foreach ($attempt in $attempts) {
+        try {
+            Invoke-Download $attempt.Uri $attempt.Proxy
+            $downloaded = $true
+            break
+        } catch {
+            $lastError = $_
+            Write-Host "Download failed ($($attempt.Uri), proxy=$($attempt.Proxy)): $($_.Exception.Message)"
+            Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if (-not $downloaded) { throw "Could not download $Uri. $($lastError.Exception.Message)" }
     if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ine $Sha256) {
         throw "Checksum does not match for $([IO.Path]::GetFileName($Path))."
+    }
+    if ($cached) {
+        New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+        Copy-Item -LiteralPath $Path -Destination $cached -Force
     }
 }
 
