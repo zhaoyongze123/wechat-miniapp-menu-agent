@@ -99,6 +99,74 @@ def fake_store_result(worker, task_id, output):
     worker.store.complete_capture(task_id, output, "已采集 1 张")
 
 
+def test_cached_source_without_assignment_is_registered_again(tmp_path):
+    hub_app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
+    worker_app = create_app(tmp_path / "computer", role="worker")
+    worker = worker_app.state.shared_worker
+    with client_for(hub_app, admin=True) as hub:
+        batch(hub_app, tmp_path / "raw", ("门店 A",))
+        task = hub.get("/api/capture/queue").json()["records"][0]
+        worker_id = pair(hub, worker, "电脑 A", Link(hub))
+        assigned = assign(hub, worker_id, [task["id"]]).json()["assignments"][0]
+        worker.poll()
+
+        cached_path = worker._source_path(assigned)
+        assert cached_path.is_file()
+        # 模拟缓存已落盘但本地 assignment 注册记录缺失，例如首次同步中途退出。
+        with worker.store.connect() as db:
+            db.execute("DELETE FROM worker_assignments WHERE id=?", (assigned["id"],))
+
+        worker._ensure_source(assigned)
+
+        with worker.store.connect() as db:
+            local = db.execute(
+                "SELECT status FROM worker_assignments WHERE id=?", (assigned["id"],)
+            ).fetchone()
+        assert local is not None and local["status"] == "ready"
+        assert worker.store.get(task["id"])["source_path"] == str(cached_path)
+    worker.close()
+
+
+def test_new_assignment_waits_for_old_run_before_replacing_task_path(tmp_path):
+    hub_app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
+    worker_app = create_app(tmp_path / "computer", role="worker")
+    worker = worker_app.state.shared_worker
+    with client_for(hub_app, admin=True) as hub:
+        batch(hub_app, tmp_path / "raw", ("门店 A",))
+        task = hub.get("/api/capture/queue").json()["records"][0]
+        worker_id = pair(hub, worker, "电脑 A", Link(hub))
+        old = assign(hub, worker_id, [task["id"]]).json()["assignments"][0]
+        worker.poll()
+        old_path = worker.store.get(task["id"])["source_path"]
+        worker.store.create_run("old-run", "automatic", [task["id"]])
+
+        reclaimed = hub.post(
+            "/api/shared/assignments/" + old["id"] + "/reclaim", headers=session(hub)
+        )
+        assert reclaimed.status_code == 200
+        fresh = assign(hub, worker_id, [task["id"]]).json()["assignments"][0]
+        assert fresh["id"] != old["id"]
+
+        worker.poll()
+        assert worker.store.get(task["id"])["source_path"] == old_path
+        with worker.store.connect() as db:
+            assert db.execute(
+                "SELECT 1 FROM worker_assignments WHERE id=?", (fresh["id"],)
+            ).fetchone() is None
+        assert worker._source_path(fresh).is_file()
+
+        worker.store.update_run("old-run", status="completed")
+        worker.poll()
+
+        with worker.store.connect() as db:
+            local = db.execute(
+                "SELECT status FROM worker_assignments WHERE id=?", (fresh["id"],)
+            ).fetchone()
+        assert local is not None and local["status"] == "ready"
+        assert worker.store.get(task["id"])["source_path"] == str(worker._source_path(fresh))
+    worker.close()
+
+
 def test_two_computers_continue_multiple_stores_offline_and_retry_after_restart(tmp_path):
     hub_app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
     b_root = tmp_path / "computer-b"

@@ -417,13 +417,33 @@ class SharedWorker:
     def _ensure_source(self, assigned: dict) -> None:
         """保证活动分配在本机有二维码文件，并把任务来源路径纠正到本分配缓存目录。"""
         path = self._source_path(assigned)
-        if not path.is_file():
+        with self.store.connect() as db:
+            local = db.execute(
+                "SELECT a.status,t.source_path FROM worker_assignments a "
+                "LEFT JOIN tasks t ON t.id=a.task_id WHERE a.id=? AND a.task_id=?",
+                (assigned["id"], assigned["task_id"]),
+            ).fetchone()
+        needs_registration = local is None or local["status"] == "reclaimed" or not path.is_file()
+        needs_path_repair = (
+            local is None
+            or local["status"] == "reclaimed"
+            or (local["status"] == "ready" and local["source_path"] != str(path))
+        )
+        if needs_registration:
+            # 缓存文件可能在上次同步时先落盘，后续因同店旧运行占用而推迟登记。
+            # 是否存在文件不能代表分配已登记，必须重新经过 _download 的登记流程。
             self._download(assigned)
-        task = self.store.get(assigned["task_id"])
-        # 历史导入/恢复的任务可能仍指向旧发布目录，采集前的目录归属校验会失败。
-        if task and task.get("source_path") != str(path):
+        if needs_path_repair:
+            # _download 遇到同店仍在执行的旧轮次会暂缓登记。此时保持旧任务来源不变。
+            # 同时要求这仍是最新的 ready assignment，避免迟到心跳覆盖新分配的路径。
             with self.store.connect() as db:
-                db.execute("UPDATE tasks SET source_path=? WHERE id=?", (str(path), assigned["task_id"]))
+                db.execute(
+                    "UPDATE tasks SET source_path=? WHERE id=? AND EXISTS ("
+                    "SELECT 1 FROM worker_assignments a WHERE a.id=? AND a.task_id=tasks.id "
+                    "AND a.status='ready' AND a.rowid=(SELECT MAX(b.rowid) "
+                    "FROM worker_assignments b WHERE b.task_id=a.task_id))",
+                    (str(path), assigned["task_id"], assigned["id"]),
+                )
 
     def _store_shared_state(self, sync: dict) -> None:
         """落库共享端下发的当前快照与门店权威状态，供本机列表过滤和展示。"""
