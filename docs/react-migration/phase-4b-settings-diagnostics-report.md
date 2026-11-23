@@ -16,7 +16,7 @@
 | 模型连接测试 | 右栏「模型连接」 | 仅使用已保存配置；未配置时按钮禁用；成功/失败展示 message 与时间 | 隔离 Worker 未配置模型，按钮为禁用态 |
 | 采集参数 | 「截图与循环参数」 | 窗口宽高/重叠比例沿用旧页“预留”只读；最大页数、Agent 步数、单任务上限、稳定等待、素材并发可编辑并按服务端范围校验 | 5 项范围单测；页面字段完整 |
 | 采集人数与授权建议 | 「模型服务」下方 | 就餐人数 1–12；「人工标注时提供授权操作建议」说明仅影响标注建议 | 单测覆盖人数范围 |
-| 调试日志 | 「开发调试日志」 | 读取占用（`/api/debug/summary`）、手动刷新、容量上限 64–4096、清理前二次确认并说明素材/结果保留 | 隔离环境显示「已用 3.8 MB / 上限 512 MB · 2 个文件」；确认窗打开/取消验证通过 |
+| 调试日志 | 「开发调试日志」 | 读取占用（`/api/debug/summary`）、手动刷新、容量上限 64–4096、清理前二次确认并说明素材/结果保留 | 隔离环境显示「已用 2.7 MB / 上限 512 MB · 2 个文件」；确认窗打开/取消验证通过 |
 | 共享工作台（Hub） | 顶部「共享工作台」卡 | 展示已配对/在线台数，跳转采集电脑管理生成配对码 | 真实 Hub 显示「已配对 4 台，当前在线 1 台」 |
 | 共享工作台（Worker） | 同上 | 已配对展示连接摘要；未配对/凭证失效时展示地址、电脑名、配对码表单并调用 `POST /api/shared/connect`；离线显示待补传数量 | Worker 显示「已连接共享后台 · 前台采集电脑（补测）」；表单分支单测级渲染路径 |
 | 环境总览 | 诊断页 | `/api/connections` 快照、总状态、预检阻塞、最近检查时间；不自动轮询 | 真实 Worker 显示三模块与阻塞提示 |
@@ -48,7 +48,7 @@
 
 - `src/app/App.tsx`：新增 `/settings`、`/diagnostics` 路由。
 - `src/app/AppShell.tsx`：设置项标记为已迁移。
-- `UFS_Menu_Scraper/macos_runner/web/react/`：重建产物 `index-DeKp5lt9.js` / `index-D15Pe7pd.css`，旧产物已移除。
+- `UFS_Menu_Scraper/macos_runner/web/react/`：重建产物 `index-grBdMn-Y.js` / `index-D15Pe7pd.css`，旧产物已移除。
 
 ## 3. 测试与证据
 
@@ -57,7 +57,7 @@
 | 类型检查 | `npm run typecheck` | 通过，0 错误 |
 | 单元测试 | `npm run test -- --run` | 10 个文件、50 个用例全部通过（设置 5 + 诊断 3） |
 | 生产构建 | `npm run build` | 成功，仅既有 chunk 体积警告 |
-| 构建引用 | `index.html` 与 `assets/` 比对 | 引用 `index-DeKp5lt9.js`、`index-D15Pe7pd.css`，旧产物已删除 |
+| 构建引用 | `index.html` 与 `assets/` 比对 | 引用 `index-grBdMn-Y.js`、`index-D15Pe7pd.css`，旧产物已删除 |
 | 浏览器验收 | Playwright（`channel="msedge"`，1440×1000） | 见 `verify/phase-4b/ui-check.json`，无页面脚本错误 |
 
 UI 断言明细：
@@ -67,7 +67,7 @@ UI 断言明细：
 | Worker 设置页 8 个分区齐全 | 通过 |
 | Worker 输出目录读取真实值 | 通过（`D:\menu-agent\.tmp-quality-test\worker\output`） |
 | 保存配置往返 `POST /api/config` | 通过（toast「配置已保存」） |
-| 调试占用展示与刷新 | 通过（`已用 3.8 MB / 上限 512 MB · 2 个文件`） |
+| 调试占用展示与刷新 | 通过（`已用 2.7 MB / 上限 512 MB · 2 个文件`） |
 | 清理日志确认窗文案/取消关闭 | 通过 |
 | 诊断页总览 + 3 模块 + 动作 | 通过（`重新检测`/`重新连接`/`配置模型`） |
 | 诊断「配置模型」跳转设置 | 通过 |

@@ -12,7 +12,7 @@
     ],
     "output_dir": "D:\\menu-agent\\.tmp-quality-test\\worker\\output",
     "debug_usage": [
-      "已用 3.8 MB / 上限 512 MB · 2 个文件"
+      "已用 2.7 MB / 上限 512 MB · 2 个文件"
     ],
     "capture_fields": true,
     "save_roundtrip": true,
@@ -21,7 +21,7 @@
   },
   "worker_diagnostics": {
     "summary_hint": [
-      "页面不会自动轮询检测；点击“检查连接”时执行一轮微信、采集引擎和 AI 模型验证。",
+      "页面不会自动轮询检测；点击右上角检测按钮时执行一轮微信、采集引擎和 AI 模型验证。",
       "连接需要处理，请查看下方提示。",
       "微信：微信已打开，等待自动化引擎确认登录状态。",
       "AI 模型：请先配置模型接口和密钥。"

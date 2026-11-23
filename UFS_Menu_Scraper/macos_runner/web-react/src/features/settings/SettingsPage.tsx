@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
@@ -26,7 +26,7 @@ import {
   validateForm,
   type SettingsFormState,
 } from './format'
-import { useConfig, useDebugSummary } from './hooks'
+import { settingsKeys, useConfig, useDebugSummary } from './hooks'
 import { SharedWorkbenchCard } from './SharedWorkbenchCard'
 import type { DirectoryKind, ModelProvider, ModelTestResult, ThinkingMode } from './types'
 
@@ -37,6 +37,7 @@ import type { DirectoryKind, ModelProvider, ModelTestResult, ThinkingMode } from
 export function SettingsPage() {
   const role = useRole()
   const toast = useToast()
+  const queryClient = useQueryClient()
   const configQuery = useConfig()
   const debugQuery = useDebugSummary()
   const [form, setForm] = useState<SettingsFormState | null>(null)
@@ -55,6 +56,8 @@ export function SettingsPage() {
   const saveMutation = useMutation({
     mutationFn: saveConfig,
     onSuccess: (data) => {
+      // 保存响应即最新事实源；同步缓存，模型“已配置”状态与目录展示立刻更新。
+      queryClient.setQueryData(settingsKeys.config, data)
       setForm(formFromConfig(data))
       setError('')
       setTestResult(null)

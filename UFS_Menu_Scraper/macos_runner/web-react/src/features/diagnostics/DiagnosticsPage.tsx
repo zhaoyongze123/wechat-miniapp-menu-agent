@@ -148,7 +148,7 @@ export function DiagnosticsPage() {
             环境与连接
           </h1>
           <p className="mt-1 text-sm text-secondary">
-            页面不会自动轮询检测；点击“检查连接”时执行一轮微信、采集引擎和 AI 模型验证。
+            页面不会自动轮询检测；点击右上角检测按钮时执行一轮微信、采集引擎和 AI 模型验证。
           </p>
         </div>
         <Button color="primary" size="sm" disabled={busy} onClick={() => connectMutation.mutate()}>
