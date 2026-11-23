@@ -107,6 +107,39 @@ def test_same_qr_stays_frozen_across_publish_and_changed_qr_can_be_assigned(tmp_
         assert response.status_code == 200
 
 
+def test_republish_keeps_non_captured_states_for_unchanged_qr(tmp_path):
+    app = create_app(tmp_path, role="hub", admin_password="isolated-test")
+    store = app.state.store
+    first = seed_batch(app, "d"*64, "返工批次", "v1")
+    for name in ("待检查门店", "不合格门店", "待重试门店", "不可采门店"):
+        save_qr(first, name)
+    store.scan(first)
+    ids = {task["source_name"]: task["id"] for task in store.tasks()}
+    store.update(ids["待检查门店"], status="needs_review", stage="captured", message="请人工复核")
+    store.update(ids["不合格门店"], status="needs_review", reject_reason="not_ordering", rejected_at=STAMP)
+    store.update(ids["待重试门店"], status="error", stage="capture", error_code="agent_timeout", message="超时")
+    store.update(ids["不可采门店"], status="blocked", stage="queued", error_code="store_unavailable")
+    second = seed_batch(app, "e"*64, "返工批次", "v2")
+    for name in ("待检查门店", "不合格门店", "待重试门店", "不可采门店"):
+        save_qr(second, name)
+    store.scan(second, reuse_sources=[first])
+    latest = {task["source_name"]: task for task in app.state.materials.effective_capture_tasks()}
+    assert latest["待检查门店"]["status"] == "needs_review"
+    assert latest["待检查门店"]["message"] == "请人工复核"
+    assert latest["不合格门店"]["reject_reason"] == "not_ordering"
+    assert latest["待重试门店"]["error_code"] == "agent_timeout"
+    assert latest["不可采门店"]["status"] == "blocked"
+    assert all(task["inherited_from"] == ids[name] for name, task in latest.items())
+    # 二维码内容变化后必须重新排队，旧审核结论不能继续生效。
+    third = seed_batch(app, "f"*64, "返工批次", "v3")
+    for name in ("待检查门店", "不合格门店", "待重试门店", "不可采门店"):
+        save_qr(third, name, color="black")
+    store.scan(third, reuse_sources=[second, first])
+    changed = {task["source_name"]: task for task in app.state.materials.effective_capture_tasks()}
+    assert {task["status"] for task in changed.values()} == {"pending"}
+    assert changed["不合格门店"]["reject_reason"] == ""
+
+
 def test_review_scope_keeps_distinct_stores_with_same_display_prefix(tmp_path):
     app = create_app(tmp_path, role="hub", admin_password="isolated-test")
     one = seed_batch(app, "1"*64, "批次 A", "v1")

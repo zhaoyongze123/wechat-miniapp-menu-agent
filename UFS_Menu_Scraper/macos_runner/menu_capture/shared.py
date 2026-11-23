@@ -15,7 +15,7 @@ from zipfile import BadZipFile, ZipFile
 
 from PIL import Image
 
-from .capture_results import waiting_for_materials
+from .capture_results import store_state, waiting_for_materials
 from .materials import REJECTION_REASONS, MaterialService
 from .store import TaskStore
 
@@ -403,6 +403,7 @@ class SharedHub:
                     or not 0 <= run_summary["processed"] <= run_summary["total"] <= 10000):
                 raise ValueError("采集端轮次摘要无效")
         stamp = utc_stamp()
+        current = self.materials.latest_snapshot_map()
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             worker = self._worker(db, worker_id)
@@ -418,12 +419,45 @@ class SharedHub:
                         processed=excluded.processed,total=excluded.total,reported_at=excluded.reported_at
                 """, (worker_id, run_summary["status"], run_summary["mode"], run_summary["processed"],
                       run_summary["total"], stamp))
+            # 批次发布新快照后，旧快照的分配不可能再产出有效结果；
+            # 统一回收，避免采集端继续处理同一门店的历史版本。
+            stale = [row["id"] for row in db.execute(
+                "SELECT id,batch_id,snapshot_id FROM shared_assignments "
+                "WHERE worker_id=? AND status IN ('assigned','ready')", (worker_id,))
+                if current.get(row["batch_id"]) != row["snapshot_id"]]
+            if stale:
+                db.executemany("UPDATE shared_assignments SET status='reclaimed' WHERE id=?",
+                               ((assignment_id,) for assignment_id in stale))
             db.executemany("UPDATE shared_assignments SET status='ready' WHERE id=? AND worker_id=? AND status='assigned'",
                            ((assignment_id, worker_id) for assignment_id in ready_ids))
+            # 状态以共享端为准：把当前快照任务的权威状态一并下发，采集端只做展示和开跑判断。
+            state_rows = db.execute("""
+                SELECT a.id AS assignment_id,a.status AS assignment_state,a.task_id,a.batch_id,a.snapshot_id,
+                       t.status,t.stage,t.reject_reason
+                FROM shared_assignments a JOIN tasks t ON t.id=a.task_id
+                WHERE a.worker_id=? AND a.status IN ('assigned','ready','completed')
+            """, (worker_id,)).fetchall()
+            # 任务已被判定为已采集/不合格/待重新选码后，活动分配不再需要继续采集，直接回收。
+            resolved = [row["assignment_id"] for row in state_rows
+                        if row["assignment_state"] in ACTIVE
+                        and current.get(row["batch_id"]) == row["snapshot_id"]
+                        and store_state(dict(row)) in {"captured", "rejected", "returned"}]
+            if resolved:
+                db.executemany("UPDATE shared_assignments SET status='reclaimed' WHERE id=?",
+                               ((assignment_id,) for assignment_id in resolved))
             rows = [dict(row) for row in db.execute(
                 "SELECT * FROM shared_assignments WHERE worker_id=? AND status IN ('assigned','ready') "
                 "ORDER BY rowid", (worker_id,))]
-        return {"assignments": rows, "supports_run_summary": True, "worker_name": worker["name"]}
+        states = {}
+        for row in state_rows:
+            if current.get(row["batch_id"]) != row["snapshot_id"]:
+                continue
+            states[row["task_id"]] = {"state": store_state(dict(row)),
+                                      "reject_reason": row["reject_reason"] or ""}
+        return {"assignments": rows,
+                "batches": [{"batch_id": batch_id, "snapshot_id": snapshot_id}
+                            for batch_id, snapshot_id in current.items()],
+                "states": states, "supports_run_summary": True, "worker_name": worker["name"]}
 
     def assignment(self, worker_id: str, assignment_id: str) -> dict:
         with self.store.connect() as db:

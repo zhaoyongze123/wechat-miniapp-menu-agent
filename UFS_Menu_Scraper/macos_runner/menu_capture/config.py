@@ -51,7 +51,7 @@ class CaptureConfig(StrictModel):
     window_height: int = Field(default=900, ge=480, le=1800)
     overlap_ratio: float = Field(default=0.35, ge=0.2, le=0.7)
     max_pages: int = Field(default=120, ge=2, le=500)
-    max_agent_steps: int = Field(default=18, ge=2, le=60)
+    max_agent_steps: int = Field(default=24, ge=2, le=60)
     max_task_seconds: int = Field(default=900, ge=60, le=7200)
     settle_seconds: float = Field(default=1.2, ge=0.3, le=10)
 

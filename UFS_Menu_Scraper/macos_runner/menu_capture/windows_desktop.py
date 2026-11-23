@@ -48,6 +48,12 @@ SM_YVIRTUALSCREEN = 77
 SM_CXVIRTUALSCREEN = 78
 SM_CYVIRTUALSCREEN = 79
 GA_ROOT = 2
+# 右键菜单、工具提示这类系统弹窗也会被 GetWindow(GW_ENABLEDPOPUP) 命中，
+# 但它们不是模态对话框，不能因此中止整店采集。
+# Qt51514QWindowToolSaveBits 是微信 4.x 图片工具栏/气泡浮层的窗口类（实测 4 家连续命中），
+# 同样属于瞬态浮层：直接关闭后继续，不要判定为模态占用。
+_TRANSIENT_POPUP_CLASSES = frozenset({"#32768", "#32769", "tooltips_class32", "ComboLBox",
+                                       "Qt51514QWindowToolSaveBits"})
 
 
 class RECT(ctypes.Structure):
@@ -235,6 +241,12 @@ def _normalize(value: str) -> str:
     return unicodedata.normalize("NFKC", value).strip().casefold()
 
 
+def _window_class(hwnd) -> str:
+    name = ctypes.create_unicode_buffer(512)
+    user32.GetClassNameW(hwnd, name, 512)
+    return name.value
+
+
 def _matches(window: dict, expected: dict) -> bool:
     app = expected.get("app")
     if app and _normalize(Path(app).name).removesuffix(".exe") != _normalize(window["app"]).removesuffix(".exe"):
@@ -344,8 +356,16 @@ class WindowsDesktop:
             raise RuntimeError("微信窗口当前不可见（被隐藏或最小化），已中止操作，请人工恢复窗口后重试")
         if not user32.IsWindowEnabled(hwnd):
             raise RuntimeError("微信窗口已被禁用（可能有未关闭的对话框），已中止操作")
-        if user32.GetWindow(hwnd, GW_ENABLEDPOPUP):
-            raise RuntimeError("微信窗口被一个模态窗口占用，已中止操作")
+        popup = user32.GetWindow(hwnd, GW_ENABLEDPOPUP)
+        # 微信线程里常驻若干隐藏的 Qt 弹窗窗口（176×199、262×71 等），GW_ENABLEDPOPUP
+        # 连不可见窗口也会返回；隐藏窗口不参与输入路由，不能当成模态框中止整店采集。
+        if popup and user32.IsWindowVisible(popup):
+            # 右键菜单/工具提示不是模态框：先收掉再继续，避免“点开右键菜单就整店失败”。
+            if _window_class(popup) in _TRANSIENT_POPUP_CLASSES:
+                user32.PostMessageW(popup, WM_CLOSE, 0, 0)
+                time.sleep(.15)
+            else:
+                raise RuntimeError(f"微信窗口被模态窗口占用（{_window_class(popup) or '未知类'}），已中止操作")
         if user32.IsIconic(hwnd):
             user32.ShowWindow(hwnd, SW_RESTORE)
         if user32.GetForegroundWindow() == hwnd:

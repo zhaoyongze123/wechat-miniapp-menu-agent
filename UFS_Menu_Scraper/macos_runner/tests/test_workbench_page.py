@@ -32,7 +32,10 @@ def test_shared_overview_pages_without_resolving_task_paths(tmp_path, monkeypatc
         page = client.get("/api/status?queue_page=1&include_events=false").json()
         assert len(page["tasks"]) == 50
         assert page["queue"] == {"page": 1, "pages": 3, "total": 125, "selected": []}
-        assert page["counts"] == {"pending": 123, "needs_review": 2, "attention": 1, "rejected": 1}
+        assert page["counts"] == {"rejected": 1, "returned": 0, "review": 1, "captured": 0,
+                                  "running": 0, "pending": 123, "needs_review": 1, "attention": 1}
+        assert sum(page["counts"][key] for key in ("rejected", "returned", "review", "captured",
+                                                   "running", "pending")) == 125
         assert page["events"] == []
         search = client.get("/api/status", params={
             "queue_page": 9, "queue_q": "qr-001", "queue_filter": "review", "selected": "task-080",
