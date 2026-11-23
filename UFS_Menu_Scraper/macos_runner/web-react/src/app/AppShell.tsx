@@ -43,18 +43,18 @@ export function AppShell({ children }: { children: ReactNode }) {
   const connection = connectionText(role.role, role.status)
 
   return (
-    <div className="flex h-full overflow-hidden bg-[var(--color-surface)] text-[var(--color-text)]">
-      <aside className="hidden w-[252px] shrink-0 flex-col overflow-hidden bg-[var(--color-surface-secondary)] md:flex">
+    <div className="flex h-full overflow-hidden bg-surface text-default">
+      <aside className="hidden w-64 shrink-0 flex-col overflow-hidden bg-surface-secondary md:flex">
         <div className="flex items-center gap-2.5 px-4 py-4">
           <span
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[var(--color-text)] text-xs font-semibold text-[var(--color-text-inverse)]"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary-solid text-xs font-semibold text-inverse"
             aria-hidden="true"
           >
             菜
           </span>
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">菜单采集工作台</p>
-            <p className="truncate text-2xs text-[var(--color-text-tertiary)]">共享后台 · Windows 采集端</p>
+            <p className="truncate heading-xs">菜单采集工作台</p>
+            <p className="truncate text-2xs text-tertiary">共享后台 · Windows 采集端</p>
           </div>
         </div>
 
@@ -64,19 +64,19 @@ export function AppShell({ children }: { children: ReactNode }) {
           ))}
         </nav>
 
-        <div className="border-t border-[var(--color-border-subtle)] p-2">
+        <div className="border-t border-subtle p-2">
           <Menu>
             <Menu.Trigger>
               <button
                 type="button"
-                className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-[var(--alpha-02)]"
+                className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-secondary-ghost-hover"
               >
                 <Avatar size={28} name={ROLE_LABEL[role.role]} color="secondary" />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-[var(--color-text)]">{ROLE_LABEL[role.role]}</span>
-                  <span className="block truncate text-2xs text-[var(--color-text-tertiary)]">{connection}</span>
+                  <span className="block truncate text-sm text-default">{ROLE_LABEL[role.role]}</span>
+                  <span className="block truncate text-2xs text-tertiary">{connection}</span>
                 </span>
-                <ChevronRight width={14} height={14} className="shrink-0 -rotate-90 text-[var(--color-text-tertiary)]" />
+                <ChevronRight width={14} height={14} className="shrink-0 -rotate-90 text-tertiary" />
               </button>
             </Menu.Trigger>
             <Menu.Content side="top" align="start" width={224} minWidth={224}>
@@ -88,15 +88,15 @@ export function AppShell({ children }: { children: ReactNode }) {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-[var(--color-border-subtle)] bg-[var(--color-surface)] px-4 md:px-6">
+        <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-subtle bg-surface px-4 md:px-6">
           <div className="flex min-w-0 items-center gap-2 md:hidden">
-            <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[var(--color-text)] text-3xs font-semibold text-[var(--color-text-inverse)]">
+            <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-primary-solid text-2xs font-semibold text-inverse">
               菜
             </span>
-            <h2 className="truncate text-base font-semibold">{currentItem?.label ?? '菜单采集工作台'}</h2>
+            <h2 className="truncate heading-xs">{currentItem?.label ?? '菜单采集工作台'}</h2>
           </div>
           <div className="ml-auto flex shrink-0 items-center gap-2.5">
-            <span className="hidden text-xs text-[var(--color-text-tertiary)] sm:inline">{connection}</span>
+            <span className="hidden text-xs text-tertiary sm:inline">{connection}</span>
             <Badge color={role.role === 'standalone' ? 'warning' : 'secondary'} variant="soft" size="sm">
               {ROLE_LABEL[role.role]}
             </Badge>
@@ -104,7 +104,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </header>
 
         <nav
-          className="flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--color-border-subtle)] bg-[var(--color-surface)] px-3 py-2 md:hidden"
+          className="flex shrink-0 gap-1 overflow-x-auto border-b border-subtle bg-surface px-3 py-2 md:hidden"
           aria-label="主导航（移动端）"
         >
           {visibleItems.map((item) => (
@@ -112,8 +112,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           ))}
         </nav>
 
-        <main id="app-main" className="min-h-0 flex-1 overflow-y-auto bg-[var(--color-surface)] px-4 py-6 md:px-10">
-          <div className="mx-auto w-full max-w-[1120px]">{children}</div>
+        <main id="app-main" className="min-h-0 flex-1 overflow-y-auto bg-surface px-4 py-6 md:px-10">
+          <div className="mx-auto w-full max-w-6xl">{children}</div>
         </main>
       </div>
     </div>
@@ -126,8 +126,8 @@ function NavLink({ item, active, compact = false }: { item: NavItem; active: boo
     'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors',
     compact ? 'shrink-0 whitespace-nowrap' : '',
     active
-      ? 'bg-[var(--alpha-08)] font-medium text-[var(--color-text)]'
-      : 'text-[var(--color-text-secondary)] hover:bg-[var(--alpha-04)] hover:text-[var(--color-text)]',
+      ? 'bg-secondary-soft text-default'
+      : 'text-secondary hover:bg-secondary-ghost-hover hover:text-default',
   ].join(' ')
   const content = (
     <>

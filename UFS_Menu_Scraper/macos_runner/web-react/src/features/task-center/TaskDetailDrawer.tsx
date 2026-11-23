@@ -127,15 +127,15 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
-            <span className="text-[var(--color-text-secondary)]">开始于 {formatTime(detail.created_at)}</span>
+            <span className="text-secondary">开始于 {formatTime(detail.created_at)}</span>
             {detail.updated_at && detail.updated_at !== detail.created_at ? (
-              <span className="text-[var(--color-text-secondary)]">更新于 {formatTime(detail.updated_at)}</span>
+              <span className="text-secondary">更新于 {formatTime(detail.updated_at)}</span>
             ) : null}
           </div>
 
           {renaming ? (
-            <div className="rounded-xl bg-[var(--color-surface-secondary)] p-3">
-              <label className="mb-1 block text-xs text-[var(--color-text-secondary)]" htmlFor="task-rename-input">
+            <div className="rounded-xl bg-surface-secondary p-3">
+              <label className="mb-1 block text-xs text-secondary" htmlFor="task-rename-input">
                 任务名称（1–64 个字符）
               </label>
               <div className="flex flex-wrap items-center gap-2">
@@ -170,7 +170,7 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
           {detail.kind === 'capture' ? (
             <>
               <CountChips detail={detail} />
-              {detail.message ? <p className="text-sm text-[var(--color-text-secondary)]">{detail.message}</p> : null}
+              {detail.message ? <p className="text-sm text-secondary">{detail.message}</p> : null}
               <AppDataTable
                 caption="本轮逐店采集结果"
                 rows={detail.tasks}
@@ -187,13 +187,13 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                   {
                     id: 'store',
                     header: '门店',
-                    cell: (row) => <span className="font-medium">{row.store_name || row.task_id}</span>,
+                    cell: (row) => <span>{row.store_name || row.task_id}</span>,
                   },
                   {
                     id: 'batch',
                     header: '批次 / 版本',
                     cell: (row) => (
-                      <span className="text-[var(--color-text-secondary)]">
+                      <span className="text-secondary">
                         {[row.batch_name, row.version].filter(Boolean).join(' · ') || '—'}
                       </span>
                     ),
@@ -207,7 +207,7 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                     id: 'message',
                     header: '说明',
                     cell: (row) => (
-                      <span className="text-[var(--color-text-secondary)]">{row.reject_reason || row.message || '—'}</span>
+                      <span className="text-secondary">{row.reject_reason || row.message || '—'}</span>
                     ),
                   },
                 ]}
@@ -216,18 +216,18 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
           ) : (
             <>
               <CountChips detail={detail} />
-              {detail.message ? <p className="text-sm text-[var(--color-text-secondary)]">{detail.message}</p> : null}
+              {detail.message ? <p className="text-sm text-secondary">{detail.message}</p> : null}
               {detail.events.length ? (
                 <ol className="space-y-2">
                   {detail.events.map((event, index) => (
                     <li
                       key={`${event.time ?? ''}-${index}`}
-                      className="flex gap-3 rounded-xl bg-[var(--color-surface-secondary)] px-3 py-2 text-sm"
+                      className="flex gap-3 rounded-xl bg-surface-secondary px-3 py-2 text-sm"
                     >
-                      <time className="font-mono shrink-0 text-xs text-[var(--color-text-tertiary)]">
+                      <time className="font-mono shrink-0 text-xs text-tertiary">
                         {shortTime(event.time) || '—'}
                       </time>
-                      <span className={event.level === 'error' ? 'text-[var(--color-text-danger)]' : ''}>
+                      <span className={event.level === 'error' ? 'text-danger' : ''}>
                         {event.message || '—'}
                       </span>
                     </li>

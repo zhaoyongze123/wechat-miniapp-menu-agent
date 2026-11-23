@@ -44,7 +44,7 @@ export function ConfirmActionDialog({
         </div>
       }
     >
-      <div className="space-y-3 text-sm leading-relaxed text-[var(--color-text)]">
+      <div className="space-y-3 text-sm leading-relaxed text-default">
         <div>{description}</div>
         {error ? <Alert color="danger" variant="soft" title={error} /> : null}
       </div>

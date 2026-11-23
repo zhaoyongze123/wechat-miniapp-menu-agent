@@ -33,7 +33,7 @@ export function AppPagination({
   const pages = pageWindow(page, pageCount)
   return (
     <nav className="flex flex-wrap items-center justify-between gap-3 px-1 py-3" aria-label="分页">
-      <span className="text-xs text-[var(--color-text-secondary)]">
+      <span className="text-xs text-secondary">
         共 {total} 条 · 第 {page} / {Math.max(1, pageCount)} 页
       </span>
       <div className="flex items-center gap-2">

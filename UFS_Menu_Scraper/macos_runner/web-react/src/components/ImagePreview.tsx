@@ -22,11 +22,11 @@ export function ImagePreview({ open, src, alt, caption, onOpenChange }: ImagePre
       <RadixDialog.Portal>
         <RadixDialog.Overlay className="fixed inset-0 z-50 bg-black/70" />
         <RadixDialog.Content
-          className="fixed inset-3 z-[60] flex flex-col overflow-hidden rounded-2xl border border-[var(--color-border-subtle)] bg-[var(--color-surface)]"
+          className="fixed inset-3 z-[60] flex flex-col overflow-hidden rounded-2xl border border-subtle bg-surface"
           aria-describedby={undefined}
         >
-          <header className="flex items-center justify-between gap-4 border-b border-[var(--color-border-subtle)] px-4 py-2.5">
-            <RadixDialog.Title className="truncate text-sm text-[var(--color-text)]">{caption ?? alt}</RadixDialog.Title>
+          <header className="flex items-center justify-between gap-4 border-b border-subtle px-4 py-2.5">
+            <RadixDialog.Title className="truncate text-sm text-default">{caption ?? alt}</RadixDialog.Title>
             <div className="flex items-center gap-2">
               <Button
                 color="secondary"
@@ -44,7 +44,7 @@ export function ImagePreview({ open, src, alt, caption, onOpenChange }: ImagePre
               </RadixDialog.Close>
             </div>
           </header>
-          <div className="min-h-0 flex-1 overflow-auto bg-[var(--color-surface-secondary)] p-3">
+          <div className="min-h-0 flex-1 overflow-auto bg-surface-secondary p-3">
             <Image
               src={src}
               alt={alt}
