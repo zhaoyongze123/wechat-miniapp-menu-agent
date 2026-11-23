@@ -7,9 +7,9 @@ import { ToastProvider } from '../components/ToastProvider'
 import { TaskCenterPage } from '../features/task-center/TaskCenterPage'
 import { HubAssignmentsPage } from '../features/hub/HubAssignmentsPage'
 import { HubDevicesPage } from '../features/hub/HubDevicesPage'
-import { HubWorkbenchPage } from '../features/hub/HubWorkbenchPage'
 import { MaterialsPage } from '../features/materials/MaterialsPage'
 import { QualityPage } from '../features/quality/QualityPage'
+import { WorkbenchRoute } from '../features/worker/WorkbenchRoute'
 
 export function App() {
   return (
@@ -18,7 +18,7 @@ export function App() {
         <AppShell>
           <ErrorBoundary>
             <Routes>
-              <Route path="/workbench" element={<HubWorkbenchPage />} />
+              <Route path="/workbench" element={<WorkbenchRoute />} />
               <Route path="/devices" element={<HubDevicesPage />} />
               <Route path="/assignments" element={<HubAssignmentsPage />} />
               <Route path="/materials" element={<MaterialsPage />} />

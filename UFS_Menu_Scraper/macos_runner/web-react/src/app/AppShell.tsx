@@ -34,7 +34,7 @@ interface NavItem {
  * 已迁移页面留在 React 内部，不复制第二套路由规则。
  */
 const NAV_ITEMS: NavItem[] = [
-  { key: 'workbench', label: '采集工作台', roles: ['hub', 'worker'], icon: Home, migratedFor: ['hub'], legacyHash: 'overview' },
+  { key: 'workbench', label: '采集工作台', roles: ['hub', 'worker'], icon: Home, migratedFor: ['hub', 'worker'], legacyHash: 'overview' },
   { key: 'devices', label: '采集电脑', roles: ['hub'], icon: Desktop, migrated: true },
   { key: 'assignments', label: '分配记录', roles: ['hub'], icon: Clipboard, migrated: true },
   { key: 'materials', label: '素材清洗', roles: ['hub'], icon: Images, migrated: true },
