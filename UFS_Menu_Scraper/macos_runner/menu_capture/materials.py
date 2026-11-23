@@ -1598,6 +1598,11 @@ class MaterialService:
                 latest[row["batch_id"]] = {"version": dict(row), "batch": batch}
         return latest
 
+    def latest_snapshot_map(self) -> dict[str, str]:
+        """每个未删除批次的最新发布快照；采集端据此只展示当前快照的任务。"""
+        return {batch_id: item["version"]["snapshot_id"]
+                for batch_id, item in self._latest_versions().items()}
+
     def effective_capture_tasks(self) -> list[dict]:
         """跨批次有效任务：每家门店只取所属原批次最新发布快照里的任务。
 

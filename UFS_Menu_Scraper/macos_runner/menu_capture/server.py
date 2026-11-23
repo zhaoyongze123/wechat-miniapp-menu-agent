@@ -35,7 +35,7 @@ from starlette.background import BackgroundTask
 from .config import ConfigStore, ROOT
 from .capture_outputs import batch_output_dir
 from .failures import describe as describe_failure
-from .capture_results import CAPTURE_RESULT_LABELS, capture_outcome, waiting_for_materials
+from .capture_results import CAPTURE_RESULT_LABELS, capture_outcome, state_counts, store_state, waiting_for_materials
 from .store import TaskStore
 from .uipath_runner import UiPathRunner
 from .robot_profile import ProfileStore
@@ -272,7 +272,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 continue
             if normalized and normalized not in (task.get("source_name") or "").casefold():
                 continue
-            failure = describe_failure(task.get("error_code", ""))
+            failure = describe_failure(task.get("error_code", ""), task.get("stage", ""),
+                                       task.get("message", ""))
             records.append({
                 "task_id": task["id"],
                 "store_name": task["source_name"],
@@ -282,6 +283,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 "error_code": task.get("error_code", ""),
                 "group": failure["group"],
                 "label": failure["label"],
+                "bucket": failure["bucket"],
+                "bucket_label": failure["bucket_label"],
                 "source_path": task["source_path"],
                 "output_dir": task["output_dir"],
                 "reject_reason": task.get("reject_reason", ""),
@@ -559,8 +562,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                                                           release.get("batch_name", "") if release else ""))
                                      if settings.output_dir else ""),
                 "input_name": "本机分配" if worker else (current_root.name if current_root else ""),
-                "tasks": queue["records"] if queue else [task | describe_failure(task.get("error_code", "")) for task in tasks],
-                "counts": queue["counts"] if queue else dict(Counter(t["status"] for t in tasks)),
+                "tasks": queue["records"] if queue else [task | describe_failure(task.get("error_code", ""), task.get("stage", ""), task.get("message", "")) | {"store_state": store_state(task)} for task in tasks],
+                "counts": queue["counts"] if queue else state_counts(tasks),
                 **({"queue": {key: value for key, value in queue.items() if key not in {"records", "counts"}}} if queue else {}),
                 "material_rejected": material_rejected, "material_rejected_all": material_rejected_all,
                 "events": store.events() if include_events else [],
@@ -583,7 +586,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                                                         "version": row["version"], "stores": 0})
             item["stores"] += 1
             item["version"] = max(item["version"], row["version"])
-        enriched = [row | describe_failure(row.get("error_code", "")) for row in records]
+        enriched = [row | describe_failure(row.get("reject_reason") or row.get("error_code", ""),
+                                           row.get("stage", ""), row.get("message", ""))
+                    for row in records]
         return {
             "records": enriched,
             "batches": sorted(batches.values(), key=lambda item: item["batch_name"]),

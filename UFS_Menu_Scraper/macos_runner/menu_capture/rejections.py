@@ -54,12 +54,32 @@ class RejectionService:
                 "task_id": task["id"],
                 "run_id": task.get("run_id", ""),
             })
-        return sorted(rows, key=lambda row: (row.get("marked_at", ""), row["store_name"]), reverse=True)
+        return self._merge_by_store(rows)
+
+    @staticmethod
+    def _merge_by_store(rows: list[dict]) -> list[dict]:
+        """按门店合并素材与采集两类不合格记录，保证一家店只出现一次。
+
+        采集记录带任务证据和处置入口，优先保留；素材记录的 store_id 补进来，
+        后续仍可从同一条记录打回素材清洗。
+        """
+        merged: dict[tuple[str, str], dict] = {}
+        for row in rows:
+            key = (row.get("batch_id") or row.get("batch_name") or "",
+                   row.get("source_folder") or row.get("store_key") or "")
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = row
+                continue
+            preferred, other = (row, existing) if row["source_type"] == "capture" else (existing, row)
+            if preferred["source_type"] == "capture" and not preferred.get("store_id") and other.get("store_id"):
+                preferred = dict(preferred) | {"store_id": other["store_id"]}
+            merged[key] = preferred
+        return sorted(merged.values(), key=lambda row: (row.get("marked_at", ""), row["store_name"]), reverse=True)
 
     @staticmethod
     def _summary(rows: list[dict]) -> dict:
-        # 两个阶段没有稳定的跨阶段门店主键；直接按当前有效不合格记录统计，
-        # 避免同名门店被误合并，也避免素材目录名与采集任务名口径不一致。
+        # 已按门店合并，stores 与 records 都表示唯一门店数，素材/采集为来源归属。
         return {
             "stores": len(rows),
             "records": len(rows),
@@ -162,13 +182,15 @@ class RejectionService:
         raise ValueError("不合格来源无效")
 
     def return_to_materials(self, task_id: str) -> dict:
-        """把采集不合格打回素材清洗：清不合格 + 决策回 pending + 任务置 blocked。
+        """把采集任务打回素材清洗：清不合格 + 决策回 pending + 任务置 blocked。
 
+        不合格任务与待处理任务都允许打回：前者是复核后的处置，后者用于把尚未采集的
+        门店退回重选二维码；能否打回以素材批次和门店能否解析为准。
         不新建批次也不新建发布；重新确认二维码后按原批次增量发布即可生成新的采集任务。
         """
         task = self.tasks.get(task_id)
-        if not task.get("reject_reason"):
-            raise ValueError("该任务当前没有不合格标记")
+        if not task.get("reject_reason") and task.get("status") != "pending":
+            raise ValueError("只有不合格或待处理任务可以打回素材清洗")
         binding = self.tasks.task_material_binding(task_id)
         batch_id = binding.get("batch_id", "")
         if not batch_id:

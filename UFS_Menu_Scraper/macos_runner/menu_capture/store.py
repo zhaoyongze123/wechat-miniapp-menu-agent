@@ -63,6 +63,8 @@ class TaskStore:
                     elapsed_ms INTEGER, result TEXT NOT NULL, details TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS run_actions_task ON run_actions(task_id, id);
+                -- 状态接口按 run_id 聚合已处理任务；缺少该索引时每次轮询都会全表扫描 run_actions。
+                CREATE INDEX IF NOT EXISTS run_actions_run ON run_actions(run_id, task_id);
                 CREATE TABLE IF NOT EXISTS publish_transactions (
                     task_id TEXT PRIMARY KEY, output_root TEXT NOT NULL, staging TEXT NOT NULL,
                     destination TEXT NOT NULL, backup TEXT NOT NULL, had_previous INTEGER NOT NULL,
@@ -236,20 +238,37 @@ class TaskStore:
                         db.execute("UPDATE tasks SET status='blocked',stage='returned_to_materials',message=? WHERE id=?",
                                    ("待重新选码并发布", current["id"]))
                         continue
-                    # 仅继承同一清洗批次中、同门店且二维码字节相同的成功结果。
+                    # 二维码字节未变时按门店继承此前状态；只有内容变化才重新排队。
                     for old_root in reusable:
                         old_path = old_root / image.relative_to(source)
                         old = db.execute(
-                            "SELECT * FROM tasks WHERE source_path=? AND source_hash=? AND status='captured'",
+                            "SELECT * FROM tasks WHERE source_path=? AND source_hash=? "
+                            "ORDER BY updated_at DESC,rowid DESC LIMIT 1",
                             (str(old_path), digest),
                         ).fetchone()
-                        latest = db.execute("SELECT source_hash FROM tasks WHERE output_dir=? AND status='captured' ORDER BY updated_at DESC,rowid DESC LIMIT 1",
-                                            (old["output_dir"],)).fetchone() if old else None
-                        if (old and latest and latest["source_hash"] == digest and old["output_dir"]
-                                and any(Path(old["output_dir"]).glob("page-*.png"))):
+                        if old is None or old["status"] in {"pending", "running"}:
+                            continue
+                        if old["status"] == "captured":
+                            latest = db.execute("SELECT source_hash FROM tasks WHERE output_dir=? AND status='captured' ORDER BY updated_at DESC,rowid DESC LIMIT 1",
+                                                (old["output_dir"],)).fetchone()
+                            if not (latest and latest["source_hash"] == digest and old["output_dir"]
+                                    and any(Path(old["output_dir"]).glob("page-*.png"))):
+                                continue
                             db.execute("UPDATE tasks SET status='captured',stage='captured',message=?,output_dir=?,inherited_from=? WHERE id=?",
                                        ("沿用此前相同二维码的采集结果", old["output_dir"], old["id"], current["id"]))
                             break
+                        # 待检查 / 待重试 / 失败 / 门店不可采 / 不合格等状态整体沿用，
+                        # 复核证据和失败原因一并带过来，避免换个快照目录就丢失。
+                        evidence = old["output_dir"] if old["output_dir"] and any(
+                            Path(old["output_dir"]).glob("page-*.png")) else ""
+                        db.execute(
+                            "UPDATE tasks SET status=?,stage=?,message=?,error_code=?,reject_reason=?,"
+                            "reject_detail=?,rejected_at=?,reject_evidence=?,reject_reviewed_at=?,"
+                            "output_dir=?,inherited_from=? WHERE id=?",
+                            (old["status"], old["stage"], old["message"], old["error_code"], old["reject_reason"],
+                             old["reject_detail"], old["rejected_at"], old["reject_evidence"],
+                             old["reject_reviewed_at"], evidence, old["id"], current["id"]))
+                        break
             total = db.execute("SELECT count(*) FROM tasks").fetchone()[0]
         return {"added": added, "total": total}
 
@@ -309,6 +328,18 @@ class TaskStore:
         return [item for item in items if not item.pop("_deleted_batch", False)]
 
     @staticmethod
+    def _match_batch_path(mappings, path: str):
+        """按来源路径匹配素材批次：发布快照路径含 snapshot_id，普通目录含 source_root。
+
+        列表回填与打回素材清洗共用这一条规则，避免两处口径不一致。
+        """
+        return next((
+            mapping for mapping in mappings
+            if (mapping["source_root"] and mapping["source_root"] in path)
+            or (mapping["snapshot_id"] and mapping["snapshot_id"] in path)
+        ), None)
+
+    @staticmethod
     def _bind_missing_batches(db, items: list[dict]) -> None:
         """按来源路径回填缺失的批次归属；删除中的批次标记为非当前记录。"""
         missing = [item for item in items if not item.get("material_batch_id")]
@@ -319,12 +350,7 @@ class TaskStore:
             "FROM material_batches b LEFT JOIN material_versions v ON v.batch_id=b.id"
         ).fetchall()
         for item in missing:
-            path = item.get("source_path") or ""
-            matched = next((
-                mapping for mapping in mappings
-                if (mapping["source_root"] and mapping["source_root"] in path)
-                or (mapping["snapshot_id"] and mapping["snapshot_id"] in path)
-            ), None)
+            matched = TaskStore._match_batch_path(mappings, item.get("source_path") or "")
             if matched is None:
                 continue
             if matched["deleted_at"]:
@@ -348,16 +374,34 @@ class TaskStore:
         return None
 
     def task_material_binding(self, task_id: str) -> dict:
-        """返回任务最近一次绑定素材批次的运行信息；未绑定返回空字段。"""
+        """返回任务所属素材批次：优先运行记录，缺失时按来源路径回退。
+
+        导入或被继承的任务没有带批次绑定的运行记录，但来源路径仍指向素材目录或
+        发布快照；这里复用列表回填的同一规则，保证打回素材清洗与列表口径一致。
+        """
         with self.connect() as db:
             row = db.execute("""
-                SELECT r.material_batch_id AS batch_id, b.name AS batch_name
+                SELECT r.material_batch_id AS batch_id, b.name AS batch_name,
+                       b.deleted_at AS batch_deleted
                 FROM run_actions a JOIN runs r ON r.id=a.run_id
                 LEFT JOIN material_batches b ON b.id=r.material_batch_id
                 WHERE a.task_id=? AND r.material_batch_id IS NOT NULL AND r.material_batch_id<>''
                 ORDER BY a.id DESC LIMIT 1
             """, (task_id,)).fetchone()
-        return dict(row) if row else {"batch_id": "", "batch_name": ""}
+            # 运行记录可能指向已删除批次；只有批次仍有效时才直接采用。
+            if row and row["batch_name"] and not row["batch_deleted"]:
+                return {"batch_id": row["batch_id"], "batch_name": row["batch_name"]}
+            task = db.execute("SELECT source_path FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if task is None:
+                return {"batch_id": "", "batch_name": ""}
+            mappings = db.execute(
+                "SELECT b.id,b.name,b.source_root,b.deleted_at,v.snapshot_id "
+                "FROM material_batches b LEFT JOIN material_versions v ON v.batch_id=b.id"
+            ).fetchall()
+        matched = self._match_batch_path(mappings, task["source_path"] or "")
+        if matched is None or matched["deleted_at"]:
+            return {"batch_id": "", "batch_name": ""}
+        return {"batch_id": matched["id"], "batch_name": matched["name"]}
 
     def update(self, task_id: str, *, capture_run_id: str = "",
                attempt_outcome: str = "", attempt_message: str = "", **changes) -> None:
