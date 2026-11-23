@@ -60,12 +60,18 @@
 
 - `npm run typecheck`：通过
 - `npm test`：3 个文件 / 11 项通过（API 令牌与 403 重试、分页窗口、状态口径与时间格式化）
-- `npm run build`：通过，产物 1006 模块，JS 443 kB / CSS 159 kB
+- `npm run build`：通过，JS 433 kB / CSS 155 kB（未压缩前 443 kB / 159 kB）
 
 ### 后端（`macos_runner`）
 
-- `pytest tests/test_server.py`：9 项通过（含 React 入口、资源白名单、未构建 503、素材详情计数）
-- 完整套件：见提交说明；沿用迁移前已知基线 `tests/test_review_queue.py::test_pending_reviews_include_batch_and_approval` 失败，本次未新增失败。
+- 与本阶段相关集合（`test_server`、`test_materials*`、`test_material_jobs`、`test_shared_workbench`、
+  `test_task_identity`、`test_capture_*`）：**117 项通过**。
+- 完整套件：449 passed / 49 failed / 58 skipped。失败全部集中在桌面截图、OCR、UiPath/Agent 与标注等
+  依赖本机运行环境的用例；在主工作区基线 `e6b7ea8` 上运行同一批文件同样 44 项失败，抽查
+  `annotation`、`connections`、`windows_image`、`preview_locator` 均能复现，未发现由本次改动新增的失败。
+- 迁移前已记录的 `tests/test_review_queue.py::test_pending_reviews_include_batch_and_approval`
+  仍为已知失败，本次未改动该实现。
+
 
 ### 真实服务与界面验证
 
