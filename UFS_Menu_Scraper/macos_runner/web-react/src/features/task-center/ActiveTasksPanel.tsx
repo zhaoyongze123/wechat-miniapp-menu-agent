@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
+import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
+import { EmptyMessage } from '@openai/apps-sdk-ui/components/EmptyMessage'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { errorMessage } from '../../api/client'
@@ -25,12 +27,18 @@ export function ActiveTasksPanel({ onOpen }: ActiveTasksPanelProps) {
 
   if (query.isError) {
     return (
-      <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
-        <span>运行中任务读取失败：{errorMessage(query.error)}</span>
-        <Button color="secondary" variant="outline" size="sm" onClick={() => void query.refetch()}>
-          重试
-        </Button>
-      </div>
+      <Alert
+        color="danger"
+        variant="soft"
+        title="运行中任务读取失败"
+        description={errorMessage(query.error)}
+        actions={
+          <Button color="secondary" variant="outline" size="sm" onClick={() => void query.refetch()}>
+            重试
+          </Button>
+        }
+        actionsPlacement="end"
+      />
     )
   }
 
@@ -40,9 +48,10 @@ export function ActiveTasksPanel({ onOpen }: ActiveTasksPanelProps) {
 
   if (!query.data.tasks.length) {
     return (
-      <div className="rounded-xl border border-dashed border-shell-line/60 px-4 py-4 text-sm text-shell-muted">
-        当前没有运行中的任务。开始一次采集或素材分析后，进度会显示在这里。
-      </div>
+      <EmptyMessage className="app-card px-4 py-6">
+        <EmptyMessage.Title>当前没有运行中的任务</EmptyMessage.Title>
+        <EmptyMessage.Description>开始一次采集或素材分析后，进度会显示在这里。</EmptyMessage.Description>
+      </EmptyMessage>
     )
   }
 
@@ -56,7 +65,7 @@ export function ActiveTasksPanel({ onOpen }: ActiveTasksPanelProps) {
         return (
           <article
             key={`${task.source}:${task.id}`}
-            className="app-panel flex flex-col gap-3 p-4"
+            className="app-card flex flex-col gap-3 p-4"
             aria-label={`活动任务 ${task.title}`}
           >
             <header className="flex items-start justify-between gap-3">
@@ -64,28 +73,28 @@ export function ActiveTasksPanel({ onOpen }: ActiveTasksPanelProps) {
                 <h3 className="truncate text-sm font-semibold" title={task.title}>
                   {task.title || task.id}
                 </h3>
-                <p className="mt-0.5 text-xs text-shell-muted">
+                <p className="mt-0.5 text-xs text-ink-muted">
                   {KIND_LABEL[task.source] ?? task.source} · 更新于 {formatTime(task.updated_at)}
                 </p>
               </div>
               <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
             </header>
             <div>
-              <div className="mb-1 flex justify-between text-xs text-shell-muted">
+              <div className="mb-1 flex justify-between text-xs text-ink-muted">
                 <span>
                   已处理 {done} / {total}
                 </span>
                 <span>{percent}%</span>
               </div>
               <div
-                className="h-1.5 overflow-hidden rounded-full bg-shell-700"
+                className="h-1.5 overflow-hidden rounded-full bg-subtle"
                 role="progressbar"
                 aria-valuemin={0}
                 aria-valuemax={total}
                 aria-valuenow={done}
                 aria-label="任务进度"
               >
-                <div className="h-full rounded-full bg-accent-400 transition-[width]" style={{ width: `${percent}%` }} />
+                <div className="h-full rounded-full bg-ink transition-[width]" style={{ width: `${percent}%` }} />
               </div>
             </div>
             <div className="flex justify-end">

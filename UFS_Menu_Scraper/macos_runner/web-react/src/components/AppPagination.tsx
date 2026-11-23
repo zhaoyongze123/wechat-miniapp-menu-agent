@@ -33,17 +33,19 @@ export function AppPagination({
   const pages = pageWindow(page, pageCount)
   return (
     <nav className="flex flex-wrap items-center justify-between gap-3 px-1 py-3" aria-label="分页">
-      <span className="text-xs text-shell-muted">
+      <span className="text-xs text-ink-muted">
         共 {total} 条 · 第 {page} / {Math.max(1, pageCount)} 页
       </span>
       <div className="flex items-center gap-2">
         {onPageSizeChange ? (
-          <Select
-            aria-label="每页条数"
-            value={String(pageSize)}
-            options={pageSizeOptions.map((size) => ({ value: String(size), label: `${size} 条/页` }))}
-            onChange={(option) => onPageSizeChange(Number(option.value))}
-          />
+          <div className="w-[116px]">
+            <Select
+              aria-label="每页条数"
+              value={String(pageSize)}
+              options={pageSizeOptions.map((size) => ({ value: String(size), label: `${size} 条/页` }))}
+              onChange={(option) => onPageSizeChange(Number(option.value))}
+            />
+          </div>
         ) : null}
         <Button
           color="secondary"

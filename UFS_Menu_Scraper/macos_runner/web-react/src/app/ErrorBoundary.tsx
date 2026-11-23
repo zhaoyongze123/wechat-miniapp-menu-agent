@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { StatePanel } from '../components/StatePanel'
 
 interface State {
@@ -25,13 +26,9 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
           title="页面渲染失败"
           description={this.state.error.message}
           action={
-            <button
-              type="button"
-              className="rounded-md border border-shell-line px-3 py-1.5 text-sm hover:border-accent-400"
-              onClick={() => this.setState({ error: null })}
-            >
+            <Button color="secondary" variant="outline" size="sm" onClick={() => this.setState({ error: null })}>
               重试
-            </button>
+            </Button>
           }
         />
       )

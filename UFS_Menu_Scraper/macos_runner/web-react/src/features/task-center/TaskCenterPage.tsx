@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
+import { Badge } from '@openai/apps-sdk-ui/components/Badge'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Input } from '@openai/apps-sdk-ui/components/Input'
+import { SegmentedControl } from '@openai/apps-sdk-ui/components/SegmentedControl'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
+import { TextLink } from '@openai/apps-sdk-ui/components/TextLink'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppPagination } from '../../components/AppPagination'
 import { StatePanel } from '../../components/StatePanel'
@@ -15,12 +18,6 @@ import { TaskDetailDrawer } from './TaskDetailDrawer'
 import { fetchTaskHistory } from './api'
 import { KIND_LABEL, formatTime, statusOf } from './format'
 import type { ActiveTask, HistoryRecord, HistoryResponse, TaskFilters } from './types'
-
-const KIND_OPTIONS = [
-  { value: 'all', label: '全部类型' },
-  { value: 'capture', label: '采集运行' },
-  { value: 'materials', label: '素材分析' },
-]
 
 const STATUS_OPTIONS = [
   { value: 'all', label: '全部状态' },
@@ -203,9 +200,9 @@ export function TaskCenterPage() {
         title="当前为本机独立模式"
         description="React 控制台一期只支持共享后台（Hub）与 Windows 原生采集端。本机独立模式请继续使用旧版控制台。"
         action={
-          <a className="text-sm text-accent-300 underline underline-offset-4" href="/#task-center">
+          <TextLink href="/#task-center" className="text-sm">
             打开旧版任务中心
-          </a>
+          </TextLink>
         }
       />
     )
@@ -228,13 +225,15 @@ export function TaskCenterPage() {
       className: 'min-w-[240px] max-w-[380px]',
       cell: (record) => (
         <div className="min-w-0">
-          <strong className="block truncate" title={`${record.title ?? record.id} · ${record.id}`}>
+          <strong className="block truncate font-medium" title={`${record.title ?? record.id} · ${record.id}`}>
             {record.title || record.id}
           </strong>
-          <span className="app-mono mt-0.5 block truncate text-[11px] text-shell-muted">{record.id}</span>
+          <span className="app-mono mt-0.5 block truncate text-[11px] text-ink-faint">{record.id}</span>
           {kind === 'all' ? (
-            <span className="mt-1 inline-block rounded border border-shell-line px-1.5 py-0.5 text-[11px] text-shell-muted">
-              {KIND_LABEL[record.kind] ?? record.kind}
+            <span className="mt-1 inline-block">
+              <Badge color="secondary" variant="soft" size="sm">
+                {KIND_LABEL[record.kind] ?? record.kind}
+              </Badge>
             </span>
           ) : null}
         </div>
@@ -264,7 +263,7 @@ export function TaskCenterPage() {
     {
       id: 'created',
       header: '开始时间',
-      className: 'whitespace-nowrap text-shell-muted',
+      className: 'whitespace-nowrap text-ink-muted',
       cell: (record) => formatTime(record.created_at),
     },
     {
@@ -291,16 +290,15 @@ export function TaskCenterPage() {
     records.find((record) => record.kind === selection?.kind && record.id === selection?.id) ?? null
 
   return (
-    <section className="space-y-5" aria-labelledby="task-center-heading">
-      <header className="flex flex-wrap items-end justify-between gap-3">
+    <section className="space-y-6" aria-labelledby="task-center-heading">
+      <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-accent-400">任务中心</p>
-          <h1 id="task-center-heading" className="mt-1 text-xl font-semibold">
-            运行状态与任务历史
+          <h1 id="task-center-heading" className="text-[22px] font-semibold tracking-[-0.01em]">
+            任务中心
           </h1>
-          <p className="mt-1 text-sm text-shell-muted">{scopeText}</p>
+          <p className="mt-1 text-sm text-ink-muted">{scopeText}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <Button
             color="secondary"
             variant="outline"
@@ -312,17 +310,14 @@ export function TaskCenterPage() {
           >
             刷新
           </Button>
-          <a
-            className="rounded-md border border-shell-line px-3 py-1.5 text-sm text-shell-muted hover:border-accent-400 hover:text-shell-text"
-            href="/#task-center"
-          >
+          <TextLink href="/#task-center" className="text-xs">
             旧版任务中心
-          </a>
+          </TextLink>
         </div>
       </header>
 
       <section className="space-y-3" aria-labelledby="active-heading">
-        <h2 id="active-heading" className="text-sm font-semibold text-shell-muted">
+        <h2 id="active-heading" className="text-sm font-medium text-ink-muted">
           运行中与最近结束
         </h2>
         <ActiveTasksPanel onOpen={openActive} />
@@ -336,24 +331,27 @@ export function TaskCenterPage() {
         <StatCard label="失败/取消" value={Number(summary.failed) || 0} />
       </section>
 
-      <section className="app-panel space-y-3 p-4" aria-labelledby="history-heading">
+      <section className="app-card space-y-4 p-4 md:p-5" aria-labelledby="history-heading">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <h2 id="history-heading" className="text-base font-semibold">
               任务历史
             </h2>
-            <p className="text-xs text-shell-muted">筛选与页码保存在地址栏，刷新或返回后保持原条件。</p>
+            <p className="mt-0.5 text-xs text-ink-muted">筛选与页码保存在地址栏，刷新或返回后保持原条件。</p>
           </div>
-          <div className="flex flex-wrap items-end gap-2">
-            <div className="w-[150px] rounded-lg border border-shell-line bg-shell-850 px-2">
-              <Select
-                aria-label="任务类型"
-                value={kind}
-                options={KIND_OPTIONS}
-                onChange={(option) => updateQuery({ kind: option.value })}
-              />
-            </div>
-            <div className="w-[150px] rounded-lg border border-shell-line bg-shell-850 px-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <SegmentedControl
+              aria-label="任务类型"
+              value={kind}
+              onChange={(next) => updateQuery({ kind: next })}
+              size="sm"
+              pill
+            >
+              <SegmentedControl.Option value="all">全部类型</SegmentedControl.Option>
+              <SegmentedControl.Option value="capture">采集运行</SegmentedControl.Option>
+              <SegmentedControl.Option value="materials">素材分析</SegmentedControl.Option>
+            </SegmentedControl>
+            <div className="w-[140px]">
               <Select
                 aria-label="任务状态"
                 value={status}
@@ -361,7 +359,7 @@ export function TaskCenterPage() {
                 onChange={(option) => updateQuery({ status: option.value })}
               />
             </div>
-            <div className="w-[260px] rounded-lg border border-shell-line bg-shell-850 px-2">
+            <div className="w-[240px]">
               <Input
                 aria-label="搜索历史任务"
                 placeholder="搜索任务名、批次或任务 ID"
@@ -444,8 +442,8 @@ export function TaskCenterPage() {
 
 function StatCard({ label, value }: { label: string; value: number }) {
   return (
-    <div className="app-panel px-4 py-3">
-      <p className="text-xs text-shell-muted">{label}</p>
+    <div className="app-card px-4 py-3">
+      <p className="text-xs text-ink-muted">{label}</p>
       <p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p>
     </div>
   )
@@ -458,7 +456,7 @@ function BatchCell({ record }: { record: HistoryRecord }) {
     return (
       <span title={description} className="inline-flex flex-col">
         <span>涉及 {batches.length} 个批次</span>
-        <span className="text-[11px] text-shell-muted">{description}</span>
+        <span className="text-[11px] text-ink-muted">{description}</span>
       </span>
     )
   }
@@ -472,7 +470,7 @@ function BatchCell({ record }: { record: HistoryRecord }) {
         {single.versions.length ? (
           <span className="mt-0.5 flex flex-wrap gap-1">
             {single.versions.map((version) => (
-              <span key={version} className="rounded border border-shell-line px-1 text-[11px] text-shell-muted">
+              <span key={version} className="rounded-md bg-subtle px-1.5 py-0.5 text-[11px] text-ink-muted">
                 {version}
               </span>
             ))}
@@ -488,32 +486,32 @@ function BatchCell({ record }: { record: HistoryRecord }) {
       </span>
     )
   }
-  return <span className="text-shell-muted">—</span>
+  return <span className="text-ink-faint">—</span>
 }
 
 function ResultCell({ record }: { record: HistoryRecord }) {
   const counts = record.counts ?? {}
   if (record.kind === 'capture') {
     return (
-      <div className="flex flex-col text-xs">
+      <div className="flex flex-col gap-0.5 text-xs">
         <span>
           已处理 {counts.recorded ?? 0} / {counts.total ?? 0}
         </span>
-        <span className="text-shell-muted">
+        <span className="text-ink-muted">
           已截图待复核 {counts.done ?? 0} · 待检查 {counts.attention ?? 0} · 不合格 {counts.rejected ?? 0}
         </span>
         {counts.unknown ? (
-          <span className="text-amber-300">旧记录未保存当轮结果（{counts.unknown} 家）</span>
+          <span className="text-[var(--color-text-warning)]">旧记录未保存当轮结果（{counts.unknown} 家）</span>
         ) : null}
       </div>
     )
   }
   return (
-    <div className="flex flex-col text-xs">
+    <div className="flex flex-col gap-0.5 text-xs">
       <span>
         已分析 {counts.done ?? 0} / {counts.total ?? 0}
       </span>
-      {counts.failed ? <span className="text-rose-300">分析失败 {counts.failed}</span> : null}
+      {counts.failed ? <span className="text-[var(--color-text-danger)]">分析失败 {counts.failed}</span> : null}
     </div>
   )
 }

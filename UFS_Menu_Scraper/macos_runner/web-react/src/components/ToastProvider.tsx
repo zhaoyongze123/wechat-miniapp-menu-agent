@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 
 export type ToastTone = 'success' | 'danger' | 'info'
 
@@ -35,24 +36,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={value}>
       {children}
       <div
-        className="pointer-events-none fixed bottom-5 right-5 z-[60] flex w-[min(360px,90vw)] flex-col gap-2"
+        className="pointer-events-none fixed right-5 bottom-5 z-[60] flex w-[min(380px,90vw)] flex-col gap-2"
         role="status"
         aria-live="polite"
       >
         {items.map((item) => (
-          <div
+          <Alert
             key={item.id}
-            className={[
-              'pointer-events-auto rounded-lg border px-4 py-3 text-sm shadow-lg backdrop-blur',
-              item.tone === 'success'
-                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-100'
-                : item.tone === 'danger'
-                  ? 'border-rose-500/40 bg-rose-500/15 text-rose-100'
-                  : 'border-sky-500/40 bg-sky-500/15 text-sky-100',
-            ].join(' ')}
-          >
-            {item.message}
-          </div>
+            color={item.tone}
+            variant="soft"
+            title={item.message}
+            className="pointer-events-auto shadow-lg"
+          />
         ))}
       </div>
     </ToastContext.Provider>

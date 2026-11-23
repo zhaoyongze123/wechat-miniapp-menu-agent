@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { AppDialog } from './AppDialog'
 
@@ -43,13 +44,9 @@ export function ConfirmActionDialog({
         </div>
       }
     >
-      <div className="space-y-3 text-sm leading-relaxed text-shell-text">
+      <div className="space-y-3 text-sm leading-relaxed text-ink">
         <div>{description}</div>
-        {error ? (
-          <p className="rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-rose-200" role="alert">
-            {error}
-          </p>
-        ) : null}
+        {error ? <Alert color="danger" variant="soft" title={error} /> : null}
       </div>
     </AppDialog>
   )

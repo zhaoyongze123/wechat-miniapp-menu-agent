@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Alert } from '@openai/apps-sdk-ui/components/Alert'
+import { Badge } from '@openai/apps-sdk-ui/components/Badge'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { AppDrawer } from '../../components/AppDrawer'
@@ -125,15 +127,15 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
-            <span className="text-shell-muted">开始于 {formatTime(detail.created_at)}</span>
+            <span className="text-ink-muted">开始于 {formatTime(detail.created_at)}</span>
             {detail.updated_at && detail.updated_at !== detail.created_at ? (
-              <span className="text-shell-muted">更新于 {formatTime(detail.updated_at)}</span>
+              <span className="text-ink-muted">更新于 {formatTime(detail.updated_at)}</span>
             ) : null}
           </div>
 
           {renaming ? (
-            <div className="rounded-lg border border-shell-line bg-shell-850 p-3">
-              <label className="mb-1 block text-xs text-shell-muted" htmlFor="task-rename-input">
+            <div className="rounded-xl bg-canvas p-3">
+              <label className="mb-1 block text-xs text-ink-muted" htmlFor="task-rename-input">
                 任务名称（1–64 个字符）
               </label>
               <div className="flex flex-wrap items-center gap-2">
@@ -154,30 +156,21 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                     }}
                   />
                 </div>
-                <Button
-                  color="primary"
-                  size="sm"
-                  onClick={submitRename}
-                  disabled={renameMutation.isPending}
-                >
+                <Button color="primary" size="sm" onClick={submitRename} disabled={renameMutation.isPending}>
                   {renameMutation.isPending ? '保存中…' : '保存'}
                 </Button>
                 <Button color="secondary" variant="ghost" size="sm" onClick={() => setRenaming(false)}>
                   取消
                 </Button>
               </div>
-              {renameError ? (
-                <p className="mt-2 text-xs text-rose-300" role="alert">
-                  {renameError}
-                </p>
-              ) : null}
+              {renameError ? <Alert color="danger" variant="soft" title={renameError} className="mt-2" /> : null}
             </div>
           ) : null}
 
           {detail.kind === 'capture' ? (
             <>
               <CountChips detail={detail} />
-              {detail.message ? <p className="text-sm text-shell-muted">{detail.message}</p> : null}
+              {detail.message ? <p className="text-sm text-ink-muted">{detail.message}</p> : null}
               <AppDataTable
                 caption="本轮逐店采集结果"
                 rows={detail.tasks}
@@ -200,7 +193,7 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                     id: 'batch',
                     header: '批次 / 版本',
                     cell: (row) => (
-                      <span className="text-shell-muted">
+                      <span className="text-ink-muted">
                         {[row.batch_name, row.version].filter(Boolean).join(' · ') || '—'}
                       </span>
                     ),
@@ -214,7 +207,7 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                     id: 'message',
                     header: '说明',
                     cell: (row) => (
-                      <span className="text-shell-muted">{row.reject_reason || row.message || '—'}</span>
+                      <span className="text-ink-muted">{row.reject_reason || row.message || '—'}</span>
                     ),
                   },
                 ]}
@@ -223,18 +216,20 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
           ) : (
             <>
               <CountChips detail={detail} />
-              {detail.message ? <p className="text-sm text-shell-muted">{detail.message}</p> : null}
+              {detail.message ? <p className="text-sm text-ink-muted">{detail.message}</p> : null}
               {detail.events.length ? (
                 <ol className="space-y-2">
                   {detail.events.map((event, index) => (
                     <li
                       key={`${event.time ?? ''}-${index}`}
-                      className="flex gap-3 rounded-lg border border-shell-line/70 bg-shell-850/60 px-3 py-2 text-sm"
+                      className="flex gap-3 rounded-xl bg-canvas px-3 py-2 text-sm"
                     >
-                      <time className="app-mono shrink-0 text-xs text-shell-muted">
+                      <time className="app-mono shrink-0 text-xs text-ink-faint">
                         {shortTime(event.time) || '—'}
                       </time>
-                      <span className={event.level === 'error' ? 'text-rose-300' : ''}>{event.message || '—'}</span>
+                      <span className={event.level === 'error' ? 'text-[var(--color-text-danger)]' : ''}>
+                        {event.message || '—'}
+                      </span>
                     </li>
                   ))}
                 </ol>
@@ -263,14 +258,14 @@ function CountChips({ detail }: { detail: TaskDetail }) {
   return (
     <div className="flex flex-wrap gap-2">
       {chips.map((chip) => (
-        <span key={chip} className="rounded-md border border-shell-line bg-shell-850 px-2.5 py-1 text-xs">
+        <Badge key={chip} color="secondary" variant="soft" size="sm">
           {chip}
-        </span>
+        </Badge>
       ))}
       {detail.kind === 'capture' && counts.unknown ? (
-        <span className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs text-amber-200">
+        <Badge color="warning" variant="soft" size="sm">
           {counts.unknown} 家旧记录缺少本轮结果
-        </span>
+        </Badge>
       ) : null}
     </div>
   )
