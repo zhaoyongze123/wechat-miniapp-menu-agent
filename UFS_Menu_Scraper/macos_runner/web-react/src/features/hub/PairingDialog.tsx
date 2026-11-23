@@ -40,7 +40,6 @@ export function PairingDialog({ open, onOpenChange }: PairingDialogProps) {
       open={open}
       onOpenChange={onOpenChange}
       title="配对新的采集电脑"
-      description="在 Windows 采集端输入一次性配对码，完成后设备会出现在列表中。"
       widthClass="w-[min(560px,94vw)]"
       footer={
         <div className="flex justify-end gap-2">

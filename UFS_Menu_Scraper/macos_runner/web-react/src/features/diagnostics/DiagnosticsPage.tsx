@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
+import { PageHeader } from '../../components/PageHeader'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
@@ -142,19 +143,18 @@ export function DiagnosticsPage() {
 
   return (
     <section className="space-y-6" aria-labelledby="diagnostics-heading">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 id="diagnostics-heading" className="heading-md">
-            环境与连接
-          </h1>
-          <p className="mt-1 text-sm text-secondary">
-            页面不会自动轮询检测；点击右上角检测按钮时执行一轮微信、采集引擎和 AI 模型验证。
-          </p>
-        </div>
-        <Button color="primary" size="sm" disabled={busy} onClick={() => connectMutation.mutate()}>
-          {connectMutation.isPending ? '检测中…' : snapshot.busy ? '继续等待本轮检测' : snapshot.checked_at ? '重新检测' : '检查连接'}
-        </Button>
-      </header>
+      <PageHeader
+        title="环境与连接"
+        headingId="diagnostics-heading"
+        actions={
+          <div className="flex flex-col items-end gap-1">
+            <Button color="primary" size="sm" disabled={busy} onClick={() => connectMutation.mutate()}>
+              {connectMutation.isPending ? '检测中…' : snapshot.busy ? '继续等待本轮检测' : snapshot.checked_at ? '重新检测' : '检查连接'}
+            </Button>
+            <span className="text-2xs text-tertiary">手动检测微信、引擎与模型，不会自动轮询</span>
+          </div>
+        }
+      />
 
       <section className="rounded-xl border border-subtle p-4" aria-label="总体状态">
         <div className="flex flex-wrap items-start justify-between gap-3">

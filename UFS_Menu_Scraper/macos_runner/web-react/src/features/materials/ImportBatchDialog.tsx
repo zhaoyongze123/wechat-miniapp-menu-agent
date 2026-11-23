@@ -118,7 +118,6 @@ export function ImportBatchDialog({ open, onOpenChange, onCreated }: ImportBatch
         if (!next) close()
       }}
       title="新建素材批次"
-      description="上传的图片会先落入待分析批次；导入本地目录要求服务端可访问该路径。"
       widthClass="w-[min(640px,94vw)]"
       footer={
         <div className="flex justify-end gap-2">
@@ -226,7 +225,7 @@ export function ImportBatchDialog({ open, onOpenChange, onCreated }: ImportBatch
               disabled={busy}
             />
             <span className="block text-2xs text-tertiary">
-              要求目录按门店分文件夹；共享后台会直接从该路径读取，不会复制文件。
+              要求目录按门店分文件夹且服务端可访问；共享后台会直接从该路径读取，不会复制文件。
             </span>
           </label>
         )}

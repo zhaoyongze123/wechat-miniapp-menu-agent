@@ -122,7 +122,7 @@ function WorkerPairing() {
   if (!needsPairing) {
     return (
       <p className="mt-3 text-xs text-tertiary">
-        采集端会自动同步分配、上传结果并补传离线积压；凭证失效时可在此重新配对。
+        凭证失效后，此处会显示重新配对表单。
         <button
           type="button"
           className="ml-2 underline underline-offset-2"

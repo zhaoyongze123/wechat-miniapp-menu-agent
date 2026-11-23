@@ -11,6 +11,7 @@ import { TextLink } from '@openai/apps-sdk-ui/components/TextLink'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppDrawer } from '../../components/AppDrawer'
 import { AppPagination } from '../../components/AppPagination'
+import { PageHeader } from '../../components/PageHeader'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
@@ -348,32 +349,28 @@ export function HubWorkbenchPage() {
 
   return (
     <section className="space-y-6" aria-labelledby="hub-workbench-heading">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 id="hub-workbench-heading" className="heading-md">
-            采集工作台
-          </h1>
-          <p className="mt-1 text-sm text-secondary">
-            选择已发布门店并分配给采集电脑；同一门店在任何时刻只会由一台电脑执行。
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            color="secondary"
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              void statusQuery.refetch()
-              void sharedQuery.refetch()
-            }}
-          >
-            刷新
-          </Button>
-          <Button color="primary" size="sm" disabled={!selectedIds.length} onClick={() => setAssignOpen(true)}>
-            分配选中 {selectedIds.length ? `${selectedIds.length} 家` : '门店'}
-          </Button>
-        </div>
-      </header>
+      <PageHeader
+        title="采集工作台"
+        headingId="hub-workbench-heading"
+        actions={
+          <>
+            <Button
+              color="secondary"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                void statusQuery.refetch()
+                void sharedQuery.refetch()
+              }}
+            >
+              刷新
+            </Button>
+            <Button color="primary" size="sm" disabled={!selectedIds.length} onClick={() => setAssignOpen(true)}>
+              分配选中 {selectedIds.length ? `${selectedIds.length} 家` : '门店'}
+            </Button>
+          </>
+        }
+      />
 
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6" aria-label="门店状态统计">
         <StatCard label="门店总数" value={totalStores} active={filter === 'all'} onClick={() => updateQuery({ filter: 'all' })} />

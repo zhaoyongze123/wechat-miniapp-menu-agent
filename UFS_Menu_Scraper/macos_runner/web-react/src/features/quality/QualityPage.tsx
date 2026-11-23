@@ -9,6 +9,7 @@ import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppPagination } from '../../components/AppPagination'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
+import { PageHeader } from '../../components/PageHeader'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
@@ -556,16 +557,7 @@ export function QualityPage() {
 
   return (
     <section className="space-y-6" aria-labelledby="quality-heading">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 id="quality-heading" className="heading-md">
-            质量审核
-          </h1>
-          <p className="mt-1 text-sm text-secondary">
-            复核不合格门店与采集失败门店，确认证据后放行、打回或重新采集。
-          </p>
-        </div>
-      </header>
+      <PageHeader title="质量审核" headingId="quality-heading" />
 
       <SegmentedControl<QualityView> value={view} onChange={changeView} aria-label="质量审核视图">
         <SegmentedControl.Option value="rejections">不合格门店</SegmentedControl.Option>

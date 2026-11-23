@@ -9,6 +9,7 @@ import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppPagination } from '../../components/AppPagination'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
+import { PageHeader } from '../../components/PageHeader'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
@@ -355,32 +356,28 @@ export function WorkerWorkbenchPage() {
 
   return (
     <section className="space-y-6" aria-labelledby="worker-workbench-heading">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 id="worker-workbench-heading" className="heading-md">
-            采集工作台
-          </h1>
-          <p className="mt-1 text-sm text-secondary">
-            本机执行全自动 Agent 或半自动人工采集；结果先落本机，恢复连接后自动补传。
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button color="secondary" variant="outline" size="sm" onClick={() => void statusQuery.refetch()}>
-            刷新
-          </Button>
-          <Button
-            color="primary"
-            size="sm"
-            disabled={!canStart}
-            onClick={() => {
-              setStartMode(run?.capture_mode === 'manual' ? 'manual' : 'auto')
-              setStartOpen(true)
-            }}
-          >
-            开跑采集 {selectedTasks.length ? `${selectedTasks.length} 家` : ''}
-          </Button>
-        </div>
-      </header>
+      <PageHeader
+        title="采集工作台"
+        headingId="worker-workbench-heading"
+        actions={
+          <>
+            <Button color="secondary" variant="outline" size="sm" onClick={() => void statusQuery.refetch()}>
+              刷新
+            </Button>
+            <Button
+              color="primary"
+              size="sm"
+              disabled={!canStart}
+              onClick={() => {
+                setStartMode(run?.capture_mode === 'manual' ? 'manual' : 'auto')
+                setStartOpen(true)
+              }}
+            >
+              开跑采集 {selectedTasks.length ? `${selectedTasks.length} 家` : ''}
+            </Button>
+          </>
+        }
+      />
 
       {connection && !connection.paired ? (
         <Alert

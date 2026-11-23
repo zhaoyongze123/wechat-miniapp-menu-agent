@@ -9,6 +9,7 @@ import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppPagination } from '../../components/AppPagination'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
+import { PageHeader } from '../../components/PageHeader'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
@@ -283,32 +284,28 @@ export function HubAssignmentsPage() {
 
   return (
     <section className="space-y-6" aria-labelledby="hub-assignments-heading">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 id="hub-assignments-heading" className="heading-md">
-            分配记录
-          </h1>
-          <p className="mt-1 text-sm text-secondary">
-            查看每家门店当前或历史的分配去向；回收只解除占用，不删除采集结果。
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button color="secondary" variant="outline" size="sm" onClick={() => void recordsQuery.refetch()}>
-            刷新
-          </Button>
-          <Button
-            color="danger"
-            size="sm"
-            disabled={!selected.length}
-            onClick={() => {
-              setConfirmError('')
-              setConfirm({ ids: [...selected], label: `所选 ${selected.length} 条分配` })
-            }}
-          >
-            回收选中 {selected.length ? `${selected.length} 条` : ''}
-          </Button>
-        </div>
-      </header>
+      <PageHeader
+        title="分配记录"
+        headingId="hub-assignments-heading"
+        actions={
+          <>
+            <Button color="secondary" variant="outline" size="sm" onClick={() => void recordsQuery.refetch()}>
+              刷新
+            </Button>
+            <Button
+              color="danger"
+              size="sm"
+              disabled={!selected.length}
+              onClick={() => {
+                setConfirmError('')
+                setConfirm({ ids: [...selected], label: `所选 ${selected.length} 条分配` })
+              }}
+            >
+              回收选中 {selected.length ? `${selected.length} 条` : ''}
+            </Button>
+          </>
+        }
+      />
 
       {reclaimResult ? (
         <Alert
@@ -344,7 +341,6 @@ export function HubAssignmentsPage() {
             <h2 id="hub-records-list-heading" className="heading-xs">
               分配明细
             </h2>
-            <p className="mt-0.5 text-xs text-secondary">回收后门店立即解除占用；设备已下载未上传的本机结果会转为历史留档。</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="w-52">

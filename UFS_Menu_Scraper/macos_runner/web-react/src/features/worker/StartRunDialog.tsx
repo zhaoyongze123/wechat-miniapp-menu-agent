@@ -75,7 +75,6 @@ export function StartRunDialog({ open, onOpenChange, tasks, defaultMode, blocked
       open={open}
       onOpenChange={onOpenChange}
       title="开跑采集"
-      description={`已选择 ${tasks.length} 家门店，确认范围与模式后开始。`}
       widthClass="w-[min(640px,94vw)]"
       footer={
         <div className="flex justify-end gap-2">

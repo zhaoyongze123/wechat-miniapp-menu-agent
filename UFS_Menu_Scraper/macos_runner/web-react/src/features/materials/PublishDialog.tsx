@@ -79,7 +79,6 @@ export function PublishDialog({ open, batch, onOpenChange, onPublished }: Publis
           }
         }}
         title={`发布批次：${batch?.name ?? ''}`}
-        description="发布会在当前选码结果上生成新快照；是否成为默认版本在下方单独控制。"
         widthClass="w-[min(720px,94vw)]"
         footer={
           <div className="flex justify-end gap-2">
@@ -130,6 +129,7 @@ export function PublishDialog({ open, batch, onOpenChange, onPublished }: Publis
                   ? ` · 较当前版本新增 ${batch.draft_changes.added}、移除 ${batch.draft_changes.removed}、变更 ${batch.draft_changes.changed}`
                   : ''}
               </p>
+              <p className="mt-1">发布会基于当前选码结果生成新快照。</p>
               {batch.release ? (
                 <p className="mt-1">
                   当前默认版本：{batch.release.version}（{formatTime(batch.release.published_at)} 发布）

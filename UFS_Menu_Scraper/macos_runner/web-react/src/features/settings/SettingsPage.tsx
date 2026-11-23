@@ -7,6 +7,7 @@ import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
 import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
+import { PageHeader } from '../../components/PageHeader'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
@@ -151,14 +152,7 @@ export function SettingsPage() {
 
   return (
     <section className="space-y-6" aria-labelledby="settings-heading">
-      <header>
-        <h1 id="settings-heading" className="heading-md">
-          设置
-        </h1>
-        <p className="mt-1 text-sm text-secondary">
-          配置素材与输出目录、模型服务、采集参数和调试日志；保存后立即对后续任务生效。
-        </p>
-      </header>
+      <PageHeader title="设置" headingId="settings-heading" />
 
       <SharedWorkbenchCard />
 
@@ -200,14 +194,7 @@ export function SettingsPage() {
             />
           </FormSection>
 
-          <FormSection
-            title="模型服务"
-            description={
-              isHub
-                ? '视觉模型用于素材处理与连接诊断；共享后台统一为采集端提供正式菜单导航配置。'
-                : '视觉模型用于采集诊断与人工辅助；正式菜单导航使用本机保存的模型配置。'
-            }
-          >
+          <FormSection title="模型服务">
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="供应商">
                 <Select
@@ -311,10 +298,7 @@ export function SettingsPage() {
           </FormSection>
 
           {!isHub ? (
-            <FormSection
-              title="截图与循环参数"
-              description="运行时自动调整窗口大小；滚动距离使用总览中的“滚动步数”。"
-            >
+            <FormSection title="截图与循环参数">
               <div className="grid gap-3 sm:grid-cols-2">
                 <Field label="目标窗口宽度（预留）" help="运行时自动调整，仅展示当前保存值。">
                   <Input type="number" value={form.window_width} disabled />
@@ -322,7 +306,7 @@ export function SettingsPage() {
                 <Field label="目标窗口高度（预留）">
                   <Input type="number" value={form.window_height} disabled />
                 </Field>
-                <Field label="重叠比例（预留）">
+                <Field label="重叠比例（预留）" help="运行时自动调整；滚动距离使用总览中的“滚动步数”。">
                   <Input type="number" value={form.overlap_ratio} disabled />
                 </Field>
                 <Field label="最大页数" help="2–500。">
@@ -375,12 +359,9 @@ export function SettingsPage() {
             </FormSection>
           ) : null}
 
-          <FormSection
-            title="开发调试日志"
-            description="达到上限后自动清理较早的调试记录；不包含门店素材与菜单截图。"
-          >
+          <FormSection title="开发调试日志">
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="最大存储空间（MB）" help="64–4096。">
+              <Field label="最大存储空间（MB）" help="64–4096；达到上限后自动清理较早记录，不影响门店素材与截图。">
                 <Input
                   type="number"
                   min={64}
@@ -437,7 +418,6 @@ export function SettingsPage() {
             <h2 id="model-test-heading" className="heading-xs">
               模型连接
             </h2>
-            <p className="mt-1 text-xs text-secondary">使用已保存配置发起连接测试。</p>
             <div className="mt-3 flex items-center gap-2">
               <StatusBadge tone={modelConfigured ? 'success' : 'warning'}>
                 {modelConfigured ? '已配置' : '待配置'}
@@ -456,6 +436,7 @@ export function SettingsPage() {
             >
               {testMutation.isPending ? '测试中…' : '测试模型连接'}
             </Button>
+            <p className="mt-1 text-2xs text-tertiary">测试使用已保存配置，未保存的修改不会参与。</p>
             {dirtyTest && testResult ? (
               <Alert
                 className="mt-3"
@@ -478,7 +459,6 @@ export function SettingsPage() {
             <h2 id="advanced-tools-heading" className="heading-xs">
               高级工具
             </h2>
-            <p className="mt-1 text-xs text-secondary">人工标注与环境诊断不在主导航中，需要时从这里打开。</p>
             <div className="mt-3 space-y-2">
               <a
                 href="/#annotation"
@@ -531,21 +511,10 @@ export function SettingsPage() {
   )
 }
 
-function FormSection({
-  title,
-  description,
-  children,
-}: {
-  title: string
-  description?: string
-  children: ReactNode
-}) {
+function FormSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="space-y-3" aria-label={title}>
-      <div>
-        <h2 className="heading-xs">{title}</h2>
-        {description ? <p className="mt-1 text-2xs text-tertiary">{description}</p> : null}
-      </div>
+      <h2 className="heading-xs">{title}</h2>
       {children}
     </section>
   )

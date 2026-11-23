@@ -44,7 +44,6 @@ export function BatchManagementDialog({
         open={open}
         onOpenChange={onOpenChange}
         title="批次管理"
-        description="编辑名称与阶段、移入回收站或彻底删除。已发布或有任务引用的批次会显示阻断原因。"
         widthClass="w-[min(880px,94vw)]"
         footer={
           <div className="flex justify-end">

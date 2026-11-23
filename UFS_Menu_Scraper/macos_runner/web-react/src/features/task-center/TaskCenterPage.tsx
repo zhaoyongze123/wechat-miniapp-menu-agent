@@ -9,6 +9,7 @@ import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { TextLink } from '@openai/apps-sdk-ui/components/TextLink'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppPagination } from '../../components/AppPagination'
+import { PageHeader } from '../../components/PageHeader'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { errorMessage } from '../../api/client'
@@ -213,11 +214,6 @@ export function TaskCenterPage() {
   const summary = data?.summary ?? {}
   const total = Number(summary.total) || 0
   const hasFilters = kind !== 'all' || status !== 'all' || q.trim() !== ''
-  const scopeText =
-    role.role === 'hub'
-      ? '统计后台素材分析与后台保留的采集运行记录；按开始时间倒序。'
-      : '按开始时间倒序查看本机任务；进度与结果均来自本机服务。'
-
   const columns: DataColumn<HistoryRecord>[] = [
     {
       id: 'title',
@@ -291,14 +287,10 @@ export function TaskCenterPage() {
 
   return (
     <section className="space-y-6" aria-labelledby="task-center-heading">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 id="task-center-heading" className="heading-md">
-            任务中心
-          </h1>
-          <p className="mt-1 text-sm text-secondary">{scopeText}</p>
-        </div>
-        <div className="flex items-center gap-3">
+      <PageHeader
+        title="任务中心"
+        headingId="task-center-heading"
+        actions={
           <Button
             color="secondary"
             variant="outline"
@@ -310,8 +302,8 @@ export function TaskCenterPage() {
           >
             刷新
           </Button>
-        </div>
-      </header>
+        }
+      />
 
       <section className="space-y-3" aria-labelledby="active-heading">
         <h2 id="active-heading" className="text-sm text-secondary">
@@ -334,7 +326,6 @@ export function TaskCenterPage() {
             <h2 id="history-heading" className="heading-xs">
               任务历史
             </h2>
-            <p className="mt-0.5 text-xs text-secondary">筛选与页码保存在地址栏，刷新或返回后保持原条件。</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <SegmentedControl

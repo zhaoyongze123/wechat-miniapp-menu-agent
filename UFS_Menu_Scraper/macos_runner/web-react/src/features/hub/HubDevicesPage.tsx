@@ -5,6 +5,7 @@ import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
+import { PageHeader } from '../../components/PageHeader'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
@@ -173,19 +174,15 @@ export function HubDevicesPage() {
 
   return (
     <section className="space-y-6" aria-labelledby="hub-devices-heading">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 id="hub-devices-heading" className="heading-md">
-            采集电脑
-          </h1>
-          <p className="mt-1 text-sm text-secondary">
-            查看设备连接状态、管理配对信息，并确认每台电脑正在占用的门店。
-          </p>
-        </div>
-        <Button color="primary" size="sm" onClick={() => setPairOpen(true)}>
-          配对采集电脑
-        </Button>
-      </header>
+      <PageHeader
+        title="采集电脑"
+        headingId="hub-devices-heading"
+        actions={
+          <Button color="primary" size="sm" onClick={() => setPairOpen(true)}>
+            配对采集电脑
+          </Button>
+        }
+      />
 
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="采集电脑统计">
         <Metric label="已配对" value={activeWorkers.length} />

@@ -48,7 +48,6 @@ export function AnalysisDialog({ open, batchId, onOpenChange }: AnalysisDialogPr
         open={open}
         onOpenChange={onOpenChange}
         title="分析进度"
-        description={`批次：${batchQuery.data?.name ?? batchId}`}
         widthClass="w-[min(760px,94vw)]"
         footer={
           <div className="flex justify-end">
@@ -59,6 +58,7 @@ export function AnalysisDialog({ open, batchId, onOpenChange }: AnalysisDialogPr
         }
       >
         <div className="space-y-5">
+          <p className="text-xs text-secondary">批次：{batchQuery.data?.name ?? batchId}</p>
           {job ? (
             <section className="space-y-3 rounded-xl border border-subtle p-4" aria-label="当前作业">
               <div className="flex flex-wrap items-center justify-between gap-2">

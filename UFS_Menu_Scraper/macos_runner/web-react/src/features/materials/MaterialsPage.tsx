@@ -8,6 +8,7 @@ import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppPagination } from '../../components/AppPagination'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
+import { PageHeader } from '../../components/PageHeader'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
@@ -335,24 +336,20 @@ export function MaterialsPage() {
 
   return (
     <section className="space-y-6" aria-labelledby="materials-heading">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 id="materials-heading" className="heading-md">
-            素材清洗
-          </h1>
-          <p className="mt-1 text-sm text-secondary">
-            审核批次内每家门店的点餐二维码，处理不合格与返工，并把确认结果发布为任务。
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button color="secondary" variant="outline" size="sm" onClick={() => setManagementOpen(true)}>
-            批次管理
-          </Button>
-          <Button color="primary" size="sm" onClick={() => setImportOpen(true)}>
-            新建批次
-          </Button>
-        </div>
-      </header>
+      <PageHeader
+        title="素材清洗"
+        headingId="materials-heading"
+        actions={
+          <>
+            <Button color="secondary" variant="outline" size="sm" onClick={() => setManagementOpen(true)}>
+              批次管理
+            </Button>
+            <Button color="primary" size="sm" onClick={() => setImportOpen(true)}>
+              新建批次
+            </Button>
+          </>
+        }
+      />
 
       <SegmentedControl<MaterialsView> value={view} onChange={switchView} aria-label="素材视图">
         <SegmentedControl.Option value="batch">批次清洗</SegmentedControl.Option>

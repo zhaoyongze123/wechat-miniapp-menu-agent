@@ -108,7 +108,6 @@ export function AssignDialog({ open, onOpenChange, tasks, workers, onExclude, on
         if (!next) close()
       }}
       title={`分配 ${remaining.length} 家门店`}
-      description="选择一台已配对的采集电脑。分配后门店会进入该电脑的下载队列，离线电脑会在重新连接后同步。"
       widthClass="w-[min(640px,94vw)]"
       footer={
         <div className="flex items-center justify-between gap-3">
@@ -164,6 +163,7 @@ export function AssignDialog({ open, onOpenChange, tasks, workers, onExclude, on
         <div className="rounded-xl border border-subtle bg-surface-secondary px-4 py-3 text-sm">
           <p className="text-default">本次将分配 {remaining.length} 家门店</p>
           <p className="mt-1 text-xs text-secondary">{batchSummary || '批次信息未记录'}</p>
+          <p className="mt-1 text-xs text-tertiary">同一门店同一时刻只会由一台电脑执行。</p>
         </div>
 
         {conflicts.length ? (
