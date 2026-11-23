@@ -112,6 +112,29 @@ def _near_white_ratio(image: Image.Image) -> float:
     return sum(1 for value in pixels if value >= 244) / max(len(pixels), 1)
 
 
+def _chat_pane_right(image: Image.Image) -> int:
+    """返回微信聊天窗格右边界；右侧内嵌小程序面板会把窗口变成左右分栏。
+
+    WeChat 4.x 会把会员卡/部分小程序以右侧面板形式嵌进主窗口：窗口仍按 999×749
+    固定，但聊天区只剩约 62% 宽。按整窗比例裁右下角会落进面板，把面板里的绿色
+    按钮误判成“发送”按钮（实测 70 家待检查全部因此误报输入框残留）。分栏位置用
+    一条贯穿上下、位于窗口中部的竖线识别；识别不到就按整窗宽处理。
+    """
+    width, height = image.size
+    gray = image.convert("L")
+    pixels = gray.load()
+    top, bottom = int(height * .12), int(height * .88)
+    rows = max(1, bottom - top)
+    best_x, best_score = width, 0.0
+    # 分栏线固定出现在窗口中部；限制范围避免把菜品图/气泡的竖直边缘当成面板边界。
+    for x in range(int(width * .55), int(width * .78)):
+        edge = sum(1 for y in range(top, bottom) if abs(pixels[x, y] - pixels[x - 1, y]) >= 12)
+        score = edge / rows
+        if score > best_score:
+            best_x, best_score = x, score
+    return best_x if best_score >= .80 else width
+
+
 class RobotProtocolError(RuntimeError):
     pass
 
@@ -2504,7 +2527,11 @@ class UiPathRunner:
             raise NeedsReview("未配置微信主窗口 selector，无法校准窗口版面", purpose)
         width, height = _BATCH_WECHAT_FRAME
         last = (0, 0)
-        for attempt in range(3):
+        # 显示器休眠唤醒、远程会话重连后的头几十秒里，窗口常停在极小尺寸（实测 296×388），
+        # 此时立刻判定环境异常会让整批任务作废；前 3 次快速重试，之后每 8 秒再试，
+        # 累计约 45 秒仍不达标才中止。
+        delays = (0.6, 1.5, 8, 8, 8, 8, 8)
+        for attempt in range(len(delays) + 1):
             try:
                 reply = self._send({"action": "resize", "selector": selector,
                                     "width": width, "height": height})
@@ -2518,13 +2545,13 @@ class UiPathRunner:
             if abs(actual_width - width) <= 2 and abs(actual_height - height) <= 2:
                 return
             # 窗口被最小化/隐藏或句柄短暂失效时，SetWindowPos 只改还原尺寸、回读仍是 0×0；
-            # 先按 selector 还原窗口（会激活）再重设，第三次仍不符才判定环境异常。
-            if attempt < 2:
+            # 先按 selector 还原窗口（会激活）再重设。
+            if attempt < len(delays):
                 try:
                     self._send({"action": "restore_window", "selector": selector})
                 except (RobotCommandError, RobotTimeout):
                     pass
-                time.sleep(0.6 if attempt == 0 else 1.5)
+                time.sleep(delays[attempt])
         raise NeedsReview(
             f"微信主窗口未调整到 {width}×{height}（实际 {last[0]}×{last[1]}），未开始处理",
             purpose)
@@ -3589,7 +3616,16 @@ class UiPathRunner:
         if not offset_y:
             offset_y = height * (1 - float(profile["wechat_input_y_ratio"]))
             source = "profile_input_ratio"
-        x = max(1.0, width - float(offset_x))
+        # 内嵌小程序面板会把聊天区压到窗口左侧；点距要从聊天窗格右边缘往前推，
+        # 否则会点进右侧面板，后面粘贴/回车都落在错误控件上。
+        pane_points = width
+        try:
+            with Image.open(Path(frame["path"])) as image:
+                pane_px = _chat_pane_right(image.convert("RGB"))
+            pane_points = width * pane_px / max(1, int(frame["width"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        x = max(1.0, pane_points - float(offset_x))
         y = max(1.0, height - float(offset_y))
         self._trace_click = {"source": source, "target": "微信消息输入区",
                              "coordinates": {"window_points": {"x": x, "y": y},
@@ -3643,6 +3679,11 @@ class UiPathRunner:
         # 每家开始前先全部收起，保证识别结果只对应本轮二维码。
         with self._trace("close_stale_miniapp") as trace:
             trace["closed"] = self._close_miniapp_windows(profile, output_dir)
+        if sys.platform == "win32" and not self._wait_no_miniapp(0.8):
+            # 关不掉的旧小程序会让本轮直接复用上一家的窗口和菜单（实测会把别家菜单
+            # 当成本店结果）。宁可停在待检查，也不能把错菜单入库。
+            raise NeedsReview("仍有残留小程序窗口未关闭，已中止，避免沿用上一家菜单",
+                              "stale_miniapp")
         mark("close_stale")
         windows = sys.platform == "win32"
         if windows and profile.get("preview_selector"):
@@ -3992,9 +4033,11 @@ class UiPathRunner:
             # 窗口尺寸变了，基线失效；返回 unknown 让调用方重拍或转人工，不做误判。
             return {"kind": "unknown", "changed_ratio": 1.0, "box": None}
         width, height = current.size
+        # 输入区比例按聊天窗格宽度换算；右侧内嵌面板打开时不能把面板内容算进来。
+        pane = _chat_pane_right(current)
         ratio = _INPUT_REGION_RATIO
-        left, top = round(width * ratio[0]), round(height * ratio[1])
-        right, bottom = round(width * ratio[2]), round(height * ratio[3])
+        left, top = round(pane * ratio[0]), round(height * ratio[1])
+        right, bottom = round(pane * ratio[2]), round(height * ratio[3])
         current = current.crop((left, top, right, bottom))
         baseline = baseline.crop((left, top, right, bottom))
         diff = ImageChops.difference(current, baseline).convert("L")
@@ -4045,9 +4088,10 @@ class UiPathRunner:
         try:
             with Image.open(image_path) as image:
                 rgb = image.convert("RGB")
-                # 只看右下角输入区，避开聊天气泡、侧栏和窗口外黑边。
-                region = rgb.crop((int(rgb.width * .86), int(rgb.height * .88),
-                                   rgb.width, int(rgb.height * .99)))
+                # 只看聊天窗格右下角：右侧内嵌小程序面板不属于聊天区，不能参与发送按钮判定。
+                pane = _chat_pane_right(rgb)
+                region = rgb.crop((int(pane * .86), int(rgb.height * .88),
+                                   pane, int(rgb.height * .99)))
         except (OSError, ValueError):
             return False
         colors = region.getcolors(maxcolors=region.width * region.height) or []

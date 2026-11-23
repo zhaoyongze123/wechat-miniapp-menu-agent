@@ -22,8 +22,10 @@ let actionUsedOnFrame = false;
 let terminal = null;
 let faulted = false;
 // 连续格式错误与整个任务的格式错误分开计数：连续合法输出后允许重新获得修正机会。
-const CONSECUTIVE_PARSE_FAILURE_LIMIT = 2;
-const TOTAL_PARSE_FAILURE_LIMIT = 4;
+// 实测模型在复杂页面会连续输出格式错误；连续 2 次就终止偏激进，放宽到 3 次，
+// 但总预算仍保留上限，避免坏输出无限重试。
+const CONSECUTIVE_PARSE_FAILURE_LIMIT = 3;
+const TOTAL_PARSE_FAILURE_LIMIT = 6;
 const REASON_MAX_CHARS = 500;
 // 白屏/加载中/前置页的“最小观察预算”：至少 3 帧、累计 10 秒，避免模型只看一眼就判待检查。
 const MIN_REVIEW_SCREENSHOTS = 3;
