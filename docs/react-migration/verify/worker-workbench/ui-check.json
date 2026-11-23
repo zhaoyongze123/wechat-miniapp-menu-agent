@@ -1,0 +1,66 @@
+﻿{
+    "checks":  {
+                   "worker_rows":  {
+                                       "pass":  true,
+                                       "detail":  "rows=6"
+                                   },
+                   "worker_nav_workbench":  {
+                                                "pass":  true,
+                                                "detail":  "[\u0027采集工作台\u0027, \u0027任务中心\u0027, \u0027设置\u0027, \u0027采集工作台\u0027, \u0027任务中心\u0027, \u0027设置\u0027]"
+                                            },
+                   "worker_nav_no_quality":  {
+                                                 "pass":  true,
+                                                 "detail":  ""
+                                             },
+                   "worker_selection":  {
+                                            "pass":  true,
+                                            "detail":  "buttons=1"
+                                        },
+                   "worker_dialog":  {
+                                         "pass":  true,
+                                         "detail":  ""
+                                     },
+                   "worker_search":  {
+                                         "pass":  true,
+                                         "detail":  "rows=1"
+                                     },
+                   "worker_filter_review":  {
+                                                "pass":  true,
+                                                "detail":  "rows=1"
+                                            },
+                   "hub_workbench_regression":  {
+                                                    "pass":  true,
+                                                    "detail":  ""
+                                                }
+               },
+    "summary":  {
+                    "passed":  8,
+                    "total":  8,
+                    "failed":  [
+
+                               ],
+                    "console_distinct":  [
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_AMS-Regular.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Caligraphic-Bold.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Caligraphic-Regular.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Fraktur-Bold.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Fraktur-Regular.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Main-Bold.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Main-BoldItalic.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Main-Italic.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Main-Regular.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Math-BoldItalic.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Math-Italic.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_SansSerif-Bold.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_SansSerif-Italic.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_SansSerif-Regular.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Script-Regular.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Size1-Regular.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Size2-Regular.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Size3-Regular.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Size4-Regular.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Loading the font \u0027https://cdn.openai.com/common/fonts/katex/KaTeX_Typewriter-Regular.woff2\u0027 violates the following Content Security Policy directive: \"default-src \u0027self\u0027\". Note that \u0027font-src\u0027 was not explicitly set, so \u0027default-src\u0027 is used as a fallback. The action has been blocked.",
+                                             "Failed to load resource: the server responded with a status of 404 (Not Found)"
+                                         ]
+                }
+}
