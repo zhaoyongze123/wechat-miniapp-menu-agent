@@ -6,6 +6,8 @@ import { Menu } from '@openai/apps-sdk-ui/components/Menu'
 import {
   CheckCircle,
   ChevronRight,
+  Clipboard,
+  Desktop,
   Home,
   Images,
   Settings,
@@ -19,7 +21,12 @@ interface NavItem {
   label: string
   roles: AppRole[]
   icon: ComponentType<SVGProps<SVGSVGElement>>
+  /** 所有角色都已迁移到 React。 */
   migrated?: boolean
+  /** 仅列出的角色走 React 路由，其余角色仍回旧版 hash。 */
+  migratedFor?: AppRole[]
+  /** 旧版入口 hash 与 React 路由 key 不同的页面在此声明。 */
+  legacyHash?: string
 }
 
 /**
@@ -27,7 +34,9 @@ interface NavItem {
  * 已迁移页面留在 React 内部，不复制第二套路由规则。
  */
 const NAV_ITEMS: NavItem[] = [
-  { key: 'overview', label: '采集工作台', roles: ['hub', 'worker'], icon: Home },
+  { key: 'workbench', label: '采集工作台', roles: ['hub', 'worker'], icon: Home, migratedFor: ['hub'], legacyHash: 'overview' },
+  { key: 'devices', label: '采集电脑', roles: ['hub'], icon: Desktop, migrated: true },
+  { key: 'assignments', label: '分配记录', roles: ['hub'], icon: Clipboard, migrated: true },
   { key: 'materials', label: '素材清洗', roles: ['hub'], icon: Images },
   { key: 'rejections', label: '质量审核', roles: ['hub'], icon: CheckCircle },
   { key: 'task-center', label: '任务中心', roles: ['hub', 'worker'], icon: Tasks, migrated: true },
@@ -60,7 +69,12 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-2" aria-label="主导航">
           {visibleItems.map((item) => (
-            <NavLink key={item.key} item={item} active={item.key === currentKey} />
+            <NavLink
+              key={item.key}
+              item={item}
+              active={item.key === currentKey}
+              migrated={item.migrated === true || item.migratedFor?.includes(role.role) === true}
+            />
           ))}
         </nav>
 
@@ -108,7 +122,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           aria-label="主导航（移动端）"
         >
           {visibleItems.map((item) => (
-            <NavLink key={item.key} item={item} active={item.key === currentKey} compact />
+            <NavLink
+              key={item.key}
+              item={item}
+              active={item.key === currentKey}
+              migrated={item.migrated === true || item.migratedFor?.includes(role.role) === true}
+              compact
+            />
           ))}
         </nav>
 
@@ -120,7 +140,17 @@ export function AppShell({ children }: { children: ReactNode }) {
   )
 }
 
-function NavLink({ item, active, compact = false }: { item: NavItem; active: boolean; compact?: boolean }) {
+function NavLink({
+  item,
+  active,
+  migrated,
+  compact = false,
+}: {
+  item: NavItem
+  active: boolean
+  migrated: boolean
+  compact?: boolean
+}) {
   const Icon = item.icon
   const className = [
     'flex items-center gap-2.5 rounded-sm px-2 py-1.5 text-sm transition-colors',
@@ -135,7 +165,7 @@ function NavLink({ item, active, compact = false }: { item: NavItem; active: boo
       {item.label}
     </>
   )
-  if (item.migrated) {
+  if (migrated) {
     return (
       <Link to={`/${item.key}`} className={className} aria-current={active ? 'page' : undefined}>
         {content}
@@ -143,7 +173,7 @@ function NavLink({ item, active, compact = false }: { item: NavItem; active: boo
     )
   }
   return (
-    <a href={`/#${item.key}`} className={className} aria-current={active ? 'page' : undefined}>
+    <a href={`/#${item.legacyHash ?? item.key}`} className={className} aria-current={active ? 'page' : undefined}>
       {content}
     </a>
   )
