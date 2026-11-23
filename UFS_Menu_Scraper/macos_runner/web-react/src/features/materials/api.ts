@@ -219,8 +219,10 @@ export function reanalyzeStore(batchId: string, storeId: string): Promise<Materi
   })
 }
 
-export function fetchRework(signal?: AbortSignal): Promise<ReworkResponse> {
-  return apiFetch<ReworkResponse>(`${BASE}/rework?batch_ids=all`, { signal })
+export function fetchRework(query = '', signal?: AbortSignal): Promise<ReworkResponse> {
+  const search = new URLSearchParams({ batch_ids: 'all' })
+  if (query.trim()) search.set('q', query.trim())
+  return apiFetch<ReworkResponse>(`${BASE}/rework?${search.toString()}`, { signal })
 }
 
 export function returnReworkStore(batchId: string, storeId: string): Promise<MaterialStoreDetail> {

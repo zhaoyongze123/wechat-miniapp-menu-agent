@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   abortStoreUpload,
   abortUpload,
@@ -59,7 +59,7 @@ export const materialsKeys = {
   store: (batchId: string, storeId: string) => ['materials', 'store', batchId, storeId] as const,
   jobs: (batchId: string) => ['materials', 'jobs', batchId] as const,
   job: (jobId: string) => ['materials', 'job', jobId] as const,
-  rework: () => ['materials', 'rework'] as const,
+  rework: (query = '') => ['materials', 'rework', query] as const,
   management: (deleted: boolean) => ['materials', 'management', deleted] as const,
 }
 
@@ -125,10 +125,11 @@ export function useJob(jobId: string, enabled: boolean) {
   })
 }
 
-export function useRework() {
+export function useRework(query = '') {
   return useQuery({
-    queryKey: materialsKeys.rework(),
-    queryFn: ({ signal }) => fetchRework(signal),
+    queryKey: materialsKeys.rework(query),
+    queryFn: ({ signal }) => fetchRework(query, signal),
+    placeholderData: keepPreviousData,
   })
 }
 
@@ -276,7 +277,7 @@ export function useStoreActions(batchId: string, storeId: string) {
     void queryClient.invalidateQueries({ queryKey: materialsKeys.store(batchId, storeId) })
     void queryClient.invalidateQueries({ queryKey: materialsKeys.batch(batchId) })
     void queryClient.invalidateQueries({ queryKey: materialsKeys.batches() })
-    void queryClient.invalidateQueries({ queryKey: materialsKeys.rework() })
+    void queryClient.invalidateQueries({ queryKey: ['materials', 'rework'] })
   }, [batchId, queryClient, storeId])
 
   const decide = useMutation({
@@ -326,7 +327,7 @@ export function useStoreActions(batchId: string, storeId: string) {
 export function useReworkActions() {
   const queryClient = useQueryClient()
   const invalidate = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: materialsKeys.rework() })
+    void queryClient.invalidateQueries({ queryKey: ['materials', 'rework'] })
     void queryClient.invalidateQueries({ queryKey: materialsKeys.batches() })
   }, [queryClient])
 

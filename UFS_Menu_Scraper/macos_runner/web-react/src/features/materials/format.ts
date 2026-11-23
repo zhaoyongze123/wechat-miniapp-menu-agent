@@ -100,8 +100,23 @@ export const WECHAT_VALIDATION_LABELS: Record<string, string> = {
   passed: '小程序校验通过',
   failed: '小程序校验失败',
   unavailable: '小程序校验不可用',
+  unverified: '未做小程序校验',
   skipped: '未做小程序校验',
   unknown: '小程序状态未知',
+}
+
+/** 单店分析状态：后端只使用 selected / needs_review，其余为兼容旧数据。 */
+export const ANALYSIS_STATUS_LABELS: Record<string, string> = {
+  selected: '已检测到候选',
+  needs_review: '需人工确认',
+  no_candidates: '未检测到二维码',
+  failed: '分析失败',
+  pending: '等待分析',
+}
+
+export function analysisStatusLabel(value: string | undefined): string {
+  if (!value) return '未知'
+  return ANALYSIS_STATUS_LABELS[value] ?? value
 }
 
 export const REJECTION_REASONS: { code: string; label: string }[] = [
@@ -121,10 +136,13 @@ export const REJECTION_REASONS: { code: string; label: string }[] = [
   { code: 'other', label: '其他原因' },
 ]
 
+/** 与后端 `_WORKFLOW_LABELS` 一致；空字符串表示跟随采集轮次自动判断。 */
 export const WORKFLOW_STAGES: { value: string; label: string }[] = [
-  { value: 'auto', label: '跟随采集阶段' },
-  { value: 'first_round', label: '首轮采集' },
-  { value: 'rework', label: '返工' },
+  { value: '', label: '自动判断' },
+  { value: 'not_started', label: '未采集' },
+  { value: 'first_run', label: '首轮已跑' },
+  { value: 'rerun', label: '已重跑' },
+  { value: 'approved', label: '人工审核通过（可建档）' },
 ]
 
 export const MAX_BATCH_FILES = 10_000
@@ -173,11 +191,12 @@ export function relativePathOf(file: File): string {
   return relative && relative.trim() ? relative : file.name
 }
 
+/** 返工发布接口要求 `batch_id:store_id` 形式的门店标识。 */
 export function storeKey(batchId: string, storeId: string): string {
-  return `${batchId}::${storeId}`
+  return `${batchId}:${storeId}`
 }
 
 export function parseStoreKey(key: string): { batchId: string; storeId: string } {
-  const index = key.indexOf('::')
-  return { batchId: key.slice(0, index), storeId: key.slice(index + 2) }
+  const index = key.indexOf(':')
+  return { batchId: key.slice(0, index), storeId: key.slice(index + 1) }
 }

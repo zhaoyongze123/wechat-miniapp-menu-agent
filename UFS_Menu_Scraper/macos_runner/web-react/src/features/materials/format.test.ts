@@ -67,6 +67,7 @@ describe('展示辅助', () => {
 
   it('返工门店键可往返解析', () => {
     const key = storeKey('batch-1', 'store-9')
+    expect(key).toBe('batch-1:store-9')
     expect(parseStoreKey(key)).toEqual({ batchId: 'batch-1', storeId: 'store-9' })
   })
 })
