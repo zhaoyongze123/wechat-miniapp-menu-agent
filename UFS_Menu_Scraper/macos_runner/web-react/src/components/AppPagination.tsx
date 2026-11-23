@@ -38,7 +38,7 @@ export function AppPagination({
       </span>
       <div className="flex items-center gap-2">
         {onPageSizeChange ? (
-          <div className="w-[116px]">
+          <div className="w-30">
             <Select
               aria-label="每页条数"
               value={String(pageSize)}

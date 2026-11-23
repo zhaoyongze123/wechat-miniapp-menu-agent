@@ -123,7 +123,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 function NavLink({ item, active, compact = false }: { item: NavItem; active: boolean; compact?: boolean }) {
   const Icon = item.icon
   const className = [
-    'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors',
+    'flex items-center gap-2.5 rounded-sm px-2 py-1.5 text-sm transition-colors',
     compact ? 'shrink-0 whitespace-nowrap' : '',
     active
       ? 'bg-secondary-soft text-default'

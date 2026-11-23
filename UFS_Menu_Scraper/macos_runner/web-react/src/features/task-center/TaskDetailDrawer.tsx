@@ -134,7 +134,7 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
           </div>
 
           {renaming ? (
-            <div className="rounded-xl bg-surface-secondary p-3">
+            <div className="rounded-lg bg-surface-secondary p-3">
               <label className="mb-1 block text-xs text-secondary" htmlFor="task-rename-input">
                 任务名称（1–64 个字符）
               </label>
@@ -222,7 +222,7 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                   {detail.events.map((event, index) => (
                     <li
                       key={`${event.time ?? ''}-${index}`}
-                      className="flex gap-3 rounded-xl bg-surface-secondary px-3 py-2 text-sm"
+                      className="flex gap-3 rounded-lg bg-surface-secondary px-3 py-2 text-sm"
                     >
                       <time className="font-mono shrink-0 text-xs text-tertiary">
                         {shortTime(event.time) || '—'}

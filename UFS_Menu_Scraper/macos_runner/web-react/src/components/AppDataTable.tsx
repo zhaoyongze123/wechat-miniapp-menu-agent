@@ -46,7 +46,7 @@ export function AppDataTable<T>({
               <th
                 key={column.id}
                 scope="col"
-                className={`border-b border-subtle px-3 py-2.5 text-xs whitespace-nowrap text-secondary ${column.headerClassName ?? ''}`}
+                className={`border-b border-subtle px-4 py-3 text-xs whitespace-nowrap text-secondary ${column.headerClassName ?? ''}`}
               >
                 {column.header}
               </th>
@@ -61,12 +61,12 @@ export function AppDataTable<T>({
                 key={key}
                 className={[
                   'border-b border-subtle align-top last:border-b-0',
-                  onRowActivate ? 'cursor-pointer hover:bg-hover' : '',
+                  onRowActivate ? 'cursor-pointer hover:bg-secondary-ghost-hover' : '',
                 ].join(' ')}
                 onClick={onRowActivate ? () => onRowActivate(row) : undefined}
               >
                 {columns.map((column) => (
-                  <td key={column.id} className={`px-3 py-3 ${column.className ?? ''}`}>
+                  <td key={column.id} className={`px-4 py-3 ${column.className ?? ''}`}>
                     {column.cell(row)}
                   </td>
                 ))}

@@ -20,9 +20,9 @@ export function ImagePreview({ open, src, alt, caption, onOpenChange }: ImagePre
   return (
     <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
       <RadixDialog.Portal>
-        <RadixDialog.Overlay className="fixed inset-0 z-50 bg-black/70" />
+        <RadixDialog.Overlay className="fixed inset-0 z-50 bg-[var(--modal-backdrop-background)]" />
         <RadixDialog.Content
-          className="fixed inset-3 z-[60] flex flex-col overflow-hidden rounded-2xl border border-subtle bg-surface"
+          className="fixed inset-3 z-[60] flex flex-col overflow-hidden rounded-xl border border-subtle bg-surface shadow-[var(--shadow-400),var(--shadow-hairline)]"
           aria-describedby={undefined}
         >
           <header className="flex items-center justify-between gap-4 border-b border-subtle px-4 py-2.5">

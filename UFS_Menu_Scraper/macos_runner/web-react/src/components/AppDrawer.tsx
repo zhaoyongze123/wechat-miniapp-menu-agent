@@ -28,9 +28,9 @@ export function AppDrawer({
   return (
     <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
       <RadixDialog.Portal>
-        <RadixDialog.Overlay className="fixed inset-0 z-40 bg-black/30" />
+        <RadixDialog.Overlay className="fixed inset-0 z-40 bg-[var(--dialog-backdrop-dim-background)]" />
         <RadixDialog.Content
-          className="fixed top-0 right-0 z-50 flex h-full w-[min(720px,96vw)] flex-col overflow-hidden border-l border-subtle bg-surface shadow-2xl"
+          className="fixed top-0 right-0 z-50 flex h-full w-[min(720px,96vw)] flex-col overflow-hidden border-l border-subtle bg-surface shadow-[var(--shadow-400),var(--shadow-hairline)]"
           {...(description ? {} : { 'aria-describedby': undefined })}
         >
           <header className="flex items-start justify-between gap-4 border-b border-subtle px-5 py-4">
@@ -51,7 +51,7 @@ export function AppDrawer({
               </RadixDialog.Close>
             </div>
           </header>
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
           {footer ? <footer className="border-t border-subtle px-5 py-3">{footer}</footer> : null}
         </RadixDialog.Content>
       </RadixDialog.Portal>

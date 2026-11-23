@@ -348,7 +348,7 @@ export function TaskCenterPage() {
               <SegmentedControl.Option value="capture">采集运行</SegmentedControl.Option>
               <SegmentedControl.Option value="materials">素材分析</SegmentedControl.Option>
             </SegmentedControl>
-            <div className="w-35">
+            <div className="w-36">
               <Select
                 aria-label="任务状态"
                 value={status}
@@ -467,7 +467,7 @@ function BatchCell({ record }: { record: HistoryRecord }) {
         {single.versions.length ? (
           <span className="mt-0.5 flex flex-wrap gap-1">
             {single.versions.map((version) => (
-              <span key={version} className="rounded-md bg-surface-tertiary px-1.5 py-0.5 text-2xs text-secondary">
+              <span key={version} className="rounded-xs bg-surface-tertiary px-1.5 py-0.5 text-2xs text-secondary">
                 {version}
               </span>
             ))}
