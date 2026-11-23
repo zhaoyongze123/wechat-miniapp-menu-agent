@@ -40,7 +40,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'materials', label: '素材清洗', roles: ['hub'], icon: Images, migrated: true },
   { key: 'rejections', label: '质量审核', roles: ['hub'], icon: CheckCircle, migrated: true },
   { key: 'task-center', label: '任务中心', roles: ['hub', 'worker'], icon: Tasks, migrated: true },
-  { key: 'settings', label: '设置', roles: ['hub', 'worker'], icon: Settings },
+  { key: 'settings', label: '设置', roles: ['hub', 'worker'], icon: Settings, migrated: true },
 ]
 
 export function AppShell({ children }: { children: ReactNode }) {
