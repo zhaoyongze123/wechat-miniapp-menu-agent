@@ -33,20 +33,20 @@ export function AppDataTable<T>({
   loading = false,
   emptyState,
   onRowActivate,
-  minWidthClass = 'min-w-[880px]',
+  minWidthClass = 'min-w-[760px]',
 }: AppDataTableProps<T>) {
   const showEmpty = !loading && rows.length === 0
   return (
-    <div className="relative overflow-x-auto rounded-xl border border-line-subtle">
+    <div className="relative overflow-x-auto rounded-xl border border-[var(--color-border-subtle)]">
       <table className={`w-full ${minWidthClass} border-collapse text-left text-sm`}>
         <caption className="sr-only">{caption}</caption>
-        <thead className="sticky top-0 z-10 bg-canvas">
+        <thead className="sticky top-0 z-10 bg-[var(--color-surface-secondary)]">
           <tr>
             {columns.map((column) => (
               <th
                 key={column.id}
                 scope="col"
-                className={`border-b border-line-subtle px-3 py-2.5 text-xs font-medium whitespace-nowrap text-ink-muted ${column.headerClassName ?? ''}`}
+                className={`border-b border-[var(--color-border-subtle)] px-3 py-2.5 text-xs font-medium whitespace-nowrap text-[var(--color-text-secondary)] ${column.headerClassName ?? ''}`}
               >
                 {column.header}
               </th>
@@ -60,7 +60,7 @@ export function AppDataTable<T>({
               <tr
                 key={key}
                 className={[
-                  'border-b border-line-subtle align-top last:border-b-0',
+                  'border-b border-[var(--color-border-subtle)] align-top last:border-b-0',
                   onRowActivate ? 'cursor-pointer hover:bg-hover' : '',
                 ].join(' ')}
                 onClick={onRowActivate ? () => onRowActivate(row) : undefined}
@@ -76,7 +76,7 @@ export function AppDataTable<T>({
         </tbody>
       </table>
       {loading ? (
-        <div className="absolute inset-0 flex items-center justify-center bg-panel/80 text-sm text-ink-muted">
+        <div className="absolute inset-0 flex items-center justify-center bg-[var(--color-surface)]/80 text-sm text-[var(--color-text-secondary)]">
           正在读取任务数据…
         </div>
       ) : null}

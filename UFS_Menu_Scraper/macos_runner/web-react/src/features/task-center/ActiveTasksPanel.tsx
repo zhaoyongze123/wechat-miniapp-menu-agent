@@ -48,7 +48,7 @@ export function ActiveTasksPanel({ onOpen }: ActiveTasksPanelProps) {
 
   if (!query.data.tasks.length) {
     return (
-      <EmptyMessage className="app-card px-4 py-6">
+      <EmptyMessage className="rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-surface)] px-4 py-6">
         <EmptyMessage.Title>当前没有运行中的任务</EmptyMessage.Title>
         <EmptyMessage.Description>开始一次采集或素材分析后，进度会显示在这里。</EmptyMessage.Description>
       </EmptyMessage>
@@ -65,7 +65,7 @@ export function ActiveTasksPanel({ onOpen }: ActiveTasksPanelProps) {
         return (
           <article
             key={`${task.source}:${task.id}`}
-            className="app-card flex flex-col gap-3 p-4"
+            className="rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-surface)] flex flex-col gap-3 p-4"
             aria-label={`活动任务 ${task.title}`}
           >
             <header className="flex items-start justify-between gap-3">
@@ -73,28 +73,28 @@ export function ActiveTasksPanel({ onOpen }: ActiveTasksPanelProps) {
                 <h3 className="truncate text-sm font-semibold" title={task.title}>
                   {task.title || task.id}
                 </h3>
-                <p className="mt-0.5 text-xs text-ink-muted">
+                <p className="mt-0.5 text-xs text-[var(--color-text-secondary)]">
                   {KIND_LABEL[task.source] ?? task.source} · 更新于 {formatTime(task.updated_at)}
                 </p>
               </div>
               <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
             </header>
             <div>
-              <div className="mb-1 flex justify-between text-xs text-ink-muted">
+              <div className="mb-1 flex justify-between text-xs text-[var(--color-text-secondary)]">
                 <span>
                   已处理 {done} / {total}
                 </span>
                 <span>{percent}%</span>
               </div>
               <div
-                className="h-1.5 overflow-hidden rounded-full bg-subtle"
+                className="h-1.5 overflow-hidden rounded-full bg-[var(--color-surface-tertiary)]"
                 role="progressbar"
                 aria-valuemin={0}
                 aria-valuemax={total}
                 aria-valuenow={done}
                 aria-label="任务进度"
               >
-                <div className="h-full rounded-full bg-ink transition-[width]" style={{ width: `${percent}%` }} />
+                <div className="h-full rounded-full bg-[var(--color-text)] transition-[width]" style={{ width: `${percent}%` }} />
               </div>
             </div>
             <div className="flex justify-end">

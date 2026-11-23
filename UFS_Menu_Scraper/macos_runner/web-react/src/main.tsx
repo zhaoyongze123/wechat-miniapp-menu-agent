@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClientProvider } from '@tanstack/react-query'
+import { AppsSDKUIProvider } from '@openai/apps-sdk-ui/components/AppsSDKUIProvider'
 import { HashRouter } from 'react-router-dom'
 import './styles/index.css'
 import { App } from './app/App'
@@ -18,10 +19,12 @@ if (window.location.hash.length > 1 && !window.location.hash.startsWith('#/')) {
 
 createRoot(container).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <HashRouter>
-        <App />
-      </HashRouter>
-    </QueryClientProvider>
+    <AppsSDKUIProvider linkComponent="a">
+      <QueryClientProvider client={queryClient}>
+        <HashRouter>
+          <App />
+        </HashRouter>
+      </QueryClientProvider>
+    </AppsSDKUIProvider>
   </StrictMode>,
 )

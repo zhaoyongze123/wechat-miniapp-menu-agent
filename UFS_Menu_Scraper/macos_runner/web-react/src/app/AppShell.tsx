@@ -1,7 +1,16 @@
-import type { ReactNode } from 'react'
+import type { ComponentType, ReactNode, SVGProps } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+import { Avatar } from '@openai/apps-sdk-ui/components/Avatar'
 import { Badge } from '@openai/apps-sdk-ui/components/Badge'
-import { TextLink } from '@openai/apps-sdk-ui/components/TextLink'
+import { Menu } from '@openai/apps-sdk-ui/components/Menu'
+import {
+  CheckCircle,
+  ChevronRight,
+  Home,
+  Images,
+  Settings,
+  Tasks,
+} from '@openai/apps-sdk-ui/components/Icon'
 import { ROLE_LABEL, useRole } from './RoleProvider'
 import type { AppRole } from '../api/types'
 
@@ -9,6 +18,7 @@ interface NavItem {
   key: string
   label: string
   roles: AppRole[]
+  icon: ComponentType<SVGProps<SVGSVGElement>>
   migrated?: boolean
 }
 
@@ -17,11 +27,11 @@ interface NavItem {
  * 已迁移页面留在 React 内部，不复制第二套路由规则。
  */
 const NAV_ITEMS: NavItem[] = [
-  { key: 'overview', label: '采集工作台', roles: ['hub', 'worker'] },
-  { key: 'materials', label: '素材清洗', roles: ['hub'] },
-  { key: 'rejections', label: '质量审核', roles: ['hub'] },
-  { key: 'task-center', label: '任务中心', roles: ['hub', 'worker'], migrated: true },
-  { key: 'settings', label: '设置', roles: ['hub', 'worker'] },
+  { key: 'overview', label: '采集工作台', roles: ['hub', 'worker'], icon: Home },
+  { key: 'materials', label: '素材清洗', roles: ['hub'], icon: Images },
+  { key: 'rejections', label: '质量审核', roles: ['hub'], icon: CheckCircle },
+  { key: 'task-center', label: '任务中心', roles: ['hub', 'worker'], icon: Tasks, migrated: true },
+  { key: 'settings', label: '设置', roles: ['hub', 'worker'], icon: Settings },
 ]
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -33,59 +43,68 @@ export function AppShell({ children }: { children: ReactNode }) {
   const connection = connectionText(role.role, role.status)
 
   return (
-    <div className="flex h-full overflow-hidden bg-canvas text-ink">
-      <aside className="hidden w-[248px] shrink-0 flex-col bg-canvas md:flex">
-        <div className="flex items-center gap-2.5 px-4 py-5">
+    <div className="flex h-full overflow-hidden bg-[var(--color-surface)] text-[var(--color-text)]">
+      <aside className="hidden w-[252px] shrink-0 flex-col overflow-hidden bg-[var(--color-surface-secondary)] md:flex">
+        <div className="flex items-center gap-2.5 px-4 py-4">
           <span
-            className="grid h-9 w-9 place-items-center rounded-full bg-ink text-[13px] font-semibold text-[var(--color-text-inverse)]"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[var(--color-text)] text-xs font-semibold text-[var(--color-text-inverse)]"
             aria-hidden="true"
           >
             菜
           </span>
           <div className="min-w-0">
-            <p className="truncate text-[15px] font-semibold">菜单采集工作台</p>
-            <p className="truncate text-xs text-ink-faint">共享后台 · Windows 采集端</p>
+            <p className="truncate text-sm font-semibold">菜单采集工作台</p>
+            <p className="truncate text-2xs text-[var(--color-text-tertiary)]">共享后台 · Windows 采集端</p>
           </div>
         </div>
 
-        <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-2" aria-label="主导航">
+        <nav className="flex-1 space-y-0.5 overflow-y-auto px-2" aria-label="主导航">
           {visibleItems.map((item) => (
             <NavLink key={item.key} item={item} active={item.key === currentKey} />
           ))}
         </nav>
 
-        <div className="space-y-2 border-t border-line-subtle px-4 py-3 text-xs">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-ink-muted">当前角色</span>
-            <Badge color={role.role === 'standalone' ? 'warning' : 'secondary'} variant="soft" size="sm">
-              {ROLE_LABEL[role.role]}
-            </Badge>
-          </div>
-          <p className="leading-relaxed break-words text-ink-faint">{connection}</p>
-          <TextLink href="/#overview" className="text-xs">
-            返回旧版主页
-          </TextLink>
+        <div className="border-t border-[var(--color-border-subtle)] p-2">
+          <Menu>
+            <Menu.Trigger>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-[var(--alpha-02)]"
+              >
+                <Avatar size={28} name={ROLE_LABEL[role.role]} color="secondary" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-[var(--color-text)]">{ROLE_LABEL[role.role]}</span>
+                  <span className="block truncate text-2xs text-[var(--color-text-tertiary)]">{connection}</span>
+                </span>
+                <ChevronRight width={14} height={14} className="shrink-0 -rotate-90 text-[var(--color-text-tertiary)]" />
+              </button>
+            </Menu.Trigger>
+            <Menu.Content side="top" align="start" width={224} minWidth={224}>
+              <Menu.Item onSelect={() => { window.location.href = '/#overview' }}>返回旧版主页</Menu.Item>
+              <Menu.Item onSelect={() => { window.location.href = '/#task-center' }}>旧版控制台</Menu.Item>
+            </Menu.Content>
+          </Menu>
         </div>
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line-subtle bg-panel px-4 md:px-6">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-ink text-[11px] font-semibold text-[var(--color-text-inverse)] md:hidden">
+        <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-[var(--color-border-subtle)] bg-[var(--color-surface)] px-4 md:px-6">
+          <div className="flex min-w-0 items-center gap-2 md:hidden">
+            <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[var(--color-text)] text-3xs font-semibold text-[var(--color-text-inverse)]">
               菜
             </span>
-            <h2 className="truncate text-[15px] font-semibold">{currentItem?.label ?? '菜单采集工作台'}</h2>
+            <h2 className="truncate text-base font-semibold">{currentItem?.label ?? '菜单采集工作台'}</h2>
           </div>
-          <div className="flex shrink-0 items-center gap-3 text-xs text-ink-muted">
-            <span className="hidden sm:inline">{connection}</span>
-            <TextLink href="/#task-center" className="text-xs">
-              旧版控制台
-            </TextLink>
+          <div className="ml-auto flex shrink-0 items-center gap-2.5">
+            <span className="hidden text-xs text-[var(--color-text-tertiary)] sm:inline">{connection}</span>
+            <Badge color={role.role === 'standalone' ? 'warning' : 'secondary'} variant="soft" size="sm">
+              {ROLE_LABEL[role.role]}
+            </Badge>
           </div>
         </header>
 
         <nav
-          className="flex shrink-0 gap-1 overflow-x-auto border-b border-line-subtle bg-panel px-3 py-2 md:hidden"
+          className="flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--color-border-subtle)] bg-[var(--color-surface)] px-3 py-2 md:hidden"
           aria-label="主导航（移动端）"
         >
           {visibleItems.map((item) => (
@@ -93,8 +112,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           ))}
         </nav>
 
-        <main id="app-main" className="min-h-0 flex-1 overflow-y-auto bg-canvas px-4 py-6 md:px-8">
-          <div className="mx-auto w-full max-w-[1200px]">{children}</div>
+        <main id="app-main" className="min-h-0 flex-1 overflow-y-auto bg-[var(--color-surface)] px-4 py-6 md:px-10">
+          <div className="mx-auto w-full max-w-[1120px]">{children}</div>
         </main>
       </div>
     </div>
@@ -102,23 +121,30 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 
 function NavLink({ item, active, compact = false }: { item: NavItem; active: boolean; compact?: boolean }) {
+  const Icon = item.icon
   const className = [
-    'flex items-center rounded-lg px-3 py-2 text-sm transition-colors',
+    'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors',
     compact ? 'shrink-0 whitespace-nowrap' : '',
     active
-      ? 'bg-[var(--alpha-08)] font-medium text-ink'
-      : 'text-ink-muted hover:bg-[var(--alpha-04)] hover:text-ink',
+      ? 'bg-[var(--alpha-08)] font-medium text-[var(--color-text)]'
+      : 'text-[var(--color-text-secondary)] hover:bg-[var(--alpha-04)] hover:text-[var(--color-text)]',
   ].join(' ')
+  const content = (
+    <>
+      <Icon width={compact ? 15 : 17} height={compact ? 15 : 17} className="shrink-0" />
+      {item.label}
+    </>
+  )
   if (item.migrated) {
     return (
       <Link to={`/${item.key}`} className={className} aria-current={active ? 'page' : undefined}>
-        {item.label}
+        {content}
       </Link>
     )
   }
   return (
     <a href={`/#${item.key}`} className={className} aria-current={active ? 'page' : undefined}>
-      {item.label}
+      {content}
     </a>
   )
 }

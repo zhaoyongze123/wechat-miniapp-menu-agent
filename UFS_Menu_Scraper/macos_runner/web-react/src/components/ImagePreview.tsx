@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import * as RadixDialog from '@radix-ui/react-dialog'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
+import { Image } from '@openai/apps-sdk-ui/components/Image'
 
 interface ImagePreviewProps {
   open: boolean
@@ -21,11 +22,11 @@ export function ImagePreview({ open, src, alt, caption, onOpenChange }: ImagePre
       <RadixDialog.Portal>
         <RadixDialog.Overlay className="fixed inset-0 z-50 bg-black/70" />
         <RadixDialog.Content
-          className="fixed inset-3 z-[60] flex flex-col overflow-hidden rounded-2xl border border-line-subtle bg-panel"
+          className="fixed inset-3 z-[60] flex flex-col overflow-hidden rounded-2xl border border-[var(--color-border-subtle)] bg-[var(--color-surface)]"
           aria-describedby={undefined}
         >
-          <header className="flex items-center justify-between gap-4 border-b border-line-subtle px-4 py-2.5">
-            <RadixDialog.Title className="truncate text-sm text-ink">{caption ?? alt}</RadixDialog.Title>
+          <header className="flex items-center justify-between gap-4 border-b border-[var(--color-border-subtle)] px-4 py-2.5">
+            <RadixDialog.Title className="truncate text-sm text-[var(--color-text)]">{caption ?? alt}</RadixDialog.Title>
             <div className="flex items-center gap-2">
               <Button
                 color="secondary"
@@ -44,7 +45,7 @@ export function ImagePreview({ open, src, alt, caption, onOpenChange }: ImagePre
             </div>
           </header>
           <div className="min-h-0 flex-1 overflow-auto bg-[var(--color-surface-secondary)] p-3">
-            <img
+            <Image
               src={src}
               alt={alt}
               className={actualSize ? 'max-w-none' : 'mx-auto max-h-full max-w-full object-contain'}

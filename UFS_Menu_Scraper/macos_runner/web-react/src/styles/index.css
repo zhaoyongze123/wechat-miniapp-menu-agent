@@ -4,28 +4,9 @@
 @source "../../node_modules/@openai/apps-sdk-ui";
 
 /*
- * 设计 Token 只做官方变量的一层别名，不另建色板。
- * 深浅色由 <html data-theme> 决定，官方 variables-semantic.css 负责取值。
+ * 全站只消费 @openai/apps-sdk-ui 暴露的官方语义变量与官方字阶，
+ * 不定义任何自有色板、字号或组件样式类。
  */
-@theme inline {
-  --color-canvas: var(--color-surface-secondary);
-  --color-panel: var(--color-surface);
-  --color-elevated: var(--color-surface-elevated);
-  --color-subtle: var(--color-surface-tertiary);
-  --color-line: var(--color-border);
-  --color-line-subtle: var(--color-border-subtle);
-  --color-line-strong: var(--color-border-strong);
-  --color-ink: var(--color-text);
-  --color-ink-muted: var(--color-text-secondary);
-  --color-ink-faint: var(--color-text-tertiary);
-  --color-hover: var(--alpha-02);
-  --font-sans:
-    ui-sans-serif, -apple-system, system-ui, "Segoe UI", "Noto Sans", "PingFang SC", "Microsoft YaHei",
-    "Helvetica", "Arial", sans-serif;
-  --font-mono:
-    ui-monospace, "SFMono-Regular", "SF Mono", "Menlo", "Monaco", "Consolas", "Liberation Mono", monospace;
-}
-
 @layer base {
   html,
   body,
@@ -37,11 +18,6 @@
     margin: 0;
     background: var(--color-surface-secondary);
     color: var(--color-text);
-    font-family: var(--font-sans);
-    font-size: 14px;
-    line-height: 1.5;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
   }
 
   ::selection {
@@ -51,18 +27,5 @@
   :focus-visible {
     outline: 2px solid var(--color-ring);
     outline-offset: 2px;
-  }
-}
-
-@layer components {
-  /* 内容卡片：白底 + 官方细边框 + 官方大圆角。 */
-  .app-card {
-    background: var(--color-surface);
-    border: 1px solid var(--color-border-subtle);
-    border-radius: var(--radius-2xl);
-  }
-
-  .app-mono {
-    font-family: var(--font-mono);
   }
 }

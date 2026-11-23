@@ -222,13 +222,13 @@ export function TaskCenterPage() {
     {
       id: 'title',
       header: '任务名称',
-      className: 'min-w-[240px] max-w-[380px]',
+      className: 'min-w-[200px] max-w-[320px]',
       cell: (record) => (
         <div className="min-w-0">
           <strong className="block truncate font-medium" title={`${record.title ?? record.id} · ${record.id}`}>
             {record.title || record.id}
           </strong>
-          <span className="app-mono mt-0.5 block truncate text-[11px] text-ink-faint">{record.id}</span>
+          <span className="font-mono mt-0.5 block truncate text-2xs text-[var(--color-text-tertiary)]">{record.id}</span>
           {kind === 'all' ? (
             <span className="mt-1 inline-block">
               <Badge color="secondary" variant="soft" size="sm">
@@ -242,7 +242,7 @@ export function TaskCenterPage() {
     {
       id: 'batch',
       header: '批次范围',
-      className: 'min-w-[160px]',
+      className: 'min-w-[130px]',
       cell: (record) => <BatchCell record={record} />,
     },
     {
@@ -257,13 +257,13 @@ export function TaskCenterPage() {
     {
       id: 'result',
       header: '结果摘要',
-      className: 'min-w-[220px]',
+      className: 'min-w-[170px]',
       cell: (record) => <ResultCell record={record} />,
     },
     {
       id: 'created',
       header: '开始时间',
-      className: 'whitespace-nowrap text-ink-muted',
+      className: 'whitespace-nowrap text-[var(--color-text-secondary)]',
       cell: (record) => formatTime(record.created_at),
     },
     {
@@ -293,10 +293,10 @@ export function TaskCenterPage() {
     <section className="space-y-6" aria-labelledby="task-center-heading">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 id="task-center-heading" className="text-[22px] font-semibold tracking-[-0.01em]">
+          <h1 id="task-center-heading" className="text-xl font-semibold">
             任务中心
           </h1>
-          <p className="mt-1 text-sm text-ink-muted">{scopeText}</p>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">{scopeText}</p>
         </div>
         <div className="flex items-center gap-3">
           <Button
@@ -310,14 +310,11 @@ export function TaskCenterPage() {
           >
             刷新
           </Button>
-          <TextLink href="/#task-center" className="text-xs">
-            旧版任务中心
-          </TextLink>
         </div>
       </header>
 
       <section className="space-y-3" aria-labelledby="active-heading">
-        <h2 id="active-heading" className="text-sm font-medium text-ink-muted">
+        <h2 id="active-heading" className="text-sm font-medium text-[var(--color-text-secondary)]">
           运行中与最近结束
         </h2>
         <ActiveTasksPanel onOpen={openActive} />
@@ -331,13 +328,13 @@ export function TaskCenterPage() {
         <StatCard label="失败/取消" value={Number(summary.failed) || 0} />
       </section>
 
-      <section className="app-card space-y-4 p-4 md:p-5" aria-labelledby="history-heading">
+      <section className="rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-surface)] space-y-4 p-4 md:p-5" aria-labelledby="history-heading">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <h2 id="history-heading" className="text-base font-semibold">
               任务历史
             </h2>
-            <p className="mt-0.5 text-xs text-ink-muted">筛选与页码保存在地址栏，刷新或返回后保持原条件。</p>
+            <p className="mt-0.5 text-xs text-[var(--color-text-secondary)]">筛选与页码保存在地址栏，刷新或返回后保持原条件。</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <SegmentedControl
@@ -442,8 +439,8 @@ export function TaskCenterPage() {
 
 function StatCard({ label, value }: { label: string; value: number }) {
   return (
-    <div className="app-card px-4 py-3">
-      <p className="text-xs text-ink-muted">{label}</p>
+    <div className="rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-surface)] px-4 py-3">
+      <p className="text-xs text-[var(--color-text-secondary)]">{label}</p>
       <p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p>
     </div>
   )
@@ -456,7 +453,7 @@ function BatchCell({ record }: { record: HistoryRecord }) {
     return (
       <span title={description} className="inline-flex flex-col">
         <span>涉及 {batches.length} 个批次</span>
-        <span className="text-[11px] text-ink-muted">{description}</span>
+        <span className="text-2xs text-[var(--color-text-secondary)]">{description}</span>
       </span>
     )
   }
@@ -470,7 +467,7 @@ function BatchCell({ record }: { record: HistoryRecord }) {
         {single.versions.length ? (
           <span className="mt-0.5 flex flex-wrap gap-1">
             {single.versions.map((version) => (
-              <span key={version} className="rounded-md bg-subtle px-1.5 py-0.5 text-[11px] text-ink-muted">
+              <span key={version} className="rounded-md bg-[var(--color-surface-tertiary)] px-1.5 py-0.5 text-2xs text-[var(--color-text-secondary)]">
                 {version}
               </span>
             ))}
@@ -486,7 +483,7 @@ function BatchCell({ record }: { record: HistoryRecord }) {
       </span>
     )
   }
-  return <span className="text-ink-faint">—</span>
+  return <span className="text-[var(--color-text-tertiary)]">—</span>
 }
 
 function ResultCell({ record }: { record: HistoryRecord }) {
@@ -497,7 +494,7 @@ function ResultCell({ record }: { record: HistoryRecord }) {
         <span>
           已处理 {counts.recorded ?? 0} / {counts.total ?? 0}
         </span>
-        <span className="text-ink-muted">
+        <span className="text-[var(--color-text-secondary)]">
           已截图待复核 {counts.done ?? 0} · 待检查 {counts.attention ?? 0} · 不合格 {counts.rejected ?? 0}
         </span>
         {counts.unknown ? (

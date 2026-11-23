@@ -17,12 +17,12 @@ export function StatePanel({ variant, title, description, action }: StatePanelPr
   if (variant === 'loading') {
     return (
       <div
-        className="flex flex-col items-center justify-center gap-3 px-6 py-12 text-center text-sm text-ink-muted"
+        className="flex flex-col items-center justify-center gap-3 px-6 py-12 text-center text-sm text-[var(--color-text-secondary)]"
         role="status"
         aria-live="polite"
       >
         <LoadingIndicator size={20} />
-        <strong className="text-sm font-medium text-ink">{title}</strong>
+        <strong className="text-sm font-medium text-[var(--color-text)]">{title}</strong>
         {description ? <span className="max-w-lg leading-relaxed">{description}</span> : null}
       </div>
     )
