@@ -1,0 +1,479 @@
+{
+  "rejections": {
+    "summary": {
+      "stores": 2,
+      "records": 2,
+      "materials": 0,
+      "capture": 2,
+      "reviewed": 0
+    },
+    "records": [
+      {
+        "source_type": "capture",
+        "source_label": "采集任务",
+        "record_id": "b546932b43732bc5681b",
+        "store_key": "SH010__杭州市__演示门店010__31.009,121.009",
+        "store_name": "SH010__杭州市__演示门店010__31.009,121.009",
+        "source_folder": "SH010__杭州市__演示门店010__31.009,121.009",
+        "source_item": "二维码.png",
+        "reason_code": "demo_blur",
+        "reason_label": "未记录原因",
+        "detail": "",
+        "evidence": "",
+        "marked_at": "",
+        "reviewed_at": "",
+        "status": "rejected",
+        "stage": "queued",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "task_id": "b546932b43732bc5681b",
+        "run_id": null
+      },
+      {
+        "source_type": "capture",
+        "source_label": "采集任务",
+        "record_id": "7d243b8b464b6025c0d8",
+        "store_key": "SH009__上海市__演示门店009__31.008,121.008",
+        "store_name": "SH009__上海市__演示门店009__31.008,121.008",
+        "source_folder": "SH009__上海市__演示门店009__31.008,121.008",
+        "source_item": "二维码.png",
+        "reason_code": "demo_blur",
+        "reason_label": "未记录原因",
+        "detail": "",
+        "evidence": "",
+        "marked_at": "",
+        "reviewed_at": "",
+        "status": "rejected",
+        "stage": "queued",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "task_id": "7d243b8b464b6025c0d8",
+        "run_id": null
+      }
+    ],
+    "batches": [
+      {
+        "id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "name": "清洗 2026-11-23 23:01:01"
+      }
+    ]
+  },
+  "batch": {
+    "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+    "source_kind": "local",
+    "source_root": "D:\\menu-agent\\.tmp-quality-test\\hub\\raw",
+    "status": "completed",
+    "progress": {
+      "done": 128,
+      "total": 128
+    },
+    "summary": {
+      "total_stores": 128,
+      "total_images": 128,
+      "selected_stores": 128,
+      "review_stores": 0,
+      "confirmed_stores": 128,
+      "skipped_stores": 0,
+      "pending_stores": 0,
+      "detection_stats": {
+        "square": {
+          "scanned_stores": 0,
+          "hit_stores": 0,
+          "ms": 0.0
+        },
+        "total_ms": 0.0
+      }
+    },
+    "error": "",
+    "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+    "job": {
+      "id": "89b8723845d34e4fa880ecc71c98233b",
+      "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+      "kind": "analyze",
+      "status": "completed",
+      "total_stores": 128,
+      "done_stores": 128,
+      "failed_stores": 0,
+      "concurrency": 2,
+      "current_store_id": "9df2a755267347a3e28728ed",
+      "current_store_name": "SH128__苏州市__演示门店128__31.127,121.127",
+      "stage": "检测与用途识别",
+      "message": "全部门店处理完成",
+      "error": "",
+      "owner": "",
+      "heartbeat_at": "2026-11-23T23:01:32+08:00",
+      "started_at": "2026-11-23T23:01:02+08:00",
+      "finished_at": "2026-11-23T23:01:32+08:00",
+      "created_at": "2026-11-23T23:01:02+08:00",
+      "updated_at": "2026-11-23T23:01:32+08:00",
+      "counts": {
+        "total": 128,
+        "done": 128,
+        "failed": 0,
+        "remaining": 0,
+        "running": 0
+      }
+    },
+    "workflow": {
+      "stage": "rerun",
+      "label": "已重跑",
+      "capture_rounds": 5,
+      "source": "auto",
+      "manual_stage": ""
+    },
+    "name": "清洗 2026-11-23 23:01:01",
+    "release": {
+      "release_id": "8342c30f7e1645f2866546001fd174af",
+      "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+      "batch_name": "清洗 2026-11-23 23:01:01",
+      "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+      "version": "v1.0.0",
+      "description": "Phase 1B 演示发布",
+      "published_at": "2026-11-23T23:01:41+08:00",
+      "store_count": 128,
+      "active": true
+    },
+    "releases": [
+      {
+        "release_id": "8342c30f7e1645f2866546001fd174af",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+        "version": "v1.0.0",
+        "description": "Phase 1B 演示发布",
+        "published_at": "2026-11-23T23:01:41+08:00",
+        "store_count": 128,
+        "active": true
+      }
+    ],
+    "suggested_version": "v1.0.1",
+    "has_changes": false,
+    "draft_changes": {
+      "added": 0,
+      "removed": 0,
+      "changed": 0
+    },
+    "stores": [
+      {
+        "store_id": "117a2d4b55259fcf3b42da6f",
+        "source_name": "SH009__上海市__演示门店009__31.008,121.008",
+        "source_folder": "SH009__上海市__演示门店009__31.008,121.008",
+        "analysis_status": "selected",
+        "reason": "店内仅剩一个用途未知二维码，图片正常且无冲突或漏检线索；按低可信候选推荐，待微信验证",
+        "recommendation": true,
+        "decision": "confirmed",
+        "recommendation_level": "low",
+        "wechat_validation_status": "unverified",
+        "rejection": null,
+        "selected": {
+          "image_index": 0,
+          "candidate_index": 0,
+          "box": {
+            "x": 30.0,
+            "y": 20.0,
+            "width": 100.0,
+            "height": 100.0
+          },
+          "crop_margin_ratio": 0.8,
+          "box_space": "source"
+        }
+      },
+      {
+        "store_id": "a724de26e189e7e9e7fde542",
+        "source_name": "SH010__杭州市__演示门店010__31.009,121.009",
+        "source_folder": "SH010__杭州市__演示门店010__31.009,121.009",
+        "analysis_status": "selected",
+        "reason": "店内仅剩一个用途未知二维码，图片正常且无冲突或漏检线索；按低可信候选推荐，待微信验证",
+        "recommendation": true,
+        "decision": "confirmed",
+        "recommendation_level": "low",
+        "wechat_validation_status": "unverified",
+        "rejection": null,
+        "selected": {
+          "image_index": 0,
+          "candidate_index": 0,
+          "box": {
+            "x": 30.0,
+            "y": 20.0,
+            "width": 100.0,
+            "height": 100.0
+          },
+          "crop_margin_ratio": 0.8,
+          "box_space": "source"
+        }
+      }
+    ]
+  },
+  "shared": {
+    "role": "hub",
+    "workers": [
+      {
+        "id": "f544de22d304d7558c39cbafbb482ed6",
+        "name": "前台采集电脑",
+        "last_seen": "2026-11-23T15:21:03+00:00",
+        "pending_uploads": 2,
+        "description": "一楼前台 · 已验证编辑",
+        "paired_at": "2026-11-23T15:01:41+00:00",
+        "revoked_at": "",
+        "archived_at": "",
+        "last_run": {
+          "worker_id": "f544de22d304d7558c39cbafbb482ed6",
+          "status": "completed",
+          "mode": "auto",
+          "processed": 3,
+          "total": 3,
+          "reported_at": "2026-11-23T15:01:41+00:00"
+        }
+      },
+      {
+        "id": "22b168726fab1c2d79c1d2d775419fdd",
+        "name": "后厨备用电脑",
+        "last_seen": "2026-11-23T12:01:41+00:00",
+        "pending_uploads": 0,
+        "description": "备用机，城东片区",
+        "paired_at": "2026-11-23T15:01:41+00:00",
+        "revoked_at": "",
+        "archived_at": "",
+        "last_run": null
+      },
+      {
+        "id": "2adf87dbe7c0ef86a9eb0702cf563f48",
+        "name": "旧笔记本",
+        "last_seen": "2026-11-23T12:01:41+00:00",
+        "pending_uploads": 0,
+        "description": "",
+        "paired_at": "2026-11-23T15:01:41+00:00",
+        "revoked_at": "2026-11-23T15:01:41+00:00",
+        "archived_at": "2026-11-23T15:22:47+00:00",
+        "last_run": null
+      }
+    ],
+    "assignments": [
+      {
+        "id": "0e288346f56737073ca633fc4d2d2361",
+        "task_id": "97b5e1a2b80fd85a6901",
+        "worker_id": "f544de22d304d7558c39cbafbb482ed6",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "store": "SH013__上海市__演示门店013__31.012,121.012",
+        "revision": "v1.0.0",
+        "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+        "source_hash": "764cb630e93531b68330d70d247ab0f47d0d3463d8252934178396df4345820c",
+        "source_suffix": ".png",
+        "status": "assigned",
+        "created_at": "2026-11-23T15:14:46+00:00",
+        "disposition": "",
+        "result_message": "",
+        "current_task_id": "97b5e1a2b80fd85a6901"
+      },
+      {
+        "id": "e04e4798e3c3f351aa5ba2bc48a74c60",
+        "task_id": "33e048ce2ba36f5ff80d",
+        "worker_id": "f544de22d304d7558c39cbafbb482ed6",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "store": "SH101__上海市__演示门店101__31.100,121.100",
+        "revision": "v1.0.0",
+        "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+        "source_hash": "fc9610c06b44650b1bb4a3d075cfbf567a2b5b7130637b3968ba283b321c359b",
+        "source_suffix": ".png",
+        "status": "assigned",
+        "created_at": "2026-11-23T15:09:29+00:00",
+        "disposition": "",
+        "result_message": "",
+        "current_task_id": "33e048ce2ba36f5ff80d"
+      },
+      {
+        "id": "4bba0315b977602c7146704bd1d55cd5",
+        "task_id": "fb9d5d1884584faa8847",
+        "worker_id": "f544de22d304d7558c39cbafbb482ed6",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "store": "SH003__南京市__演示门店003__31.002,121.002",
+        "revision": "v1.0.0",
+        "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+        "source_hash": "9fb63cdce0f60f3b1cb1581af8cbd5d0d3370b79523724466b2c2856bbabe741",
+        "source_suffix": ".png",
+        "status": "assigned",
+        "created_at": "2026-11-23T15:01:41+00:00",
+        "disposition": "",
+        "result_message": "",
+        "current_task_id": "fb9d5d1884584faa8847"
+      },
+      {
+        "id": "504ae5308a9d3699384151e8145944d0",
+        "task_id": "1d3277c67e2df0ec1a98",
+        "worker_id": "f544de22d304d7558c39cbafbb482ed6",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "store": "SH001__上海市__演示门店001__31.000,121.000",
+        "revision": "v1.0.0",
+        "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+        "source_hash": "764cb630e93531b68330d70d247ab0f47d0d3463d8252934178396df4345820c",
+        "source_suffix": ".png",
+        "status": "ready",
+        "created_at": "2026-11-23T15:01:41+00:00",
+        "disposition": "",
+        "result_message": "",
+        "current_task_id": "1d3277c67e2df0ec1a98"
+      },
+      {
+        "id": "e4573f686926f05396d1c4de9e98fee4",
+        "task_id": "f01cdefd0f3510a8d1da",
+        "worker_id": "f544de22d304d7558c39cbafbb482ed6",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "store": "SH002__杭州市__演示门店002__31.001,121.001",
+        "revision": "v1.0.0",
+        "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+        "source_hash": "6616e0cb4cb754b637302c26c9ac9c50b0f6684d8b30343e0d5207498403a8f9",
+        "source_suffix": ".png",
+        "status": "assigned",
+        "created_at": "2026-11-23T15:01:41+00:00",
+        "disposition": "",
+        "result_message": "",
+        "current_task_id": "f01cdefd0f3510a8d1da"
+      },
+      {
+        "id": "c1a8920bc97c2c09b046095b08a42ed7",
+        "task_id": "3af830973d4eab4c41d3",
+        "worker_id": "22b168726fab1c2d79c1d2d775419fdd",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "store": "SH014__杭州市__演示门店014__31.013,121.013",
+        "revision": "v1.0.0",
+        "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+        "source_hash": "6616e0cb4cb754b637302c26c9ac9c50b0f6684d8b30343e0d5207498403a8f9",
+        "source_suffix": ".png",
+        "status": "reclaimed",
+        "created_at": "2026-11-23T15:15:33+00:00",
+        "disposition": "",
+        "result_message": ""
+      },
+      {
+        "id": "001a1593e9ce7bc7c81332097f6461be",
+        "task_id": "dfc07da581cc479fdcae",
+        "worker_id": "22b168726fab1c2d79c1d2d775419fdd",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "store": "SH005__上海市__演示门店005__31.004,121.004",
+        "revision": "v1.0.0",
+        "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+        "source_hash": "fc9610c06b44650b1bb4a3d075cfbf567a2b5b7130637b3968ba283b321c359b",
+        "source_suffix": ".png",
+        "status": "reclaimed",
+        "created_at": "2026-11-23T15:01:41+00:00",
+        "disposition": "",
+        "result_message": ""
+      },
+      {
+        "id": "7ae61b2cf4278253dbad7eb2601cf00a",
+        "task_id": "00f9f50b329ae2a5a9fe",
+        "worker_id": "22b168726fab1c2d79c1d2d775419fdd",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "store": "SH006__杭州市__演示门店006__31.005,121.005",
+        "revision": "v1.0.0",
+        "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+        "source_hash": "bca08ae78ad8f88a5fd17b107b3a2d50b701efd3961f7fc9d7acd33499cc55b8",
+        "source_suffix": ".png",
+        "status": "reclaimed",
+        "created_at": "2026-11-23T15:01:41+00:00",
+        "disposition": "",
+        "result_message": ""
+      },
+      {
+        "id": "be972c36fdf239666fd6ccef2411ac3f",
+        "task_id": "60375c1f591644d8a36d",
+        "worker_id": "22b168726fab1c2d79c1d2d775419fdd",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "store": "SH004__苏州市__演示门店004__31.003,121.003",
+        "revision": "v1.0.0",
+        "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+        "source_hash": "3cf42a943be358e4f6b6ab2d872157b0c1fd0ac4d934cafb577bce57ff322518",
+        "source_suffix": ".png",
+        "status": "completed",
+        "created_at": "2026-11-23T15:01:41+00:00",
+        "disposition": "accepted",
+        "result_message": "已上传并确认（演示数据）"
+      }
+    ]
+  },
+  "pending": {
+    "records": [
+      {
+        "task_id": "970b61f9353de15360a4",
+        "store_name": "SH012__苏州市__演示门店012__31.011,121.011",
+        "status": "needs_review",
+        "stage": "queued",
+        "message": "",
+        "error_code": "unknown",
+        "group": "manual",
+        "label": "未分类失败",
+        "bucket": "other",
+        "bucket_label": "其他·未分类",
+        "source_path": "D:\\menu-agent\\.tmp-quality-test\\hub\\data\\materials\\published\\227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d\\SH012__苏州市__演示门店012__31.011,121.011\\二维码.png",
+        "output_dir": "",
+        "reject_reason": "",
+        "reject_detail": "",
+        "updated_at": "2026-11-23T23:01:40+08:00",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "workflow": {
+          "stage": "rerun",
+          "label": "已重跑",
+          "capture_rounds": 5,
+          "source": "auto",
+          "manual_stage": ""
+        }
+      },
+      {
+        "task_id": "8e27a4f913e35e1e392d",
+        "store_name": "SH011__南京市__演示门店011__31.010,121.010",
+        "status": "needs_review",
+        "stage": "queued",
+        "message": "",
+        "error_code": "unknown",
+        "group": "manual",
+        "label": "未分类失败",
+        "bucket": "other",
+        "bucket_label": "其他·未分类",
+        "source_path": "D:\\menu-agent\\.tmp-quality-test\\hub\\data\\materials\\published\\227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d\\SH011__南京市__演示门店011__31.010,121.010\\二维码.png",
+        "output_dir": "",
+        "reject_reason": "",
+        "reject_detail": "",
+        "updated_at": "2026-11-23T23:01:40+08:00",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "workflow": {
+          "stage": "rerun",
+          "label": "已重跑",
+          "capture_rounds": 5,
+          "source": "auto",
+          "manual_stage": ""
+        }
+      }
+    ],
+    "batches": [
+      {
+        "id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "name": "清洗 2026-11-23 23:01:01",
+        "workflow": {
+          "stage": "rerun",
+          "label": "已重跑",
+          "capture_rounds": 5,
+          "source": "auto",
+          "manual_stage": ""
+        }
+      }
+    ],
+    "summary": {
+      "stores": 2,
+      "batches": 1,
+      "needs_review": 2,
+      "retryable": 2
+    }
+  },
+  "events": []
+}

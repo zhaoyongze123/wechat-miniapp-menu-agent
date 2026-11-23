@@ -1,0 +1,33 @@
+[
+  {
+    "id": "7d243b8b464b6025c0d8",
+    "source_name": "SH009__上海市__演示门店009__31.008,121.008",
+    "source_path": "D:\\menu-agent\\.tmp-quality-test\\hub\\data\\materials\\published\\227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d\\SH009__上海市__演示门店009__31.008,121.008\\二维码.png",
+    "source_hash": "9fb63cdce0f60f3b1cb1581af8cbd5d0d3370b79523724466b2c2856bbabe741",
+    "status": "blocked",
+    "stage": "returned_to_materials",
+    "message": "已打回素材清洗；请重新确认二维码后增量发布并重跑",
+    "output_dir": "",
+    "updated_at": "2026-11-24T01:16:49+08:00",
+    "reject_reason": "",
+    "reject_detail": "",
+    "rejected_at": "",
+    "inherited_from": "",
+    "archived_at": "",
+    "reject_evidence": "",
+    "reject_reviewed_at": "",
+    "source_key": "7d243b8b464b6025c0d82092f3725a8bd70e4daac3bd421e51f34f1f3d318591",
+    "error_code": "",
+    "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+    "batch_name": "清洗 2026-11-23 23:01:01",
+    "version": "v1.0.0",
+    "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+    "reject_label": "",
+    "runnable": false,
+    "code": "unknown",
+    "group": "manual",
+    "bucket": "material",
+    "bucket_label": "素材问题",
+    "label": "未分类失败"
+  }
+]
