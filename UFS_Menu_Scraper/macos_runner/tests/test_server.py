@@ -160,3 +160,70 @@ def test_vue_asset_route_only_serves_built_files(tmp_path: Path) -> None:
     assert client.get("/vue/index.html").status_code == 404
     assert client.get("/vue/not-exists.js").status_code == 404
     assert client.get("/vue/%2e%2e/index.html").status_code == 404
+
+
+def test_react_entry_only_returns_manifest_assets(tmp_path: Path) -> None:
+    """React 入口仅在 ?ui=react 时返回，静态资源严格来自 Vite manifest。"""
+    import json
+
+    app = create_app(tmp_path, desktop=FakeDesktop())
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    response = client.get("/", params={"ui": "react"})
+    assert response.status_code == 200
+    assert '<div id="root"></div>' in response.text
+    assert "__CAPTURE_TOKEN__" not in response.text
+    assert response.headers["cache-control"] == "no-store"
+
+    manifest = json.loads(
+        (Path(__file__).resolve().parents[1] / "web/react/.vite/manifest.json").read_text(encoding="utf-8")
+    )
+    entry = next(item for item in manifest.values() if item.get("isEntry"))
+    script = entry["file"].rsplit("/", 1)[-1]
+    asset = client.get(f"/react/assets/{script}")
+    assert asset.status_code == 200
+    assert "javascript" in asset.headers["content-type"]
+    assert "immutable" in asset.headers["cache-control"]
+
+    # 目录内的 index.html、清单外文件与越界路径都不能通过资源路由读取。
+    assert client.get("/react/assets/index.html").status_code == 404
+    assert client.get("/react/assets/not-exists.js").status_code == 404
+    assert client.get("/react/assets/%2e%2e/index.html").status_code != 200
+
+
+def test_react_entry_reports_missing_build(tmp_path: Path, monkeypatch) -> None:
+    """未构建 React 时明确返回 503，而不是把旧版入口当作 React 页面。"""
+    from menu_capture import server
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    app = create_app(tmp_path / "data", desktop=FakeDesktop())
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    response = client.get("/", params={"ui": "react"})
+    assert response.status_code == 503
+    assert "React" in response.text
+
+
+def test_materials_history_detail_counts_match_list(tmp_path: Path) -> None:
+    """素材任务详情必须返回与列表相同的进度口径，不能返回空 counts。"""
+    app = create_app(tmp_path)
+    store = app.state.store
+    stamp = "2026-11-23T10:00:00+08:00"
+    with store.connect() as db:
+        db.execute(
+            "INSERT INTO material_batches(id,source_kind,source_root,status,created_at,updated_at,name) "
+            "VALUES(?,?,?,?,?,?,?)",
+            ("batch-a", "folder", str(tmp_path / "src"), "released", stamp, stamp, "演示批次"),
+        )
+        db.execute(
+            "INSERT INTO material_jobs(id,batch_id,kind,status,total_stores,done_stores,failed_stores,"
+            "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            ("job-a", "batch-a", "analyze", "running", 32, 18, 1, stamp, stamp),
+        )
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    detail = client.get("/api/tasks/history/materials/job-a").json()
+    assert detail["counts"] == {"total": 32, "done": 18, "attention": 0, "failed": 1}
+    assert detail["batch_name"] == "演示批次"
+    listed = client.get("/api/tasks/history", params={"kind": "materials"}).json()["records"]
+    assert listed[0]["counts"] == detail["counts"]

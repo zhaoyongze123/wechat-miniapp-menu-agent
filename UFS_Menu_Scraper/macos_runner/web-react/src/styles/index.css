@@ -1,0 +1,65 @@
+@import "tailwindcss";
+@import "@openai/apps-sdk-ui/css";
+/* 让 Tailwind 扫描官方组件内使用的 class，避免运行期样式缺失。 */
+@source "../../node_modules/@openai/apps-sdk-ui";
+
+/* 设计 Token：保留旧工作台黑白底、青绿强调的识别度，统一字体、行高、线条与表层。 */
+@theme {
+  --color-shell-950: #080c0d;
+  --color-shell-900: #0c1315;
+  --color-shell-850: #101a1c;
+  --color-shell-800: #142024;
+  --color-shell-700: #1b2b2f;
+  --color-shell-line: #223438;
+  --color-shell-muted: #8aa0a6;
+  --color-shell-text: #e4eef0;
+  --color-accent-300: #5eead4;
+  --color-accent-400: #2dd4bf;
+  --color-accent-500: #14b8a6;
+  --font-sans: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-shell-950);
+    color: var(--color-shell-text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent-400) 35%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent-400);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* 统一的内容表层面：外壳、卡片、分隔线只走这三个 Token。 */
+  .app-panel {
+    background: var(--color-shell-900);
+    border: 1px solid var(--color-shell-line);
+    border-radius: 12px;
+  }
+
+  .app-muted {
+    color: var(--color-shell-muted);
+  }
+
+  .app-mono {
+    font-family: var(--font-mono);
+  }
+}

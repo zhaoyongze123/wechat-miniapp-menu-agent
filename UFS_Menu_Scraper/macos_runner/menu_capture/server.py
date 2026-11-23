@@ -21,7 +21,7 @@ import tempfile
 import threading
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 from urllib.parse import quote, urlsplit
@@ -208,7 +208,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             if not hmac.compare_digest(supplied.encode(), token.encode()) or not origin_ok:
                 return JSONResponse({"detail": "本机操作令牌无效，请刷新控制台"}, status_code=403)
         response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
+        # 内容哈希资源由路由给出 immutable 缓存，其余响应一律 no-store。
+        if not (request.url.path.startswith("/react/assets/") and response.status_code == 200):
+            response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; connect-src 'self'"
@@ -317,10 +319,70 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         }
 
 
+    # React 迁移产物固定装配在 web/react/；入口只在 ?ui=react 时返回，
+    # 资源必须来自 Vite manifest 白名单，避免把构建目录里的其他文件暴露出去。
+    react_root = ROOT / "web" / "react"
+
+    def react_bundle() -> tuple[str, dict[str, Path]]:
+        """读取一次 manifest，返回入口 HTML 与允许对外提供的资源清单。"""
+        try:
+            manifest = json.loads((react_root / ".vite" / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise RuntimeError("React 控制台尚未构建，请先运行 web-react 的 npm run build") from error
+        entries = [item for item in manifest.values()
+                   if isinstance(item, dict) and item.get("isEntry")] if isinstance(manifest, dict) else []
+        if len(entries) != 1 or not isinstance(entries[0].get("file"), str):
+            raise RuntimeError("React 构建清单缺少唯一入口文件")
+        entry = entries[0]
+        assets: dict[str, Path] = {}
+        names = [entry["file"], *[item for item in entry.get("css", []) if isinstance(item, str)]]
+        for name in names:
+            relative = PurePosixPath(name)
+            # 只接受 assets/<文件名>，拒绝绝对路径、..、嵌套目录与隐藏文件。
+            if (relative.is_absolute() or len(relative.parts) != 2 or relative.parts[0] != "assets"
+                    or relative.parts[1].startswith(".")):
+                raise RuntimeError("React 构建清单包含非法资源路径")
+            target = react_root.joinpath(*relative.parts)
+            if not target.is_file():
+                raise RuntimeError(f"React 构建产物缺失: {name}")
+            assets[relative.parts[1]] = target
+        try:
+            html = (react_root / "index.html").read_text(encoding="utf-8")
+        except OSError as error:
+            raise RuntimeError("React 入口 HTML 缺失") from error
+        return html, assets
+
     @app.get("/", response_class=HTMLResponse)
-    def index():
+    def index(ui: str = ""):
+        if ui == "react":
+            try:
+                html, _ = react_bundle()
+            except RuntimeError as error:
+                return HTMLResponse(str(error), status_code=503)
+            return HTMLResponse(html, headers={"Cache-Control": "no-store"})
         html = (ROOT / "web/index.html").read_text(encoding="utf-8")
         return html.replace("__CAPTURE_TOKEN__", token)
+
+    @app.get("/react/assets/{name}")
+    def react_assets(name: str):
+        """React 静态资源：按 manifest 白名单返回内容哈希文件，长期缓存。"""
+        try:
+            _, assets = react_bundle()
+        except RuntimeError as error:
+            raise HTTPException(503, str(error)) from error
+        target = assets.get(name)
+        media_types = {
+            ".js": "text/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".svg": "image/svg+xml",
+            ".woff2": "font/woff2",
+            ".png": "image/png",
+        }
+        media_type = media_types.get(target.suffix.lower()) if target else None
+        if target is None or media_type is None:
+            raise HTTPException(404, "资源不存在")
+        return FileResponse(target, media_type=media_type,
+                            headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
     @app.get("/assets/{name}")
     def material_assets(name: str):
@@ -949,11 +1011,19 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return capture_history_row(run, results, capture_history_task_index())
         if kind == "materials":
             job = materials.job_detail(item_id, events=True)
+            # 与列表行保持同一口径：进度来自 job 行本身，不能返回空 counts 让前端显示 0/0。
             return {"kind": "materials", "id": item_id, "title": _batch_name(job["batch_id"]),
+                    "batch_id": job["batch_id"], "batch_name": _batch_name(job["batch_id"]),
                     "mode": job.get("kind", ""), "status": job.get("status", ""),
                     "created_at": job.get("created_at", ""), "updated_at": job.get("updated_at", ""),
                     "message": job.get("message", "") or job.get("error", ""),
-                    "counts": job.get("counts", {}), "events": job.get("events", [])}
+                    "counts": {
+                        "total": int(job.get("total_stores") or 0),
+                        "done": int(job.get("done_stores") or 0),
+                        "attention": 0,
+                        "failed": int(job.get("failed_stores") or 0),
+                    },
+                    "events": job.get("events", [])}
         raise HTTPException(404, "任务类型不存在")
 
     @app.patch("/api/tasks/history/capture/{run_id}")

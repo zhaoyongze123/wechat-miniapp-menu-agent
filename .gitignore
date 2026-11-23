@@ -68,6 +68,7 @@ UFS_Menu_Scraper/macos_runner/web/frames/
 *.rej
 *.tmp
 *.log
+*.tsbuildinfo
 
 # 一次性诊断/分析脚本（保留本地，不入库）
 UFS_Menu_Scraper/macos_runner/batch_pending.py

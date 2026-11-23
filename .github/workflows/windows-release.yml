@@ -20,7 +20,30 @@ permissions:
   contents: read
 
 jobs:
+  react-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: UFS_Menu_Scraper/macos_runner/web-react/package-lock.json
+      - name: 校验 React 底座、单测与提交的构建产物
+        working-directory: UFS_Menu_Scraper/macos_runner/web-react
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm test
+          npm run build
+          if [ -n "$(git status --porcelain ../web/react)" ]; then
+            echo "web/react 产物与源码不一致，请本地重新构建并提交"
+            git status --short ../web/react
+            exit 1
+          fi
+
   windows:
+    needs: react-web
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
