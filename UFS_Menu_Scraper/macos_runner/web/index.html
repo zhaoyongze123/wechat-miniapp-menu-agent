@@ -133,6 +133,8 @@
     .debug-block{margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:#fbfcfb}.debug-block>summary{font-size:11px;color:#52615c;font-weight:650;cursor:pointer}.debug-json{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;margin:8px 0 0;font:10px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#34413d}.debug-expired{margin:8px 0;padding:8px 10px;border-radius:7px;background:#f5f6f5;color:#77817d;font-size:11px}.debug-run-export{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin:8px 0}.debug-run-export[hidden]{display:none}.debug-run-export select{min-width:150px;max-width:250px;border:1px solid var(--line);border-radius:7px;background:#fff;padding:8px 10px;color:var(--ink);font-size:12px}
   .quality-row.is-visited{background:#f5f9f7}
     .quality-row.is-active{background:#e9f5f0;box-shadow:inset 3px 0 0 var(--teal,#24856f)}
+  .review-bucket-filters {flex-wrap: wrap; gap: 6px}
+  .quality-bucket {font-size: 11px; color: #55555c; background: #f2f2f4; border-radius: 4px; padding: 1px 6px; white-space: nowrap}
   </style>
   <link rel="stylesheet" href="/assets/workspace.css">
   <link rel="stylesheet" href="/assets/model-usage.css">
@@ -345,6 +347,7 @@
             <div class="quality-actions"><button class="btn" id="review-refresh" type="button">刷新</button><button class="btn" id="review-approve" type="button">标记选中批次通过</button><button class="btn" id="review-approve-undo" type="button">撤销通过</button><button class="btn btn-primary" id="review-rerun" type="button">重跑选中</button></div>
           </div>
           <div class="quality-filters"><div class="quality-batch-picker" id="review-batch-picker"><button class="quality-batch-trigger" id="review-batch-trigger" type="button">全部批次</button><div class="quality-batch-menu" id="review-batch-menu" hidden><div id="review-batch-list"></div></div></div><label class="quality-select-all"><input id="review-select-all" type="checkbox">全选当前列表</label><input id="review-search" type="search" placeholder="搜索门店" aria-label="搜索待检查门店"></div>
+          <div class="quality-filters review-bucket-filters" role="group" aria-label="按原因类型筛选"><button class="btn active" type="button" data-review-bucket="all" aria-pressed="true">全部 <span data-review-bucket-count="all">0</span></button><button class="btn" type="button" data-review-bucket="material">素材问题 <span data-review-bucket-count="material">0</span></button><button class="btn" type="button" data-review-bucket="store_unavailable">门店不可采 <span data-review-bucket-count="store_unavailable">0</span></button><button class="btn" type="button" data-review-bucket="technical">技术重试 <span data-review-bucket-count="technical">0</span></button><button class="btn" type="button" data-review-bucket="auth">授权交互 <span data-review-bucket-count="auth">0</span></button><button class="btn" type="button" data-review-bucket="environment">环境异常 <span data-review-bucket-count="environment">0</span></button><button class="btn" type="button" data-review-bucket="other">其他·未分类 <span data-review-bucket-count="other">0</span></button></div>
           <div class="quality-table-head"><span>门店</span><span>批次 / 阶段</span><span>原因</span><span>操作</span></div>
           <div id="review-list" class="quality-list" aria-live="polite"><div class="empty">正在读取待检查门店…</div></div>
           <div class="quality-pager" id="review-pager"></div>
@@ -648,7 +651,7 @@
       let reviewBatchOptions=[];
       let historyPage=1,historySeq=0,historyDialog=null;
       const LIST_PAGE_SIZE=100;
-      let qualityPage=1,reviewPage=1,reviewRecordsCache=[],reviewActiveId='';
+      let qualityPage=1,reviewPage=1,reviewRecordsCache=[],reviewActiveId='',reviewBucket='all';
       // 已看过详情的门店：刷新页面后仍保留底色，方便区分处理进度。
       const reviewVisitedIds=new Set((()=>{try{return JSON.parse(localStorage.getItem('review-visited')||'[]');}catch(error){return [];}})());
       let qualityRecordsCache=[],qualityActiveKey='';
@@ -1198,9 +1201,9 @@
         const counts=state.status?.queue?state.status.counts:null;
         const taskRejected=counts?.rejected??tasks.filter(t=>captureOutcome(t)==='rejected').length;
         const attention=counts?.attention??tasks.filter(t=>captureOutcome(t)==='review').length;
-        $('count-pending').textContent=counts?(counts.pending||0):tasks.filter(t=>t.status==='pending').length;
-        $('count-running').textContent=counts?(counts.running||0):tasks.filter(t=>t.status==='running').length;
-        $('count-completed').textContent=counts?(counts.captured||0):tasks.filter(t=>captureOutcome(t)==='captured').length;
+        $('count-pending').textContent=counts?(counts.pending||0):tasks.filter(t=>storeState(t)==='pending').length;
+        $('count-running').textContent=counts?(counts.running||0):tasks.filter(t=>storeState(t)==='running').length;
+        $('count-completed').textContent=counts?(counts.captured||0):tasks.filter(t=>storeState(t)==='captured').length;
         $('count-rejected').textContent=taskRejected;
         $('count-attention').textContent=attention;
       }
@@ -1296,12 +1299,18 @@
       }
       const rejectionLabels={blur:'图片模糊 / 无法识别',invalid_qr:'二维码无效',store_mismatch:'二维码门店不一致',store_closed:'门店已关店 / 停业',miniapp_unavailable:'小程序到期或未绑定',scan_order_unsupported:'门店不支持扫码点餐',not_ordering:'非点餐码',qr_external_web:'二维码指向外部网页（非小程序）',menu_unavailable:'门店未配置菜单 / 无可用菜品',authorization_unavailable:'需要验证码 / 扫码授权',duplicate:'重复素材',other:'其他原因'};
       const CAPTURE_RESULT_LABELS={captured:'已截图待复核',review:'待检查',rejected:'不合格'};
-      function captureOutcome(task){
-        if(task.stage==='returned_to_materials')return '';
-        if(typeof task.capture_outcome==='string')return task.capture_outcome;
+      const STORE_STATE_LABELS={rejected:'不合格',returned:'待重新选码',review:'待检查',captured:'已截图待复核',running:'采集中',pending:'待采集'};
+      function storeState(task){
         if(task.reject_reason)return 'rejected';
+        if(task.stage==='returned_to_materials')return 'returned';
         if(task.status==='captured')return 'captured';
-        return ['needs_review','needs_retry','error','blocked','failed'].includes(task.status)?'review':'';
+        if(task.status==='running')return 'running';
+        return ['needs_review','needs_retry','error','blocked','failed'].includes(task.status)?'review':'pending';
+      }
+      function captureOutcome(task){
+        if(typeof task.store_state==='string'&&task.store_state)return ['captured','review','rejected'].includes(task.store_state)?task.store_state:'';
+        const state=storeState(task);
+        return ['captured','review','rejected'].includes(state)?state:'';
       }
       function badgeFor(t){
         if(t.stage==='returned_to_materials')return el('span','badge badge-error','待重新选码');
@@ -1333,7 +1342,7 @@
         select.dataset.options=signature;
       }
       $('worker-batch-filter').addEventListener('change',()=>renderRobotTasks(scopeTaskList()));
-      function visibleTasks(tasks){const query=$('task-search').value.trim().toLocaleLowerCase(),filter=$('task-filter').value,sort=$('task-sort').value;const batch=sharedWorkbench.role()==='worker'?$('worker-batch-filter').value:'';let rows=tasks.filter(task=>{if(batch&&task.batch_id!==batch)return false;const text=`${task.source_name||''} ${task.source_path||''}`.toLocaleLowerCase();if(query&&!text.includes(query))return false;if(['review','rejected','captured'].includes(filter))return captureOutcome(task)===filter;if(filter!=='all'&&task.status!==filter)return false;return true;});rows.sort((a,b)=>sort==='recent'?String(b.updated_at||'').localeCompare(String(a.updated_at||'')):sort==='status'?String(a.status).localeCompare(String(b.status))||String(a.source_name).localeCompare(String(b.source_name),'zh-CN'):String(a.source_name||'').localeCompare(String(b.source_name||''),'zh-CN'));return rows;}
+      function visibleTasks(tasks){const query=$('task-search').value.trim().toLocaleLowerCase(),filter=$('task-filter').value,sort=$('task-sort').value;const batch=sharedWorkbench.role()==='worker'?$('worker-batch-filter').value:'';let rows=tasks.filter(task=>{if(batch&&task.batch_id!==batch)return false;const text=`${task.source_name||''} ${task.source_path||''}`.toLocaleLowerCase();if(query&&!text.includes(query))return false;if(filter!=='all'&&storeState(task)!==filter)return false;return true;});rows.sort((a,b)=>sort==='recent'?String(b.updated_at||'').localeCompare(String(a.updated_at||'')):sort==='status'?String(a.status).localeCompare(String(b.status))||String(a.source_name).localeCompare(String(b.source_name),'zh-CN'):String(a.source_name||'').localeCompare(String(b.source_name||''),'zh-CN'));return rows;}
       function reconcileHubSelection(tasks){
         const pageTasks=new Map(tasks.map(task=>[String(task.id),task]));
         const selected=new Map();
@@ -1958,21 +1967,24 @@
           renderReviewBatches();
           // 已判不合格的门店归不合格清单，待检查清单不再混入；统计同步按过滤后数量展示。
           const records=(Array.isArray(data.records)?data.records:[]).filter(item=>!item.reject_reason),summary=data.summary||{};
-          reviewRecordsCache=records;summary.stores=records.length;summary.retryable=records.length;
-          const pageCount=Math.max(1,Math.ceil(records.length/LIST_PAGE_SIZE));reviewPage=Math.min(reviewPage,pageCount);
-          const pageRecords=records.slice((reviewPage-1)*LIST_PAGE_SIZE,reviewPage*LIST_PAGE_SIZE);
+          renderReviewBuckets(records);
+          // 原因类型筛选只影响当前列表与分页，批次/搜索条件仍由服务端处理。
+          const filtered=reviewBucket==='all'?records:records.filter(item=>reviewBucketOf(item)===reviewBucket);
+          reviewRecordsCache=filtered;summary.stores=filtered.length;summary.retryable=filtered.length;
+          const pageCount=Math.max(1,Math.ceil(filtered.length/LIST_PAGE_SIZE));reviewPage=Math.min(reviewPage,pageCount);
+          const pageRecords=filtered.slice((reviewPage-1)*LIST_PAGE_SIZE,reviewPage*LIST_PAGE_SIZE);
           $('review-store-count').textContent=String(summary.stores||0);
           $('review-batch-count').textContent=String(summary.batches||0);
           $('review-retry-count').textContent=String(summary.retryable||0);
-          $('review-record-count').textContent=records.length+' 条记录';
-          renderPager('review-pager',reviewPage,pageCount,records.length,page=>{reviewPage=page;void loadReviewQueue(true);});
-          const visible=new Set(records.map(record=>String(record.task_id)));
+          $('review-record-count').textContent=filtered.length+' 条记录';
+          renderPager('review-pager',reviewPage,pageCount,filtered.length,page=>{reviewPage=page;void loadReviewQueue(true);});
+          const visible=new Set(filtered.map(record=>String(record.task_id)));
           for(const value of [...reviewSelected])if(!visible.has(value))reviewSelected.delete(value);
           list.replaceChildren();
-          if(!records.length){list.append(el('div','empty','当前没有待检查门店。'));return;}
+          if(!filtered.length){list.append(el('div','empty','当前筛选下没有待检查门店。'));return;}
           // 抽屉翻店只在本次筛选出的待检查记录内移动，不会串到已合格门店。
-          const reviewNavIds=records.map(item=>String(item.task_id));
-          const reviewNavTasks=records.map(item=>({id:item.task_id,source_name:item.store_name,status:item.status,message:item.message,stage:item.stage,reject_reason:item.reject_reason||'',error_code:item.error_code||'',source_path:item.source_path||'',output_dir:item.output_dir||''}));
+          const reviewNavIds=filtered.map(item=>String(item.task_id));
+          const reviewNavTasks=filtered.map(item=>({id:item.task_id,source_name:item.store_name,status:item.status,message:item.message,stage:item.stage,reject_reason:item.reject_reason||'',error_code:item.error_code||'',source_path:item.source_path||'',output_dir:item.output_dir||''}));
           for(const record of pageRecords){
             const row=el('article','quality-row'),head=el('div','quality-row-head');
             row.dataset.taskId=String(record.task_id);
@@ -1982,6 +1994,7 @@
             const box=el('input');box.type='checkbox';box.dataset.task=String(record.task_id);box.checked=reviewSelected.has(String(record.task_id));
             box.addEventListener('change',()=>{if(box.checked)reviewSelected.add(String(record.task_id));else reviewSelected.delete(String(record.task_id));syncReviewSelection();});
             label.append(box,el('strong','',record.store_name||'未命名门店'));head.append(label,el('span','quality-source '+(record.status==='needs_review'?'materials':'capture'),record.label||record.status||'待检查'));
+            if(record.bucket_label||record.bucket||reviewBucketOf(record)!=='other')head.append(el('span','quality-bucket',record.bucket_label||BUCKET_LABELS[reviewBucketOf(record)]));
             const workflow=record.workflow||{},meta=el('div','quality-row-meta');
             meta.append(el('span','',record.batch_name||'未关联批次'));
             const rowBadge=batchBadge(workflow);if(rowBadge)meta.append(rowBadge);
@@ -1996,6 +2009,50 @@
         }catch(error){
           if(requestId===reviewRequestSeq&&!quiet)list.replaceChildren(el('div','empty','读取失败：'+error.message));
         }finally{if(quiet)reviewRefreshBusy=false;}
+      }
+      // 处置桶与后端 failures.py 保持一致；共享端容器里的旧后端不返回 bucket 时，
+      // 前端按同样的码表与关键词兜底，保证两端筛选口径一致、且未知原因落入“其他”。
+      const BUCKET_LABELS={material:'素材问题',store_unavailable:'门店不可采',technical:'技术重试',auth:'授权交互',environment:'环境异常',other:'其他·未分类'};
+      const BUCKET_CODES={
+        qr_expired:'material',qr_external_web:'material',startup_preview_unavailable:'material',startup_qr_entry_unavailable:'material',
+        image_not_found:'material',preview_icon_missing:'material',source_changed:'material',blur:'material',invalid_qr:'material',
+        store_mismatch:'material',not_ordering:'material',duplicate:'material',
+        store_closed:'store_unavailable',menu_unavailable:'store_unavailable',miniapp_unavailable:'store_unavailable',
+        scan_order_unsupported:'store_unavailable',phone_only:'store_unavailable',customer_service:'store_unavailable',agent_unqualified:'store_unavailable',
+        miniapp_timeout:'technical',page_blank:'technical',menu_empty:'technical',page_stuck:'technical',agent_runtime:'technical',
+        startup_no_miniapp:'technical',miniapp_window:'technical',ui_locator:'technical',people_count:'technical',no_page_change:'technical',
+        prepare_limit:'technical',page_limit:'technical',output_publish_error:'technical',uipath_timeout:'technical',uipath_error:'technical',
+        runtime:'technical',capture:'technical',invalid_action:'technical',invalid_terminal:'technical',disallowed_action:'technical',
+        no_observation:'technical',insufficient_observation:'technical',no_terminal:'technical',
+        authorization_unavailable:'auth',login_required:'auth',payment_interface:'auth',notification_popup:'auth',
+        network_error:'environment',network_unavailable:'environment',wechat_context_lost:'environment',wechat_window_frame:'environment',
+        agent_needs_review:'other',terminated:'other',paused:'other',manual_rejected:'other',other:'other',unknown:'other'
+      };
+      const BUCKET_KEYWORDS=[['隐私','auth'],['授权','auth'],['登录','auth'],['验证码','auth'],['通知','auth'],['协议','auth'],['手机号','auth'],['支付','auth'],['交易','auth'],['弹窗','auth'],['弹层','auth'],['会员','auth'],['优惠券','auth'],['权限','auth'],['同意','auth'],
+        ['二维码','material'],['素材','material'],['图片','material'],['识别入口','material'],
+        ['门店已','store_unavailable'],['打烊','store_unavailable'],['未开通','store_unavailable'],['暂无菜单','store_unavailable'],['未设置点餐','store_unavailable'],['到期','store_unavailable'],['超出点餐距离','store_unavailable'],['不支持扫码','store_unavailable'],
+        ['网络','environment'],['窗口','environment'],['缩放','environment'],['显示器','environment'],
+        ['截图','technical'],['滚动','technical'],['步数','technical'],['定位','technical'],['加载','technical'],['空白','technical'],['白屏','technical'],['点击','technical'],['无变化','technical'],['未进入','technical'],['未找到','technical']];
+      const BUCKET_GENERIC_CODES=new Set(['agent_needs_review','unknown','other']);
+      function reviewBucketOf(record){
+        if(record&&record.bucket)return record.bucket;
+        for(const candidate of [record&&record.error_code,record&&record.stage]){
+          if(candidate&&!BUCKET_GENERIC_CODES.has(candidate)&&BUCKET_CODES[candidate])return BUCKET_CODES[candidate];
+        }
+        const text=record&&record.message||'';
+        for(const [keyword,bucket] of BUCKET_KEYWORDS)if(text.includes(keyword))return bucket;
+        for(const candidate of [record&&record.error_code,record&&record.stage]){
+          if(candidate&&BUCKET_CODES[candidate])return BUCKET_CODES[candidate];
+        }
+        return 'other';
+      }
+      function renderReviewBuckets(records){
+        // 统计基于批次/搜索过滤后的全集，切换类型筛选不清零其他桶的数量。
+        const counts={all:records.length};
+        for(const item of records){const key=reviewBucketOf(item);counts[key]=(counts[key]||0)+1;}
+        for(const node of document.querySelectorAll('[data-review-bucket-count]')){
+          node.textContent=String(counts[node.dataset.reviewBucketCount]||0);
+        }
       }
       function renderReviewBatches(){
         const host=$('review-batch-list');if(!host)return;
@@ -2061,6 +2118,7 @@
         }catch(error){toast(error.message);}
       }
       $('review-refresh')?.addEventListener('click',()=>loadReviewQueue());
+      for(const button of document.querySelectorAll('[data-review-bucket]'))button.addEventListener('click',()=>{reviewBucket=button.dataset.reviewBucket;for(const item of document.querySelectorAll('[data-review-bucket]')){const active=item===button;item.classList.toggle('active',active);item.setAttribute('aria-pressed',String(active));}reviewPage=1;void loadReviewQueue(true);});
       $('review-rerun')?.addEventListener('click',event=>rerunReviewTasks([...reviewSelected],event.currentTarget));
       $('review-approve')?.addEventListener('click',()=>setReviewBatchesApproved(true));
       $('review-approve-undo')?.addEventListener('click',()=>setReviewBatchesApproved(false));

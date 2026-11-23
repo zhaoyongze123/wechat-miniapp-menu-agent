@@ -1,7 +1,5 @@
 """共享工作台门店分页与汇总，按当前有效任务计算筛选和勾选状态。"""
-from collections import Counter
-
-from .capture_results import capture_outcome
+from .capture_results import state_counts, store_state
 from .failures import describe
 
 SELECTED_FIELDS = ("id", "source_name", "status", "reject_reason", "runnable", "batch_name", "version")
@@ -15,21 +13,15 @@ def workbench_page(tasks, *, snapshot, query, status, sort, page, size, selected
         scope = [row for row in scope if row["snapshot_id"] == snapshot]
     elif batch_id:
         scope = [row for row in scope if row.get("batch_id") == batch_id]
-    counts = dict(Counter(row["status"] for row in scope))
-    outcomes = Counter(capture_outcome(row) for row in scope)
-    if "captured" in counts:
-        counts["captured"] = outcomes["captured"]
-    counts["rejected"] = outcomes["rejected"]
-    counts["attention"] = outcomes["review"]
+    # 统计与筛选共用门店唯一状态：不合格不会再被算进待检查或已采集。
+    counts = state_counts(scope)
     selected = [{field: row.get(field) for field in SELECTED_FIELDS}
                 for row in tasks if row["id"] in selected_ids]
 
     needle = query.strip().casefold()
     rows = [row for row in scope if needle in f"{row['source_name']} {row['source_path']}".casefold()]
-    if status in ("review", "rejected", "captured"):
-        rows = [row for row in rows if capture_outcome(row) == status]
-    elif status != "all":
-        rows = [row for row in rows if row["status"] == status]
+    if status != "all":
+        rows = [row for row in rows if store_state(row) == status]
 
     def by_name(row):
         return row["source_name"].casefold(), row["id"]
@@ -44,7 +36,8 @@ def workbench_page(tasks, *, snapshot, query, status, sort, page, size, selected
     pages = max(1, (total + size - 1) // size)
     page = min(page, pages)
     first = (page - 1) * size
-    return {"records": [row | describe(row.get("error_code", "")) | {"capture_outcome": capture_outcome(row)} for row in rows[first:first + size]],
+    return {"records": [row | describe(row.get("error_code", ""), row.get("stage", ""), row.get("message", ""))
+                        | {"store_state": store_state(row)} for row in rows[first:first + size]],
             "counts": counts, "selected": selected, "page": page, "pages": pages, "total": total,
             **({"batches": [{"id": key, "name": name} for key, name in sorted(batches.items(), key=lambda item: item[1])]}
                if batches else {})}

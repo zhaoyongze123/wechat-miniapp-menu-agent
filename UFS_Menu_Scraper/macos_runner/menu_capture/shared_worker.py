@@ -76,11 +76,20 @@ class SharedWorker:
                     batch_name TEXT NOT NULL, store TEXT NOT NULL, revision TEXT NOT NULL,
                     snapshot_id TEXT NOT NULL, source_hash TEXT NOT NULL, source_suffix TEXT NOT NULL,
                     status TEXT NOT NULL, run_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
-                    disposition TEXT NOT NULL DEFAULT ''
+                    disposition TEXT NOT NULL DEFAULT '', shared_state TEXT NOT NULL DEFAULT '',
+                    shared_reject TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS worker_assignment_task ON worker_assignments(task_id,status);
                 CREATE INDEX IF NOT EXISTS worker_assignment_source ON worker_assignments(source_hash);
+                CREATE TABLE IF NOT EXISTS worker_batches (
+                    batch_id TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
             """)
+            # 旧安装包的表没有共享端状态列，按需补齐，保留已有本机任务。
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(worker_assignments)")}
+            for name in ("shared_state", "shared_reject"):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE worker_assignments ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="shared-worker", daemon=True)
@@ -150,16 +159,23 @@ class SharedWorker:
                 "assignments": assignments}
 
     def tasks(self) -> list[dict]:
+        """采集端只展示未结束的分配：结果一旦上传成功（completed）即代表共享端已收到。"""
         with self.store.connect() as db:
             rows = db.execute("""
                 SELECT t.*, a.batch_id, a.batch_name, a.revision AS version, a.snapshot_id,
-                       a.status AS assignment_status
+                       a.status AS assignment_status, a.shared_state, a.shared_reject
                 FROM tasks t JOIN worker_assignments a ON a.task_id=t.id
-                WHERE a.status IN ('ready','pending_upload','completed')
+                WHERE a.status IN ('ready','pending_upload')
                   AND a.rowid=(SELECT MAX(b.rowid) FROM worker_assignments b WHERE b.task_id=t.id)
+                  -- 只展示所属批次当前发布快照的任务；首次同步前没有记录时保留旧行为。
+                  AND a.snapshot_id=COALESCE(
+                      (SELECT b.snapshot_id FROM worker_batches b WHERE b.batch_id=a.batch_id), a.snapshot_id)
                 ORDER BY a.rowid
             """).fetchall()
-        return [dict(row) | {"runnable": row["assignment_status"] == "ready"} for row in rows]
+        # 共享端已判定不合格/已采集/已退回的门店不再允许本机重跑。
+        blocked = {"rejected", "captured", "returned"}
+        return [dict(row) | {"runnable": row["assignment_status"] == "ready"
+                             and row["shared_state"] not in blocked} for row in rows]
 
     def _source_path(self, assignment: dict) -> Path:
         return self.inputs / assignment["id"] / "source" / ("二维码" + assignment["source_suffix"])
@@ -178,6 +194,11 @@ class SharedWorker:
         if self.connection.get("invalid"):
             raise ValueError("采集电脑的配对已失效，请联系管理员")
         self.prepare_results()
+        with self.store.connect() as db:
+            states = {row["task_id"]: row["shared_state"] for row in db.execute(
+                "SELECT task_id,shared_state FROM worker_assignments WHERE status='ready'")}
+        if any(states.get(task_id) in {"rejected", "captured", "returned"} for task_id in task_ids):
+            raise ValueError("有门店已在共享端完成或标记不合格，请刷新后重新选择")
         if any(not self.source_root(task_id) for task_id in task_ids):
             raise ValueError("请只选择本机已下载、可离线采集的门店")
 
@@ -313,6 +334,13 @@ class SharedWorker:
         self._cache_source(assigned, path)
         with self.control_lock, self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            existing = db.execute("SELECT status FROM worker_assignments WHERE id=?",
+                                  (assigned["id"],)).fetchone()
+            if existing:
+                # 同一分配补下载：只恢复可采集状态，不重置已有任务结果。
+                db.execute("UPDATE worker_assignments SET status='ready' WHERE id=? AND status='reclaimed'",
+                           (assigned["id"],))
+                return
             busy = db.execute("""
                 SELECT run_id FROM worker_assignments WHERE task_id=? AND id<>?
                 AND status IN ('ready','reclaimed','pending_upload') AND run_id<>''
@@ -372,16 +400,70 @@ class SharedWorker:
         active_ids = {row["id"] for row in active}
         with self.control_lock:
             self.prepare_results()
+            self._store_shared_state(sync)
             with self.store.connect() as db:
                 local = {row["id"] for row in db.execute("SELECT id FROM worker_assignments")}
                 db.executemany("UPDATE worker_assignments SET status='reclaimed' WHERE id=? AND status='ready'",
                                ((row_id,) for row_id in local - active_ids))
         self.online = True
         for assigned in active:
-            if assigned["id"] not in local:
-                self._download(assigned)
-                self._wake.set()
+            try:
+                self._ensure_source(assigned)
+            except (httpx.HTTPError, OSError, ValueError, KeyError) as exc:
+                self.error = str(exc)[:200]
+        self._wake.set()
         return active_ids
+
+    def _ensure_source(self, assigned: dict) -> None:
+        """保证活动分配在本机有二维码文件，并把任务来源路径纠正到本分配缓存目录。"""
+        path = self._source_path(assigned)
+        with self.store.connect() as db:
+            local = db.execute(
+                "SELECT a.status,t.source_path FROM worker_assignments a "
+                "LEFT JOIN tasks t ON t.id=a.task_id WHERE a.id=? AND a.task_id=?",
+                (assigned["id"], assigned["task_id"]),
+            ).fetchone()
+        needs_registration = local is None or local["status"] == "reclaimed" or not path.is_file()
+        needs_path_repair = (
+            local is None
+            or local["status"] == "reclaimed"
+            or (local["status"] == "ready" and local["source_path"] != str(path))
+        )
+        if needs_registration:
+            # 缓存文件可能在上次同步时先落盘，后续因同店旧运行占用而推迟登记。
+            # 是否存在文件不能代表分配已登记，必须重新经过 _download 的登记流程。
+            self._download(assigned)
+        if needs_path_repair:
+            # _download 遇到同店仍在执行的旧轮次会暂缓登记。此时保持旧任务来源不变。
+            # 同时要求这仍是最新的 ready assignment，避免迟到心跳覆盖新分配的路径。
+            with self.store.connect() as db:
+                db.execute(
+                    "UPDATE tasks SET source_path=? WHERE id=? AND EXISTS ("
+                    "SELECT 1 FROM worker_assignments a WHERE a.id=? AND a.task_id=tasks.id "
+                    "AND a.status='ready' AND a.rowid=(SELECT MAX(b.rowid) "
+                    "FROM worker_assignments b WHERE b.task_id=a.task_id))",
+                    (str(path), assigned["task_id"], assigned["id"]),
+                )
+
+    def _store_shared_state(self, sync: dict) -> None:
+        """落库共享端下发的当前快照与门店权威状态，供本机列表过滤和展示。"""
+        stamp = now()
+        batches = [row for row in sync.get("batches") or []
+                   if isinstance(row, dict) and row.get("batch_id") and row.get("snapshot_id")]
+        states = {str(key): value for key, value in (sync.get("states") or {}).items()
+                  if isinstance(value, dict)}
+        with self.store.connect() as db:
+            if batches:
+                db.executemany(
+                    "INSERT INTO worker_batches(batch_id,snapshot_id,updated_at) VALUES(?,?,?) "
+                    "ON CONFLICT(batch_id) DO UPDATE SET snapshot_id=excluded.snapshot_id,"
+                    "updated_at=excluded.updated_at",
+                    ((row["batch_id"], row["snapshot_id"], stamp) for row in batches))
+            if states:
+                db.executemany(
+                    "UPDATE worker_assignments SET shared_state=?,shared_reject=? WHERE task_id=?",
+                    ((value.get("state", ""), value.get("reject_reason", ""), task_id)
+                     for task_id, value in states.items()))
 
     def _upload_pending(self) -> None:
         with self.store.connect() as db:
