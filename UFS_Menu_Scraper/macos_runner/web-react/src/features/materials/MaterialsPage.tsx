@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
@@ -49,7 +49,9 @@ export function MaterialsPage() {
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
-  const [detailStoreId, setDetailStoreId] = useState<string | null>(null)
+  const [detailStoreId, setDetailStoreId] = useState<string | null>(() => searchParams.get('store') || null)
+  // 质量审核跳转携带的门店只消费一次，之后仍按批次切换清空详情。
+  const deepLinkStore = useRef(searchParams.get('store') ?? '')
   const [importOpen, setImportOpen] = useState(false)
   const [publishOpen, setPublishOpen] = useState(false)
   const [analysisOpen, setAnalysisOpen] = useState(false)
@@ -73,7 +75,10 @@ export function MaterialsPage() {
   }, [batchId, optionsQuery.data])
 
   useEffect(() => {
-    setDetailStoreId(null)
+    if (!batchId) return
+    const linked = deepLinkStore.current
+    deepLinkStore.current = ''
+    setDetailStoreId(linked || null)
     setFilter('all')
     setSearch('')
     setPage(1)
