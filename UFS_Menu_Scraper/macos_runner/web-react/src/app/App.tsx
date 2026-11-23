@@ -9,6 +9,7 @@ import { HubAssignmentsPage } from '../features/hub/HubAssignmentsPage'
 import { HubDevicesPage } from '../features/hub/HubDevicesPage'
 import { HubWorkbenchPage } from '../features/hub/HubWorkbenchPage'
 import { MaterialsPage } from '../features/materials/MaterialsPage'
+import { QualityPage } from '../features/quality/QualityPage'
 
 export function App() {
   return (
@@ -21,6 +22,8 @@ export function App() {
               <Route path="/devices" element={<HubDevicesPage />} />
               <Route path="/assignments" element={<HubAssignmentsPage />} />
               <Route path="/materials" element={<MaterialsPage />} />
+              <Route path="/rejections" element={<QualityPage />} />
+              <Route path="/review-queue" element={<Navigate to="/rejections?view=review" replace />} />
               <Route path="/task-center" element={<TaskCenterPage />} />
               <Route path="/" element={<Navigate to="/task-center" replace />} />
               <Route path="*" element={<UnknownRoutePage />} />

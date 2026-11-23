@@ -38,7 +38,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'devices', label: '采集电脑', roles: ['hub'], icon: Desktop, migrated: true },
   { key: 'assignments', label: '分配记录', roles: ['hub'], icon: Clipboard, migrated: true },
   { key: 'materials', label: '素材清洗', roles: ['hub'], icon: Images, migrated: true },
-  { key: 'rejections', label: '质量审核', roles: ['hub'], icon: CheckCircle },
+  { key: 'rejections', label: '质量审核', roles: ['hub'], icon: CheckCircle, migrated: true },
   { key: 'task-center', label: '任务中心', roles: ['hub', 'worker'], icon: Tasks, migrated: true },
   { key: 'settings', label: '设置', roles: ['hub', 'worker'], icon: Settings },
 ]
