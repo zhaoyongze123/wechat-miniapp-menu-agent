@@ -282,6 +282,8 @@ class RejectionService:
         batch_id, store, reason = self.material_return_target(task)
         if store is None:
             raise ValueError(reason)
+        if self.current_only and task_id not in {row["id"] for row in self.materials.effective_capture_tasks()}:
+            raise ValueError("这条采集记录已不是当前素材的有效任务，请刷新后重试")
         self.materials.return_rework_store(batch_id, store["store_id"])
         self.tasks.update(
             task_id, status="blocked", stage="returned_to_materials",
@@ -290,7 +292,7 @@ class RejectionService:
         )
         self.tasks.event("已打回素材清洗：等待重新确认二维码", "warning", task_id)
         return {"ok": True, "task": self.tasks.get(task_id), "batch_id": batch_id,
-                "batch_name": binding.get("batch_name", ""), "store_id": store["store_id"]}
+                "batch_name": self.tasks.material_batch_name(batch_id), "store_id": store["store_id"]}
 
     @staticmethod
     def _validate_reason(reason: str, detail: str) -> None:

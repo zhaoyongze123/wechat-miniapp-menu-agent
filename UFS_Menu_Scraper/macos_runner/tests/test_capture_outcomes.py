@@ -205,15 +205,17 @@ def test_worker_reports_latest_run_and_can_fall_back_to_older_hub(tmp_path):
     with TestClient(hub_app, base_url="http://127.0.0.1", headers=AUTH) as client:
         def transport(request):
             payload = json.loads(request.read())
-            payloads.append(payload)
+            if request.url.path.endswith("/sync"):
+                payloads.append(payload)
             if mode == "old" and "run_summary" in payload:
                 return httpx.Response(400, json={"detail": "同步参数无效"})
-            result = client.post(request.url.path, json=payload,
+            result = client.request(request.method, request.url.path, json=payload,
                                  headers={"Authorization": request.headers["Authorization"]}
                                  if "Authorization" in request.headers else {})
             body = result.json()
             if mode == "old":
                 body.pop("supports_run_summary", None)
+                body.pop("supports_run_history", None)
             return httpx.Response(result.status_code, json=body)
 
         worker._http.close()

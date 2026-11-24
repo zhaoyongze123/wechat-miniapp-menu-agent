@@ -1670,12 +1670,13 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
 
     @app.post("/api/rejections/tasks/{task_id}/return-to-materials")
     def return_rejection_to_materials(task_id: str):
-        """把采集不合格打回素材清洗；不新建批次或发布。"""
+        """打回当前门店，保留此前执行与迟到结果供回查。"""
         with control_lock:
             idle()
+            result = rejections.return_to_materials(task_id)
             if hub:
-                hub.protect_task(task_id)
-            return rejections.return_to_materials(task_id)
+                hub.reconcile_assignments()
+            return result
 
     @app.get("/api/rejections/tasks/{task_id}/evidence")
     def rejection_evidence(task_id: str):

@@ -538,3 +538,24 @@ def test_material_version_digest_ignores_png_metadata_and_compression(tmp_path):
     assert pixel_digest(first) == pixel_digest(second)
     image.crop((0, 0, 70, 90)).save(second)
     assert pixel_digest(first) != pixel_digest(second)
+
+
+def test_return_rejection_uses_originating_batch_and_archives_old_decision(tmp_path):
+    app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
+    with client_for(app, admin=True) as hub:
+        created = batch(app, tmp_path / "input", ("门店 A",))
+        task = app.state.materials.effective_capture_tasks()[0]
+        app.state.store.update(task["id"], status="needs_review", reject_reason="store_closed",
+                               rejected_at="2026-11-24T12:00:00+08:00")
+        rejection = hub.get("/api/rejections").json()["records"][0]
+        assert rejection["can_return_to_materials"]
+        returned = hub.post(f"/api/rejections/tasks/{task['id']}/return-to-materials", headers=session(hub))
+        assert returned.status_code == 200, returned.text
+        assert returned.json()["batch_id"] == created["batch_id"]
+        effective = app.state.materials.effective_capture_tasks()[0]
+        assert effective["stage"] == "returned_to_materials"
+        assert not effective["runnable"]
+        assert not hub.get("/api/rejections").json()["records"]
+        with app.state.store.connect() as db:
+            previous = json.loads(db.execute("SELECT past_task FROM material_store_returns").fetchone()[0])
+        assert previous[0]["reject_reason"] == "store_closed"

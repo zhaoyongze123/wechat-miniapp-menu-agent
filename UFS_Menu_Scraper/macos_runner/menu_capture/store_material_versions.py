@@ -78,7 +78,8 @@ class StoreMaterialVersions:
         """, (batch_id, store_id, now(), json.dumps(decision, ensure_ascii=False),
               json.dumps(previous, ensure_ascii=False)))
         db.executemany("""
-            UPDATE tasks SET status='blocked',stage='returned_to_materials',message='待重新选码并发布'
+            UPDATE tasks SET status='blocked',stage='returned_to_materials',message='待重新选码并发布',
+                reject_reason='',reject_detail='',rejected_at='',reject_evidence='',reject_reviewed_at='',error_code=''
             WHERE id=?
         """, ((task_id,) for task_id in task_ids))
 
