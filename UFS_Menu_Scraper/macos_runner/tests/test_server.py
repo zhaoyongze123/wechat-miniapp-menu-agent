@@ -266,3 +266,17 @@ def test_remote_manual_control_is_scoped_and_rejects_stale_commands(tmp_path):
     assert "status" not in accepted.json()
     assert client.post("/api/manual/capture", headers=headers, json=command).status_code == 409
     app.state.shared_worker.close()
+
+
+def test_update_download_endpoint_requires_checked_release(tmp_path: Path) -> None:
+    app = create_app(tmp_path)
+    client = TestClient(app, base_url="http://127.0.0.1")
+    headers = {"x-capture-token": client.get("/api/session").json()["token"]}
+
+    response = client.post("/api/updates/download", headers=headers, json={})
+    assert response.status_code == 409
+    assert "没有可下载的更新" in response.json()["detail"]
+
+    cancelled = client.post("/api/updates/download/cancel", headers=headers)
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "idle"

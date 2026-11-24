@@ -1,19 +1,26 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { checkUpdates, fetchUpdateHistory, fetchUpdateStatus, saveUpdatePreferences } from './api'
+import {
+  cancelUpdateDownload,
+  checkUpdates,
+  fetchUpdateHistory,
+  fetchUpdateStatus,
+  saveUpdatePreferences,
+  startUpdateDownload,
+} from './api'
 
 export const updateKeys = {
   status: ['updates', 'status'] as const,
   history: ['updates', 'history'] as const,
 }
 
-/** 服务端按小时缓存；前端只做轻量刷新，不为每台机器引入高频轮询。 */
+/** 服务端按小时缓存；下载进行中才加密轮询，其余情况不为每台机器引入高频请求。 */
 export function useUpdateStatus(enabled = true) {
   return useQuery({
     queryKey: updateKeys.status,
     queryFn: ({ signal }) => fetchUpdateStatus(signal),
     enabled,
     staleTime: 30_000,
-    refetchInterval: 5 * 60_000,
+    refetchInterval: (query) => (query.state.data?.download.active ? 2_000 : 5 * 60_000),
   })
 }
 
@@ -34,5 +41,7 @@ export function useUpdateActions() {
   return {
     check: useMutation({ mutationFn: checkUpdates, onSuccess: refresh }),
     savePreferences: useMutation({ mutationFn: saveUpdatePreferences, onSuccess: refresh }),
+    download: useMutation({ mutationFn: startUpdateDownload, onSuccess: refresh }),
+    cancelDownload: useMutation({ mutationFn: cancelUpdateDownload, onSuccess: refresh }),
   }
 }

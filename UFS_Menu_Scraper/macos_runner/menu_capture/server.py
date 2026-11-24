@@ -463,6 +463,17 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     def updates_history(limit: Annotated[int, Query(ge=1, le=200)] = 50):
         return updates.history(limit)
 
+    @app.post("/api/updates/download")
+    def updates_download():
+        try:
+            return updates.start_download()
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.post("/api/updates/download/cancel")
+    def updates_download_cancel():
+        return updates.cancel_download()
+
     @app.get("/api/model-usage")
     def model_usage_report(date_from: str | None = None, date_to: str | None = None,
                            group_by: str = "day", source: str = "all", run_id: str = "",
