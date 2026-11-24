@@ -25,6 +25,8 @@
 - 最小变更，遵循现有分层与命名；先定位根因再改代码，不在展示层打补丁。
 - 状态保持唯一事实源；不引入无依据的缓存、去重或异常吞并。
 - 按风险验证：优先跑相关测试；数据库、并发、升级回滚类改动必须做集成验证。
+- 云端 CI 不自动触发；合并前按改动风险在本地执行相关检查，不等待 GitHub Actions 反馈。
+- 正式发布仅通过手动 `workflow_dispatch`，复用同一次构建产物；PR、提交和标签推送不重新打包。
 - 前端改动需 `npm run typecheck`、`npm test`、`npm run build` 并提交 `web/react` 产物。
 - Python 改动需 `ruff check .` 通过（门禁规则见 `pyproject.toml`）。
 

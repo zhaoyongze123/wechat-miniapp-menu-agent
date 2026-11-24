@@ -10,7 +10,7 @@
 
 [快速开始](#快速开始) · [核心功能](#核心功能) · [系统架构](#系统架构) · [部署指南](deploy/README.md) · [生产交付报告](docs/react-migration/production-delivery-report.md) · [版本发布](../../releases)
 
-> 当前分支为 React 新版本交付分支。新增能力以实际代码为准。`0.2.0-rc.3` 已完成安装、升级、回滚及单台现场采集验收，并已切换生产环境；验收详情见 [生产交付报告](docs/react-migration/production-delivery-report.md)。
+> 当前主分支为 React 产品主线。新增能力以实际代码为准。`0.2.2` 已作为生产补丁完成安装、升级、回滚与生产端数据一致性验收；发布资产复用同一次构建产物，不在标签推送时重建。详见 [CHANGELOG](CHANGELOG.md) 与 [Releases](../../releases)。
 
 ## 产品预览
 
@@ -185,7 +185,7 @@ npm run build
 - **Hub**：通过明确的镜像版本标签升级或回退，保留持久化数据卷；首次迁移须先用副本验证数据兼容性。
 - **版本核对**：新版本提供 `/api/version`，用于核对运行版本与前端构建入口；迁移前版本需使用相应的兼容验证方式。
 
-完整操作、旧数据迁移及验收步骤见 [部署与回滚指南](deploy/README.md)。`0.2.0-rc.3` 已于 2026-11-24 完成本机 `0.1.2 → 0.2.0-rc.3 → 0.1.2` 安装、升级、回滚 smoketest 并切换生产；详见 [生产交付报告](docs/react-migration/production-delivery-report.md)。
+完整操作、旧数据迁移及验收步骤见 [部署与回滚指南](deploy/README.md)。`0.2.2` 已完成 `0.2.0-rc.3 → 0.2.2 → 0.2.0-rc.3` 安装、升级、回滚 smoke，并在生产 Windows Worker 与 Hub 使用同一份产物完成升级；数据计数与完整性校验一致。历史 `0.2.0-rc.3` 交付详情见 [生产交付报告](docs/react-migration/production-delivery-report.md)。
 
 ## 文档与维护
 
