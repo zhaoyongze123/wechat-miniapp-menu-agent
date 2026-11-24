@@ -208,3 +208,11 @@ def test_openai_output_only_usage_is_preserved_as_partial(tmp_path):
     assert row['usage_state'] == 'partial' and row['output_tokens'] == 8
     assert row['input_tokens'] is None and row['total_tokens'] is None
     assert row['reasoning_tokens'] == 3
+
+
+def test_query_breaks_equal_timestamps_by_call_insertion_order(tmp_path):
+    usage = ledger(tmp_path)
+    stamp = "2026-11-24T12:00:00+08:00"
+    usage.start_call(provider="generic", model="m", started_at=stamp, call_id="z-first")
+    usage.start_call(provider="generic", model="m", started_at=stamp, call_id="a-second")
+    assert [row["call_id"] for row in usage.query()["calls"]] == ["a-second", "z-first"]
