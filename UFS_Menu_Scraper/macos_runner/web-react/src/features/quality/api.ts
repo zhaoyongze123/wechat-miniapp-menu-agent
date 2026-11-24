@@ -93,6 +93,14 @@ export function retryCaptureTask(taskId: string): Promise<{ ok: boolean }> {
   return apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/retry`, { method: 'POST', json: {} })
 }
 
+/** 人工把待检查门店标记为不合格；只记录结论，不自动重新采集。 */
+export function rejectPendingTask(taskId: string, reason: string, detail: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/reject`, {
+    method: 'POST',
+    json: { reason, detail },
+  })
+}
+
 export function captureEvidenceUrl(taskId: string): string {
   return `${BASE}/tasks/${encodeURIComponent(taskId)}/evidence`
 }

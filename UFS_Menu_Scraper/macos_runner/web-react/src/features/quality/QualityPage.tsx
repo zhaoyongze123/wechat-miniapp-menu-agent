@@ -8,6 +8,7 @@ import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { SegmentedControl } from '@openai/apps-sdk-ui/components/SegmentedControl'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
+import { AppDialog } from '../../components/AppDialog'
 import { AppPagination } from '../../components/AppPagination'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
 import { PageHeader } from '../../components/PageHeader'
@@ -21,6 +22,7 @@ import { formatStore, formatTime } from '../hub/format'
 import { useHubSharedStatus } from '../hub/hooks'
 import type { HubSelectedTask } from '../hub/types'
 import { useBatchOptions } from '../materials/hooks'
+import { REJECTION_REASONS } from '../materials/format'
 import { statusOf } from '../task-center/format'
 import { REASON_OPTIONS, downloadRejections } from './api'
 import {
@@ -87,6 +89,9 @@ export function QualityPage() {
   const [reviewPage, setReviewPage] = useState(1)
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set())
   const [reviewDrawerId, setReviewDrawerId] = useState<string | null>(null)
+  const [rejectOpen, setRejectOpen] = useState(false)
+  const [rejectTargets, setRejectTargets] = useState<string[]>([])
+  const [rejectError, setRejectError] = useState('')
   const [continuousReview, setContinuousReview] = useContinuityPreference('quality.continuous-review')
 
   // 弹窗
@@ -460,6 +465,35 @@ export function QualityPage() {
     })
   }
 
+  const openReject = (taskIds: string[]) => {
+    if (!taskIds.length) return
+    setRejectTargets(taskIds)
+    setRejectError('')
+    setRejectOpen(true)
+  }
+
+  const confirmReject = (reason: string, detail: string) => {
+    reviewActions.reject.mutate(
+      { taskIds: rejectTargets, reason, detail },
+      {
+        onSuccess: ({ rejected, failed, error }) => {
+          if (failed.length) {
+            // 保留失败项供直接重试，已成功的门店已由后端移入不合格清单。
+            setRejectTargets(failed)
+            setRejectError(error || `${failed.length} 家门店标记失败，请重试`)
+            toast.push(`已标记 ${rejected} 家，${failed.length} 家失败`, 'danger')
+            return
+          }
+          setRejectOpen(false)
+          setRejectTargets([])
+          setSelectedTasks(new Set())
+          toast.push(`已标记 ${rejected} 家门店为不合格`, 'success')
+        },
+        onError: (error) => setRejectError(errorMessage(error)),
+      },
+    )
+  }
+
   const rejectionBatches = rejectionsQuery.data?.batches ?? []
   const summary = rejectionsQuery.data?.summary
   const reviewSummary = reviewsQuery.data?.summary
@@ -668,8 +702,8 @@ export function QualityPage() {
     {
       id: 'actions',
       header: '',
-      className: 'w-32 whitespace-nowrap text-right',
-      width: '10rem',
+      className: 'w-44 whitespace-nowrap text-right',
+      width: '13rem',
       sticky: 'right',
       cell: (record) => (
         <div className="flex justify-end gap-2" onClick={(event) => event.stopPropagation()}>
@@ -680,6 +714,14 @@ export function QualityPage() {
             onClick={() => setReviewDrawerId(record.task_id)}
           >
             详情
+          </Button>
+          <Button
+            color="danger"
+            variant="ghost"
+            size="sm"
+            onClick={() => openReject([record.task_id])}
+          >
+            不合格
           </Button>
           <Button
             color="secondary"
@@ -946,6 +988,15 @@ export function QualityPage() {
               <span className="text-xs text-secondary">已选 {selectedTasks.size} 家门店</span>
               <div className="flex flex-wrap items-center gap-2">
                 <Button
+                  color="danger"
+                  variant="outline"
+                  size="sm"
+                  disabled={selectedTasks.size === 0}
+                  onClick={() => openReject([...selectedTasks])}
+                >
+                  标记不合格（{selectedTasks.size}）
+                </Button>
+                <Button
                   color="secondary"
                   variant="outline"
                   size="sm"
@@ -1086,6 +1137,7 @@ export function QualityPage() {
           }
         }}
         onRerun={(record) => openAssign([record])}
+        onReject={(record) => openReject([record.task_id])}
       />
 
       <ConfirmActionDialog
@@ -1158,6 +1210,20 @@ export function QualityPage() {
         }}
       />
 
+      <RejectPendingDialog
+        open={rejectOpen}
+        count={rejectTargets.length}
+        busy={reviewActions.reject.isPending}
+        error={rejectError}
+        onConfirm={confirmReject}
+        onOpenChange={(open) => {
+          if (open || reviewActions.reject.isPending) return
+          setRejectOpen(false)
+          setRejectTargets([])
+          setRejectError('')
+        }}
+      />
+
       <AssignDialog
         open={assignTasks !== null}
         onOpenChange={(open) => {
@@ -1192,5 +1258,109 @@ function Metric({ label, value }: { label: string; value: number | string }) {
       <span className="block text-xs text-secondary">{label}</span>
       <span className="mt-1 block heading-lg tabular-nums text-default">{value}</span>
     </div>
+  )
+}
+
+interface RejectPendingDialogProps {
+  open: boolean
+  count: number
+  busy: boolean
+  error: string
+  onConfirm: (reason: string, detail: string) => void
+  onOpenChange: (open: boolean) => void
+}
+
+/** 待检查转不合格：必须选择原因；选择“其他”时必须补充说明。 */
+function RejectPendingDialog({
+  open,
+  count,
+  busy,
+  error,
+  onConfirm,
+  onOpenChange,
+}: RejectPendingDialogProps) {
+  const [reason, setReason] = useState('')
+  const [detail, setDetail] = useState('')
+  const [localError, setLocalError] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    setReason('')
+    setDetail('')
+    setLocalError('')
+  }, [open])
+
+  const submit = () => {
+    if (!reason) {
+      setLocalError('请选择不合格原因')
+      return
+    }
+    if (reason === 'other' && !detail.trim()) {
+      setLocalError('选择其他原因时请填写具体说明')
+      return
+    }
+    if (detail.trim().length > 200) {
+      setLocalError('补充说明最多 200 字')
+      return
+    }
+    setLocalError('')
+    onConfirm(reason, detail.trim())
+  }
+
+  return (
+    <AppDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      busy={busy}
+      title={`标记 ${count} 家门店为不合格`}
+      widthClass="w-[min(560px,94vw)]"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button color="secondary" variant="outline" size="sm" onClick={() => onOpenChange(false)} disabled={busy}>
+            取消
+          </Button>
+          <Button color="danger" size="sm" onClick={submit} disabled={busy}>
+            {busy ? '处理中…' : '确认标记'}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-3 text-sm leading-relaxed text-default">
+        <p>
+          将从待检查清单移入不合格清单，并记录原因与说明。该操作只保存审核结论，不会自动重新采集。
+        </p>
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-secondary" htmlFor="quality-reject-reason">
+            不合格原因
+          </label>
+          <Select
+            aria-label="不合格原因"
+            value={reason}
+            options={[
+              { value: '', label: '请选择原因' },
+              ...REJECTION_REASONS.map((item) => ({ value: item.code, label: item.label })),
+            ]}
+            onChange={(option) => setReason(option.value)}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-secondary" htmlFor="quality-reject-detail">
+            补充说明
+          </label>
+          <Input
+            id="quality-reject-detail"
+            value={detail}
+            maxLength={200}
+            placeholder={reason === 'other' ? '请填写其他原因（必填）' : '补充说明（可选，最多 200 字）'}
+            onChange={(event) => setDetail(event.target.value)}
+          />
+        </div>
+        {localError || error ? (
+          <p className="text-xs text-danger" role="alert">
+            {localError || error}
+          </p>
+        ) : null}
+      </div>
+    </AppDialog>
   )
 }
