@@ -18,6 +18,10 @@ on:
         description: 也可使用已通过本地验证的旧版安装包 Actions Run ID
         required: false
         type: string
+      ota_base_version:
+        description: 应用内更新验收用的基础版本（须低于 version；会额外构建一次）
+        required: false
+        type: string
       create_release:
         description: 构建验收后创建或更新 GitHub Release 草稿
         default: true
@@ -162,17 +166,25 @@ jobs:
           if (-not $env:PREVIOUS_INSTALLER) {
             Write-Host 'Upgrade/rollback smoke skipped. Dispatch with previous_installer_tag or previous_installer_run to verify the previous release.'
           }
+      - name: 构建应用内更新基础版本
+        if: inputs.ota_base_version != ''
+        shell: pwsh
+        run: |
+          ./deploy/windows/build.ps1 -Version '${{ inputs.ota_base_version }}' -Output (Join-Path $env:RUNNER_TEMP 'ota-base')
       - name: 验收应用内更新接口
-        if: env.PREVIOUS_INSTALLER != ''
+        if: inputs.ota_base_version != ''
         shell: pwsh
         env:
           BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
+          OTA_BASE_VERSION: ${{ inputs.ota_base_version }}
         run: |
           $version = $env:BUILD_VERSION
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
           $installer = Get-ChildItem deploy/artifacts -Filter '*.exe' -File | Select-Object -First 1
+          # 0.2.2 及更早版本没有安装接口，OTA 只能从包含执行器的基础版本开始。
+          $base = Get-ChildItem (Join-Path $env:RUNNER_TEMP 'ota-base') -Filter '*.exe' -File | Select-Object -First 1
           ./deploy/windows/ota-smoke.ps1 -Installer $installer.FullName -Version $version `
-            -PreviousInstaller $env:PREVIOUS_INSTALLER -PreviousVersion $env:PREVIOUS_VERSION
+            -PreviousInstaller $base.FullName -PreviousVersion $env:OTA_BASE_VERSION
       - name: 上传验收日志
         if: failure()
         uses: actions/upload-artifact@v4
