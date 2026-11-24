@@ -122,18 +122,16 @@ macos_runner/
 | `annotation.py` | 人工标注模式：只给候选，点击必须人工确认，保留前后截图样本。 |
 | `auto_pipeline.py` | 串行无人值守：分析 → 接受推荐 → 发布 → 激活 → 采集，单批超 100 家自动分轮。 |
 
-## 5. 前端（`web/`）
+## 5. 前端（源码 `web-react/`，产物 `web/react/`）
 
-| 文件 | 职责 |
+| 路径 | 职责 |
 | --- | --- |
-| `index.html` | 单页骨架、全局状态、轮询与主要页面渲染；页面用 `#page-*` 切换。 |
-| `workspace.css` | 共享视觉与布局：外框、顶栏、卡片、表格、分页。 |
-| `materials.js` / `materials.css` | 素材与批次管理：上传、分析、决策、发布、激活、回收站、阶段维护。 |
-| `task-center.js` / `task-center.css` | 任务中心：浮动面板、独立页面、任务详情弹窗。 |
-| `annotation.js` / `annotation.css` | 标注工作台。 |
-| `model-usage.js` / `model-usage.css` | 模型用量展示。 |
+| `web-react/src/app/` | 路由、角色边界、壳层导航与顶栏活动任务入口。 |
+| `web-react/src/features/<域名>/` | 按业务域拆分的页面、弹窗、API 封装与展示格式化。 |
+| `web/react/` | 提交到仓库的构建产物：`index.html`、`assets/`、`.vite/manifest.json`。 |
+| `menu_capture/server.py` | `/` 返回 React 入口，`/assets/{name}` 按 manifest 白名单返回哈希资源。 |
 
-当前页面：总览、素材管理、任务中心、待检查清单、不合格清单、人工标注、环境诊断、设置。
+当前页面：采集工作台（Hub 调度 / Windows 执行）、设备与分配、素材清洗、不合格、待检查、任务中心、人工标注、环境诊断、设置（含模型用量）。旧 `web/index.html`、`web/*.js|css`、Vue 试点 `web-ui/` 与 `web/vue/` 已退场。
 
 ## 6. 数据流与状态事实源
 

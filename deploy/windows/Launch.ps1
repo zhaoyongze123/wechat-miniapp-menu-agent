@@ -57,6 +57,7 @@ function Start-Worker {
     $exe = Join-Path $release 'python\python.exe'
     $app = Join-Path $release 'app'
     $env:MENU_CAPTURE_ROLE = 'worker'
+    $env:MENU_CAPTURE_VERSION = $ActiveVersion
     $env:MENU_CAPTURE_HOME = $homePath
     $env:MENU_CAPTURE_BIND = '127.0.0.1'
     $env:MENU_CAPTURE_PORT = '8765'

@@ -25,7 +25,7 @@ export function fetchHubStatus(params: HubQueueParams, signal?: AbortSignal): Pr
     queue_filter: params.filter,
     queue_sort: params.sort,
     selected: params.selected.join(','),
-    include_events: 'false',
+    include_events: params.includeEvents ? 'true' : 'false',
   })
   return apiFetch<HubStatus>(`/api/status?${search.toString()}`, { signal })
 }

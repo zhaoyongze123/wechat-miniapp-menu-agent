@@ -6,7 +6,6 @@ import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { SegmentedControl } from '@openai/apps-sdk-ui/components/SegmentedControl'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
-import { TextLink } from '@openai/apps-sdk-ui/components/TextLink'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppPagination } from '../../components/AppPagination'
 import { PageHeader } from '../../components/PageHeader'
@@ -199,12 +198,7 @@ export function TaskCenterPage() {
       <StatePanel
         variant="info"
         title="当前为本机独立模式"
-        description="React 控制台一期只支持共享后台（Hub）与 Windows 原生采集端。本机独立模式请继续使用旧版控制台。"
-        action={
-          <TextLink href="/#task-center" className="text-sm">
-            打开旧版任务中心
-          </TextLink>
-        }
+        description="任务中心只支持共享后台（Hub）与 Windows 采集端；本机独立模式请直接查看采集工作台的本机状态。"
       />
     )
   }

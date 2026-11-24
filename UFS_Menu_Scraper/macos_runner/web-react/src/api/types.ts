@@ -24,6 +24,18 @@ export interface HubStatus {
   assignments: AssignmentSummary[]
 }
 
+/** 本机分配记录：只包含后端可靠字段，用于同步状态汇总，不推断逐文件上传进度。 */
+export interface WorkerAssignmentRecord {
+  id: string
+  task_id: string
+  batch_id?: string
+  batch_name?: string
+  store?: string
+  revision?: string
+  status: string
+  disposition?: string
+}
+
 export interface WorkerConnectionStatus {
   role: 'worker'
   paired: boolean
@@ -32,6 +44,7 @@ export interface WorkerConnectionStatus {
   error?: string
   credential_invalid?: boolean
   pending_uploads?: number
+  assignments?: WorkerAssignmentRecord[]
 }
 
 export interface StandaloneStatus {

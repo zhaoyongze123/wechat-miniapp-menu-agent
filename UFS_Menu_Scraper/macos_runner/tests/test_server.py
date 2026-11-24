@@ -147,61 +147,56 @@ def test_artifact_endpoint_rejects_traversal_outside_task_output(tmp_path: Path)
         assert "outside" not in symlink_response.text
 
 
-def test_vue_asset_route_only_serves_built_files(tmp_path: Path) -> None:
-    """Vue 试点产物只通过 /vue/ 暴露 js/css，且不允许越出构建目录。"""
-    app = create_app(tmp_path, desktop=FakeDesktop())
-    client = TestClient(app, base_url="http://127.0.0.1")
-
-    assert client.get("/assets/task-center-vue-loader.js").status_code == 200
-    assert client.get("/vue/task-center.css").status_code == 200
-    assert client.get("/vue/task-center.js").status_code == 200
-
-    # 只允许 js/css，目录内的其他文件（例如 index.html 或临时文件）不对外。
-    assert client.get("/vue/index.html").status_code == 404
-    assert client.get("/vue/not-exists.js").status_code == 404
-    assert client.get("/vue/%2e%2e/index.html").status_code == 404
-
-
-def test_react_entry_only_returns_manifest_assets(tmp_path: Path) -> None:
-    """React 入口仅在 ?ui=react 时返回，静态资源严格来自 Vite manifest。"""
+def test_react_entry_is_default_and_only_serves_manifest_assets(tmp_path: Path) -> None:
+    """根路径始终返回 React 入口，静态资源严格来自 Vite manifest。"""
     import json
 
     app = create_app(tmp_path, desktop=FakeDesktop())
     client = TestClient(app, base_url="http://127.0.0.1")
 
-    response = client.get("/", params={"ui": "react"})
+    response = client.get("/")
     assert response.status_code == 200
     assert '<div id="root"></div>' in response.text
+    assert "/assets/" in response.text
     assert "__CAPTURE_TOKEN__" not in response.text
     assert response.headers["cache-control"] == "no-store"
+
+    # 迁移期临时入口不再存在：旧参数与旧版横幅都会被忽略。
+    assert client.get("/", params={"ui": "vue"}).text == response.text
 
     manifest = json.loads(
         (Path(__file__).resolve().parents[1] / "web/react/.vite/manifest.json").read_text(encoding="utf-8")
     )
     entry = next(item for item in manifest.values() if item.get("isEntry"))
     script = entry["file"].rsplit("/", 1)[-1]
-    asset = client.get(f"/react/assets/{script}")
+    asset = client.get(f"/assets/{script}")
     assert asset.status_code == 200
     assert "javascript" in asset.headers["content-type"]
     assert "immutable" in asset.headers["cache-control"]
 
-    # 目录内的 index.html、清单外文件与越界路径都不能通过资源路由读取。
-    assert client.get("/react/assets/index.html").status_code == 404
-    assert client.get("/react/assets/not-exists.js").status_code == 404
-    assert client.get("/react/assets/%2e%2e/index.html").status_code != 200
+    version = client.get("/api/version").json()
+    assert version["frontend"] == script
+    assert client.get("/favicon.svg").status_code == 200
+
+    # 目录内的 index.html、清单外文件、旧版资源与越界路径都不能通过资源路由读取。
+    assert client.get("/assets/index.html").status_code == 404
+    assert client.get("/assets/not-exists.js").status_code == 404
+    assert client.get("/assets/materials.js").status_code == 404
+    assert client.get("/assets/%2e%2e/index.html").status_code != 200
+    assert client.get("/vue/task-center.js").status_code == 404
 
 
 def test_react_entry_reports_missing_build(tmp_path: Path, monkeypatch) -> None:
-    """未构建 React 时明确返回 503，而不是把旧版入口当作 React 页面。"""
+    """未构建前端时明确返回 503，而不是回退到任何旧版页面。"""
     from menu_capture import server
 
     monkeypatch.setattr(server, "ROOT", tmp_path)
     app = create_app(tmp_path / "data", desktop=FakeDesktop())
     client = TestClient(app, base_url="http://127.0.0.1")
 
-    response = client.get("/", params={"ui": "react"})
+    response = client.get("/")
     assert response.status_code == 503
-    assert "React" in response.text
+    assert "前端" in response.text
 
 
 def test_materials_history_detail_counts_match_list(tmp_path: Path) -> None:

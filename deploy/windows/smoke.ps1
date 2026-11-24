@@ -90,6 +90,33 @@ function Assert-WorkerRelease {
     if (-not $worker) { throw "Worker did not start from releases\$Expected." }
 }
 
+function Assert-ApiVersion {
+    param([string]$Expected, [string]$Label)
+    if (-not $Expected) { return }
+    $url = "http://127.0.0.1:$Port/api/version"
+    for ($i = 0; $i -lt 30; $i++) {
+        try {
+            $info = Invoke-RestMethod $url -UseBasicParsing -TimeoutSec 2
+            if ($info.version -eq $Expected -and $info.frontend) { return }
+        } catch {}
+        Start-Sleep -Seconds 1
+    }
+    throw "$Label did not report version $Expected with a frontend build via /api/version."
+}
+
+function Assert-ReleaseManifest {
+    param([string]$Expected)
+    if (-not $Expected) { return }
+    $path = Join-Path $install "releases\$Expected\release-manifest.json"
+    if (-not (Test-Path -LiteralPath $path)) { throw "Missing release-manifest.json for $Expected." }
+    $manifest = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    if ($manifest.version -ne $Expected) { throw "release-manifest version $($manifest.version), expected $Expected." }
+    $asset = Join-Path $install ("releases\$Expected\app\web\react\" + $manifest.frontend_entry.Replace('/', '\'))
+    if (-not (Test-Path -LiteralPath $asset)) { throw "Frontend entry missing: $asset" }
+    $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($hash -ne $manifest.frontend_sha256) { throw "Frontend entry hash mismatch in release-manifest for $Expected." }
+}
+
 function Install-TestWorker {
     param([int]$Index, [string]$Path = $Installer)
     # 每次安装单独一份日志：升级时安装器会先卸载旧版本，两份日志混在一起会掩盖真正的失败原因。
@@ -130,6 +157,8 @@ try {
     Start-TestSupervisor
     $first = Assert-WorkerHealthy
     Assert-WorkerRelease $Version
+    Assert-ReleaseManifest $Version
+    Assert-ApiVersion $Version 'Install #1'
     Stop-Process -Id $first.ProcessId -Force
     $second = Assert-WorkerHealthy -PreviousProcessId $first.ProcessId
     Write-Host "Supervisor restarted worker $($first.ProcessId) as $($second.ProcessId)."
@@ -143,15 +172,29 @@ try {
         Start-TestSupervisor
         $third = Assert-WorkerHealthy
         Assert-WorkerRelease $UpgradeVersion
+        Assert-ReleaseManifest $UpgradeVersion
+        Assert-ApiVersion $UpgradeVersion 'Upgrade'
         Stop-Process -Id $third.ProcessId -Force
         $fourth = Assert-WorkerHealthy -PreviousProcessId $third.ProcessId
         Write-Host "Upgrade restarted worker $($third.ProcessId) as $($fourth.ProcessId)."
+
+        # 回滚验收：版本登记切回安装前版本，守护进程应在空闲时重启旧实例。
+        $rollback = Join-Path $install 'rollback.ps1'
+        if (-not (Test-Path -LiteralPath $rollback)) { throw 'Installed rollback.ps1 is missing.' }
+        & $rollback -Version $Version -TimeoutSeconds 120
+        if ($LASTEXITCODE -ne 0) { throw "Rollback to $Version failed." }
+        $fifth = Assert-WorkerHealthy
+        Assert-WorkerRelease $Version
+        Assert-ReleaseManifest $Version
+        Assert-ApiVersion $Version 'Rollback'
+        Write-Host "Rollback switched worker $($fourth.ProcessId) to $($fifth.ProcessId) on version $Version."
     } else {
         Install-TestWorker -Index 2
         Assert-Version $Version 'Install #2'
         Start-TestSupervisor
         $null = Assert-WorkerHealthy
         Assert-WorkerRelease $Version
+        Assert-ApiVersion $Version 'Install #2'
     }
 
     if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne 'preserve') { throw 'Reinstall removed local state.' }

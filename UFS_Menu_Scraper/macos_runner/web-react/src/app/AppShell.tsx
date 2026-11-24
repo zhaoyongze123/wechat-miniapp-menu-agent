@@ -1,11 +1,10 @@
 import type { ComponentType, ReactNode, SVGProps } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { Avatar } from '@openai/apps-sdk-ui/components/Avatar'
 import { Badge } from '@openai/apps-sdk-ui/components/Badge'
-import { Menu } from '@openai/apps-sdk-ui/components/Menu'
 import {
   CheckCircle,
-  ChevronRight,
   Clipboard,
   Cursor,
   Desktop,
@@ -16,33 +15,28 @@ import {
 } from '@openai/apps-sdk-ui/components/Icon'
 import { ROLE_LABEL, useRole } from './RoleProvider'
 import type { AppRole } from '../api/types'
+import { fetchActiveTasks } from '../features/task-center/api'
 
 interface NavItem {
   key: string
   label: string
   roles: AppRole[]
   icon: ComponentType<SVGProps<SVGSVGElement>>
-  /** 所有角色都已迁移到 React。 */
-  migrated?: boolean
-  /** 仅列出的角色走 React 路由，其余角色仍回旧版 hash。 */
-  migratedFor?: AppRole[]
-  /** 旧版入口 hash 与 React 路由 key 不同的页面在此声明。 */
-  legacyHash?: string
 }
 
 /**
- * 导航只列出当前角色可见的入口。未迁移页面直接回到旧版同源 hash，
- * 已迁移页面留在 React 内部，不复制第二套路由规则。
+ * 导航只列出当前角色可见的入口；所有页面都在 React 路由内，
+ * 不再回退到旧版同源 hash。
  */
 const NAV_ITEMS: NavItem[] = [
-  { key: 'workbench', label: '采集工作台', roles: ['hub', 'worker'], icon: Home, migratedFor: ['hub', 'worker'], legacyHash: 'overview' },
-  { key: 'annotation', label: '人工标注', roles: ['worker'], icon: Cursor, migrated: true },
-  { key: 'devices', label: '采集电脑', roles: ['hub'], icon: Desktop, migrated: true },
-  { key: 'assignments', label: '分配记录', roles: ['hub'], icon: Clipboard, migrated: true },
-  { key: 'materials', label: '素材清洗', roles: ['hub'], icon: Images, migrated: true },
-  { key: 'rejections', label: '质量审核', roles: ['hub'], icon: CheckCircle, migrated: true },
-  { key: 'task-center', label: '任务中心', roles: ['hub', 'worker'], icon: Tasks, migrated: true },
-  { key: 'settings', label: '设置', roles: ['hub', 'worker'], icon: Settings, migrated: true },
+  { key: 'workbench', label: '采集工作台', roles: ['hub', 'worker'], icon: Home },
+  { key: 'annotation', label: '人工标注', roles: ['worker'], icon: Cursor },
+  { key: 'devices', label: '采集电脑', roles: ['hub'], icon: Desktop },
+  { key: 'assignments', label: '分配记录', roles: ['hub'], icon: Clipboard },
+  { key: 'materials', label: '素材清洗', roles: ['hub'], icon: Images },
+  { key: 'rejections', label: '质量审核', roles: ['hub'], icon: CheckCircle },
+  { key: 'task-center', label: '任务中心', roles: ['hub', 'worker'], icon: Tasks },
+  { key: 'settings', label: '设置', roles: ['hub', 'worker'], icon: Settings },
 ]
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -71,35 +65,18 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-2" aria-label="主导航">
           {visibleItems.map((item) => (
-            <NavLink
-              key={item.key}
-              item={item}
-              active={item.key === currentKey}
-              migrated={item.migrated === true || item.migratedFor?.includes(role.role) === true}
-            />
+            <NavLink key={item.key} item={item} active={item.key === currentKey} />
           ))}
         </nav>
 
         <div className="border-t border-subtle p-2">
-          <Menu>
-            <Menu.Trigger>
-              <button
-                type="button"
-                className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-secondary-ghost-hover"
-              >
-                <Avatar size={28} name={ROLE_LABEL[role.role]} color="secondary" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm text-default">{ROLE_LABEL[role.role]}</span>
-                  <span className="block truncate text-2xs text-tertiary">{connection}</span>
-                </span>
-                <ChevronRight width={14} height={14} className="shrink-0 -rotate-90 text-tertiary" />
-              </button>
-            </Menu.Trigger>
-            <Menu.Content side="top" align="start" width={224} minWidth={224}>
-              <Menu.Item onSelect={() => { window.location.href = '/#overview' }}>返回旧版主页</Menu.Item>
-              <Menu.Item onSelect={() => { window.location.href = '/#task-center' }}>旧版控制台</Menu.Item>
-            </Menu.Content>
-          </Menu>
+          <div className="flex items-center gap-2.5 rounded-lg px-2 py-2">
+            <Avatar size={28} name={ROLE_LABEL[role.role]} color="secondary" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm text-default">{ROLE_LABEL[role.role]}</span>
+              <span className="block truncate text-2xs text-tertiary">{connection}</span>
+            </span>
+          </div>
         </div>
       </aside>
 
@@ -112,6 +89,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <h2 className="truncate heading-xs">{currentItem?.label ?? '菜单采集工作台'}</h2>
           </div>
           <div className="ml-auto flex shrink-0 items-center gap-2.5">
+            <ActiveTaskIndicator />
             <span className="hidden text-xs text-tertiary sm:inline">{connection}</span>
             <Badge color={role.role === 'standalone' ? 'warning' : 'secondary'} variant="soft" size="sm">
               {ROLE_LABEL[role.role]}
@@ -124,13 +102,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           aria-label="主导航（移动端）"
         >
           {visibleItems.map((item) => (
-            <NavLink
-              key={item.key}
-              item={item}
-              active={item.key === currentKey}
-              migrated={item.migrated === true || item.migratedFor?.includes(role.role) === true}
-              compact
-            />
+            <NavLink key={item.key} item={item} active={item.key === currentKey} compact />
           ))}
         </nav>
 
@@ -145,12 +117,10 @@ export function AppShell({ children }: { children: ReactNode }) {
 function NavLink({
   item,
   active,
-  migrated,
   compact = false,
 }: {
   item: NavItem
   active: boolean
-  migrated: boolean
   compact?: boolean
 }) {
   const Icon = item.icon
@@ -167,17 +137,30 @@ function NavLink({
       {item.label}
     </>
   )
-  if (migrated) {
-    return (
-      <Link to={`/${item.key}`} className={className} aria-current={active ? 'page' : undefined}>
-        {content}
-      </Link>
-    )
-  }
   return (
-    <a href={`/#${item.legacyHash ?? item.key}`} className={className} aria-current={active ? 'page' : undefined}>
+    <Link to={`/${item.key}`} className={className} aria-current={active ? 'page' : undefined}>
       {content}
-    </a>
+    </Link>
+  )
+}
+
+/** 全局运行中任务入口：任何页面都能看到正在执行的采集或素材分析。 */
+function ActiveTaskIndicator() {
+  const query = useQuery({
+    queryKey: ['tasks-active'],
+    queryFn: ({ signal }) => fetchActiveTasks(signal),
+    refetchInterval: 5_000,
+    staleTime: 4_000,
+  })
+  const count = query.data?.tasks.length ?? 0
+  if (!count) return null
+  return (
+    <Link
+      to="/task-center"
+      className="rounded-full border border-subtle bg-secondary-soft px-2.5 py-1 text-2xs text-default transition-colors hover:bg-secondary-ghost-hover"
+    >
+      运行中 {count} 个任务
+    </Link>
   )
 }
 

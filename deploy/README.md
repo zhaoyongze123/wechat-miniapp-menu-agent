@@ -16,6 +16,20 @@ A 机运行共享后台。A、B 都安装 Windows 采集端，用各自已登录
 - A、B 分别配对并获领不同门店，同时开始采集。暂时断开 B 到 A 的链路，在 B 连续采集两家并重启采集端。恢复链路后确认截图和状态都已补齐。云模型不可达时验证全自动暂停，并能由操作员切到半自动。
 - 让一台电脑离线，在 A 收回它的一家店并另行分配。旧结果补传后，应能在分配记录打开历史附件。再用两个原批次验证打回、重选、统一发布和重跑。同一门店仍被占用时，发布会提示等待同步或先收回。
 
+## 升级与回滚
+
+前后端随发布版本一起打包：React 构建产物在 `web/react/`，运行时不依赖 Node、npm 或外部 CDN。安装包与镜像都会写入版本信息，可用 `GET /api/version` 核对实际运行的后端版本与前端入口哈希。
+
+Windows 采集端按版本目录并存（`releases\<版本>`），`current-version` 决定守护进程启动哪个版本；数据、配置、设备身份和待上传结果都在 `%LOCALAPPDATA%\MenuCapture`，升级与回滚都不触碰。升级：运行新版安装包。回滚：执行安装目录下的 `rollback.ps1 -Version <旧版本>`，守护进程会在当前采集或标注结束后切回旧版本；脚本会校验目标版本文件完整，并通过 `/api/version` 等待切换完成。每个版本目录内的 `release-manifest.json` 记录版本、源码提交与前端入口哈希，可用于发布核对。
+
+共享后台按镜像标签发布与回滚，数据卷保持不变：
+
+```bash
+MENU_CAPTURE_VERSION=1.2.3 MENU_CAPTURE_IMAGE=menu-capture-hub:1.2.3 docker compose -f deploy/compose.yaml up -d --build
+# 回滚到上一镜像
+MENU_CAPTURE_IMAGE=menu-capture-hub:1.2.2 docker compose -f deploy/compose.yaml up -d
+```
+
 ## 迁移旧 Windows 备份
 
 先备份旧采集端的 `data`、截图、配置，以及独立存放的原素材和不合格归档。SQLite 使用备份 API 导出一致副本，或者在暂停旧工作台写入后复制完整数据目录。演练使用备份和新的空数据卷。

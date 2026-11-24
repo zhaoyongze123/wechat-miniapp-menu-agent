@@ -1,0 +1,38 @@
+{
+  "hub": {
+    "h1": "采集工作台",
+    "nav": [
+      "采集工作台",
+      "采集电脑",
+      "分配记录",
+      "素材清洗",
+      "质量审核",
+      "任务中心",
+      "设置"
+    ],
+    "debug_section": true,
+    "overview_path": "http://127.0.0.1:8791/#/workbench",
+    "overview_h1": "采集工作台",
+    "environment_path": "http://127.0.0.1:8791/#/diagnostics",
+    "unknown_ok": true,
+    "errors": []
+  },
+  "worker": {
+    "h1": "采集工作台",
+    "nav": [
+      "采集工作台",
+      "人工标注",
+      "任务中心",
+      "设置"
+    ],
+    "sync_dialog": {
+      "title": "同步状态",
+      "has_pending": true,
+      "has_confirmed": true,
+      "snippet": "同步状态\n关闭\n\n本机与共享工作台连接正常。\n\n待上传\n\n没有待上传的采集结果。\n\n最近确认\n\n还没有后台确认的结果。"
+    },
+    "annotation_h1": "人工标注",
+    "errors": []
+  },
+  "errors": []
+}

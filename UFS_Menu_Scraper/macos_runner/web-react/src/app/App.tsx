@@ -22,6 +22,9 @@ export function App() {
           <ErrorBoundary>
             <Routes>
               <Route path="/workbench" element={<WorkbenchRoute />} />
+              {/* 旧版 hash 深链保持可用：overview 与 environment 是仍会被收藏的入口。 */}
+              <Route path="/overview" element={<Navigate to="/workbench" replace />} />
+              <Route path="/environment" element={<Navigate to="/diagnostics" replace />} />
               <Route path="/devices" element={<HubDevicesPage />} />
               <Route path="/assignments" element={<HubAssignmentsPage />} />
               <Route path="/materials" element={<MaterialsPage />} />
@@ -31,7 +34,8 @@ export function App() {
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/annotation" element={<AnnotationPage />} />
               <Route path="/diagnostics" element={<DiagnosticsPage />} />
-              <Route path="/" element={<Navigate to="/task-center" replace />} />
+              {/* 首页回到采集工作台：与旧版默认入口 #overview 一致。 */}
+              <Route path="/" element={<Navigate to="/workbench" replace />} />
               <Route path="*" element={<UnknownRoutePage />} />
             </Routes>
           </ErrorBoundary>

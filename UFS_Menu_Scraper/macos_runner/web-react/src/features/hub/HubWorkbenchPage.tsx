@@ -7,7 +7,6 @@ import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
 import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { SegmentedControl } from '@openai/apps-sdk-ui/components/SegmentedControl'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
-import { TextLink } from '@openai/apps-sdk-ui/components/TextLink'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppDrawer } from '../../components/AppDrawer'
 import { AppPagination } from '../../components/AppPagination'
@@ -120,6 +119,7 @@ export function HubWorkbenchPage() {
     [setSearchParams],
   )
 
+  const [debugView, setDebugView] = useState(false)
   const [queryText, setQueryText] = useState(q)
   useEffect(() => setQueryText(q), [q])
   useEffect(() => {
@@ -129,9 +129,9 @@ export function HubWorkbenchPage() {
   }, [queryText, q, updateQuery])
 
   const statusQuery = useQuery({
-    queryKey: ['hub-status', scope, batch, filter, sort, q, page, size, selectedIds.join(',')],
+    queryKey: ['hub-status', scope, batch, filter, sort, q, page, size, selectedIds.join(','), debugView],
     queryFn: ({ signal }) =>
-      fetchHubStatus({ page, size, scope, batch, q, filter, sort, selected: selectedIds }, signal),
+      fetchHubStatus({ page, size, scope, batch, q, filter, sort, selected: selectedIds, includeEvents: debugView }, signal),
     placeholderData: keepPreviousData,
     enabled: role.role === 'hub',
     refetchInterval: 10_000,
@@ -162,6 +162,7 @@ export function HubWorkbenchPage() {
   const queue = statusQuery.data?.queue
   const records = statusQuery.data?.tasks ?? []
   const counts = statusQuery.data?.counts ?? {}
+  const events = statusQuery.data?.events ?? []
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
   const selectedMap = useMemo(
     () => new Map((queue?.selected ?? []).map((task) => [task.id, task])),
@@ -228,13 +229,8 @@ export function HubWorkbenchPage() {
     return (
       <StatePanel
         variant="info"
-        title="采集工作台当前由共享后台使用"
-        description="本页负责把已发布门店分配给 Windows 采集电脑。Windows 采集端请使用旧版工作台查看本机任务。"
-        action={
-          <TextLink href="/#overview" className="text-sm">
-            打开旧版工作台
-          </TextLink>
-        }
+        title="共享调度页面仅共享后台可用"
+        description="本页负责把已发布门店分配给 Windows 采集电脑，请使用共享后台或 Windows 采集端访问。"
       />
     )
   }
@@ -354,6 +350,15 @@ export function HubWorkbenchPage() {
         headingId="hub-workbench-heading"
         actions={
           <>
+            <Button
+              color="secondary"
+              variant="outline"
+              size="sm"
+              aria-pressed={debugView}
+              onClick={() => setDebugView((current) => !current)}
+            >
+              {debugView ? '关闭调试视图' : '调试视图'}
+            </Button>
             <Button
               color="secondary"
               variant="outline"
@@ -537,6 +542,34 @@ export function HubWorkbenchPage() {
           title="当前没有已发布的素材快照"
           description="“当前素材”只展示当前发布版本；请在素材清洗中发布批次，或切换到“全部发布批次”。"
         />
+      ) : null}
+
+      {debugView ? (
+        <section className="rounded-xl border border-subtle bg-surface" aria-labelledby="hub-debug-heading">
+          <div className="border-b border-subtle px-4 py-3">
+            <h2 id="hub-debug-heading" className="heading-sm">
+              最近活动
+            </h2>
+          </div>
+          {events.length ? (
+            <ul className="max-h-80 divide-y divide-subtle overflow-y-auto">
+              {events.slice(0, 80).map((event, index) => (
+                <li
+                  key={`${event.time ?? ''}-${index}`}
+                  className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-2 text-xs"
+                >
+                  <span className="tabular-nums text-tertiary">{event.time}</span>
+                  <span className="min-w-0 flex-1 text-default">{event.message}</span>
+                  {event.level && event.level !== 'info' ? (
+                    <StatusBadge tone={event.level === 'error' ? 'danger' : 'warning'}>{event.level}</StatusBadge>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="px-4 py-4 text-sm text-tertiary">暂无运行日志。</p>
+          )}
+        </section>
       ) : null}
 
       <AssignDialog

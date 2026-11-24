@@ -1,20 +1,23 @@
-import { useLocation } from 'react-router-dom'
-import { TextLink } from '@openai/apps-sdk-ui/components/TextLink'
+import { Link, useLocation } from 'react-router-dom'
 import { StatePanel } from '../components/StatePanel'
 
-/** 未迁移的 hash：说明当前预览范围，并给出回到旧版对应页面的入口。 */
+/** 未知路由：说明地址无效，并提供工作台与任务中心两个有效入口。 */
 export function UnknownRoutePage() {
   const location = useLocation()
   const hash = location.pathname.replace(/^\//, '')
   return (
     <StatePanel
       variant="info"
-      title="该页面尚未迁移到 React"
-      description={`“#${hash || 'home'}” 仍由旧版控制台承载。本次迁移先完成任务中心试点，其余模块按阶段推进。`}
+      title="页面不存在"
+      description={`没有找到“#${hash || 'home'}”对应的页面，可能是链接已过期或地址不完整。`}
       action={
         <div className="flex flex-wrap items-center justify-center gap-4 text-sm">
-          <TextLink href={`/#${hash || 'overview'}`}>打开旧版对应页面</TextLink>
-          <TextLink href="#/task-center">前往 React 任务中心</TextLink>
+          <Link to="/workbench" className="text-primary underline-offset-2 hover:underline">
+            返回采集工作台
+          </Link>
+          <Link to="/task-center" className="text-primary underline-offset-2 hover:underline">
+            前往任务中心
+          </Link>
         </div>
       }
     />

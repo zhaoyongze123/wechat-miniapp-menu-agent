@@ -34,6 +34,7 @@ import {
 import { useRefreshWorkerStatus, useWorkerStatus } from './hooks'
 import { ManualPanel } from './ManualPanel'
 import { StartRunDialog } from './StartRunDialog'
+import { WorkerSyncDialog } from './WorkerSyncDialog'
 import type { CaptureMode, WorkerFilter, WorkerSort, WorkerTask } from './types'
 import { START_RUN_LIMIT } from './types'
 
@@ -158,6 +159,7 @@ export function WorkerWorkbenchPage() {
   const [startOpen, setStartOpen] = useState(false)
   const [startMode, setStartMode] = useState<CaptureMode>('auto')
   const [terminateOpen, setTerminateOpen] = useState(false)
+  const [syncOpen, setSyncOpen] = useState(false)
   const [commandError, setCommandError] = useState('')
   const [manualError, setManualError] = useState('')
 
@@ -361,6 +363,9 @@ export function WorkerWorkbenchPage() {
         headingId="worker-workbench-heading"
         actions={
           <>
+            <Button color="secondary" variant="outline" size="sm" onClick={() => setSyncOpen(true)}>
+              同步状态{pendingUploads ? ` · 待上传 ${pendingUploads}` : ''}
+            </Button>
             <Button color="secondary" variant="outline" size="sm" onClick={() => void statusQuery.refetch()}>
               刷新
             </Button>
@@ -647,6 +652,8 @@ export function WorkerWorkbenchPage() {
           refresh()
         }}
       />
+
+      <WorkerSyncDialog open={syncOpen} onOpenChange={setSyncOpen} connection={connection} />
 
       <ConfirmActionDialog
         open={terminateOpen}

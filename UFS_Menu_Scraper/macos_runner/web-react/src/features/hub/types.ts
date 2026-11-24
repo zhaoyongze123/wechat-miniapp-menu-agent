@@ -62,6 +62,14 @@ export interface HubRun {
   task_ids?: string[]
 }
 
+/** 运行事件：来自后端 events 表，仅调试视图展示。 */
+export interface HubEvent {
+  time?: string
+  level?: string
+  message?: string
+  task_id?: string
+}
+
 export interface HubStatus {
   execution_engine?: string
   launch_mode?: string
@@ -72,6 +80,7 @@ export interface HubStatus {
   tasks?: HubTask[]
   counts?: Record<string, number>
   queue?: HubQueue
+  events?: HubEvent[]
   material_release?: MaterialRelease | null
   material_rejected?: number
   material_rejected_all?: number
@@ -175,4 +184,6 @@ export interface HubQueueParams {
   filter: HubQueueFilter
   sort: HubQueueSort
   selected: string[]
+  /** 调试视图才请求运行事件，正常视图保持响应体精简。 */
+  includeEvents?: boolean
 }

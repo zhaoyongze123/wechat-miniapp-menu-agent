@@ -209,7 +209,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 return JSONResponse({"detail": "本机操作令牌无效，请刷新控制台"}, status_code=403)
         response = await call_next(request)
         # 内容哈希资源由路由给出 immutable 缓存，其余响应一律 no-store。
-        if not (request.url.path.startswith("/react/assets/") and response.status_code == 200):
+        if not (request.url.path.startswith("/assets/") and response.status_code == 200):
             response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -319,20 +319,20 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         }
 
 
-    # React 迁移产物固定装配在 web/react/；入口只在 ?ui=react 时返回，
-    # 资源必须来自 Vite manifest 白名单，避免把构建目录里的其他文件暴露出去。
+    # React 是唯一业务前端：入口 HTML 与构建资源都来自 web/react/。
+    # 资源只按 Vite manifest 白名单返回，避免把构建目录里的其他文件暴露出去。
     react_root = ROOT / "web" / "react"
 
-    def react_bundle() -> tuple[str, dict[str, Path]]:
-        """读取一次 manifest，返回入口 HTML 与允许对外提供的资源清单。"""
+    def react_bundle() -> tuple[str, dict[str, Path], str]:
+        """读取一次 manifest，返回入口 HTML、允许对外提供的资源清单与入口文件名。"""
         try:
             manifest = json.loads((react_root / ".vite" / "manifest.json").read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
-            raise RuntimeError("React 控制台尚未构建，请先运行 web-react 的 npm run build") from error
+            raise RuntimeError("前端控制台尚未构建，请先运行 web-react 的 npm run build") from error
         entries = [item for item in manifest.values()
                    if isinstance(item, dict) and item.get("isEntry")] if isinstance(manifest, dict) else []
         if len(entries) != 1 or not isinstance(entries[0].get("file"), str):
-            raise RuntimeError("React 构建清单缺少唯一入口文件")
+            raise RuntimeError("前端构建清单缺少唯一入口文件")
         entry = entries[0]
         assets: dict[str, Path] = {}
         names = [entry["file"], *[item for item in entry.get("css", []) if isinstance(item, str)]]
@@ -341,33 +341,30 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             # 只接受 assets/<文件名>，拒绝绝对路径、..、嵌套目录与隐藏文件。
             if (relative.is_absolute() or len(relative.parts) != 2 or relative.parts[0] != "assets"
                     or relative.parts[1].startswith(".")):
-                raise RuntimeError("React 构建清单包含非法资源路径")
+                raise RuntimeError("前端构建清单包含非法资源路径")
             target = react_root.joinpath(*relative.parts)
             if not target.is_file():
-                raise RuntimeError(f"React 构建产物缺失: {name}")
+                raise RuntimeError(f"前端构建产物缺失: {name}")
             assets[relative.parts[1]] = target
         try:
             html = (react_root / "index.html").read_text(encoding="utf-8")
         except OSError as error:
-            raise RuntimeError("React 入口 HTML 缺失") from error
-        return html, assets
+            raise RuntimeError("前端入口 HTML 缺失") from error
+        return html, assets, entry["file"]
 
     @app.get("/", response_class=HTMLResponse)
-    def index(ui: str = ""):
-        if ui == "react":
-            try:
-                html, _ = react_bundle()
-            except RuntimeError as error:
-                return HTMLResponse(str(error), status_code=503)
-            return HTMLResponse(html, headers={"Cache-Control": "no-store"})
-        html = (ROOT / "web/index.html").read_text(encoding="utf-8")
-        return html.replace("__CAPTURE_TOKEN__", token)
-
-    @app.get("/react/assets/{name}")
-    def react_assets(name: str):
-        """React 静态资源：按 manifest 白名单返回内容哈希文件，长期缓存。"""
+    def index():
         try:
-            _, assets = react_bundle()
+            html, _, _ = react_bundle()
+        except RuntimeError as error:
+            return HTMLResponse(str(error), status_code=503)
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+    @app.get("/assets/{name}")
+    def react_assets(name: str):
+        """前端静态资源：按 manifest 白名单返回内容哈希文件，长期缓存。"""
+        try:
+            _, assets, _ = react_bundle()
         except RuntimeError as error:
             raise HTTPException(503, str(error)) from error
         target = assets.get(name)
@@ -384,22 +381,25 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return FileResponse(target, media_type=media_type,
                             headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
-    @app.get("/assets/{name}")
-    def material_assets(name: str):
-        if name not in {"materials.js", "materials.css", "workspace.css", "model-usage.js", "model-usage.css",
-                        "annotation.js", "annotation.css", "task-center.js", "task-center.css",
-                        "shared-workbench.js", "task-center-vue-loader.js"}:
+    @app.get("/favicon.svg")
+    def favicon():
+        target = react_root / "favicon.svg"
+        if not target.is_file():
             raise HTTPException(404, "资源不存在")
-        return FileResponse(ROOT / "web" / name, headers={"Cache-Control": "no-cache"})
+        return FileResponse(target, media_type="image/svg+xml",
+                            headers={"Cache-Control": "public, max-age=86400"})
 
-    @app.get("/vue/{name}")
-    def vue_assets(name: str):
-        """Vue 试点构建产物：固定文件名、同源加载，不依赖 CDN 或开发服务器。"""
-        base = (ROOT / "web" / "vue").resolve()
-        target = (base / name).resolve()
-        if target.suffix not in {".js", ".css"} or not target.is_relative_to(base) or not target.is_file():
-            raise HTTPException(404, "资源不存在")
-        return FileResponse(target, headers={"Cache-Control": "no-cache"})
+    @app.get("/api/version")
+    def version_info():
+        # 发布版本由安装启动器或镜像环境的 MENU_CAPTURE_VERSION 提供；
+        # 入口哈希文件名即前端构建 ID，便于升级/回滚后核对实际运行产物。
+        frontend = ""
+        try:
+            _, _, entry = react_bundle()
+            frontend = PurePosixPath(entry).name
+        except RuntimeError:
+            frontend = ""
+        return {"version": os.environ.get("MENU_CAPTURE_VERSION", ""), "frontend": frontend}
 
     @app.get("/api/model-usage")
     def model_usage_report(date_from: str | None = None, date_to: str | None = None,

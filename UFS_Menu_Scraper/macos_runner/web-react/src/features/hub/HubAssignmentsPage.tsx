@@ -178,7 +178,7 @@ export function HubAssignmentsPage() {
     )
   }
   if (role.role !== 'hub') {
-    return <StatePanel variant="info" title="仅共享后台可查看分配记录" description="Windows 采集端请使用旧版工作台查看本机任务与结果。" />
+    return <StatePanel variant="info" title="仅共享后台可查看分配记录" description="分配记录在共享后台查看；Windows 采集端可在采集工作台查看本机任务与结果。" />
   }
 
   const columns: DataColumn<AssignmentRecord>[] = [
