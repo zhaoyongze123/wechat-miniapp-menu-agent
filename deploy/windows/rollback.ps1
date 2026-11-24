@@ -24,7 +24,7 @@ function Write-RollbackLog {
 $release = Join-Path $PSScriptRoot "releases\$Version"
 $required = @(
     (Join-Path $release 'python\python.exe'),
-    (Join-Path $release 'app\menu_capture\server.py')
+    (Join-Path $release 'app\menu_capture\api\server.py')
 )
 foreach ($path in $required) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {

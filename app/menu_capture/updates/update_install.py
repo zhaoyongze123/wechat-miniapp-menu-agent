@@ -438,7 +438,7 @@ class InstallOrchestrator:
         release = self.install_root / "releases" / self.target
         required = [
             release / "python" / "python.exe",
-            release / "app" / "menu_capture" / "server.py",
+            release / "app" / "menu_capture" / "api" / "server.py",
         ]
         for path in required:
             if not path.is_file():
