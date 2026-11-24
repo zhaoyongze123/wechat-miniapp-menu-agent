@@ -345,7 +345,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     app.include_router(create_task_center_router(task_center))
 
 
- 
+
 
 
     register_frontend_routes(
