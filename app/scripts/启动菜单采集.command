@@ -7,5 +7,5 @@ fi
 # 仅清理本服务进程的代理环境，不修改系统或其他应用的代理设置。
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
 export NO_PROXY='*' no_proxy='*'
-.venv/bin/python -m menu_capture.service
+.venv/bin/python -m menu_capture.core.service
 open 'http://127.0.0.1:8765'

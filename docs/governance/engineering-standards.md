@@ -27,7 +27,7 @@
 | 改动类型 | 最低验证 |
 | --- | --- |
 | 纯文档 / 配置 | 按影响检查差异、链接或配置语法。涉及运行配置时验证相关契约。 |
-| 服务端路由、共享同步 | 对应 `tests/test_server.py`、`test_shared_workbench.py` 等契约测试 |
+| 服务端路由、共享同步 | `tests/integration/` 下的 `test_server.py`、`test_shared_workbench.py` 等 |
 | 采集执行、窗口契约 | `test_windows_compat.py`、`test_environment.py` 与相关回归 |
 | 前端 | 按风险运行类型检查、相关 Vitest 或浏览器交互用例。提交涉及产品资源的变更前核对 `web/react`。 |
 | 数据库 / 并发 / 权限 | 用隔离数据执行必要的迁移兼容性、竞态、角色与拒绝路径验证。 |

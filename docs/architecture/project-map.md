@@ -57,69 +57,87 @@ app/
 
 ## 4. 后端模块（`menu_capture/`）
 
+按域分包，依赖方向为 `api → capture/materials/annotation/quality/shared/updates → core/storage`，跨域只调用对方公开函数，不直接读写对方数据表。
+
+| 包 | 职责 |
+| --- | --- |
+| `api/` | FastAPI 装配、HTTP 路由与页面数据接口 |
+| `capture/` | 采集执行、批次调度、输出与历史 |
+| `desktop/` | Windows/macOS 桌面能力、图像定位与窗口契约 |
+| `vision/` | 视觉模型、场景决策、用途分类与用量 |
+| `agent/` | GUI Agent 试运行与交接 |
+| `materials/` | 素材清洗、发布快照与不合格返工 |
+| `annotation/` | 独立标注、快捷键与目标候选 |
+| `quality/` | 失败归因与质量口径 |
+| `shared/` | Hub/Worker 共享状态、历史与镜像更新 |
+| `storage/` | SQLite 事实源与调试日志 |
+| `updates/` | 发布发现、下载、安装、回滚与清理 |
+| `core/` | 配置、连接、环境诊断与单实例托管 |
+
+
 ### 4.1 入口、配置与运行环境
 
 | 模块 | 职责 |
 | --- | --- |
-| `server.py` | FastAPI 应用：REST 路由、令牌校验、静态资源；只做协议层，业务下沉到各 service。 |
-| `service.py` | 把 Web 服务托管给当前用户（macOS LaunchAgent），不自动启动采集。 |
-| `config.py` | `Settings` 校验与本地 JSON 原子读写；普通配置与密钥分离。 |
-| `instance_lock.py` | 单实例锁：同一台机器只允许一个服务占用桌面任务。 |
-| `connections.py` | 连接生命周期：模型/桌面探针事实的缓存、恢复与展示状态。 |
-| `environment.py` | 环境诊断：依赖、权限、OCR、路径等检查项。 |
-| `debug_log.py` | 调试日志：分段 JSONL、异步写入与容量清理。 |
+| `api/server.py` | FastAPI 应用：REST 路由、令牌校验、静态资源；只做协议层，业务下沉到各 service。 |
+| `core/service.py` | 把 Web 服务托管给当前用户（macOS LaunchAgent），不自动启动采集。 |
+| `core/config.py` | `Settings` 校验与本地 JSON 原子读写；普通配置与密钥分离。 |
+| `core/instance_lock.py` | 单实例锁：同一台机器只允许一个服务占用桌面任务。 |
+| `core/connections.py` | 连接生命周期：模型/桌面探针事实的缓存、恢复与展示状态。 |
+| `core/environment.py` | 环境诊断：依赖、权限、OCR、路径等检查项。 |
+| `storage/debug_log.py` | 调试日志：分段 JSONL、异步写入与容量清理。 |
 
 ### 4.2 任务、运行与用量
 
 | 模块 | 职责 |
 | --- | --- |
-| `store.py` | SQLite 唯一事实源：`tasks`、`runs`、`run_actions`、`events`；状态迁移与幂等迁移。 |
-| `robot_profile.py` | UiPath 运行配置：选择器、快捷键、窗口尺寸、坐标校准。 |
-| `model_usage.py` | 模型调用用量台账与按日统计。 |
-| `model.py` | 视觉模型客户端（OpenAI 兼容接口）与 JSON 结果解析。 |
+| `storage/store.py` | SQLite 唯一事实源：`tasks`、`runs`、`run_actions`、`events`；状态迁移与幂等迁移。 |
+| `capture/robot_profile.py` | UiPath 运行配置：选择器、快捷键、窗口尺寸、坐标校准。 |
+| `vision/model_usage.py` | 模型调用用量台账与按日统计。 |
+| `vision/model.py` | 视觉模型客户端（OpenAI 兼容接口）与 JSON 结果解析。 |
 
 ### 4.3 素材清洗与批次
 
 | 模块 | 职责 |
 | --- | --- |
-| `materials.py` | 素材批次、分析结果、人工决策、发布快照与批次阶段。 |
-| `material_jobs.py` | 分析 job 的持久化与并发调度；状态迁移用单条 UPDATE 做 CAS。 |
-| `material_fallback.py` | 对本地检测漏检图片做保守的视觉补检。 |
-| `material_versions.py` | 发布版本元数据；清洗决策与不可变发布清单分开保存。 |
-| `preprocess.py` | 本地二维码素材预筛，只保存载荷哈希，不保留原文。 |
-| `purpose_classifier.py` | 二维码用途视觉分类（点餐码/收款码等），不接触解码载荷。 |
-| `batch_management.py` | 批次列表、软删除/恢复、物理清理与删除前置校验。 |
-| `capture_outputs.py` | 产物目录命名、门店目录、不合格原图归档。 |
+| `materials/materials.py` | 素材批次、分析结果、人工决策、发布快照与批次阶段。 |
+| `materials/material_jobs.py` | 分析 job 的持久化与并发调度；状态迁移用单条 UPDATE 做 CAS。 |
+| `materials/material_fallback.py` | 对本地检测漏检图片做保守的视觉补检。 |
+| `materials/material_versions.py` | 发布版本元数据；清洗决策与不可变发布清单分开保存。 |
+| `materials/preprocess.py` | 本地二维码素材预筛，只保存载荷哈希，不保留原文。 |
+| `vision/purpose_classifier.py` | 二维码用途视觉分类（点餐码/收款码等），不接触解码载荷。 |
+| `capture/batch_management.py` | 批次列表、软删除/恢复、物理清理与删除前置校验。 |
+| `capture/capture_outputs.py` | 产物目录命名、门店目录、不合格原图归档。 |
 
 ### 4.4 采集执行与桌面能力
 
 | 模块 | 职责 |
 | --- | --- |
-| `uipath_runner.py` | 单店采集主流程：准备微信、导航交接、滚动截图、菜单校验、结果落库与归档。 |
-| `ui_tars_trial.py` | GUI Agent SDK 子进程协议、动作白名单、目标 ID 与坐标契约。 |
-| `scene_agent.py` | 单步场景决策：根据当前画面输出点击/滚动/等待/就绪/阻塞等动作与理由。 |
-| `uipath_cli.py` | 定位本机 UiPath CLI 并组装可直接执行的参数。 |
-| `window_contract.py` | 动作回执中的窗口身份契约（与像素内容验证分离）。 |
-| `windows_desktop.py` | Windows Win32 桌面驱动：窗口级截图、点击、输入（适配 `WeChatAppEx.exe`）。 |
-| `windows_image.py` | Windows 本地 OCR、二维码识别与剪贴板适配。 |
-| `macos.py` | macOS 原生能力：权限查询、Vision OCR、二维码定位。 |
-| `image_tools.py` | 已保存图片与剪贴板的图像处理，不读取桌面、不注入输入事件。 |
-| `template_locator.py` | 多尺度模板匹配，定位固定 UI 控件。 |
-| `preview_locator.py` | 图片预览页顶部“识别二维码”图标定位。 |
-| `target_candidates.py` | 把 OCR 行转换成稳定的可点击候选 ID，模型只选 ID 不猜坐标。 |
-| `chat_anchor.py` | 微信聊天截图中的店名锚点定位。 |
-| `chat_layout.py` | 绿色文本气泡（已发送店名）定位。 |
-| `chat_image_locator.py` | 在聊天记录中定位刚发送的图片缩略图。 |
-| `checkbox_locator.py` | 协议/隐私弹窗的勾选框定位。 |
-| `close_icon_locator.py` | 把模型给出的粗坐标精修到附近的关闭图标。 |
+| `capture/uipath_runner.py` | 单店采集主流程：准备微信、导航交接、滚动截图、菜单校验、结果落库与归档。 |
+| `agent/ui_tars_trial.py` | GUI Agent SDK 子进程协议、动作白名单、目标 ID 与坐标契约。 |
+| `vision/scene_agent.py` | 单步场景决策：根据当前画面输出点击/滚动/等待/就绪/阻塞等动作与理由。 |
+| `capture/uipath_cli.py` | 定位本机 UiPath CLI 并组装可直接执行的参数。 |
+| `desktop/window_contract.py` | 动作回执中的窗口身份契约（与像素内容验证分离）。 |
+| `capture/windows_desktop.py` | Windows Win32 桌面驱动：窗口级截图、点击、输入（适配 `WeChatAppEx.exe`）。 |
+| `desktop/windows_image.py` | Windows 本地 OCR、二维码识别与剪贴板适配。 |
+| `capture/macos.py` | macOS 原生能力：权限查询、Vision OCR、二维码定位。 |
+| `desktop/image_tools.py` | 已保存图片与剪贴板的图像处理，不读取桌面、不注入输入事件。 |
+| `desktop/template_locator.py` | 多尺度模板匹配，定位固定 UI 控件。 |
+| `desktop/preview_locator.py` | 图片预览页顶部“识别二维码”图标定位。 |
+| `annotation/target_candidates.py` | 把 OCR 行转换成稳定的可点击候选 ID，模型只选 ID 不猜坐标。 |
+| `desktop/chat_anchor.py` | 微信聊天截图中的店名锚点定位。 |
+| `desktop/chat_layout.py` | 绿色文本气泡（已发送店名）定位。 |
+| `desktop/chat_image_locator.py` | 在聊天记录中定位刚发送的图片缩略图。 |
+| `desktop/checkbox_locator.py` | 协议/隐私弹窗的勾选框定位。 |
+| `desktop/close_icon_locator.py` | 把模型给出的粗坐标精修到附近的关闭图标。 |
 
 ### 4.5 结果、审核与自动化
 
 | 模块 | 职责 |
 | --- | --- |
-| `rejections.py` | 汇总素材决策与采集任务的不合格记录，支持筛选与 Excel 导出。 |
-| `annotation.py` | 人工标注模式：只给候选，点击必须人工确认，保留前后截图样本。 |
-| `auto_pipeline.py` | 串行无人值守：分析 → 接受推荐 → 发布 → 激活 → 采集，单批超 100 家自动分轮。 |
+| `materials/rejections.py` | 汇总素材决策与采集任务的不合格记录，支持筛选与 Excel 导出。 |
+| `annotation/annotation.py` | 人工标注模式：只给候选，点击必须人工确认，保留前后截图样本。 |
+| `capture/auto_pipeline.py` | 串行无人值守：分析 → 接受推荐 → 发布 → 激活 → 采集，单批超 100 家自动分轮。 |
 
 ## 5. 前端（源码 `web-react/`，产物 `web/react/`）
 
@@ -153,7 +171,7 @@ app/
 
 ## 7. 测试
 
-- 在 `macos_runner` 按改动执行 `uv run --frozen pytest -q <相关测试路径>` 和 `uvx ruff check <受影响路径>`。
+- 在 `app/` 按改动执行 `uv run --frozen pytest -q <相关测试路径>` 和 `uvx ruff check <受影响路径>`。
 - 前端使用必要的 `npm run typecheck` 和 `npm test -- <相关测试文件>`，提交受影响的静态资源前再核对构建产物。
 - 重点覆盖：批次管理、素材 API、任务身份、UiPath 窗口契约、失败码、待检查/不合格清单、自动流水线续跑。
 - 测试不访问真实桌面、模型和网络；涉及实机链路的改动需另做单店实跑验证。
@@ -163,7 +181,7 @@ app/
 | 任务 | 入口 |
 | --- | --- |
 | 启动控制台（Windows） | `cd app; .\启动菜单采集.ps1` |
-| 启动控制台（macOS 调试） | `cd app && .venv/bin/python -m menu_capture.server` |
+| 启动控制台（macOS 调试） | `cd app && .venv/bin/python -m menu_capture.api.server` |
 | 跑针对性测试 | `uv run --frozen pytest -q <相关测试路径>` |
 | 无人值守批量采集 | `uv run --frozen python -m menu_capture.auto_pipeline --batches <batch_id> [...]` |
 | 查看任务/运行状态 | `GET /api/status`、`GET /api/tasks/active` |

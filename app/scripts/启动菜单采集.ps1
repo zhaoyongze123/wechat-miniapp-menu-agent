@@ -12,5 +12,5 @@ if (-not (Test-Path -LiteralPath 'ui_tars/node_modules/@gui-agent/agent-sdk/pack
 }
 
 Write-Host 'Menu capture console: http://127.0.0.1:8765/'
-& $python -m menu_capture.server
+& $python -m menu_capture.api.server
 exit $LASTEXITCODE

@@ -214,7 +214,7 @@ try {
     $env:PYTHONNOUSERSITE = '1'
     Push-Location $app
     try {
-        Invoke-Checked $python @('-c', 'import fastapi, cv2, zxingcpp, screeninfo, rapidocr_onnxruntime, menu_capture.server')
+        Invoke-Checked $python @('-c', 'import fastapi, cv2, zxingcpp, screeninfo, rapidocr_onnxruntime, menu_capture.api.server')
         Invoke-Checked (Join-Path $nodeDir 'node.exe') @('--version')
         Invoke-Checked $env:TESSERACT_CMD @('--version')
         $languages = & $env:TESSERACT_CMD --list-langs
