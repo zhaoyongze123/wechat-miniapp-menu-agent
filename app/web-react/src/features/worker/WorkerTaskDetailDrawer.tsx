@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
+import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDrawer } from '../../components/AppDrawer'
 import { CellText } from '../../components/CellText'
 import { ImagePreview } from '../../components/ImagePreview'
@@ -194,9 +195,19 @@ function RunExportControl({ runs }: { runs: { id: string; startedAt: string }[] 
   return valid ? (
     <>
       <label className="text-xs text-secondary" htmlFor="worker-debug-run">导出调试包</label>
-      <select id="worker-debug-run" className="min-w-0 flex-1 rounded-md border border-subtle bg-surface px-2 py-1.5 text-xs" value={selected} onChange={(event) => setSelected(event.target.value)}>
-        {runs.map((run) => <option key={run.id} value={run.id}>{formatTime(run.startedAt)} · {run.id.slice(0, 8)}</option>)}
-      </select>
+      <div className="min-w-0 flex-1">
+        <Select
+          id="worker-debug-run"
+          aria-label="要导出调试包的运行"
+          value={selected}
+          size="xs"
+          options={runs.map((run) => ({
+            value: run.id,
+            label: `${formatTime(run.startedAt)} · ${run.id.slice(0, 8)}`,
+          }))}
+          onChange={(option) => setSelected(option.value)}
+        />
+      </div>
       <a className="inline-flex min-h-8 items-center rounded-md border border-subtle px-2 text-xs text-default hover:bg-secondary-ghost-hover" href={`/api/debug/runs/${encodeURIComponent(selected)}/export`}>
         下载调试包
       </a>

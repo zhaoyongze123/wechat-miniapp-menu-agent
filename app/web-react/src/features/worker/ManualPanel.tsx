@@ -110,25 +110,13 @@ export function ManualPanel({ manual, busy, error, onCapture, onReject, onSkip, 
           {rejectOpen ? (
             <div className="space-y-2 rounded-lg border border-subtle bg-surface p-3">
               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-                {compact ? (
-                  <select
-                    className="w-full rounded-md border border-subtle bg-surface p-2 text-sm"
-                    aria-label="不合格原因"
-                    value={reason}
-                    onChange={(event) => setReason(event.target.value)}
-                  >
-                    {REJECTION_REASON_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <Select
-                    aria-label="不合格原因"
-                    value={reason}
-                    options={REJECTION_REASON_OPTIONS}
-                    onChange={(option) => setReason(option.value)}
-                  />
-                )}
+                <Select
+                  aria-label="不合格原因"
+                  value={reason}
+                  options={REJECTION_REASON_OPTIONS}
+                  size={compact ? 'sm' : 'md'}
+                  onChange={(option) => setReason(option.value)}
+                />
                 <Input
                   aria-label="补充说明"
                   placeholder={needDetail ? '请补充具体原因' : '补充说明（可选）'}

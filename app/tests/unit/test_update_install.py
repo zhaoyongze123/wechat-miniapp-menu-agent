@@ -21,8 +21,8 @@ def make_release(root: Path, version: str, entry: str = "assets/index.js") -> Pa
     release = root / "releases" / version
     (release / "python").mkdir(parents=True, exist_ok=True)
     (release / "python" / "python.exe").write_bytes(b"python")
-    (release / "app" / "menu_capture").mkdir(parents=True, exist_ok=True)
-    (release / "app" / "menu_capture" / "server.py").write_text("", encoding="utf-8")
+    (release / "app" / "menu_capture" / "api").mkdir(parents=True, exist_ok=True)
+    (release / "app" / "menu_capture" / "api" / "server.py").write_text("", encoding="utf-8")
     frontend = release / "app" / "web" / "react" / entry
     frontend.parent.mkdir(parents=True, exist_ok=True)
     frontend.write_bytes(b"frontend")

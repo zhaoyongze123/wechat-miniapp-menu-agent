@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
@@ -6,6 +6,7 @@ import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { SegmentedControl } from '@openai/apps-sdk-ui/components/SegmentedControl'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { errorMessage } from '../../api/client'
+import { AppDataTable } from '../../components/AppDataTable'
 import { AppDialog } from '../../components/AppDialog'
 import { AppPagination } from '../../components/AppPagination'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -19,7 +20,6 @@ import {
   coverageText,
   elapsedText,
   formatInteger,
-  groupRowHint,
   groupRowLabel,
   hasUnknownUsage,
   localDate,
@@ -304,60 +304,81 @@ export function ModelUsageDialog({ open, onOpenChange }: ModelUsageDialogProps) 
             {groups.length === 0 ? (
               <p className="rounded-lg border border-subtle py-8 text-center text-sm text-secondary">该条件下没有调用记录。</p>
             ) : (
-              <div className="overflow-x-auto rounded-lg border border-subtle">
-                <table className="w-full min-w-[900px] text-left text-xs">
-                  <thead className="bg-surface-secondary text-2xs text-tertiary">
-                    <tr>
-                      <th className="px-2 py-2 font-medium">{groupByLabelOf(groupBy)}</th>
-                      <th className="px-2 py-2 text-right font-medium">调用</th>
-                      <th className="px-2 py-2 text-right font-medium">成功</th>
-                      <th className="px-2 py-2 text-right font-medium">失败</th>
-                      <th className="px-2 py-2 text-right font-medium">进行中</th>
-                      <th className="px-2 py-2 text-right font-medium">中断</th>
-                      <th className="px-2 py-2 text-right font-medium">输入</th>
-                      <th className="px-2 py-2 text-right font-medium">输出</th>
-                      <th className="px-2 py-2 text-right font-medium">总 Token</th>
-                      <th className="px-2 py-2 text-right font-medium">耗时</th>
-                      <th className="px-2 py-2 text-right font-medium">下钻</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-subtle">
-                    {groups.map((group) => {
-                      const clickable = groupBy !== 'model'
-                      return (
-                        <tr
-                          key={group.key}
-                          className={clickable ? 'cursor-pointer hover:bg-secondary-ghost-hover' : undefined}
-                          onClick={() => clickable && drillGroup(group)}
-                          title={clickable ? groupRowHint(groupBy, group) : undefined}
-                        >
-                          <td className="max-w-72 px-2 py-2">
-                            <span className="block truncate text-default">{groupRowLabel(groupBy, group)}</span>
-                            {groupBy === 'task' && group.source_name ? (
-                              <span className="block truncate text-2xs text-tertiary">{group.source_name}</span>
-                            ) : null}
-                            {groupBy === 'run' && group.run_id ? (
-                              <span className="block truncate text-2xs text-tertiary">{compactId(group.run_id)}</span>
-                            ) : null}
-                          </td>
-                          <td className="px-2 py-2 text-right tabular-nums">{formatInteger(group.calls)}</td>
-                          <td className="px-2 py-2 text-right tabular-nums text-success">{formatInteger(group.success_calls)}</td>
-                          <td className="px-2 py-2 text-right tabular-nums text-danger">{formatInteger(group.error_calls)}</td>
-                          <td className="px-2 py-2 text-right tabular-nums">{formatInteger(group.running_calls)}</td>
-                          <td className="px-2 py-2 text-right tabular-nums">{formatInteger(group.interrupted_calls)}</td>
-                          <td className="px-2 py-2 text-right">{numberCell(group.input_tokens, group.input_tokens_known_calls)}</td>
-                          <td className="px-2 py-2 text-right">{numberCell(group.output_tokens, group.output_tokens_known_calls)}</td>
-                          <td className="px-2 py-2 text-right">{numberCell(group.total_tokens, group.total_tokens_known_calls)}</td>
-                          <td className="px-2 py-2 text-right tabular-nums">{elapsedText(group.elapsed_ms)}</td>
-                          <td className="px-2 py-2 text-right text-2xs text-tertiary">
-                            {clickable ? '查看' : '—'}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <AppDataTable
+                caption="模型用量分组统计"
+                minWidthClass="min-w-[900px]"
+                rows={groups}
+                rowKey={(group) => group.key}
+                {...(groupBy !== 'model' ? { onRowActivate: drillGroup } : {})}
+                columns={[
+                  {
+                    id: 'group',
+                    header: groupByLabelOf(groupBy),
+                    width: '18rem',
+                    cell: (group) => (
+                      <>
+                        <span className="block truncate text-default">{groupRowLabel(groupBy, group)}</span>
+                        {groupBy === 'task' && group.source_name ? (
+                          <span className="block truncate text-2xs text-tertiary">{group.source_name}</span>
+                        ) : null}
+                        {groupBy === 'run' && group.run_id ? (
+                          <span className="block truncate text-2xs text-tertiary">{compactId(group.run_id)}</span>
+                        ) : null}
+                      </>
+                    ),
+                  },
+                  {
+                    id: 'calls', header: '调用', width: '5.5rem',
+                    headerClassName: 'text-right', className: 'text-right tabular-nums',
+                    cell: (group) => formatInteger(group.calls),
+                  },
+                  {
+                    id: 'success', header: '成功', width: '5.5rem',
+                    headerClassName: 'text-right', className: 'text-right tabular-nums text-success',
+                    cell: (group) => formatInteger(group.success_calls),
+                  },
+                  {
+                    id: 'error', header: '失败', width: '5.5rem',
+                    headerClassName: 'text-right', className: 'text-right tabular-nums text-danger',
+                    cell: (group) => formatInteger(group.error_calls),
+                  },
+                  {
+                    id: 'running', header: '进行中', width: '5.5rem',
+                    headerClassName: 'text-right', className: 'text-right tabular-nums',
+                    cell: (group) => formatInteger(group.running_calls),
+                  },
+                  {
+                    id: 'interrupted', header: '中断', width: '5rem',
+                    headerClassName: 'text-right', className: 'text-right tabular-nums',
+                    cell: (group) => formatInteger(group.interrupted_calls),
+                  },
+                  {
+                    id: 'input', header: '输入', width: '6rem',
+                    headerClassName: 'text-right', className: 'text-right',
+                    cell: (group) => numberCell(group.input_tokens, group.input_tokens_known_calls),
+                  },
+                  {
+                    id: 'output', header: '输出', width: '6rem',
+                    headerClassName: 'text-right', className: 'text-right',
+                    cell: (group) => numberCell(group.output_tokens, group.output_tokens_known_calls),
+                  },
+                  {
+                    id: 'total', header: '总 Token', width: '7rem',
+                    headerClassName: 'text-right', className: 'text-right',
+                    cell: (group) => numberCell(group.total_tokens, group.total_tokens_known_calls),
+                  },
+                  {
+                    id: 'elapsed', header: '耗时', width: '5.5rem',
+                    headerClassName: 'text-right', className: 'text-right tabular-nums',
+                    cell: (group) => elapsedText(group.elapsed_ms),
+                  },
+                  {
+                    id: 'drill', header: '下钻', width: '4.5rem',
+                    headerClassName: 'text-right', className: 'text-right text-2xs text-tertiary',
+                    cell: () => (groupBy !== 'model' ? '查看' : '—'),
+                  },
+                ]}
+              />
             )}
             {data.groups_total > groups.length ? (
               <p className="text-2xs text-tertiary">共 {data.groups_total} 组，仅显示最近 {groups.length} 组；可缩小日期或添加筛选。</p>
@@ -370,73 +391,80 @@ export function ModelUsageDialog({ open, onOpenChange }: ModelUsageDialogProps) 
             {calls.length === 0 ? (
               <p className="rounded-lg border border-subtle py-8 text-center text-sm text-secondary">该条件下没有调用记录。</p>
             ) : (
-              <div className="overflow-x-auto rounded-lg border border-subtle">
-                <table className="w-full min-w-[980px] text-left text-xs">
-                  <thead className="bg-surface-secondary text-2xs text-tertiary">
-                    <tr>
-                      <th className="px-2 py-2 font-medium">开始时间</th>
-                      <th className="px-2 py-2 font-medium">状态</th>
-                      <th className="px-2 py-2 font-medium">用途 / 归属</th>
-                      <th className="px-2 py-2 font-medium">模型</th>
-                      <th className="px-2 py-2 text-right font-medium">输入</th>
-                      <th className="px-2 py-2 text-right font-medium">输出</th>
-                      <th className="px-2 py-2 text-right font-medium">总 Token</th>
-                      <th className="px-2 py-2 text-right font-medium">耗时</th>
-                      <th className="px-2 py-2 text-right font-medium">详情</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-subtle">
-                    {calls.map((call) => {
-                      const openDetail = expanded.has(call.call_id)
-                      return (
-                        <Fragment key={call.call_id}>
-                          <tr className="align-top">
-                            <td className="whitespace-nowrap px-2 py-2 text-secondary">{call.started_at.replace('T', ' ').slice(0, 19)}</td>
-                            <td className="px-2 py-2">
-                              <StatusBadge tone={callStatusTone(call.status)}>{callStatusLabel(call.status)}</StatusBadge>
-                            </td>
-                            <td className="max-w-52 px-2 py-2">
-                              <span className="block truncate">{sourceLabel(call.source)}</span>
-                              <span className="block truncate text-2xs text-tertiary">
-                                {call.source_name || compactId(call.task_id) || '—'}
-                                {call.stage ? ` · ${call.stage}` : ''}
-                              </span>
-                            </td>
-                            <td className="max-w-60 px-2 py-2">
-                              <span className="block truncate">{modelText(call)}</span>
-                            </td>
-                            <td className="px-2 py-2 text-right tabular-nums">{callToken(call.input_tokens)}</td>
-                            <td className="px-2 py-2 text-right tabular-nums">{callToken(call.output_tokens)}</td>
-                            <td className="px-2 py-2 text-right tabular-nums">{callToken(call.total_tokens)}</td>
-                            <td className="px-2 py-2 text-right tabular-nums">{elapsedText(call.elapsed_ms)}</td>
-                            <td className="px-2 py-2 text-right">
-                              <button
-                                type="button"
-                                className="text-2xs text-primary underline-offset-2 hover:underline"
-                                onClick={() => toggleExpanded(call.call_id)}
-                              >
-                                {openDetail ? '收起' : '展开'}
-                              </button>
-                            </td>
-                          </tr>
-                          {openDetail ? (
-                            <tr className="bg-surface-secondary">
-                              <td colSpan={9} className="px-3 py-3">
-                                <CallDetail
-                                  call={call}
-                                  onFilterTask={() =>
-                                    filterTask(call.task_id || '', call.source_name || call.task_id || '')
-                                  }
-                                />
-                              </td>
-                            </tr>
-                          ) : null}
-                        </Fragment>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <AppDataTable
+                caption="模型调用明细"
+                minWidthClass="min-w-[980px]"
+                rows={calls}
+                rowKey={(call) => call.call_id}
+                subRow={(call) => (expanded.has(call.call_id) ? (
+                  <CallDetail
+                    call={call}
+                    onFilterTask={() => filterTask(call.task_id || '', call.source_name || call.task_id || '')}
+                  />
+                ) : null)}
+                columns={[
+                  {
+                    id: 'started', header: '开始时间', width: '10rem',
+                    className: 'whitespace-nowrap text-xs text-secondary',
+                    cell: (call) => call.started_at.replace('T', ' ').slice(0, 19),
+                  },
+                  {
+                    id: 'status', header: '状态', width: '6.5rem',
+                    cell: (call) => <StatusBadge tone={callStatusTone(call.status)}>{callStatusLabel(call.status)}</StatusBadge>,
+                  },
+                  {
+                    id: 'source', header: '用途 / 归属', width: '13rem',
+                    cell: (call) => (
+                      <>
+                        <span className="block truncate">{sourceLabel(call.source)}</span>
+                        <span className="block truncate text-2xs text-tertiary">
+                          {call.source_name || compactId(call.task_id) || '—'}
+                          {call.stage ? ` · ${call.stage}` : ''}
+                        </span>
+                      </>
+                    ),
+                  },
+                  {
+                    id: 'model', header: '模型', width: '12rem',
+                    cell: (call) => <span className="block truncate">{modelText(call)}</span>,
+                  },
+                  {
+                    id: 'input', header: '输入', width: '6rem',
+                    headerClassName: 'text-right', className: 'text-right tabular-nums',
+                    cell: (call) => callToken(call.input_tokens),
+                  },
+                  {
+                    id: 'output', header: '输出', width: '6rem',
+                    headerClassName: 'text-right', className: 'text-right tabular-nums',
+                    cell: (call) => callToken(call.output_tokens),
+                  },
+                  {
+                    id: 'total', header: '总 Token', width: '7rem',
+                    headerClassName: 'text-right', className: 'text-right tabular-nums',
+                    cell: (call) => callToken(call.total_tokens),
+                  },
+                  {
+                    id: 'elapsed', header: '耗时', width: '5.5rem',
+                    headerClassName: 'text-right', className: 'text-right tabular-nums',
+                    cell: (call) => elapsedText(call.elapsed_ms),
+                  },
+                  {
+                    id: 'detail', header: '详情', width: '5rem',
+                    headerClassName: 'text-right', className: 'text-right',
+                    cell: (call) => (
+                      <Button
+                        color="secondary"
+                        variant="ghost"
+                        size="sm"
+                        aria-expanded={expanded.has(call.call_id)}
+                        onClick={() => toggleExpanded(call.call_id)}
+                      >
+                        {expanded.has(call.call_id) ? '收起' : '展开'}
+                      </Button>
+                    ),
+                  },
+                ]}
+              />
             )}
             {pagination && pagination.pages > 1 ? (
               <AppPagination

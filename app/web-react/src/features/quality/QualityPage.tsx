@@ -10,9 +10,13 @@ import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppDialog } from '../../components/AppDialog'
 import { AppPagination } from '../../components/AppPagination'
+import { BulkActionBar } from '../../components/BulkActionBar'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
+import { FilterToolbar } from '../../components/FilterToolbar'
 import { PageHeader } from '../../components/PageHeader'
+import { SearchInput } from '../../components/SearchInput'
 import { StatePanel } from '../../components/StatePanel'
+import { StatCard } from '../../components/StatCard'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
@@ -50,6 +54,8 @@ import type { PendingReviewRecord, RejectionRecord, ReviewBucket } from './types
 type QualityView = 'rejections' | 'review'
 type SourceFilter = 'all' | 'materials' | 'capture'
 type ReviewStateFilter = 'all' | 'reviewed' | 'pending'
+/** 打回确认只需要门店与批次信息，不合格与待检查记录都可复用同一确认流程。 */
+type ReturnTarget = Pick<RejectionRecord, 'task_id' | 'store_name' | 'batch_name'>
 
 const PAGE_SIZE = 50
 
@@ -96,7 +102,7 @@ export function QualityPage() {
 
   // 弹窗
   const [assignTasks, setAssignTasks] = useState<HubSelectedTask[] | null>(null)
-  const [returnRecord, setReturnRecord] = useState<RejectionRecord | null>(null)
+  const [returnRecord, setReturnRecord] = useState<ReturnTarget | null>(null)
   const [approveOpen, setApproveOpen] = useState(false)
   const [unapproveOpen, setUnapproveOpen] = useState(false)
   const [dialogError, setDialogError] = useState('')
@@ -232,6 +238,21 @@ export function QualityPage() {
     reviewDrawerIndex >= 0 ? filteredReviews[reviewDrawerIndex] ?? null : null
 
   const reviewBatches = reviewsQuery.data?.batches ?? []
+  // 任务中心逐店下钻带 task 参数：自动打开同一家门店的待检查详情，避免重新搜索。
+  const deepLinkTask = searchParams.get('task') ?? ''
+  const deepLinkHandled = useRef('')
+  useEffect(() => {
+    if (!deepLinkTask || deepLinkHandled.current === deepLinkTask) return
+    if (reviewsQuery.isPending) return
+    deepLinkHandled.current = deepLinkTask
+    if (reviewsQuery.isError) {
+      toast.push('待检查清单读取失败，无法定位该门店', 'danger')
+      return
+    }
+    const found = (reviewsQuery.data?.records ?? []).some((record) => record.task_id === deepLinkTask)
+    if (found) setReviewDrawerId(deepLinkTask)
+    else toast.push('该门店已不在待检查清单中，可能已完成处置', 'info')
+  }, [deepLinkTask, reviewsQuery.isPending, reviewsQuery.isError, reviewsQuery.data, toast])
   const approveBatchIds = reviewBatchIds.length
     ? reviewBatchIds
     : reviewBatches.map((batch) => batch.id)
@@ -774,9 +795,9 @@ export function QualityPage() {
       {view === 'rejections' ? (
         <>
           <section className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="不合格统计">
-            <Metric label="不合格门店" value={summary?.stores ?? 0} />
-            <Metric label="素材 / 采集" value={`${summary?.materials ?? 0} / ${summary?.capture ?? 0}`} />
-            <Metric label="已人工确认" value={summary?.reviewed ?? 0} />
+            <StatCard label="不合格门店" value={summary?.stores ?? 0} />
+            <StatCard label="素材 / 采集" value={`${summary?.materials ?? 0} / ${summary?.capture ?? 0}`} />
+            <StatCard label="已人工确认" value={summary?.reviewed ?? 0} />
           </section>
 
           <section className="space-y-3 rounded-xl border border-subtle p-4" aria-labelledby="rejections-list-heading">
@@ -794,7 +815,23 @@ export function QualityPage() {
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-2">
+            <FilterToolbar
+              label="不合格清单筛选"
+              activeCount={[
+                batchId !== 'all' ? batchId : '',
+                source !== 'all' ? source : '',
+                reason !== 'all' ? reason : '',
+                reviewState !== 'all' ? reviewState : '',
+                search,
+              ].filter(Boolean).length}
+              onClear={() => {
+                setBatchId('all')
+                setSource('all')
+                setReason('all')
+                setReviewState('all')
+                setSearch('')
+              }}
+            >
               <div className="w-56">
                 <Select
                   aria-label="批次筛选"
@@ -830,38 +867,41 @@ export function QualityPage() {
                   onChange={(option) => setReviewState(option.value as ReviewStateFilter)}
                 />
               </div>
-              <div className="w-64">
-                <Input
-                  aria-label="搜索不合格门店"
-                  value={search}
-                  placeholder="搜索门店、批次或说明"
-                  onChange={(event) => setSearch(event.target.value)}
+              <SearchInput
+                className="w-64"
+                label="不合格门店"
+                placeholder="搜索门店、批次或说明"
+                value={search}
+                onChange={setSearch}
+              />
+            </FilterToolbar>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-2 text-xs text-secondary">
+                <input
+                  type="checkbox"
+                  checked={continuousReview}
+                  onChange={(event) => setContinuousReview(event.target.checked)}
                 />
-              </div>
+                确认不合格后自动进入下一条
+              </label>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-subtle bg-surface-secondary px-3 py-2">
-              <div className="flex flex-wrap items-center gap-4">
-                <span className="text-xs text-secondary">本页已选 {selectedPageRecords.length} 条可撤销记录；翻页后需在当前页重新选择。</span>
-                <label className="flex items-center gap-2 text-xs text-secondary">
-                  <input
-                    type="checkbox"
-                    checked={continuousReview}
-                    onChange={(event) => setContinuousReview(event.target.checked)}
-                  />
-                  确认不合格后自动进入下一条
-                </label>
-              </div>
+            <BulkActionBar
+              count={selectedPageRecords.length}
+              hint="翻页后需在当前页重新选择"
+              onClear={() => setSelectedRejections(new Set())}
+            >
               <Button
                 color="danger"
                 variant="outline"
                 size="sm"
-                disabled={running || actionBusy || selectedPageRecords.length === 0}
+                disabled={running || actionBusy}
                 onClick={() => setUndoBatchOpen(true)}
               >
-                撤销所选不合格（{selectedPageRecords.length}）
+                撤销所选不合格
               </Button>
-            </div>
+            </BulkActionBar>
             {undoBatchResult ? (
               <Alert
                 color={undoBatchResult.failures.length ? 'warning' : 'success'}
@@ -916,10 +956,10 @@ export function QualityPage() {
       ) : (
         <>
           <section className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="待检查统计">
-            <Metric label="待检查门店" value={reviewSummary?.stores ?? 0} />
-            <Metric label="涉及批次" value={reviewSummary?.batches ?? 0} />
-            <Metric label="需人工确认" value={reviewSummary?.needs_review ?? 0} />
-            <Metric label="可重跑" value={reviewSummary?.retryable ?? 0} />
+            <StatCard label="待检查门店" value={reviewSummary?.stores ?? 0} />
+            <StatCard label="涉及批次" value={reviewSummary?.batches ?? 0} />
+            <StatCard label="需人工确认" value={reviewSummary?.needs_review ?? 0} />
+            <StatCard label="可重跑" value={reviewSummary?.retryable ?? 0} />
           </section>
 
           <section className="space-y-3 rounded-xl border border-subtle p-4" aria-labelledby="review-list-heading">
@@ -927,34 +967,82 @@ export function QualityPage() {
               <h2 id="review-list-heading" className="heading-xs">
                 待检查门店
               </h2>
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="w-64">
-                  <Input
-                    aria-label="搜索待检查门店"
-                    value={reviewSearch}
-                    placeholder="搜索门店或批次"
-                    onChange={(event) => setReviewSearch(event.target.value)}
-                  />
-                </div>
-                <Button color="secondary" variant="outline" size="sm" onClick={() => void reviewsQuery.refetch()}>
-                  刷新
-                </Button>
-              </div>
+              <Button color="secondary" variant="outline" size="sm" onClick={() => void reviewsQuery.refetch()}>
+                刷新
+              </Button>
             </div>
+
+            <FilterToolbar
+              label="待检查门店筛选"
+              activeCount={[reviewSearch, bucket !== 'all' ? bucket : ''].filter(Boolean).length}
+              onClear={() => {
+                setReviewSearch('')
+                setBucket('all')
+              }}
+              summary={`已选 ${selectedTasks.size} 家门店`}
+            >
+              <SearchInput
+                className="w-64"
+                label="待检查门店"
+                placeholder="搜索门店或批次"
+                value={reviewSearch}
+                onChange={setReviewSearch}
+              />
+              <div className="flex flex-wrap gap-2" role="group" aria-label="按失败分类筛选">
+                {REVIEW_BUCKETS.map((item) => (
+                  <Button
+                    key={item.value}
+                    color={bucket === item.value ? 'primary' : 'secondary'}
+                    variant={bucket === item.value ? 'solid' : 'outline'}
+                    size="sm"
+                    aria-pressed={bucket === item.value}
+                    onClick={() => setBucket(item.value)}
+                  >
+                    {item.label}（{bucketCounts[item.value] ?? 0}）
+                  </Button>
+                ))}
+              </div>
+            </FilterToolbar>
 
             {reviewBatches.length ? (
               <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-xs text-secondary">批次范围（不选表示全部批次）</span>
-                  <Button
-                    color="secondary"
-                    variant="ghost"
-                    size="sm"
-                    disabled={reviewBatchIds.length === 0}
-                    onClick={() => setReviewBatchIds([])}
-                  >
-                    全部批次
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      color="secondary"
+                      variant="ghost"
+                      size="sm"
+                      disabled={reviewBatchIds.length === 0}
+                      onClick={() => setReviewBatchIds([])}
+                    >
+                      全部批次
+                    </Button>
+                    <Button
+                      color="secondary"
+                      variant="outline"
+                      size="sm"
+                      disabled={approveBatchIds.length === 0}
+                      onClick={() => {
+                        setDialogError('')
+                        setApproveOpen(true)
+                      }}
+                    >
+                      标记批次通过
+                    </Button>
+                    <Button
+                      color="secondary"
+                      variant="ghost"
+                      size="sm"
+                      disabled={approveBatchIds.length === 0}
+                      onClick={() => {
+                        setDialogError('')
+                        setUnapproveOpen(true)
+                      }}
+                    >
+                      撤销通过
+                    </Button>
+                  </div>
                 </div>
                 <div className="flex max-h-24 flex-wrap gap-x-4 gap-y-2 overflow-y-auto rounded-lg border border-subtle p-3">
                   {reviewBatches.map((batch) => (
@@ -969,68 +1057,27 @@ export function QualityPage() {
               </div>
             ) : null}
 
-            <div className="flex flex-wrap gap-2" role="group" aria-label="按失败分类筛选">
-              {REVIEW_BUCKETS.map((item) => (
-                <Button
-                  key={item.value}
-                  color={bucket === item.value ? 'primary' : 'secondary'}
-                  variant={bucket === item.value ? 'solid' : 'outline'}
-                  size="sm"
-                  aria-pressed={bucket === item.value}
-                  onClick={() => setBucket(item.value)}
-                >
-                  {item.label}（{bucketCounts[item.value] ?? 0}）
-                </Button>
-              ))}
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="text-xs text-secondary">已选 {selectedTasks.size} 家门店</span>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  color="danger"
-                  variant="outline"
-                  size="sm"
-                  disabled={selectedTasks.size === 0}
-                  onClick={() => openReject([...selectedTasks])}
-                >
-                  标记不合格（{selectedTasks.size}）
-                </Button>
-                <Button
-                  color="secondary"
-                  variant="outline"
-                  size="sm"
-                  disabled={selectedTasks.size === 0}
-                  onClick={assignSelected}
-                >
-                  重跑选中（{selectedTasks.size}）
-                </Button>
-                <Button
-                  color="secondary"
-                  variant="outline"
-                  size="sm"
-                  disabled={approveBatchIds.length === 0}
-                  onClick={() => {
-                    setDialogError('')
-                    setApproveOpen(true)
-                  }}
-                >
-                  标记批次通过
-                </Button>
-                <Button
-                  color="secondary"
-                  variant="ghost"
-                  size="sm"
-                  disabled={approveBatchIds.length === 0}
-                  onClick={() => {
-                    setDialogError('')
-                    setUnapproveOpen(true)
-                  }}
-                >
-                  撤销通过
-                </Button>
-              </div>
-            </div>
+            <BulkActionBar
+              count={selectedTasks.size}
+              onClear={() => setSelectedTasks(new Set())}
+            >
+              <Button
+                color="danger"
+                variant="outline"
+                size="sm"
+                onClick={() => openReject([...selectedTasks])}
+              >
+                标记不合格
+              </Button>
+              <Button
+                color="secondary"
+                variant="outline"
+                size="sm"
+                onClick={assignSelected}
+              >
+                重跑选中（分配采集电脑）
+              </Button>
+            </BulkActionBar>
 
             {reviewsQuery.isError ? (
               <StatePanel
@@ -1118,7 +1165,17 @@ export function QualityPage() {
         hasPrev={reviewDrawerIndex > 0}
         hasNext={reviewDrawerIndex >= 0 && reviewDrawerIndex < filteredReviews.length - 1}
         onOpenChange={(open) => {
-          if (!open) setReviewDrawerId(null)
+          if (!open) {
+            setReviewDrawerId(null)
+            // 关闭后清除深链参数，返回/刷新不再重新打开同一家门店。
+            if (searchParams.has('task')) {
+              setSearchParams((current) => {
+                const params = new URLSearchParams(current)
+                params.delete('task')
+                return params
+              }, { replace: true })
+            }
+          }
         }}
         onPrev={() => {
           const targetIndex = reviewDrawerIndex - 1
@@ -1138,6 +1195,10 @@ export function QualityPage() {
         }}
         onRerun={(record) => openAssign([record])}
         onReject={(record) => openReject([record.task_id])}
+        onReturn={(record) => {
+          setDialogError('')
+          setReturnRecord(record)
+        }}
       />
 
       <ConfirmActionDialog
@@ -1163,7 +1224,7 @@ export function QualityPage() {
         title="打回素材清洗"
         description={
           returnRecord
-            ? `将把「${formatStore(returnRecord.store_name).name}」（批次：${returnRecord.batch_name || '未关联'}）打回素材清洗，清除不合格标记并把门店恢复为待处理，采集任务置为已阻塞。`
+            ? `将把「${formatStore(returnRecord.store_name).name}」（批次：${returnRecord.batch_name || '未关联'}）打回素材清洗，清理不合格标记（如有）并把门店恢复为待处理，采集任务置为已阻塞。`
             : ''
         }
         confirmLabel="确认打回"
@@ -1249,15 +1310,6 @@ export function QualityPage() {
         }}
       />
     </section>
-  )
-}
-
-function Metric({ label, value }: { label: string; value: number | string }) {
-  return (
-    <div className="rounded-xl border border-subtle bg-surface px-4 py-3">
-      <span className="block text-xs text-secondary">{label}</span>
-      <span className="mt-1 block heading-lg tabular-nums text-default">{value}</span>
-    </div>
   )
 }
 

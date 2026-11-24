@@ -106,9 +106,14 @@ export interface PendingReviewRecord {
   reject_reason: string
   reject_detail: string
   updated_at: string
+  /** 最近一次采集轮次；用于查看真实历史与同步状态，缺失时如实提示。 */
+  run_id?: string
   batch_id: string
   batch_name: string
   workflow: WorkflowStage
+  /** 后端统一判定是否可打回素材清洗；false 时必须展示原因。 */
+  can_return_to_materials?: boolean
+  return_to_materials_disabled_reason?: string
 }
 
 export interface PendingReviewBatch {

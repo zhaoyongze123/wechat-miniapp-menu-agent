@@ -2,12 +2,15 @@ import { useEffect, useMemo, useState } from 'react'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
-import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { SegmentedControl } from '@openai/apps-sdk-ui/components/SegmentedControl'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppPagination } from '../../components/AppPagination'
+import { BulkActionBar } from '../../components/BulkActionBar'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
+import { FilterToolbar } from '../../components/FilterToolbar'
+import { SearchInput } from '../../components/SearchInput'
 import { StatePanel } from '../../components/StatePanel'
+import { StatCard } from '../../components/StatCard'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
@@ -259,10 +262,10 @@ export function ReworkPanel() {
   return (
     <div className="space-y-4">
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="返工统计">
-        <Metric label="待处理" value={summary?.pending ?? 0} />
-        <Metric label="不合格" value={summary?.rejected ?? 0} />
-        <Metric label="已选码待发布" value={summary?.unpublished ?? 0} />
-        <Metric label="涉及批次" value={summary?.batches ?? 0} />
+        <StatCard label="待处理" value={summary?.pending ?? 0} />
+        <StatCard label="不合格" value={summary?.rejected ?? 0} />
+        <StatCard label="已选码待发布" value={summary?.unpublished ?? 0} />
+        <StatCard label="涉及批次" value={summary?.batches ?? 0} />
       </section>
 
       <section className="space-y-3 rounded-xl border border-subtle p-4" aria-labelledby="rework-list-heading">
@@ -270,22 +273,26 @@ export function ReworkPanel() {
           <h2 id="rework-list-heading" className="heading-xs">
             返工门店
           </h2>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="w-64">
-              <Input
-                aria-label="搜索返工门店"
-                value={search}
-                placeholder="搜索门店或批次名称"
-                onChange={(event) => setSearch(event.target.value)}
-              />
-            </div>
-            <Button color="secondary" variant="outline" size="sm" onClick={() => void reworkQuery.refetch()}>
-              刷新
-            </Button>
-          </div>
+          <Button color="secondary" variant="outline" size="sm" onClick={() => void reworkQuery.refetch()}>
+            刷新
+          </Button>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <FilterToolbar
+          label="返工门店筛选"
+          activeCount={[search, category !== 'all' ? category : ''].filter(Boolean).length}
+          onClear={() => {
+            setSearch('')
+            setCategory('all')
+          }}
+        >
+          <SearchInput
+            className="w-64"
+            label="返工门店"
+            placeholder="搜索门店或批次名称"
+            value={search}
+            onChange={setSearch}
+          />
           <SegmentedControl<CategoryFilter>
             value={category}
             onChange={(next) => setCategory(next)}
@@ -296,12 +303,13 @@ export function ReworkPanel() {
             <SegmentedControl.Option value="rejected">不合格</SegmentedControl.Option>
             <SegmentedControl.Option value="unpublished">待发布</SegmentedControl.Option>
           </SegmentedControl>
-          <span className="text-xs text-secondary">
-            已选 {selected.length} 家 · 其中可发布 {publishable.length} 家
-          </span>
-        </div>
+        </FilterToolbar>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <BulkActionBar
+          count={selected.length}
+          hint={`其中可发布 ${publishable.length} 家`}
+          onClear={() => setSelected([])}
+        >
           <Button
             color="primary"
             size="sm"
@@ -325,16 +333,7 @@ export function ReworkPanel() {
           >
             打回已选门店
           </Button>
-          <Button
-            color="secondary"
-            variant="ghost"
-            size="sm"
-            disabled={!selected.length}
-            onClick={() => setSelected([])}
-          >
-            清空选择
-          </Button>
-        </div>
+        </BulkActionBar>
 
         {reworkQuery.isError ? (
           <StatePanel
@@ -430,15 +429,6 @@ export function ReworkPanel() {
         }}
         onConfirm={runPublish}
       />
-    </div>
-  )
-}
-
-function Metric({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-xl border border-subtle bg-surface px-4 py-3">
-      <span className="block text-xs text-secondary">{label}</span>
-      <span className="mt-1 block heading-lg tabular-nums text-default">{value}</span>
     </div>
   )
 }

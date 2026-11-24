@@ -10,6 +10,26 @@ export interface KeyValueItem {
   mono?: boolean
 }
 
+/** 详情网格中的单个键值项；调用方只负责栅格容器，标签/字号/换行与 KeyValueList 一致。 */
+export function KeyValuePair({
+  label,
+  children,
+  empty = '—',
+}: {
+  label: string
+  children: ReactNode
+  /** 空值占位；仅对 null/undefined/空字符串生效，0 正常显示。 */
+  empty?: ReactNode
+}) {
+  const isEmpty = children === null || children === undefined || children === ''
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs text-secondary">{label}</dt>
+      <dd className="mt-0.5 break-words text-sm text-default">{isEmpty ? empty : children}</dd>
+    </div>
+  )
+}
+
 interface KeyValueListProps {
   items: KeyValueItem[]
   className?: string

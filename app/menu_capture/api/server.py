@@ -353,6 +353,16 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             )]
         workflow = {batch["id"]: materials.workflow_stage(batch) for batch in batches}
         names = {batch["id"]: batch["name"] or batch["id"] for batch in batches}
+        # 历史记录需要真实轮次身份：取每个任务最近一次动作所属轮次，避免前端按门店名猜。
+        with store.connect() as db:
+            run_by_task = {
+                row["id"]: row["run_id"]
+                for row in db.execute(
+                    "SELECT t.id, a.run_id FROM tasks t LEFT JOIN run_actions a ON a.id="
+                    "(SELECT MAX(latest.id) FROM run_actions latest WHERE latest.task_id=t.id)"
+                )
+                if row["run_id"]
+            }
         selected = set()
         if batch_ids and batch_ids != "all":
             selected = {value.strip() for value in batch_ids.split(",") if value.strip()}
@@ -366,6 +376,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 continue
             failure = describe_failure(task.get("error_code", ""), task.get("stage", ""),
                                        task.get("message", ""))
+            # 与打回接口共用同一判定，避免列表显示可操作但实际被拒。
+            blocker = rejections.return_blocker(task["id"], current=True)
             records.append({
                 "task_id": task["id"],
                 "store_name": task["source_name"],
@@ -382,9 +394,12 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 "reject_reason": task.get("reject_reason", ""),
                 "reject_detail": task.get("reject_detail", ""),
                 "updated_at": task.get("updated_at", ""),
+                "run_id": run_by_task.get(task["id"], ""),
                 "batch_id": batch_id,
                 "batch_name": task.get("material_batch_name") or names.get(batch_id, ""),
                 "workflow": workflow.get(batch_id, {}),
+                "can_return_to_materials": not blocker,
+                "return_to_materials_disabled_reason": blocker,
             })
         # 有效任务清单已按原批次和门店归属取最新版，保留显示编号相近的各条任务。
         records.sort(key=lambda row: (row["updated_at"], row["store_name"]), reverse=True)
@@ -1801,6 +1816,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         """打回当前门店，保留此前执行与迟到结果供回查。"""
         with control_lock:
             idle()
+            # 采集电脑仍占用该门店时先阻塞，避免打回后迟到结果无处落地。
+            if hub and hub.active_task_ids([task_id]):
+                raise ValueError("该门店仍在采集电脑任务中，请等待完成或先收回后再打回")
             result = rejections.return_to_materials(task_id)
             if hub:
                 hub.reconcile_assignments()

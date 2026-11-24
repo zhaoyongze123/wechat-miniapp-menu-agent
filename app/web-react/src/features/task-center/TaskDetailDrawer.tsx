@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Badge } from '@openai/apps-sdk-ui/components/Badge'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
+import { AppDialog } from '../../components/AppDialog'
 import { AppDrawer } from '../../components/AppDrawer'
 import { AppDataTable } from '../../components/AppDataTable'
 import { CellText } from '../../components/CellText'
 import { AppPagination } from '../../components/AppPagination'
+import { ImagePreview } from '../../components/ImagePreview'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
@@ -69,6 +72,7 @@ interface TaskDetailDrawerProps {
 export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: TaskDetailDrawerProps) {
   const queryClient = useQueryClient()
   const toast = useToast()
+  const navigate = useNavigate()
   const [renaming, setRenaming] = useState(false)
   const [name, setName] = useState('')
   const [renameError, setRenameError] = useState('')
@@ -76,6 +80,8 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
   const [resultFilter, setResultFilter] = useState('all')
   const [page, setPage] = useState(1)
   const [metadataExpanded, setMetadataExpanded] = useState(false)
+  const [storeDetail, setStoreDetail] = useState<CaptureTaskEntry | null>(null)
+  const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null)
 
   const detailQuery = useQuery({
     queryKey: ['task-detail', selection?.kind ?? '', selection?.id ?? ''],
@@ -96,6 +102,7 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
     setResultFilter('all')
     setPage(1)
     setMetadataExpanded(false)
+    setStoreDetail(null)
   }, [selection?.kind, selection?.id])
 
   const renameMutation = useMutation({
@@ -175,6 +182,7 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
   }
 
   return (
+    <>
     <AppDrawer
       open={selection !== null}
       onOpenChange={(open) => {
@@ -306,7 +314,7 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                 caption="本轮逐店采集结果"
                 rows={pageTasks}
                 rowKey={(row) => row.task_id}
-                minWidthClass="min-w-[760px]"
+                minWidthClass="min-w-[900px]"
                 emptyState={
                   <StatePanel
                     variant="empty"
@@ -321,9 +329,14 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                     width: '14rem',
                     cell: (row) => (
                       <div className="min-w-0">
-                        <p className="truncate font-medium" title={row.store_name || row.source_name || row.task_id}>
+                        <button
+                          type="button"
+                          className="block max-w-full truncate text-left font-medium hover:underline"
+                          title={row.store_name || row.source_name || row.task_id}
+                          onClick={() => setStoreDetail(row)}
+                        >
                           {formatStore(row.store_name || row.source_name || '').name || row.task_id}
-                        </p>
+                        </button>
                         <p className="mt-1 truncate font-mono text-xs text-tertiary" title={row.task_id}>{row.task_id}</p>
                         {row.source_name && row.store_name && row.source_name !== row.store_name ? (
                           <details className="mt-1 text-xs text-secondary">
@@ -362,6 +375,16 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                       <span className="line-clamp-2 text-secondary" title={row.reject_reason || row.message || ''}>{row.reject_reason || row.message || '—'}</span>
                     ),
                   },
+                  {
+                    id: 'actions',
+                    header: '操作',
+                    width: '7.5rem',
+                    cell: (row) => (
+                      <Button color="secondary" variant="outline" size="sm" onClick={() => setStoreDetail(row)}>
+                        查看门店
+                      </Button>
+                    ),
+                  },
                 ]}
               />
             </>
@@ -393,6 +416,86 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
         </div>
       ) : null}
     </AppDrawer>
+
+    <AppDialog
+      open={storeDetail !== null}
+      onOpenChange={(open) => { if (!open) setStoreDetail(null) }}
+      title={storeDetail
+        ? formatStore(storeDetail.store_name || storeDetail.source_name || '').name || storeDetail.task_id
+        : '门店详情'}
+      description={storeDetail
+        ? [storeDetail.batch_name, storeDetail.version, storeDetail.task_id].filter(Boolean).join(' · ')
+        : ''}
+      widthClass="w-[min(720px,94vw)]"
+      footer={
+        <div className="flex flex-wrap justify-end gap-2">
+          {storeDetail?.status === 'review' ? (
+            <Button
+              color="primary"
+              size="sm"
+              onClick={() => {
+                const taskId = storeDetail.task_id
+                setStoreDetail(null)
+                onClose()
+                navigate(`/rejections?view=review&task=${encodeURIComponent(taskId)}`)
+              }}
+            >
+              前往质量审核处置
+            </Button>
+          ) : null}
+          <Button color="secondary" variant="outline" size="sm" onClick={() => setStoreDetail(null)}>
+            关闭
+          </Button>
+        </div>
+      }
+    >
+      {storeDetail ? (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge tone={storeDetail.status === 'rejected' ? 'danger' : storeDetail.status === 'review' ? 'warning' : storeDetail.status === 'captured' ? 'success' : 'secondary'}>
+              {storeDetail.label || storeDetail.status || '未记录'}
+            </StatusBadge>
+            <span className="text-xs text-secondary">{storeDetail.batch_name || '—'}{storeDetail.version ? ` · ${storeDetail.version}` : ''}</span>
+          </div>
+          {storeDetail.reject_reason || storeDetail.message ? (
+            <p className="whitespace-pre-wrap break-words rounded-lg bg-surface-secondary p-3 text-sm text-default">
+              {storeDetail.reject_reason || storeDetail.message}
+            </p>
+          ) : (
+            <p className="text-sm text-tertiary">这次轮次没有保存该门店的说明。</p>
+          )}
+          {storeDetail.status === 'review' ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {[
+                { src: `/api/tasks/${encodeURIComponent(storeDetail.task_id)}/source`, alt: '原始二维码' },
+                { src: `/api/tasks/${encodeURIComponent(storeDetail.task_id)}/last-frame`, alt: '最近采集画面' },
+              ].map((item) => (
+                <button
+                  key={item.alt}
+                  type="button"
+                  className="overflow-hidden rounded-lg border border-subtle bg-surface-secondary text-left"
+                  onClick={() => setPreview(item)}
+                >
+                  <img src={item.src} alt={item.alt} className="h-40 w-full object-contain" />
+                  <span className="block px-3 py-2 text-2xs text-secondary">{item.alt}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-tertiary">这里是历史轮次留存的逐店结果；当前有效任务的处置请在质量审核或采集工作台完成。</p>
+          )}
+        </div>
+      ) : null}
+    </AppDialog>
+
+    <ImagePreview
+      open={preview !== null}
+      src={preview?.src ?? ''}
+      alt={preview?.alt ?? ''}
+      caption={preview?.alt ?? ''}
+      onOpenChange={(open) => { if (!open) setPreview(null) }}
+    />
+    </>
   )
 }
 

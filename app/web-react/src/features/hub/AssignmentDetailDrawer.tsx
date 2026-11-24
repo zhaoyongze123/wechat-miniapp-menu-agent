@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
@@ -6,6 +6,7 @@ import { Image } from '@openai/apps-sdk-ui/components/Image'
 import { AppDrawer } from '../../components/AppDrawer'
 import { CellText } from '../../components/CellText'
 import { ImagePreview } from '../../components/ImagePreview'
+import { KeyValuePair } from '../../components/KeyValueList'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { errorMessage } from '../../api/client'
@@ -117,13 +118,13 @@ export function AssignmentDetailDrawer({
         </div>
 
         <dl className="grid grid-cols-1 gap-x-4 gap-y-3 text-sm sm:grid-cols-2">
-          <Fact label="结果处置">{record.disposition === 'history' ? '历史留档' : record.disposition || '未上传'}</Fact>
-          <Fact label="任务 ID">
+          <KeyValuePair label="结果处置">{record.disposition === 'history' ? '历史留档' : record.disposition || '未上传'}</KeyValuePair>
+          <KeyValuePair label="任务 ID">
             <CellText copyable copyLabel="任务 ID" mono>{record.task_id}</CellText>
-          </Fact>
-          <Fact label="分配 ID">
+          </KeyValuePair>
+          <KeyValuePair label="分配 ID">
             <CellText copyable copyLabel="分配 ID" mono>{record.id}</CellText>
-          </Fact>
+          </KeyValuePair>
         </dl>
 
         {record.result_message ? (
@@ -206,14 +207,5 @@ export function AssignmentDetailDrawer({
         }}
       />
     </AppDrawer>
-  )
-}
-
-function Fact({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div>
-      <dt className="text-xs text-tertiary">{label}</dt>
-      <dd className="mt-0.5 text-default">{children}</dd>
-    </div>
   )
 }

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 import { PendingReviewDrawer } from './PendingReviewDrawer'
 import type { PendingReviewRecord } from './types'
@@ -27,19 +28,24 @@ const record: PendingReviewRecord = {
 function renderDrawer(overrides: Partial<PendingReviewRecord> = {}) {
   const onReject = vi.fn()
   const onRerun = vi.fn()
+  const onReturn = vi.fn()
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
-    <PendingReviewDrawer
-      record={{ ...record, ...overrides }}
-      hasPrev={false}
-      hasNext
-      onOpenChange={vi.fn()}
-      onPrev={vi.fn()}
-      onNext={vi.fn()}
-      onRerun={onRerun}
-      onReject={onReject}
-    />,
+    <QueryClientProvider client={client}>
+      <PendingReviewDrawer
+        record={{ ...record, ...overrides }}
+        hasPrev={false}
+        hasNext
+        onOpenChange={vi.fn()}
+        onPrev={vi.fn()}
+        onNext={vi.fn()}
+        onRerun={onRerun}
+        onReject={onReject}
+        onReturn={onReturn}
+      />
+    </QueryClientProvider>,
   )
-  return { onReject, onRerun }
+  return { onReject, onRerun, onReturn }
 }
 
 describe('PendingReviewDrawer', () => {
@@ -53,5 +59,27 @@ describe('PendingReviewDrawer', () => {
     const { onRerun } = renderDrawer()
     fireEvent.click(screen.getByRole('button', { name: '重跑（分配采集电脑）' }))
     expect(onRerun).toHaveBeenCalled()
+  })
+
+  it('可打回素材清洗', () => {
+    const { onReturn } = renderDrawer({ can_return_to_materials: true })
+    fireEvent.click(screen.getByRole('button', { name: '打回素材清洗' }))
+    expect(onReturn).toHaveBeenCalledWith(expect.objectContaining({ task_id: 'task-1' }))
+  })
+
+  it('不可打回时禁用并展示原因', () => {
+    renderDrawer({
+      can_return_to_materials: false,
+      return_to_materials_disabled_reason: '该门店仍在采集电脑任务中',
+    })
+    const button = screen.getByRole('button', { name: '打回素材清洗' })
+    expect(button).toBeDisabled()
+    expect(button).toHaveAttribute('title', '该门店仍在采集电脑任务中')
+  })
+
+  it('历史记录缺失轮次时如实提示，不伪造记录', () => {
+    renderDrawer()
+    fireEvent.click(screen.getByRole('radio', { name: '历史记录' }))
+    expect(screen.getByText('没有可用的采集轮次')).toBeInTheDocument()
   })
 })

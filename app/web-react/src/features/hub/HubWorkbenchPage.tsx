@@ -33,6 +33,7 @@ import type {
 } from './types'
 
 const PAGE_SIZES = [20, 50, 100]
+const DEBUG_VIEW_KEY = 'hub-debug-view'
 
 const STATUS_OPTIONS = [
   { value: 'all', label: '全部状态' },
@@ -124,7 +125,23 @@ export function HubWorkbenchPage() {
     [setSearchParams],
   )
 
-  const [debugView, setDebugView] = useState(false)
+  // 调试区是本机操作者偏好：默认收起，开启后记住选择，普通业务操作不受影响。
+  const [debugView, setDebugView] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try {
+      return window.localStorage.getItem(DEBUG_VIEW_KEY) === 'on'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(DEBUG_VIEW_KEY, debugView ? 'on' : 'off')
+    } catch {
+      // 浏览器禁用存储时仅保留当前页面状态。
+    }
+  }, [debugView])
   const [queryText, setQueryText] = useState(q)
   useEffect(() => setQueryText(q), [q])
   useEffect(() => {

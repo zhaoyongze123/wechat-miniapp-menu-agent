@@ -269,21 +269,38 @@ class RejectionService:
                 results.append({**identity, "ok": False, "store_name": "", "error": str(reason)})
         return {"ok": all(result["ok"] for result in results), "results": results}
 
+    def return_blocker(self, task_id: str, current: bool | None = None) -> str:
+        """返回打回素材清洗的阻塞原因，空串表示可打回。
+
+        待检查记录（capture_outcome=review）也允许打回：用户确认无需继续采集时，
+        可直接退回重选二维码。是否属于当前有效任务由调用方传入 current 复用已有查询。
+        """
+        task = self.tasks.get(task_id)
+        if not (task.get("reject_reason") or task.get("status") == "pending"
+                or capture_outcome(task) == "review"):
+            return "只有不合格、待处理或待检查任务可以打回素材清洗"
+        _, store, reason = self.material_return_target(task)
+        if store is None:
+            return reason
+        if current is None:
+            current = not self.current_only or task_id in {
+                row["id"] for row in self.materials.effective_capture_tasks()}
+        if not current:
+            return "这条采集记录已不是当前素材的有效任务，请刷新后重试"
+        return ""
+
     def return_to_materials(self, task_id: str) -> dict:
         """把采集任务打回素材清洗：清不合格 + 决策回 pending + 任务置 blocked。
 
-        不合格任务与待处理任务都允许打回：前者是复核后的处置，后者用于把尚未采集的
-        门店退回重选二维码；能否打回以素材批次和门店能否解析为准。
+        不合格、待处理与待检查任务都允许打回：复核后确认无需继续采集时，退回重选
+        二维码即可。能否打回统一由 return_blocker 判定，避免列表与操作口径不一致。
         不新建批次也不新建发布；重新确认二维码后按原批次增量发布即可生成新的采集任务。
         """
         task = self.tasks.get(task_id)
-        if not task.get("reject_reason") and task.get("status") != "pending":
-            raise ValueError("只有不合格或待处理任务可以打回素材清洗")
-        batch_id, store, reason = self.material_return_target(task)
-        if store is None:
-            raise ValueError(reason)
-        if self.current_only and task_id not in {row["id"] for row in self.materials.effective_capture_tasks()}:
-            raise ValueError("这条采集记录已不是当前素材的有效任务，请刷新后重试")
+        blocker = self.return_blocker(task_id)
+        if blocker:
+            raise ValueError(blocker)
+        batch_id, store, _ = self.material_return_target(task)
         self.materials.return_rework_store(batch_id, store["store_id"])
         self.tasks.update(
             task_id, status="blocked", stage="returned_to_materials",

@@ -4,12 +4,13 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
-import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppPagination } from '../../components/AppPagination'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
+import { FilterToolbar } from '../../components/FilterToolbar'
 import { PageHeader } from '../../components/PageHeader'
+import { SearchInput } from '../../components/SearchInput'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
@@ -501,7 +502,15 @@ export function WorkerWorkbenchPage() {
               {blockedSelected.length ? ` · ${blockedSelected.length} 家当前不可开跑` : ''}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <FilterToolbar
+            label="本机任务筛选"
+            activeCount={[batch, filter !== 'all' ? filter : '', sort !== 'source' ? sort : '', q].filter(Boolean).length}
+            onClear={() => {
+              setQueryText('')
+              updateQuery({ batch: '', filter: 'all', sort: 'source', q: '', page: 1 })
+            }}
+            summary={`共 ${filtered.length} 家匹配`}
+          >
             <div className="w-44">
               <Select
                 aria-label="按批次筛选"
@@ -526,20 +535,19 @@ export function WorkerWorkbenchPage() {
                 onChange={(option) => updateQuery({ sort: option.value, page: 1 })}
               />
             </div>
-            <div className="w-60">
-              <Input
-                aria-label="搜索门店"
-                placeholder="搜索门店名称、批次或原因"
-                value={queryText}
-                onChange={(event) => setQueryText(event.target.value)}
-              />
-            </div>
+            <SearchInput
+              className="w-60"
+              label="门店"
+              placeholder="搜索门店名称、批次或原因"
+              value={queryText}
+              onChange={setQueryText}
+            />
             {selected.length ? (
               <Button color="secondary" variant="ghost" size="sm" onClick={() => setSelected([])}>
                 清空选择
               </Button>
             ) : null}
-          </div>
+          </FilterToolbar>
         </div>
 
         {statusQuery.isError ? (
