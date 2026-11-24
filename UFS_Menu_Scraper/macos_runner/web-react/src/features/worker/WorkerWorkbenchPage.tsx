@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
@@ -16,7 +16,7 @@ import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
 import { addSelection, removeSelection } from '../hub/selection'
-import { fetchManualState, manualCapture, manualReject, manualSkip, pauseCapture, resumeCapture, retryTask, terminateCapture } from './api'
+import { fetchManualState, manualCapture, manualCommandContext, manualReject, manualSkip, pauseCapture, resumeCapture, retryTask, terminateCapture } from './api'
 import {
   canResume,
   canRetry,
@@ -33,6 +33,7 @@ import {
 } from './format'
 import { useRefreshWorkerStatus, useWorkerStatus } from './hooks'
 import { ManualPanel } from './ManualPanel'
+import { StatCard } from '../../components/StatCard'
 import { StartRunDialog } from './StartRunDialog'
 import { WorkerSyncDialog } from './WorkerSyncDialog'
 import { WorkerTaskDetailDrawer } from './WorkerTaskDetailDrawer'
@@ -47,6 +48,7 @@ const FILTER_OPTIONS = [
   { value: 'running', label: '采集中' },
   { value: 'captured', label: '已截图待复核' },
   { value: 'review', label: '待检查' },
+  { value: 'returned', label: '待重新选码' },
   { value: 'rejected', label: '不合格' },
   { value: 'returned', label: '待重新选码' },
 ]
@@ -58,41 +60,6 @@ const SORT_OPTIONS = [
 const FILTERS: WorkerFilter[] = ['all', 'pending', 'running', 'captured', 'review', 'rejected', 'returned']
 const SORTS: WorkerSort[] = ['source', 'recent', 'status']
 
-function StatCard({
-  label,
-  value,
-  tone,
-  active,
-  onClick,
-}: {
-  label: string
-  value: number
-  tone?: 'danger' | 'warning'
-  active: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={[
-        'rounded-xl border px-3 py-2 text-left transition-colors',
-        active ? 'border-subtle bg-secondary-soft' : 'border-subtle bg-surface hover:bg-secondary-ghost-hover',
-      ].join(' ')}
-    >
-      <span className="block text-xs text-secondary">{label}</span>
-      <span
-        className={[
-          'mt-1 block heading-lg tabular-nums',
-          tone === 'danger' && value > 0 ? 'text-danger' : tone === 'warning' && value > 0 ? 'text-warning' : 'text-default',
-        ].join(' ')}
-      >
-        {value}
-      </span>
-    </button>
-  )
-}
 
 /** Windows 原生采集工作台：本机队列、全自动/半自动、运行控制与断线补传提示。 */
 export function WorkerWorkbenchPage() {
@@ -205,11 +172,24 @@ export function WorkerWorkbenchPage() {
     onError: (error) => setCommandError(errorMessage(error)),
   })
 
+  const manualQuery = useQuery({
+    queryKey: ['manual-control'],
+    queryFn: ({ signal }) => fetchManualState(signal),
+    enabled: running && run?.capture_mode === 'manual',
+    refetchInterval: 1_500,
+    staleTime: 1_250,
+  })
+  const manual = running && run?.capture_mode === 'manual' ? manualQuery.data?.manual : null
+  const manualContext = manualCommandContext(manualQuery.data)
+
   const manualAction = useMutation({
     mutationFn: async (action: 'capture' | 'skip' | { reason: string; detail: string }) => {
-      if (action === 'capture') return manualCapture()
-      if (action === 'skip') return manualSkip()
-      return manualReject(action.reason, action.detail)
+      if (!manualContext || manualQuery.isError || Date.now() - manualQuery.dataUpdatedAt > 5_000) {
+        throw new Error('当前状态已过期，请刷新后再操作')
+      }
+      if (action === 'capture') return manualCapture(manualContext)
+      if (action === 'skip') return manualSkip(manualContext)
+      return manualReject(manualContext, action.reason, action.detail)
     },
     onSuccess: (result, action) => {
       setManualError('')
@@ -220,28 +200,8 @@ export function WorkerWorkbenchPage() {
       refresh()
     },
     onError: (error) => setManualError(errorMessage(error)),
+    onSettled: () => { void manualQuery.refetch() },
   })
-
-  // 半自动面板依赖实时 manual 状态；主轮询间隔内单独拉取，避免动作后等待 3 秒。
-  const [manual, setManual] = useState(status?.manual ?? null)
-  useEffect(() => setManual(status?.manual ?? null), [status?.manual])
-  useEffect(() => {
-    if (!running || run?.capture_mode !== 'manual') return
-    let stopped = false
-    const tick = async () => {
-      try {
-        const result = await fetchManualState()
-        if (!stopped) setManual(result.manual ?? null)
-      } catch {
-        // 轮询失败交给主状态查询呈现，不覆盖已有面板。
-      }
-    }
-    const timer = window.setInterval(tick, 1500)
-    return () => {
-      stopped = true
-      window.clearInterval(timer)
-    }
-  }, [running, run?.capture_mode])
 
   const connection = sharedStatus && sharedStatus.role === 'worker' ? sharedStatus : null
   const online = connection?.online ?? false
@@ -422,7 +382,7 @@ export function WorkerWorkbenchPage() {
         <StatCard label="已截图待复核" value={Number(counts.captured) || 0} active={filter === 'captured'} onClick={() => updateQuery({ filter: 'captured', page: 1 })} />
         <StatCard label="待检查" value={Number(counts.review) || 0} tone="warning" active={filter === 'review'} onClick={() => updateQuery({ filter: 'review', page: 1 })} />
         <StatCard label="不合格" value={Number(counts.rejected) || 0} tone="danger" active={filter === 'rejected'} onClick={() => updateQuery({ filter: 'rejected', page: 1 })} />
-        <StatCard label="待重新选码" value={Number(counts.returned) || 0} active={false} onClick={() => updateQuery({ filter: 'all', page: 1 })} />
+        <StatCard label="待重新选码" value={Number(counts.returned) || 0} active={filter === 'returned'} onClick={() => updateQuery({ filter: 'returned', page: 1 })} />
       </section>
 
       <section className="rounded-xl border border-subtle bg-surface space-y-4 p-4 md:p-5" aria-labelledby="worker-run-heading">
@@ -513,8 +473,8 @@ export function WorkerWorkbenchPage() {
       {run?.capture_mode === 'manual' && manual ? (
         <ManualPanel
           manual={manual}
-          busy={manualAction.isPending}
-          error={manualError}
+          busy={manualAction.isPending || manualQuery.isError || !manualContext}
+          error={manualQuery.isError ? '无法更新当前门店，操作已暂停' : manualError}
           onCapture={() => manualAction.mutate('capture')}
           onSkip={() => manualAction.mutate('skip')}
           onReject={(reason, detail) => manualAction.mutate({ reason, detail })}

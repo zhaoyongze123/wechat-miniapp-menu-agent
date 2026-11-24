@@ -3,18 +3,10 @@ import { createPortal } from 'react-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
-import { apiFetch, errorMessage } from '../../api/client'
+import { errorMessage } from '../../api/client'
 import { statusOf } from '../task-center/format'
 import { ManualPanel } from '../worker/ManualPanel'
-import type { ManualState } from '../worker/types'
-
-interface ControlState {
-  device_id: string
-  device_name: string
-  run_name: string
-  run_status: string
-  manual: ManualState | null
-}
+import { fetchManualState, manualCapture, manualCommandContext, manualReject } from '../worker/api'
 
 interface DocumentPictureInPicture {
   window: Window | null
@@ -30,7 +22,7 @@ export function RemoteControlPage() {
   const api = (window as Window & { documentPictureInPicture?: DocumentPictureInPicture }).documentPictureInPicture
   const query = useQuery({
     queryKey: ['manual-control'],
-    queryFn: ({ signal }) => apiFetch<ControlState>('/api/manual/state', { signal }),
+    queryFn: ({ signal }) => fetchManualState(signal),
     refetchInterval: 1_500,
     refetchIntervalInBackground: Boolean(pinned),
     staleTime: 1_250,
@@ -39,20 +31,11 @@ export function RemoteControlPage() {
   const manual = state?.manual
   const command = useMutation({
     mutationFn: (decision: Decision) => {
-      if (!state || !manual?.waiting || manual.decision || !manual.wait_id || !manual.run_id
-        || query.isError || Date.now() - query.dataUpdatedAt > 5_000) {
+      const context = manualCommandContext(state)
+      if (!context || query.isError || Date.now() - query.dataUpdatedAt > 5_000) {
         throw new Error('当前状态已过期，请刷新后再操作')
       }
-      return apiFetch(`/api/manual/${decision.kind}`, {
-        method: 'POST',
-        json: {
-          context: {
-            device_id: state.device_id, run_id: manual.run_id,
-            task_id: manual.task_id, wait_id: manual.wait_id,
-          },
-          ...(decision.kind === 'reject' ? { reason: decision.reason, detail: decision.detail } : {}),
-        },
-      })
+      return decision.kind === 'capture' ? manualCapture(context) : manualReject(context, decision.reason, decision.detail)
     },
     onSettled: () => { void query.refetch() },
   })

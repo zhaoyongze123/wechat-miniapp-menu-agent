@@ -2,7 +2,8 @@ import { apiFetch } from '../../api/client'
 import type {
   CaptureMode,
   ManualActionResponse,
-  ManualState,
+  ManualCommandContext,
+  ManualControlState,
   StartCaptureResponse,
   WorkerStatus,
 } from './types'
@@ -53,19 +54,19 @@ export function retryTask(taskId: string): Promise<{ ok?: boolean }> {
   })
 }
 
-export function manualCapture(): Promise<ManualActionResponse> {
-  return apiFetch<ManualActionResponse>('/api/manual/capture', { method: 'POST', json: {} })
+export function manualCapture(context: ManualCommandContext): Promise<ManualActionResponse> {
+  return apiFetch<ManualActionResponse>('/api/manual/capture', { method: 'POST', json: { context } })
 }
 
-export function manualReject(reason: string, detail: string): Promise<ManualActionResponse> {
+export function manualReject(context: ManualCommandContext, reason: string, detail: string): Promise<ManualActionResponse> {
   return apiFetch<ManualActionResponse>('/api/manual/reject', {
     method: 'POST',
-    json: { reason, detail },
+    json: { context, reason, detail },
   })
 }
 
-export function manualSkip(): Promise<ManualActionResponse> {
-  return apiFetch<ManualActionResponse>('/api/manual/skip', { method: 'POST', json: {} })
+export function manualSkip(context: ManualCommandContext): Promise<ManualActionResponse> {
+  return apiFetch<ManualActionResponse>('/api/manual/skip', { method: 'POST', json: { context } })
 }
 
 /** 保存 F9 快捷键复用的不合格原因。 */
@@ -76,8 +77,8 @@ export function setManualReason(reason: string): Promise<{ ok: boolean; reason: 
   })
 }
 
-export function fetchManualState(signal?: AbortSignal): Promise<{ manual: ManualState | null }> {
-  return apiFetch<{ manual: ManualState | null }>('/api/manual/state', { signal })
+export function fetchManualState(signal?: AbortSignal): Promise<ManualControlState> {
+  return apiFetch<ManualControlState>('/api/manual/state', { signal })
 }
 
 export interface WorkerAction {
@@ -102,4 +103,10 @@ export function fetchTaskActions(taskId: string, before: number | null, signal?:
 
 export function fetchTaskArtifacts(taskId: string, signal?: AbortSignal): Promise<{ files: string[] }> {
   return apiFetch<{ files: string[] }>(`/api/artifacts/${encodeURIComponent(taskId)}`, { signal })
+}
+
+export function manualCommandContext(state: ManualControlState | undefined): ManualCommandContext | null {
+  const manual = state?.manual
+  if (!state || !manual?.waiting || manual.decision || !manual.wait_id || !manual.run_id) return null
+  return { device_id: state.device_id, run_id: manual.run_id, task_id: manual.task_id, wait_id: manual.wait_id }
 }

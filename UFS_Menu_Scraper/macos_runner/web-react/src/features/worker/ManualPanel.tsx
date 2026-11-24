@@ -81,7 +81,7 @@ export function ManualPanel({ manual, busy, error, onCapture, onReject, onSkip, 
       {manual.waiting ? (
         <div className="mt-3 space-y-3">
           <p className="text-xs text-secondary">请在微信小程序进入菜单，再点击开始截图。</p>
-          {!compact ? <a className="text-sm underline" href="/remote-control" target="_blank" rel="noopener">打开置顶控制窗</a> : null}
+          {!compact ? <a className="text-sm underline" href="/remote-control" target="menu-capture-manual-control">打开置顶控制窗</a> : null}
           <div className="flex flex-wrap gap-2">
             <Button color="primary" size="sm" disabled={busy} onClick={onCapture}>
               开始截图 <kbd className="ml-1 opacity-70">F8</kbd>

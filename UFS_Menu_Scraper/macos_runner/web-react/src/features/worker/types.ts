@@ -73,6 +73,22 @@ export interface ManualState {
   last_result?: string
 }
 
+export interface ManualControlState {
+  device_id: string
+  device_name: string
+  manual: ManualState | null
+  run_name: string
+  run_status: string
+  remote_url: string
+}
+
+export interface ManualCommandContext {
+  device_id: string
+  run_id: string
+  task_id: string
+  wait_id: string
+}
+
 export interface WorkerEvent {
   time: string
   level: string
@@ -136,7 +152,7 @@ export interface ManualActionResponse {
 }
 
 /** 与服务端 `/api/status` 的 queue_filter 取值保持一致；Worker 端在前端过滤。 */
-export const WORKER_FILTER_VALUES: WorkerFilter[] = ['all', 'pending', 'running', 'captured', 'rejected', 'review']
+export const WORKER_FILTER_VALUES: WorkerFilter[] = ['all', 'pending', 'running', 'captured', 'rejected', 'review', 'returned']
 export const WORKER_SORT_VALUES: WorkerSort[] = ['source', 'recent', 'status']
 /** 与服务端 REVIEW_RERUN_LIMIT 一致：一次开跑最多锁定 300 家门店。 */
 export const START_RUN_LIMIT = 300
