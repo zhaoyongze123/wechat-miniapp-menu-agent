@@ -15,9 +15,11 @@ from zipfile import BadZipFile, ZipFile
 
 from PIL import Image
 
+from .capture_history import ACTIVE_RUN_STATUSES, capture_history_row
 from .capture_results import store_state, waiting_for_materials
 from .materials import REJECTION_REASONS, MaterialService
 from .store import TaskStore
+from .shared_history import HistoryReport
 
 MAX_RESULT_SIZE = 1024**3
 MAX_ARTIFACT_SIZE = 32 * 1024**2
@@ -94,6 +96,11 @@ class SharedHub:
                     worker_id TEXT PRIMARY KEY REFERENCES shared_workers(id),
                     status TEXT NOT NULL, mode TEXT NOT NULL,
                     processed INTEGER NOT NULL, total INTEGER NOT NULL, reported_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS shared_run_history (
+                    worker_id TEXT NOT NULL REFERENCES shared_workers(id), run_id TEXT NOT NULL,
+                    generation INTEGER NOT NULL, status TEXT NOT NULL, summary TEXT NOT NULL,
+                    tasks TEXT NOT NULL, synced_at TEXT NOT NULL, PRIMARY KEY(worker_id, run_id)
                 );
                 CREATE TABLE IF NOT EXISTS shared_pairing (
                     code_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL
@@ -457,7 +464,56 @@ class SharedHub:
         return {"assignments": rows,
                 "batches": [{"batch_id": batch_id, "snapshot_id": snapshot_id}
                             for batch_id, snapshot_id in current.items()],
-                "states": states, "supports_run_summary": True, "worker_name": worker["name"]}
+                "states": states, "supports_run_summary": True, "supports_run_history": True,
+                "worker_name": worker["name"]}
+
+    def record_run_history(self, worker_id: str, report: HistoryReport) -> dict:
+        record = capture_history_row(report.run.model_dump(), [row.model_dump() for row in report.results], {})
+        tasks = record.pop("tasks")
+        record["history_status"] = "partial" if record["counts"]["unknown"] else "synced"
+        with self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if self._worker(db, worker_id)["revoked_at"]:
+                raise WorkerUnauthorized("采集电脑已解除配对")
+            db.execute("""
+                INSERT INTO shared_run_history(worker_id,run_id,generation,status,summary,tasks,synced_at)
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(worker_id,run_id) DO UPDATE SET generation=excluded.generation,
+                    status=excluded.status,summary=excluded.summary,tasks=excluded.tasks,synced_at=excluded.synced_at
+                WHERE excluded.generation > shared_run_history.generation
+            """, (worker_id, report.run.id, report.generation, report.run.status,
+                  json.dumps(record, ensure_ascii=False), json.dumps(tasks, ensure_ascii=False), utc_stamp()))
+        return {"acknowledged": report.generation}
+
+    @staticmethod
+    def _synced_history_row(row) -> dict:
+        return {
+            **json.loads(row["summary"]), "id": f'{row["worker_id"]}:{row["run_id"]}',
+            "local_run_id": row["run_id"], "worker_id": row["worker_id"], "worker_name": row["worker_name"],
+            "worker_last_seen": row["worker_last_seen"], "synced_at": row["synced_at"], "can_rename": False,
+        }
+
+    def history_records(self, worker_id: str = "", *, active_only: bool = False) -> list[dict]:
+        query = """
+            SELECT h.worker_id,h.run_id,h.synced_at,h.summary,w.name AS worker_name,w.last_seen AS worker_last_seen
+            FROM shared_run_history h JOIN shared_workers w ON h.worker_id=w.id
+            WHERE (?='' OR h.worker_id=?)
+        """
+        args = [worker_id, worker_id]
+        if active_only:
+            query += " AND h.status IN (" + ",".join("?" for _ in ACTIVE_RUN_STATUSES) + ")"
+            args.extend(sorted(ACTIVE_RUN_STATUSES))
+        with self.store.connect() as db:
+            return [self._synced_history_row(row) for row in db.execute(query, args)]
+
+    def history_detail(self, worker_id: str, run_id: str) -> dict | None:
+        with self.store.connect() as db:
+            row = db.execute("""
+                SELECT h.*,w.name AS worker_name,w.last_seen AS worker_last_seen
+                FROM shared_run_history h JOIN shared_workers w ON h.worker_id=w.id
+                WHERE h.worker_id=? AND h.run_id=?
+            """, (worker_id, run_id)).fetchone()
+        return self._synced_history_row(row) | {"tasks": json.loads(row["tasks"])} if row is not None else None
 
     def assignment(self, worker_id: str, assignment_id: str) -> dict:
         with self.store.connect() as db:

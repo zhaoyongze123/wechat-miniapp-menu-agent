@@ -391,3 +391,83 @@ def test_legacy_windows_backup_is_verified_without_changing_source(tmp_path):
     assert report["checked_qr_files"] == report["captured_screenshot_files"] == 1
     assert (destination / "output" / "门店 A" / "page-01.png").read_bytes() == screenshot.read_bytes()
     assert hashlib.sha256((data / "tasks.sqlite3").read_bytes()).hexdigest() == src_hash
+
+
+def test_run_history_keeps_device_identity_and_recovers_after_restart(tmp_path):
+    hub_app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
+    a_root = tmp_path / "computer-a"
+    a = create_app(a_root, role="worker").state.shared_worker
+    b = create_app(tmp_path / "computer-b", role="worker").state.shared_worker
+    with client_for(hub_app, admin=True) as hub:
+        a_link = Link(hub)
+        a_id = pair(hub, a, "电脑 A", a_link)
+        b_id = pair(hub, b, "电脑 B", Link(hub))
+        a.store.create_run("same-id", "automatic", [], capture_mode="auto", name="第一轮")
+        b.store.create_run("same-id", "automatic", [], capture_mode="manual", name="第二轮")
+        a_report = a.history.pending_report()
+        a.poll()
+        b.poll()
+
+        result = hub.get("/api/tasks/history", params={"kind": "capture"}).json()
+        assert {row["id"] for row in result["records"]} == {f"{a_id}:same-id", f"{b_id}:same-id"}
+        assert result["summary"]["total"] == result["summary"]["running"] == 2
+
+        a_link.available = False
+        a.store.update_run("same-id", status="completed")
+        a.store.rename_run("same-id", "离线改名")
+        a.poll()
+        assert a.history.pending_report()["run"]["status"] == "completed"
+        a.close()
+
+        a = create_app(a_root, role="worker").state.shared_worker
+        a_link.available = True
+        a_link.install(a)
+        a.poll()
+        assert a.history.pending_report() is None
+
+        old_retry = hub.put("/api/shared/worker/run-history", headers=a._headers, json=a_report)
+        assert old_retry.status_code == 200
+        assert hub.put("/api/shared/worker/run-history", json=a_report).status_code == 401
+
+        filtered = hub.get("/api/tasks/history", params={"kind": "capture", "worker_id": a_id}).json()
+        assert filtered["summary"]["total"] == filtered["summary"]["completed"] == 1
+        detail_url = f"/api/tasks/history/capture/{a_id}:same-id"
+        detail = hub.get(detail_url).json()
+        assert detail["title"] == "离线改名"
+        assert detail["worker_name"] == "电脑 A"
+        assert detail["can_rename"] is False
+        assert detail["synced_at"]
+
+        hub_app.state.shared_hub.edit_worker(a_id, "电脑 A 改名", "")
+        assert hub.get(detail_url).json()["worker_name"] == "电脑 A 改名"
+    a.close()
+    b.close()
+
+
+def test_run_history_preserves_per_store_outcomes(tmp_path):
+    hub_app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
+    worker_app = create_app(tmp_path / "worker", role="worker")
+    worker = worker_app.state.shared_worker
+    with client_for(hub_app, admin=True) as hub:
+        created = batch(hub_app, tmp_path / "raw", ("门店 A", "门店 B"))
+        ids = [row["id"] for row in hub.get("/api/capture/queue").json()["records"]]
+        worker_id = pair(hub, worker, "电脑 A", Link(hub))
+        assert assign(hub, worker_id, ids).status_code == 200
+        worker.poll()
+        worker.store.create_run("test-run", "automatic", ids, capture_mode="auto")
+        worker.store.update(ids[0], capture_run_id="test-run", attempt_outcome="review",
+                            status="needs_review", message="需要人工复核")
+        worker.store.update_run("test-run", current_index=1)
+        worker.poll()
+
+        detail = hub.get(f"/api/tasks/history/capture/{worker_id}:test-run").json()
+        assert detail["counts"]["processed"] == 1
+        assert detail["counts"]["attention"] == 1
+        assert detail["batches"][0]["id"] == created["batch_id"]
+        results = {row["task_id"]: row for row in detail["tasks"]}
+        assert results[ids[0]]["status"] == "review"
+        assert results[ids[1]]["label"] == "未处理"
+        materials = hub.get("/api/tasks/history", params={"kind": "materials"}).json()["records"]
+        assert materials and all(row["kind"] == "materials" for row in materials)
+        assert hub.get("/api/tasks/active").json()["tasks"][-1]["id"] == f"{worker_id}:test-run"
+    worker.close()

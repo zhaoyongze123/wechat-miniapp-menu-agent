@@ -35,7 +35,8 @@ from starlette.background import BackgroundTask
 from .config import ConfigStore, ROOT
 from .capture_outputs import batch_output_dir
 from .failures import describe as describe_failure
-from .capture_results import CAPTURE_RESULT_LABELS, capture_outcome, state_counts, store_state, waiting_for_materials
+from .capture_history import ACTIVE_RUN_STATUSES, capture_history_row, history_timestamp
+from .capture_results import capture_outcome, state_counts, store_state, waiting_for_materials
 from .store import TaskStore
 from .uipath_runner import UiPathRunner
 from .robot_profile import ProfileStore
@@ -869,57 +870,19 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 "created_at": run["created_at"],
                 "updated_at": run["updated_at"],
             })
+        if hub:
+            for row in hub.history_records(active_only=True):
+                if row["status"] not in ACTIVE_RUN_STATUSES:
+                    continue
+                items.append({
+                    "source": "capture", "id": row["id"], "title": row["title"],
+                    "kind": row["mode"], "status": row["status"],
+                    "progress": {"done": row["counts"]["processed"], "total": row["counts"]["total"]},
+                    "extra": {"worker_id": row["worker_id"], "worker_name": row["worker_name"],
+                              "synced_at": row["synced_at"]},
+                    "created_at": row["created_at"], "updated_at": row["updated_at"],
+                })
         return {"tasks": items}
-
-    def capture_run_title(run: dict, total: int, batch_name: str) -> str:
-        """任务名以显式保存值为准；旧占位名按可信模式和数量生成，避免历史记录都叫 automatic。"""
-        saved = (run.get("name") or "").strip()
-        if saved and saved != "automatic":
-            return saved
-        if batch_name:
-            return batch_name
-        label = {"auto": "全自动采集", "manual": "半自动采集"}.get(run.get("capture_mode") or "", "批量采集")
-        return f"{label} · {total} 家" if total else label
-
-    def capture_history_row(run: dict, recorded: list[dict], task_index: dict) -> dict:
-        """旧轮次保留门店明细和批次信息，轮次结果仅采用当时留存的记录。"""
-        batch_id = run.get("material_batch_id") or ""
-        index = {row["task_id"]: row for row in recorded}
-        outcomes = Counter(row["outcome"] for row in recorded)
-        batches = {}
-        entries = []
-        ids = run.get("task_ids") or []
-        for task_id in ids:
-            result = index.get(task_id, {})
-            task = task_index.get(task_id, {})
-            source_batch = result.get("batch_id") or task.get("batch_id") or batch_id
-            name = result.get("batch_name") or task.get("batch_name") or source_batch
-            version = result.get("version") or task.get("version") or ""
-            if source_batch:
-                batch = batches.setdefault(source_batch, {"id": source_batch, "name": name, "versions": [], "stores": 0})
-                batch["stores"] += 1
-                if version and version not in batch["versions"]:
-                    batch["versions"].append(version)
-            outcome = result.get("outcome", "")
-            label = CAPTURE_RESULT_LABELS.get(outcome, "未记录结果" if not result else "未处理")
-            if result and not outcome and task_id == run.get("current_task_id") and run["status"] == "running":
-                label = "正在处理"
-            entries.append({"task_id": task_id, "store_name": result.get("store_name") or task.get("source_name", ""),
-                            "batch_name": name, "version": version, "status": outcome, "label": label,
-                            "message": result.get("message", ""), "reject_reason": result.get("reject_reason", "")})
-        batch_list = list(batches.values())
-        batch_name = batch_list[0]["name"] if len(batch_list) == 1 else ""
-        title = capture_run_title(run, len(ids), batch_name)
-        return {"kind": "capture", "id": run["id"], "title": title, "mode": run.get("mode", ""),
-                "name": (run.get("name") or ""),
-                "batch_id": batch_list[0]["id"] if len(batch_list) == 1 else "",
-                "batch_name": batch_name, "batches": batch_list,
-                "status": run.get("status", ""), "created_at": run.get("created_at", ""),
-                "updated_at": run.get("updated_at", ""), "message": run.get("message", ""),
-                "counts": {"total": len(ids), "done": outcomes["captured"], "attention": outcomes["review"],
-                           "rejected": outcomes["rejected"], "recorded": sum(outcomes[key] for key in CAPTURE_RESULT_LABELS),
-                           "unknown": len(ids)-len(recorded), "failed": 0},
-                "tasks": entries}
 
     def capture_history_task_index() -> dict:
         # 在采集端按分配记录补充旧轮次来源；在共享后台按当前发布快照提取批次。
@@ -937,20 +900,23 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return tasks
 
     @app.get("/api/tasks/history")
-    def task_history(kind: str = "all", status: str = "", q: str = "", page: int = 1, page_size: int = 20):
+    def task_history(kind: str = "all", status: str = "", q: str = "", page: int = 1,
+                     page_size: int = 20, worker_id: str = ""):
         """任务中心历史页：采集运行与素材分析任务统一成同一结构，按时间倒序分页。"""
         page = max(1, int(page))
         page_size = min(100, max(5, int(page_size)))
         rows: list[dict] = []
         if kind in ("all", "capture"):
-            runs = store.run_history(500)
+            runs = store.run_history(500) if not worker_id else []
             results = store.capture_run_results([run["id"] for run in runs])
-            task_index = capture_history_task_index()
+            task_index = capture_history_task_index() if runs else {}
             for run in runs:
                 item = capture_history_row(run, results.get(run["id"], []), task_index)
                 item.pop("tasks")
                 rows.append(item)
-        if kind in ("all", "materials"):
+            if hub:
+                rows.extend(hub.history_records(worker_id=worker_id))
+        if kind in ("all", "materials") and not worker_id:
             for job in materials.jobs.history(500):
                 rows.append({
                     "kind": "materials",
@@ -970,7 +936,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                         "failed": int(job.get("failed_stores") or 0),
                     },
                 })
-        active = {"queued", "running", "pause_requested", "paused", "interrupted", "blocked", "resuming", "terminating"}
+        active = ACTIVE_RUN_STATUSES
         aborted = {"terminated", "stopped"}
         errors = {"failed", "cancelled"}
         if status:
@@ -979,9 +945,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         normalized = q.strip().casefold()
         if normalized:
             rows = [row for row in rows
-                    if normalized in (" ".join([row["title"], row["batch_name"], row["id"],
+                    if normalized in (" ".join([row["title"], row["batch_name"], row["id"], row.get("worker_name", ""),
                                            *(batch["name"] for batch in row.get("batches", []))])).casefold()]
-        rows.sort(key=lambda row: row["created_at"], reverse=True)
+        rows.sort(key=lambda row: (history_timestamp(row["created_at"]), row["id"]), reverse=True)
         total = len(rows)
         page_count = max(1, (total + page_size - 1) // page_size)
         page = min(page, page_count)
@@ -1004,6 +970,12 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     def task_history_detail(kind: str, item_id: str):
         """历史任务详情：采集运行返回逐店状态，素材分析返回阶段事件。"""
         if kind == "capture":
+            if hub and ":" in item_id:
+                worker_id, run_id = item_id.split(":", 1)
+                record = hub.history_detail(worker_id, run_id)
+                if record is not None:
+                    return record
+                raise HTTPException(404, "采集电脑的轮次尚未同步或不存在")
             run = store.get_run(item_id)
             if run is None:
                 raise HTTPException(404, "运行记录不存在")
