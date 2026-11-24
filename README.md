@@ -94,13 +94,7 @@ flowchart TD
 
 ### 1. 部署共享工作台（Hub）
 
-准备 Docker 和 Docker Compose。在仓库根目录将 `deploy/.env.example` 复制为 `deploy/.env`，配置管理员口令和允许访问的主机，再运行：
-
-```bash
-docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build --wait
-```
-
-正式部署请使用对应发布版本及其构建产物，并按 [部署指南](deploy/README.md) 配置受信任的内网访问、持久化数据卷与鉴权。
+准备 Docker 和 Docker Compose。正式部署获得授权后，使用已验收的发布镜像，按部署指南设置管理员口令、内网访问和持久化数据卷。日常开发可以直接启动 Python 服务或复用现有镜像。 [部署指南](deploy/README.md)
 
 ### 2. 安装 Windows 采集端（Worker）
 
@@ -162,22 +156,18 @@ React 前端统一构建为静态资源，由后端服务提供；业务界面�
 cd UFS_Menu_Scraper/macos_runner
 uv sync --frozen --python 3.12
 npm ci --prefix ui_tars
-uv run pytest -q
 ```
 
-在同一主工程目录构建与验证前端：
+在同一主工程目录准备前端依赖：
 
 ```bash
 cd web-react
 npm ci
-npm run typecheck
-npm test
-npm run build
 ```
 
-前端构建产物位于 `web/react/`。本地开发服务可使用 `npm run dev`；启动完整业务服务前应按角色配置和部署指南准备后端环境。
+前端开发可使用 `npm run dev`。按改动运行相关 pytest、Vitest、类型检查或 Lint。提交受影响的前端资源前生成并核对 `web/react/`。
 
-自动化测试不能替代真实 Windows 桌面验证。涉及导航、数据模型、同步及发布的修改，应按实际影响执行相应契约测试和现场回归。
+涉及导航、数据、同步或升级回滚时保留必要的隔离与实机验证。日常开发和合并禁止触发 Actions 或完整打包，全部开发完成后集中执行最多一次完整 CI。 [工程规范](docs/engineering-standards.md#测试与验证)
 
 ## 版本、升级与回滚
 

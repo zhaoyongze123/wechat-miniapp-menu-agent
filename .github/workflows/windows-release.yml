@@ -1,7 +1,6 @@
-# Windows 安装包与 Hub 镜像的正式发布构建。
-# 仅手动触发：PR、普通提交和标签推送都不会自动构建。
-# 一次运行完成构建、升级/回滚验收并上传同一份产物到 Release 草稿。
-name: Windows 采集安装与共享后台（手动发布）
+# 本轮开发完成后集中手动验收一次。失败后先本地修复，重跑须用户授权。
+# PR、提交、合并和标签推送不会触发。正式发布和生产部署另行授权。
+name: Windows 采集端与共享后台（手动集成验收）
 on:
   workflow_dispatch:
     inputs:
@@ -15,7 +14,7 @@ on:
         required: false
         type: string
       previous_installer_run:
-        description: 也可使用已通过本地验证的旧版安装包 Actions Run ID
+        description: 复用先前验收通过的旧版安装包 Actions Run ID
         required: false
         type: string
       ota_base_version:
@@ -23,8 +22,8 @@ on:
         required: false
         type: string
       create_release:
-        description: 构建验收后创建或更新 GitHub Release 草稿
-        default: true
+        description: 验收通过后用同一次产物创建或更新 Release 草稿
+        default: false
         required: true
         type: boolean
       min_supported_version:

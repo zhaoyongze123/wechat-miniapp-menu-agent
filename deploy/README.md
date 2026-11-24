@@ -4,7 +4,9 @@ A 机运行共享后台。A、B 都安装 Windows 采集端，用各自已登录
 
 ## 安装
 
-1. 在 A 机安装并启动 Docker Desktop。在仓库根目录把 `deploy/.env.example` 复制为 `deploy/.env`，设置管理员口令，并把 A 机的 Tailscale IPv4 填到 `MENU_CAPTURE_ALLOWED_HOSTS`。管理员账号是 `admin`。执行 `docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build --wait`，然后执行 `tailscale serve --bg --tcp=8766 tcp://127.0.0.1:8766`。同一 Tailscale 内网的浏览器和采集端使用 `http://<A 机 Tailscale IPv4>:8766`，机器之间的连接由 Tailscale 加密。
+获得用户明确授权后执行生产安装、升级或回滚。开发演练使用隔离端口、独立数据和既有产物。
+
+1. 在 A 机安装并启动 Docker Desktop。核对已验收的 Hub 镜像归档 SHA-256，用 `docker load -i <Hub 镜像归档>` 导入。在仓库根目录复制 `deploy/.env.example` 为 `deploy/.env`，配置版本、实际镜像标签、管理员口令和 A 机的 Tailscale IPv4（`MENU_CAPTURE_ALLOWED_HOSTS`）。管理员账号为 `admin`。执行 `docker compose --env-file deploy/.env -f deploy/compose.yaml up --no-build -d --wait`，再运行 `tailscale serve --bg --tcp=8766 tcp://127.0.0.1:8766`。同一 Tailscale 内网访问 `http://<A 机 Tailscale IPv4>:8766`。
 2. 在两台 Windows 上运行 Release 的 `MenuCapture-Setup-<版本>-win-x64.exe`，用开始菜单的「菜单采集工作台」打开本机端。新机器保留 `8765` 给本机采集端。安装包配置当前 Windows 用户登录后启动。把微信登录并打开文件传输助手，进「环境」查看截图、OCR 和微信检查结果。
 3. 在共享工作台打开「采集电脑」，生成配对码。每台采集端输入共享工作台地址、电脑名称和自己的一次性配对码。需要全自动时，在各电脑本机设置 GUI-Plus 模型和密钥。配对后在共享工作台勾选门店，分给一台电脑。采集端显示「可离线采集」才表示二维码已校验并保存在本机。
 
@@ -18,18 +20,18 @@ A 机运行共享后台。A、B 都安装 Windows 采集端，用各自已登录
 
 ## 升级与回滚
 
-首次升级到 React 的验证需要旧版安装包。在 GitHub Actions 手动运行 Windows workflow 时，可通过 `previous_installer_tag` 选择旧 Release，或通过 `previous_installer_run` 选择已通过的旧 CI 产物。验收依次安装旧版、升级 React、再回滚到旧版。验收生产现用安装包时，应使用其原始安装文件和 SHA-256。旧包在没有生产采集服务和启动项的独立 Windows 环境执行，避免安装器覆盖同一账号的启动项。
+验收升级与回滚时，优先复用已验收的旧版安装包及 SHA-256。最终集中 CI 可通过 `previous_installer_tag` 选择旧 Release，或通过 `previous_installer_run` 选择已验收的旧 CI 产物。需要复验时在无生产采集服务和启动项的独立 Windows 环境走旧版、候选、回滚链路。
 
 前后端随发布版本一起打包：React 构建产物在 `web/react/`，运行时不依赖 Node、npm 或外部 CDN。安装包与镜像都会写入版本信息，可用 `GET /api/version` 核对实际运行的后端版本与前端入口哈希。
 
 Windows 采集端按版本目录并存（`releases\<版本>`），`current-version` 决定守护进程启动哪个版本；数据、配置、设备身份和待上传结果都在 `%LOCALAPPDATA%\MenuCapture`，升级与回滚都不触碰。升级：运行新版安装包。回滚：执行安装目录下的 `rollback.ps1 -Version <旧版本>`，守护进程会在当前采集或标注结束后切回旧版本；脚本校验目标版本文件完整，并通过健康检查与 Worker 进程路径等待切换完成，兼容没有 `/api/version` 与 React 清单的迁移前版本。新版版本目录内的 `release-manifest.json` 记录版本、源码提交与前端入口哈希，可用于发布核对。
 
-共享后台按镜像标签发布与回滚，数据卷保持不变：
+共享后台使用已经导入并核对摘要的镜像升级与回滚。保持同一 Compose 项目和数据卷。
 
 ```bash
-MENU_CAPTURE_VERSION=1.2.3 MENU_CAPTURE_IMAGE=menu-capture-hub:1.2.3 docker compose -f deploy/compose.yaml up -d --build
+MENU_CAPTURE_VERSION=1.2.3 MENU_CAPTURE_IMAGE=menu-capture-hub:1.2.3 docker compose --env-file deploy/.env -f deploy/compose.yaml up --no-build -d --wait
 # 回滚到上一镜像
-MENU_CAPTURE_IMAGE=menu-capture-hub:1.2.2 docker compose -f deploy/compose.yaml up -d
+MENU_CAPTURE_VERSION=1.2.2 MENU_CAPTURE_IMAGE=menu-capture-hub:1.2.2 docker compose --env-file deploy/.env -f deploy/compose.yaml up --no-build -d --wait
 ```
 
 ## 迁移旧 Windows 备份
@@ -44,7 +46,11 @@ python deploy/migrate_legacy.py --backup-home 'D:\backup\runner' --legacy-home '
 
 在演练后台核对门店、批次、不合格原因和截图，再决定切换日期。正式切换先确认没有正在采集的门店或未完成的输出发布事务，停旧入口写入，做最终备份和导入，最后把内网地址切到新后台。首次正式写入前做健康检查并打开样本截图。旧计划任务、目录和备份保留供回退。
 
-开发者可在独立 Windows 构建机执行 `deploy/windows/build.ps1`。安装、自动启动和崩溃恢复由 `deploy/windows/smoke.ps1` 在隔离构建机验收。GitHub workflow 仅手动触发，一次运行完成构建与验收，并把同一份产物上传为待审阅的 Release 草稿；PR、提交和标签推送不会自动构建。
+## 集成交付
+
+日常开发、提交、PR 和合并阶段禁止触发 GitHub Actions 或完整打包。安装、自动启动、崩溃恢复、升级及回滚改动，先在隔离环境复用既有产物执行必要检查。
+
+全部开发完成后，锁定同一候选提交与版本，最多手动执行一次完整工作流。工作流生成安装包和 Hub 镜像，执行升级回滚验证，并可按显式选项用同一份产物创建 Release 草稿。失败后读取日志并在本地修复，重跑须用户明确授权。正式发布和生产部署各自另行授权。 [工程规范](../docs/engineering-standards.md#发布与云端构建)
 
 
 ## Windows 半自动远程控制
