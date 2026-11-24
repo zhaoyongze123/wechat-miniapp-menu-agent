@@ -93,6 +93,14 @@ function Assert-WorkerRelease {
 function Assert-ApiVersion {
     param([string]$Expected, [string]$Label)
     if (-not $Expected) { return }
+    $manifest = Join-Path $install "releases\$Expected\release-manifest.json"
+    if (-not (Test-Path -LiteralPath $manifest)) {
+        # 首次 React 升级前的生产版没有版本 API 和清单，按 Worker 健康状态及可执行文件路径验收。
+        $health = Invoke-RestMethod "http://127.0.0.1:$Port/healthz" -UseBasicParsing -TimeoutSec 5
+        if (-not $health.ok -or $health.role -ne 'worker') { throw "$Label previous Worker health check failed." }
+        Assert-WorkerRelease $Expected
+        return
+    }
     $url = "http://127.0.0.1:$Port/api/version"
     for ($i = 0; $i -lt 30; $i++) {
         try {
@@ -108,9 +116,11 @@ function Assert-ReleaseManifest {
     param([string]$Expected)
     if (-not $Expected) { return }
     $path = Join-Path $install "releases\$Expected\release-manifest.json"
-    if (-not (Test-Path -LiteralPath $path)) { throw "Missing release-manifest.json for $Expected." }
+    # 迁移前的原生 UI 发布物没有 React 清单，进程路径和 /healthz 会验证其已启动。
+    if (-not (Test-Path -LiteralPath $path)) { return }
     $manifest = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
     if ($manifest.version -ne $Expected) { throw "release-manifest version $($manifest.version), expected $Expected." }
+    if (-not $manifest.frontend_entry -or -not $manifest.frontend_sha256) { throw "Incomplete release-manifest for $Expected." }
     $asset = Join-Path $install ("releases\$Expected\app\web\react\" + $manifest.frontend_entry.Replace('/', '\'))
     if (-not (Test-Path -LiteralPath $asset)) { throw "Frontend entry missing: $asset" }
     $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()

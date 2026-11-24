@@ -18,9 +18,11 @@ A 机运行共享后台。A、B 都安装 Windows 采集端，用各自已登录
 
 ## 升级与回滚
 
+首次升级到 React 的验证需要前一版生产安装包。将其作为已发布 GitHub Release 附件后，手动运行 Windows workflow 并填写 `previous_installer_tag`。验收会安装旧版、升级 React、再回滚到旧版。没有提供该标签时，CI 只验收当前版本的安装、重装、守护进程恢复和本地数据保留，并明确标记升级/回滚尚未执行。
+
 前后端随发布版本一起打包：React 构建产物在 `web/react/`，运行时不依赖 Node、npm 或外部 CDN。安装包与镜像都会写入版本信息，可用 `GET /api/version` 核对实际运行的后端版本与前端入口哈希。
 
-Windows 采集端按版本目录并存（`releases\<版本>`），`current-version` 决定守护进程启动哪个版本；数据、配置、设备身份和待上传结果都在 `%LOCALAPPDATA%\MenuCapture`，升级与回滚都不触碰。升级：运行新版安装包。回滚：执行安装目录下的 `rollback.ps1 -Version <旧版本>`，守护进程会在当前采集或标注结束后切回旧版本；脚本会校验目标版本文件完整，并通过 `/api/version` 等待切换完成。每个版本目录内的 `release-manifest.json` 记录版本、源码提交与前端入口哈希，可用于发布核对。
+Windows 采集端按版本目录并存（`releases\<版本>`），`current-version` 决定守护进程启动哪个版本；数据、配置、设备身份和待上传结果都在 `%LOCALAPPDATA%\MenuCapture`，升级与回滚都不触碰。升级：运行新版安装包。回滚：执行安装目录下的 `rollback.ps1 -Version <旧版本>`，守护进程会在当前采集或标注结束后切回旧版本；脚本校验目标版本文件完整，并通过健康检查与 Worker 进程路径等待切换完成，兼容没有 `/api/version` 与 React 清单的迁移前版本。新版版本目录内的 `release-manifest.json` 记录版本、源码提交与前端入口哈希，可用于发布核对。
 
 共享后台按镜像标签发布与回滚，数据卷保持不变：
 

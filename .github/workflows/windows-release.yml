@@ -15,6 +15,10 @@ on:
         default: '0.1.0'
         required: true
         type: string
+      previous_installer_tag:
+        description: 首次升级与回滚验收所用的旧版 GitHub Release 标签，例如 v0.1.1
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -44,7 +48,9 @@ jobs:
       - name: 校验旧前端已清理且发布产物自包含
         working-directory: UFS_Menu_Scraper/macos_runner
         run: |
-          legacy=$(git ls-files 'web/*.js' 'web/*.css' 'web/index.html' 'web/vue/**' 'web-ui/**')
+          legacy=$(find web -maxdepth 1 -type f \( -name '*.js' -o -name '*.css' -o -name 'index.html' \) -print)
+          if [ -d web/vue ]; then legacy="$legacy web/vue"; fi
+          if [ -d web-ui ]; then legacy="$legacy web-ui"; fi
           if [ -n "$legacy" ]; then
             echo "旧前端文件仍在仓库中，请完成清理："
             echo "$legacy"
@@ -61,6 +67,19 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+      - name: 下载用于旧版升级与回滚验收的安装包
+        if: github.event_name == 'workflow_dispatch' && inputs.previous_installer_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_TAG: ${{ inputs.previous_installer_tag }}
+        shell: pwsh
+        run: |
+          gh release download $env:PREVIOUS_TAG --repo $env:GITHUB_REPOSITORY --pattern 'MenuCapture-Setup-*-win-x64.exe' --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installer = Get-ChildItem $env:RUNNER_TEMP -Filter 'MenuCapture-Setup-*-win-x64.exe' -File | Select-Object -First 1
+          if (-not $installer) { throw "Release $env:PREVIOUS_TAG did not contain a Windows installer." }
+          "PREVIOUS_INSTALLER=$($installer.FullName)" >> $env:GITHUB_ENV
+          "PREVIOUS_VERSION=$($env:PREVIOUS_TAG -replace '^v', '')" >> $env:GITHUB_ENV
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.11.3'
@@ -88,7 +107,15 @@ jobs:
           $version = $env:BUILD_VERSION
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
           $installer = Get-ChildItem deploy/artifacts -Filter '*.exe' -File | Select-Object -First 1
-          ./deploy/windows/smoke.ps1 -Installer $installer.FullName -Version $version
+          $smokeArgs = @{ Installer = $installer.FullName; Version = $version }
+          if ($env:PREVIOUS_INSTALLER) {
+            $smokeArgs.UpgradeInstaller = $env:PREVIOUS_INSTALLER
+            $smokeArgs.UpgradeVersion = $env:PREVIOUS_VERSION
+          }
+          ./deploy/windows/smoke.ps1 @smokeArgs
+          if (-not $env:PREVIOUS_INSTALLER) {
+            Write-Host 'Upgrade/rollback smoke skipped. Dispatch with previous_installer_tag to verify the previous release.'
+          }
       - name: 上传验收日志
         if: failure()
         uses: actions/upload-artifact@v4

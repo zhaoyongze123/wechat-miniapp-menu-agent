@@ -22,9 +22,7 @@ function Write-RollbackLog {
 $release = Join-Path $PSScriptRoot "releases\$Version"
 $required = @(
     (Join-Path $release 'python\python.exe'),
-    (Join-Path $release 'app\menu_capture\server.py'),
-    (Join-Path $release 'app\web\react\index.html'),
-    (Join-Path $release 'app\web\react\.vite\manifest.json')
+    (Join-Path $release 'app\menu_capture\server.py')
 )
 foreach ($path in $required) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -48,10 +46,14 @@ $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 $pendingNotified = $false
 while ((Get-Date) -lt $deadline) {
     try {
-        $active = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/version' -TimeoutSec 2 -UseBasicParsing
-        if ($active.version -eq $Version) {
+        # 迁移前版本没有 /api/version 或 React manifest，通过进程路径确认具体回滚版本。
+        $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/healthz' -TimeoutSec 2 -UseBasicParsing
+        $python = Join-Path $release 'python\python.exe'
+        $worker = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
+            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($python, [StringComparison]::OrdinalIgnoreCase) }
+        if ($health.ok -and $health.role -eq 'worker' -and $worker) {
             Write-RollbackLog "回滚完成，运行版本 $Version。"
-            Write-Host "已回滚到 $Version，后端与前端均已切换。"
+            Write-Host "已回滚到 $Version，目标版本采集服务已通过健康检查。"
             exit 0
         }
         $status = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/status' -TimeoutSec 2 -UseBasicParsing

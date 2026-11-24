@@ -191,7 +191,7 @@ try {
         built_at         = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
         git_commit       = (& git -C $repo rev-parse HEAD 2>$null)
         frontend_entry   = $frontendAsset
-        frontend_sha256  = (Get-FileHash -LiteralPath (Join-Path $app "web\$($frontendAsset.Replace('/', '\'))") -Algorithm SHA256).Hash.ToLowerInvariant()
+        frontend_sha256  = (Get-FileHash -LiteralPath (Join-Path $app "web\react\$($frontendAsset.Replace('/', '\'))") -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     $utf8NoBom = [Text.UTF8Encoding]::new($false)
     [IO.File]::WriteAllText((Join-Path $bundle 'release-manifest.json'), ($releaseManifest | ConvertTo-Json), $utf8NoBom)
