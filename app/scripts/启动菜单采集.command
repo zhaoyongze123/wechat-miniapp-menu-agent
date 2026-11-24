@@ -1,6 +1,6 @@
 #!/bin/zsh
 set -eu
-cd "${0:A:h}"
+cd "${0:A:h:h}"
 if [[ ! -x .venv/bin/python ]]; then
   /opt/homebrew/bin/uv sync --frozen --python 3.12
 fi

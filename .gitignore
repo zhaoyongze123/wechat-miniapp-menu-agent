@@ -36,6 +36,10 @@ UFS_Menu_Scraper/macos_runner/输出/
 UFS_Menu_Scraper/macos_runner/data/
 UFS_Menu_Scraper/macos_runner/output/
 UFS_Menu_Scraper/macos_runner/web/frames/
+/app/输出/
+/app/data/
+/app/output/
+/app/web/frames/
 /outputs/
 /素材/
 /历史归档/
@@ -65,3 +69,5 @@ UFS_Menu_Scraper/macos_runner/web/frames/
 *.orig
 *.rej
 *.tmp
+/compat/uipath/*(自动保存)
+/compat/uipath/data/

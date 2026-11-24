@@ -99,7 +99,7 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 只对配置的 compose 文件、project 和 service 执行 `up -d`，从不执行 `down -v`、`prune` 或删除卷；更新前要求数据卷已存在，避免因拼错卷名创建空卷。
 - 事务状态写入 `HUB_UPDATE_STATE_DIR/hub-update.json`（含执行器 PID），执行器重启或状态查询发现进程已退出时，按实际运行镜像收尾，不会永久停在切换中；每次成功/失败/回滚追加到 `hub-update-audit.jsonl`。
 - 必须配置的环境变量：`HUB_UPDATE_TOKEN`（≥16 字符）、`HUB_UPDATE_COMPOSE_FILE`、`HUB_UPDATE_PROJECT`、`HUB_UPDATE_DATA_VOLUME`、`HUB_UPDATE_STATE_DIR`；可选 `HUB_UPDATE_ARCHIVE_DIR`、`HUB_UPDATE_HEALTH_URL`、`HUB_UPDATE_HEALTH_USER`/`HUB_UPDATE_HEALTH_PASSWORD`（Hub 的 `/api/version` 走基本认证）、`HUB_UPDATE_BIND`、`HUB_UPDATE_PORT`、`HUB_UPDATE_ALLOWED_CLIENTS`、`HUB_UPDATE_HEALTH_TIMEOUT`。
-- Hub 服务端通过 `HUB_UPDATE_URL` / `HUB_UPDATE_TOKEN` 代理调用执行器（`deploy/compose.yaml` 已声明 `host.docker.internal:host-gateway`）；未配置时设置页只显示原因，不提供安装按钮。容器只提交「最新版本 + 清单校验后的 SHA-256/大小/URL」，由执行器再次校验。
+- Hub 服务端通过 `HUB_UPDATE_URL` / `HUB_UPDATE_TOKEN` 代理调用执行器（`deploy/hub/compose.yaml` 已声明 `host.docker.internal:host-gateway`）；未配置时设置页只显示原因，不提供安装按钮。容器只提交「最新版本 + 清单校验后的 SHA-256/大小/URL」，由执行器再次校验。
 - 部署时执行器必须监听容器可达的地址，并把 `HUB_UPDATE_ALLOWED_CLIENTS` 收敛到 Docker 网桥网段；切勿对公网开放。
 - 回滚兜底：手动回滚或安装失败自动回滚时，若目标版本切回后健康检查不通过，执行器会立即切回回滚前仍在运行的版本并复核健康，避免把采集服务留在停机状态；恢复失败才标记失败并保留状态与审计。
 - 跨版本回滚验收：CI 以 **v0.2.2 正式发布镜像**为基线（直接 `docker load` 已发布产物，不重新打包），验证「生产 0.2.2 → 新版 → 回滚 0.2.2」全流程及旧版本能在新版本迁移过的数据库上启动；结构指纹拦截仍只在 Windows 执行器实现，Hub 侧依赖上述恢复兜底与真实跨版本验收。

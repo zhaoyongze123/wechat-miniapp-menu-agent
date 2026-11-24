@@ -12,7 +12,7 @@
 ## 本地开发
 
 ```powershell
-cd UFS_Menu_Scraper\macos_runner
+cd app
 uv sync --frozen --python 3.12
 
 # 示例：改动共享路由或同步时

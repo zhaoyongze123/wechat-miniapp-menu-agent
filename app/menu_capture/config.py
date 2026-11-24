@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ROOT = Path(__file__).resolve().parent.parent
-WORKSPACE_ROOT = ROOT.parent.parent
+WORKSPACE_ROOT = ROOT.parent
 
 
 class StrictModel(BaseModel):

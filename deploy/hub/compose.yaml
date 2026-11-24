@@ -3,8 +3,8 @@ name: menu-capture
 services:
   hub:
     build:
-      context: ..
-      dockerfile: deploy/Dockerfile.hub
+      context: ../..
+      dockerfile: deploy/hub/Dockerfile.hub
       args:
         VERSION: "${MENU_CAPTURE_VERSION:-0.1.0}"
     # 固定镜像标签便于按发布版本升级与回滚：MENU_CAPTURE_IMAGE=menu-capture-hub:<版本>。
@@ -12,7 +12,7 @@ services:
     restart: unless-stopped
     init: true
     environment:
-      MENU_CAPTURE_ADMIN_PASSWORD: "${MENU_CAPTURE_ADMIN_PASSWORD:?请在 deploy/.env 中填写管理员口令}"
+      MENU_CAPTURE_ADMIN_PASSWORD: "${MENU_CAPTURE_ADMIN_PASSWORD:?请在 deploy/hub/.env 中填写管理员口令}"
       MENU_CAPTURE_ALLOWED_HOSTS: "${MENU_CAPTURE_ALLOWED_HOSTS:-}"
       # 宿主机更新执行器地址与令牌：未配置时设置页只展示原因，不提供安装入口。
       HUB_UPDATE_URL: "${HUB_UPDATE_URL:-}"

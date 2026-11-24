@@ -94,7 +94,7 @@ class Config:
     def __init__(self, env: dict[str, str] | None = None) -> None:
         env = os.environ if env is None else env
         self.token = str(env.get("HUB_UPDATE_TOKEN") or "")
-        self.compose_file = Path(env.get("HUB_UPDATE_COMPOSE_FILE") or "/opt/menu-capture/deploy/compose.yaml")
+        self.compose_file = Path(env.get("HUB_UPDATE_COMPOSE_FILE") or "/opt/menu-capture/deploy/hub/compose.yaml")
         self.project = str(env.get("HUB_UPDATE_PROJECT") or "menu-capture")
         self.service = str(env.get("HUB_UPDATE_SERVICE") or "hub")
         self.container = str(env.get("HUB_UPDATE_CONTAINER") or "")

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="UFS_Menu_Scraper/macos_runner/web-react/public/favicon.svg" width="88" height="88" alt="Menu Capture Workbench" />
+  <img src="app/web-react/public/favicon.svg" width="88" height="88" alt="Menu Capture Workbench" />
 </p>
 
 # 菜单智能采集工作台 · Menu Capture Workbench
@@ -131,20 +131,22 @@ React 前端统一构建为静态资源，由后端服务提供；业务界面�
 
 ```text
 .
-├── UFS_Menu_Scraper/macos_runner/
+├── app/
 │   ├── menu_capture/      # Python 服务、任务状态、采集与同步
 │   ├── web-react/         # React + TypeScript 前端源码
 │   ├── web/react/         # Vite 构建产物
 │   ├── ui_tars/           # GUI Agent SDK 适配
 │   ├── qr_detector/       # 二维码检测
-│   └── tests/             # 后端与业务契约测试
-├── deploy/                # Hub 部署、Windows 构建、升级与回滚
+│   ├── tests/             # 后端与业务契约测试
+│   └── scripts/           # 开发启动和维护工具
+├── compat/uipath/         # 兼容工程
+├── deploy/                # Hub、Windows、执行器和旧数据迁移
 ├── docs/                  # 架构、工程规范及验收记录
 ├── AGENTS.md              # 仓库协作规范
 └── README.md
 ```
 
-主工程保留历史目录名 `macos_runner`，不代表当前以 macOS 作为正式采集平台。历史 macOS、UiPath 与 Vue 实现不作为本轮新版本的主要部署和前端开发入口。
+Hub 和 Windows 原生采集端共用 `app/`。仍受支持的 UiPath CLI 调试工程位于 `compat/uipath/`，不随生产包分发。
 
 ## 开发与验证
 
@@ -153,7 +155,7 @@ React 前端统一构建为静态资源，由后端服务提供；业务界面�
 在主工程目录初始化后端及 Agent 依赖：
 
 ```bash
-cd UFS_Menu_Scraper/macos_runner
+cd app
 uv sync --frozen --python 3.12
 npm ci --prefix ui_tars
 ```

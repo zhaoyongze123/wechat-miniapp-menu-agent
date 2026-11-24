@@ -6,11 +6,11 @@ A 机运行共享后台。A、B 都安装 Windows 采集端，用各自已登录
 
 获得用户明确授权后执行生产安装、升级或回滚。开发演练使用隔离端口、独立数据和既有产物。
 
-1. 在 A 机安装并启动 Docker Desktop。核对已验收的 Hub 镜像归档 SHA-256，用 `docker load -i <Hub 镜像归档>` 导入。在仓库根目录复制 `deploy/.env.example` 为 `deploy/.env`，配置版本、实际镜像标签、管理员口令和 A 机的 Tailscale IPv4（`MENU_CAPTURE_ALLOWED_HOSTS`）。管理员账号为 `admin`。执行 `docker compose --env-file deploy/.env -f deploy/compose.yaml up --no-build -d --wait`，再运行 `tailscale serve --bg --tcp=8766 tcp://127.0.0.1:8766`。同一 Tailscale 内网访问 `http://<A 机 Tailscale IPv4>:8766`。
+1. 在 A 机安装并启动 Docker Desktop。核对已验收的 Hub 镜像归档 SHA-256，用 `docker load -i <Hub 镜像归档>` 导入。在仓库根目录复制 `deploy/hub/.env.example` 为 `deploy/hub/.env`，配置版本、实际镜像标签、管理员口令和 A 机的 Tailscale IPv4（`MENU_CAPTURE_ALLOWED_HOSTS`）。管理员账号为 `admin`。执行 `docker compose --env-file deploy/hub/.env -f deploy/hub/compose.yaml up --no-build -d --wait`，再运行 `tailscale serve --bg --tcp=8766 tcp://127.0.0.1:8766`。同一 Tailscale 内网访问 `http://<A 机 Tailscale IPv4>:8766`。
 2. 在两台 Windows 上运行 Release 的 `MenuCapture-Setup-<版本>-win-x64.exe`，用开始菜单的「菜单采集工作台」打开本机端。新机器保留 `8765` 给本机采集端。安装包配置当前 Windows 用户登录后启动。把微信登录并打开文件传输助手，进「环境」查看截图、OCR 和微信检查结果。
 3. 在共享工作台打开「采集电脑」，生成配对码。每台采集端输入共享工作台地址、电脑名称和自己的一次性配对码。需要全自动时，在各电脑本机设置 GUI-Plus 模型和密钥。配对后在共享工作台勾选门店，分给一台电脑。采集端显示「可离线采集」才表示二维码已校验并保存在本机。
 
-服务端环境变量与容器端口写在 `compose.yaml` 和 `Dockerfile.hub`。单机开发可继续运行 `python -m menu_capture.server`。若已在旧计划任务中使用 `8765`，先借备用端口演练共享后台，再在获准切换时停旧进程并调整旧任务及反向代理。
+服务端环境变量与容器端口写在 `deploy/hub/compose.yaml` 和 `deploy/hub/Dockerfile.hub`。单机开发可继续运行 `python -m menu_capture.server`。若已在旧计划任务中使用 `8765`，先借备用端口演练共享后台，再在获准切换时停旧进程并调整旧任务及反向代理。
 
 ## 快速验收
 
@@ -29,9 +29,9 @@ Windows 采集端按版本目录并存（`releases\<版本>`），`current-versi
 共享后台使用已经导入并核对摘要的镜像升级与回滚。保持同一 Compose 项目和数据卷。
 
 ```bash
-MENU_CAPTURE_VERSION=1.2.3 MENU_CAPTURE_IMAGE=menu-capture-hub:1.2.3 docker compose --env-file deploy/.env -f deploy/compose.yaml up --no-build -d --wait
+MENU_CAPTURE_VERSION=1.2.3 MENU_CAPTURE_IMAGE=menu-capture-hub:1.2.3 docker compose --env-file deploy/hub/.env -f deploy/hub/compose.yaml up --no-build -d --wait
 # 回滚到上一镜像
-MENU_CAPTURE_VERSION=1.2.2 MENU_CAPTURE_IMAGE=menu-capture-hub:1.2.2 docker compose --env-file deploy/.env -f deploy/compose.yaml up --no-build -d --wait
+MENU_CAPTURE_VERSION=1.2.2 MENU_CAPTURE_IMAGE=menu-capture-hub:1.2.2 docker compose --env-file deploy/hub/.env -f deploy/hub/compose.yaml up --no-build -d --wait
 ```
 
 ## 迁移旧 Windows 备份
@@ -39,7 +39,7 @@ MENU_CAPTURE_VERSION=1.2.2 MENU_CAPTURE_IMAGE=menu-capture-hub:1.2.2 docker comp
 先备份旧采集端的 `data`、截图、配置，以及独立存放的原素材和不合格归档。SQLite 使用备份 API 导出一致副本，或者在暂停旧工作台写入后复制完整数据目录。演练使用备份和新的空数据卷。
 
 ```powershell
-python deploy/migrate_legacy.py --backup-home 'D:\backup\runner' --legacy-home 'D:\menu-agent\UFS_Menu_Scraper\macos_runner' --backup-output 'D:\backup\screenshots' --destination 'D:\backup\hub-ready'
+python deploy/migration/migrate_legacy.py --backup-home 'D:\backup\runner' --legacy-home 'D:\backup\legacy-workspace' --backup-output 'D:\backup\screenshots' --destination 'D:\backup\hub-ready'
 ```
 
 旧配置缺少输出绝对路径时加 `--legacy-output <旧路径>`。转换时报缺少旧素材或不合格根目录映射时，对应每个目录加 `--extra <原路径> <该目录备份>`。脚本保留源备份，校验 SQLite、主要记录数、发布二维码和已采集截图，通过后才创建目标目录。检查 `migration-report.json`，把结果写进一个**空的演练卷**，并把卷内权限交给容器用户 10001。

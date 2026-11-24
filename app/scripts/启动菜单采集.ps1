@@ -1,7 +1,8 @@
 $ErrorActionPreference = 'Stop'
-Set-Location -LiteralPath $PSScriptRoot
+$appRoot = Split-Path -Parent $PSScriptRoot
+Set-Location -LiteralPath $appRoot
 
-$python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
+$python = Join-Path $appRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
     & uv sync --frozen --python 3.12
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

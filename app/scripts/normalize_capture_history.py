@@ -150,7 +150,7 @@ def make_plan(db_path: Path, output_root: Path, plan_id: str) -> dict:
                             "classification": "diagnostics", "batch_id": "归属待核验", "reasons": ["诊断材料单独归档，不推断门店批次"],
                             "tasks": [], "run": None, "files": [], "snapshot": file_snapshot(diag), "state": "planned"})
         return {"schema": 1, "plan_id": plan_id, "created_at": datetime.now().astimezone().isoformat(),
-                "workspace": str(ROOT.parent.parent), "db_path": str(db_path), "output_root": str(output_root),
+                "workspace": str(ROOT.parent), "db_path": str(db_path), "output_root": str(output_root),
                 "audit_cutoff": AUDIT_CUTOFF, "status": "planned", "entries": entries}
     finally:
         db.close()
@@ -297,7 +297,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("plan", help="只读生成 JSON 迁移计划")
     p.add_argument("--output", type=Path, required=True, help="计划 JSON 输出路径")
-    p.add_argument("--root", type=Path, default=ROOT.parent.parent / "输出/截图输出")
+    p.add_argument("--root", type=Path, default=ROOT.parent / "输出/截图输出")
     p.add_argument("--db", type=Path, default=ROOT / "data/tasks.sqlite3")
     p.add_argument("--plan-id", default="")
     a = sub.add_parser("apply", help="应用一份已审阅计划")

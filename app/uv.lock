@@ -578,7 +578,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ufs-menu-capture-macos"
+name = "menu-capture"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

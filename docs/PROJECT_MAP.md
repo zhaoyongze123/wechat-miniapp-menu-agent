@@ -28,29 +28,27 @@ flowchart LR
 
 | 目录/文件 | 作用 |
 | --- | --- |
-| `UFS_Menu_Scraper/macos_runner/` | 主工程：Python 后端、React 控制台源码与构建产物、GUI Agent 适配、测试与本地配置。 |
-| `UFS_Menu_Capture_CrossPlatform/` | UiPath 工程（`Main.xaml` 等），仅在“通过 UiPath CLI 启动”方式下使用，不进入 Windows 安装包。 |
-| `deploy/` | Windows 安装器、Hub 容器与发布验收脚本。 |
+| `app/` | 主工程：Python 后端、React 控制台源码与构建产物、GUI Agent 适配、测试与本地配置。 |
+| `compat/uipath/` | UiPath CLI 兼容工程（`Main.xaml` 等），不进入生产安装包。 |
+| `deploy/` | `windows/` 安装升级与回滚，`hub/` 镜像和 Compose，`hub-update/` 宿主机执行器，`migration/` 旧数据迁移。 |
 | `docs/` | 工程规范、项目导航、回归台账、产品需求、发布报告与历史归档。 |
 | `输出/` | 采集默认输出目录（运行数据，不入库）。 |
 | `.github/workflows/` | CI：前端校验、Python 回归、安装包构建、Hub 镜像与 Ruff 门禁。 |
 | `AGENTS.md` | 仓库协作规则（精简版，细节见 `docs/engineering-standards.md`）。 |
 
-## 3. macos_runner 目录
+## 3. 应用源码
 
 ```text
-macos_runner/
+app/
 ├── menu_capture/        # Python 后端与采集执行
 ├── web-react/           # React 控制台源码（Vite + TypeScript）
 ├── web/react/           # 构建产物，随代码提交并由 CI 校验一致
 ├── tests/               # pytest 回归
 ├── ui_tars/             # GUI Agent SDK 适配（Node.js）
 ├── qr_detector/         # 本地二维码检测（Node.js）
-├── scripts/             # 运维/数据修复脚本
+├── scripts/             # 启动菜单采集.ps1、启动菜单采集.command 和维护工具
 ├── data/                # 任务库、素材库、调试日志（运行期数据，不入库）
 ├── output/              # 历史输出目录（运行期数据，不入库）
-├── 启动菜单采集.command  # macOS 启动入口（调试用）
-├── 启动菜单采集.ps1      # Windows 启动入口
 ├── config.local.json    # 本机配置（不入库）
 └── secrets.local.json   # 密钥（不入库）
 ```
@@ -153,7 +151,7 @@ macos_runner/
 
 ## 7. 测试
 
-- 在 `macos_runner` 按改动执行 `uv run --frozen pytest -q <相关测试路径>` 和 `uvx ruff check <受影响路径>`。
+- 在 `app` 按改动执行 `uv run --frozen pytest -q <相关测试路径>` 和 `uvx ruff check <受影响路径>`。
 - 前端使用必要的 `npm run typecheck` 和 `npm test -- <相关测试文件>`，提交受影响的静态资源前再核对构建产物。
 - 重点覆盖：批次管理、素材 API、任务身份、UiPath 窗口契约、失败码、待检查/不合格清单、自动流水线续跑。
 - 测试不访问真实桌面、模型和网络；涉及实机链路的改动需另做单店实跑验证。
@@ -162,8 +160,8 @@ macos_runner/
 
 | 任务 | 入口 |
 | --- | --- |
-| 启动控制台（Windows） | `cd UFS_Menu_Scraper/macos_runner; .\启动菜单采集.ps1` |
-| 启动控制台（macOS 调试） | `cd UFS_Menu_Scraper/macos_runner && .venv/bin/python -m menu_capture.server` |
+| 启动控制台（Windows） | 从仓库根目录执行 `.\app\scripts\启动菜单采集.ps1` |
+| 启动控制台（macOS 调试） | `cd app && .venv/bin/python -m menu_capture.server` |
 | 跑针对性测试 | `uv run --frozen pytest -q <相关测试路径>` |
 | 无人值守批量采集 | `uv run --frozen python -m menu_capture.auto_pipeline --batches <batch_id> [...]` |
 | 查看任务/运行状态 | `GET /api/status`、`GET /api/tasks/active` |
@@ -171,13 +169,25 @@ macos_runner/
 | 待检查清单 | `GET /api/reviews/pending` |
 | 最终集成验收与打包 | 全部开发完成后按 [发布与云端构建](engineering-standards.md#发布与云端构建) 执行 |
 
-## 9. 相关文档
+## 9. 旧工作区路径
+
+| 原路径 | 当前入口 |
+| --- | --- |
+| `UFS_Menu_Scraper/macos_runner/` | `app/`，Python 入口保持 `python -m menu_capture.server` |
+| `UFS_Menu_Capture_CrossPlatform/` | `compat/uipath/`，保留原工程名和入口文件 |
+| 旧主工程下的启动脚本 | `app/scripts/` |
+| `deploy/compose.yaml`、`deploy/Dockerfile.hub` | `deploy/hub/` |
+| `deploy/migrate_legacy.py` | `deploy/migration/migrate_legacy.py` |
+
+在旧工作区运行的本机数据、配置、密钥和 Compose 环境文件由原工作区保留。升级和回滚沿用原安装根、数据卷与已有配置。Windows 程序包内的 `releases/<版本>/app` 和 Hub 容器内的 `/opt/menu-capture` 均保持原路径。
+
+## 10. 相关文档
 
 - [README](../README.md)：项目概览与快速开始
 - [工程规范](engineering-standards.md)：分层、测试、静态检查与 CI 门禁
 - [长期开发与优化规范](gui-agent-development.md)：Agent 决策权、工具边界与验收口径
 - [菜单采集问题与回归台账](menu-capture-regression.md)：按链路记录的问题与复测证据
-- [GUI Agent 联调说明](../UFS_Menu_Scraper/macos_runner/ui_tars/README.md)：模型配置、坐标协议与隔离试验
+- [GUI Agent 联调说明](../app/ui_tars/README.md)：模型配置、坐标协议与隔离试验
 - [微信小程序菜单导航 Agent PRD](product/微信小程序菜单导航%20Agent%20PRD.md)：早期范围与设计记录
 - [历史文档归档](archive/README.md)：已归档的阶段需求与实施记录
 - [变更记录](../CHANGELOG.md)、[贡献指南](../CONTRIBUTING.md)、[安全策略](../SECURITY.md)
