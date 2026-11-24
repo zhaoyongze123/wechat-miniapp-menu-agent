@@ -37,6 +37,13 @@ describe('formatStore', () => {
     })
   })
 
+  it('解析全角小数点与全角逗号坐标', () => {
+    expect(formatStore('FS137＿LCA0000147574＿深圳市＿潮主厨（文华店）＿113．93937，22．754052')).toEqual({
+      name: '潮主厨（文华店）',
+      code: 'FS137',
+    })
+  })
+
   it('缺少城市段时退化为坐标前最后一段', () => {
     expect(formatStore('E0005__LCA1__测试酒店__113.28,22.95')).toEqual({
       name: '测试酒店',
