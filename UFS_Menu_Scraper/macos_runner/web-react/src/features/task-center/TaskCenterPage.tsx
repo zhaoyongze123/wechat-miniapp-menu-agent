@@ -462,7 +462,7 @@ export function TaskCenterPage() {
   )
 }
 
-function BatchCell({ record }: { record: HistoryRecord }) {
+export function BatchCell({ record }: { record: HistoryRecord }) {
   const batches = record.batches ?? []
   const first = batches[0]
   const description = batches.map((batch) => [batch.name, ...(batch.versions ?? [])].filter(Boolean).join(' · ')).join('，')
