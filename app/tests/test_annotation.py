@@ -356,27 +356,23 @@ def test_session_click_failure_returns_state_instead_of_raising(tmp_path):
 
 
 def test_screenshot_retries_once_after_foreground_race(tmp_path):
-    class Dummy:
-        def __init__(self):
-            self.calls = []
+    runner = object.__new__(UiPathRunner)
+    runner.profile_path = tmp_path / "uipath.profile.json"
+    calls = []
 
-        def _fast_window_capture(self, *_args, **_kwargs):
-            return None
+    def send(command):
+        calls.append(dict(command))
+        if len(calls) == 1:
+            raise RobotCommandError("UiPath 命令失败：目标窗口 foreground=false；已拒绝窗口截图或键盘输入")
+        Path(command["path"]).write_bytes(b"png")
+        return {"path": command["path"], "width": 200, "height": 400,
+                "window_width": 100, "window_height": 200}
 
-        def _send(self, command):
-            self.calls.append(dict(command))
-            if len(self.calls) == 1:
-                raise RobotCommandError("UiPath 命令失败：目标窗口 foreground=false；已拒绝窗口截图或键盘输入")
-            Path(command["path"]).write_bytes(b"png")
-            return {"path": command["path"], "width": 200, "height": 400,
-                    "window_width": 100, "window_height": 200}
-
-    dummy = Dummy()
-    dummy._screenshot = types.MethodType(UiPathRunner._screenshot, dummy)
-    reply = dummy._screenshot(tmp_path, "<wnd app='WeChat' />", "retry.png")
+    runner._send = send
+    reply = runner._screenshot(tmp_path, "<wnd app='WeChat' />", "retry.png", allow_fast=False)
     assert reply["width"] == 200
-    assert len(dummy.calls) == 2
-    assert dummy.calls[0]["path"] == dummy.calls[1]["path"]
+    assert len(calls) == 2
+    assert calls[0]["path"] == calls[1]["path"]
 
 
 def test_pause_blocks_actions_and_resume_restores_state(tmp_path):

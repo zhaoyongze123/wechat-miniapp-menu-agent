@@ -339,7 +339,7 @@ def test_empty_selection_stays_empty_and_cannot_open_working_directory(tmp_path,
     status = client.get('/api/status').json()
     assert status['tasks'] == [] and status['material_release'] is None
     assert client.post('/api/scan', json={}, headers=headers).status_code == 400
-    monkeypatch.setattr('menu_capture.server.subprocess.run', lambda *a,**k: pytest.fail('不应打开进程工作目录'))
+    monkeypatch.setattr('menu_capture.api.evidence.subprocess.run', lambda *a,**k: pytest.fail('不应打开进程工作目录'))
     assert client.post('/api/reveal', json={'path':'input'}, headers=headers).status_code == 400
 
 

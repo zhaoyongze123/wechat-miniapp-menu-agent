@@ -59,3 +59,7 @@ def capture_outcome(task: dict) -> str:
     """兼容旧的三分类结果口径，供历史运行与导出使用。"""
     state = store_state(task)
     return state if state in {"captured", "review", "rejected"} else ""
+
+
+# 人工批量采集与待检查重跑共用服务端上限。
+REVIEW_RERUN_LIMIT = 300
