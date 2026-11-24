@@ -233,7 +233,13 @@ def _verify_authenticode(path: Path) -> dict:
     powershell = Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
     # 单引号字符串里的引号用双写转义，避免安装包路径含引号时拼出可执行脚本。
     literal = str(path).replace("'", "''")
+    # 进程可能继承 PowerShell 7 的 PSModulePath，Windows PowerShell 5.1 会因此无法加载
+    # Microsoft.PowerShell.Security，这里显式重置为系统模块目录再调用签名命令。
     script = (
+        "$env:PSModulePath = "
+        "([IO.Path]::Combine($env:SystemRoot, 'system32\\WindowsPowerShell\\v1.0\\Modules')) + ';' + "
+        "([IO.Path]::Combine($env:ProgramFiles, 'WindowsPowerShell\\Modules')); "
+        "Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; "
         f"$s = Get-AuthenticodeSignature -LiteralPath '{literal}'; "
         "$signer = if ($s.SignerCertificate) { $s.SignerCertificate.Subject } else { '' }; "
         "[pscustomobject]@{ status = $s.Status.ToString(); signer = $signer } | ConvertTo-Json -Compress"
