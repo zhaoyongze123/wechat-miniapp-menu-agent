@@ -6,6 +6,7 @@ import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDialog } from '../../components/AppDialog'
 import { AppDrawer } from '../../components/AppDrawer'
+import { ImagePreview } from '../../components/ImagePreview'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
@@ -115,6 +116,7 @@ function StoreDetailBody({ batchId, batchStatus, detail }: StoreDetailBodyProps)
   })()
 
   const [imageIndex, setImageIndex] = useState(initialImageIndex)
+  const [previewImageIndex, setPreviewImageIndex] = useState<number | null>(null)
   const [candidateIndex, setCandidateIndex] = useState<number | null>(detail.selected?.candidate_index ?? null)
   const [manualMode, setManualMode] = useState(false)
   const [manualBox, setManualBox] = useState<Box | null>(null)
@@ -382,6 +384,11 @@ function StoreDetailBody({ batchId, batchStatus, detail }: StoreDetailBodyProps)
                 )
               })}
             </div>
+            {image ? (
+              <Button color="secondary" variant="outline" size="sm" onClick={() => setPreviewImageIndex(imageIndex)}>
+                查看原图
+              </Button>
+            ) : null}
 
             {manualMode && image ? (
               <ManualQrCanvas
@@ -550,6 +557,20 @@ function StoreDetailBody({ batchId, batchStatus, detail }: StoreDetailBodyProps)
           {rejectError ? <Alert color="danger" variant="soft" title={rejectError} /> : null}
         </div>
       </AppDialog>
+      <ImagePreview
+        open={previewImageIndex !== null}
+        src={previewImageIndex === null ? '' : storeImageUrl(batchId, detail.store_id, previewImageIndex)}
+        alt={previewImageIndex === null ? '' : `${formatStore(detail.source_name).name} · 原图 ${previewImageIndex + 1}`}
+        caption={previewImageIndex === null ? '' : `${formatStore(detail.source_name).name} · 原图 ${previewImageIndex + 1}`}
+        items={detail.images.map((_, index) => ({
+          src: storeImageUrl(batchId, detail.store_id, index),
+          alt: `${formatStore(detail.source_name).name} · 原图 ${index + 1}`,
+        }))}
+        initialIndex={previewImageIndex ?? 0}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setPreviewImageIndex(null)
+        }}
+      />
     </div>
   )
 }
