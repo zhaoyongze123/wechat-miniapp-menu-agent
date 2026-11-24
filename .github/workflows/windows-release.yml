@@ -67,6 +67,17 @@ jobs:
           fi
           test -s web/react/.vite/manifest.json
 
+  python-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.3'
+      - name: Ruff 门禁（配置见 pyproject.toml）
+        working-directory: UFS_Menu_Scraper/macos_runner
+        run: uvx ruff@0.17.6 check --no-cache .
+
   windows:
     needs: react-web
     runs-on: windows-2022
