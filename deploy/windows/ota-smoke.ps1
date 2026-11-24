@@ -193,6 +193,10 @@ try {
     )) {
         if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination $keep -Force }
     }
+    # Inno 自身失败时可能来不及写 /LOG，但 setup.iss 开启了 SetupLogging，
+    # 默认日志会落在 %TEMP%\Setup Log*.txt；失败时一并收集，避免只能看到“退出码 1”。
+    Get-ChildItem -LiteralPath $env:TEMP -Filter 'Setup Log*.txt' -File -ErrorAction SilentlyContinue |
+        ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $keep -Force }
     Write-Host "Logs kept at $keep"
     Get-ChildItem -LiteralPath $keep -File | ForEach-Object { Get-Content -LiteralPath $_.FullName -Tail 200 }
     throw
