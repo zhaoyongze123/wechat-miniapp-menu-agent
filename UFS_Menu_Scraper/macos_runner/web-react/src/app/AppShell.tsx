@@ -1,4 +1,4 @@
-import type { ComponentType, ReactNode, SVGProps } from 'react'
+import { useEffect, useState, type ComponentType, type ReactNode, type SVGProps } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Avatar } from '@openai/apps-sdk-ui/components/Avatar'
@@ -40,39 +40,75 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'settings', label: '设置', roles: ['hub', 'worker'], icon: Settings },
 ]
 
+const SIDEBAR_COLLAPSED_KEY = 'menu-capture.sidebar-collapsed'
+
 export function AppShell({ children }: { children: ReactNode }) {
   const role = useRole()
   const location = useLocation()
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0')
+    } catch {
+      // 浏览器禁止本地存储时只影响偏好记忆，不阻塞导航。
+    }
+  }, [collapsed])
   const currentKey = location.pathname.replace(/^\//, '') || 'task-center'
   const visibleItems = NAV_ITEMS.filter((item) => item.roles.includes(role.role))
   const currentItem = NAV_ITEMS.find((item) => item.key === currentKey)
-  const connection = connectionText(role.role, role.status)
+  // 加载中或读取失败时不能把未知角色显示成“本机独立模式”。
+  const connection = role.loading ? '正在读取连接状态…' : role.error ? '角色状态读取失败' : connectionText(role.role, role.status)
 
   return (
     <div className="flex h-full overflow-hidden bg-surface text-default">
       <NotificationRuntime />
-      <aside className="hidden w-64 shrink-0 flex-col overflow-hidden bg-surface-secondary md:flex">
-        <div className="flex items-center gap-2.5 px-4 py-4">
+      <aside
+        className={[
+          'hidden shrink-0 flex-col overflow-hidden bg-surface-secondary md:flex',
+          collapsed ? 'w-16' : 'w-64',
+        ].join(' ')}
+      >
+        <div className={['flex items-center gap-2.5 px-4 py-4', collapsed ? 'justify-center px-2' : ''].join(' ')}>
           <img src="/favicon.svg" alt="" width={32} height={32} className="h-8 w-8 shrink-0" />
-          <div className="min-w-0">
-            <p className="truncate heading-xs">菜单采集工作台</p>
-            <p className="truncate text-2xs text-tertiary">共享后台 · Windows 采集端</p>
-          </div>
+          {!collapsed ? (
+            <div className="min-w-0 flex-1">
+              <p className="truncate heading-xs">菜单采集工作台</p>
+              <p className="truncate text-2xs text-tertiary">共享后台 · Windows 采集端</p>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setCollapsed((value) => !value)}
+            aria-label={collapsed ? '展开侧栏' : '折叠侧栏'}
+            aria-expanded={!collapsed}
+            title={collapsed ? '展开侧栏' : '折叠侧栏'}
+            className="shrink-0 rounded-md border border-subtle px-1.5 py-0.5 text-xs text-secondary hover:bg-secondary-ghost-hover"
+          >
+            {collapsed ? '»' : '«'}
+          </button>
         </div>
 
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-2" aria-label="主导航">
           {visibleItems.map((item) => (
-            <NavLink key={item.key} item={item} active={item.key === currentKey} />
+            <NavLink key={item.key} item={item} active={item.key === currentKey} iconOnly={collapsed} />
           ))}
         </nav>
 
         <div className="border-t border-subtle p-2">
-          <div className="flex items-center gap-2.5 rounded-lg px-2 py-2">
+          <div className={['flex items-center gap-2.5 rounded-lg px-2 py-2', collapsed ? 'justify-center' : ''].join(' ')}>
             <Avatar size={28} name={ROLE_LABEL[role.role]} color="secondary" />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm text-default">{ROLE_LABEL[role.role]}</span>
-              <span className="block truncate text-2xs text-tertiary">{connection}</span>
-            </span>
+            {!collapsed ? (
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm text-default">{ROLE_LABEL[role.role]}</span>
+                <span className="block truncate text-2xs text-tertiary">{connection}</span>
+              </span>
+            ) : null}
           </div>
         </div>
       </aside>
@@ -87,7 +123,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             {currentKey === 'task-center' ? null : <ActiveTaskIndicator />}
             <span className="hidden text-xs text-tertiary sm:inline">{connection}</span>
             <Badge color={role.role === 'standalone' ? 'warning' : 'secondary'} variant="soft" size="sm">
-              {ROLE_LABEL[role.role]}
+              {role.loading ? '正在确认角色' : role.error ? '角色未知' : ROLE_LABEL[role.role]}
             </Badge>
           </div>
         </header>
@@ -113,15 +149,18 @@ function NavLink({
   item,
   active,
   compact = false,
+  iconOnly = false,
 }: {
   item: NavItem
   active: boolean
   compact?: boolean
+  iconOnly?: boolean
 }) {
   const Icon = item.icon
   const className = [
     'flex items-center gap-2.5 rounded-sm px-2 py-1.5 text-sm transition-colors',
     compact ? 'shrink-0 whitespace-nowrap' : '',
+    iconOnly ? 'justify-center' : '',
     active
       ? 'bg-secondary-soft text-default'
       : 'text-secondary hover:bg-secondary-ghost-hover hover:text-default',
@@ -129,11 +168,17 @@ function NavLink({
   const content = (
     <>
       <Icon width={compact ? 15 : 17} height={compact ? 15 : 17} className="shrink-0" />
-      {item.label}
+      {iconOnly ? null : item.label}
     </>
   )
   return (
-    <Link to={`/${item.key}`} className={className} aria-current={active ? 'page' : undefined}>
+    <Link
+      to={`/${item.key}`}
+      className={className}
+      aria-current={active ? 'page' : undefined}
+      aria-label={iconOnly ? item.label : undefined}
+      title={iconOnly ? item.label : undefined}
+    >
       {content}
     </Link>
   )

@@ -72,6 +72,7 @@ export function PublishDialog({ open, batch, onOpenChange, onPublished }: Publis
     <>
       <AppDialog
         open={open}
+        busy={busy}
         onOpenChange={(next) => {
           if (!busy) {
             onOpenChange(next)

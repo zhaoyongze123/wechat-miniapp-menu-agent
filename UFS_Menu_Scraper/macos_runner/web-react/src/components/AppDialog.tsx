@@ -12,6 +12,9 @@ interface AppDialogProps {
   /** 标题右侧的自定义操作（如重命名入口）。 */
   headerActions?: ReactNode
   widthClass?: string
+  /** 请求处理中禁止通过 Esc、遮罩或关闭按钮退出，避免用户误以为操作已取消。 */
+  busy?: boolean
+  closeLabel?: string
 }
 
 /** 居中弹窗：Escape、遮罩点击与关闭按钮均关闭，焦点由 Radix 圈定并回焦。 */
@@ -24,18 +27,29 @@ export function AppDialog({
   footer,
   headerActions,
   widthClass = 'w-[min(760px,94vw)]',
+  busy = false,
+  closeLabel = '关闭',
 }: AppDialogProps) {
   return (
-    <RadixDialog.Root open={open} onOpenChange={onOpenChange}>
+    <RadixDialog.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && busy) return
+        onOpenChange(next)
+      }}
+    >
       <RadixDialog.Portal>
         <RadixDialog.Overlay className="fixed inset-0 z-40 bg-[var(--dialog-backdrop-dim-background)]" />
         <RadixDialog.Content
           className={`fixed top-1/2 left-1/2 z-50 flex max-h-[88vh] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-subtle bg-surface shadow-[var(--shadow-400),var(--shadow-hairline)] ${widthClass}`}
+          aria-busy={busy || undefined}
           {...(description ? {} : { 'aria-describedby': undefined })}
         >
           <header className="flex items-start justify-between gap-4 border-b border-subtle px-5 py-4">
             <div className="min-w-0">
-              <RadixDialog.Title className="heading-sm text-default">{title}</RadixDialog.Title>
+              <RadixDialog.Title className="truncate heading-sm text-default" title={title}>
+                {title}
+              </RadixDialog.Title>
               {description ? (
                 <RadixDialog.Description className="mt-1 text-xs text-secondary">
                   {description}
@@ -45,8 +59,8 @@ export function AppDialog({
             <div className="flex shrink-0 items-center gap-2">
               {headerActions}
               <RadixDialog.Close asChild>
-                <Button color="secondary" variant="ghost" size="sm" aria-label="关闭">
-                  关闭
+                <Button color="secondary" variant="ghost" size="sm" aria-label={closeLabel} disabled={busy}>
+                  {closeLabel}
                 </Button>
               </RadixDialog.Close>
             </div>

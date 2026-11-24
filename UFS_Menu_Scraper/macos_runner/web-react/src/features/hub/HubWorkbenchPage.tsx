@@ -4,13 +4,14 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
-import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { SegmentedControl } from '@openai/apps-sdk-ui/components/SegmentedControl'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppDrawer } from '../../components/AppDrawer'
 import { AppPagination } from '../../components/AppPagination'
+import { BulkActionBar } from '../../components/BulkActionBar'
 import { PageHeader } from '../../components/PageHeader'
+import { SearchInput } from '../../components/SearchInput'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { StatCard } from '../../components/StatCard'
@@ -465,13 +466,26 @@ export function HubWorkbenchPage() {
               />
             </div>
             <div className="w-60">
-              <Input
-                aria-label="搜索门店"
+              <SearchInput
+                label="搜索门店"
                 placeholder="搜索门店名称或图片"
                 value={queryText}
-                onChange={(event) => setQueryText(event.target.value)}
+                onChange={setQueryText}
               />
             </div>
+            {hasFilters ? (
+              <Button
+                color="secondary"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setQueryText('')
+                  updateQuery({ scope: 'all', batch: '', filter: '', q: '' })
+                }}
+              >
+                清除筛选
+              </Button>
+            ) : null}
           </div>
         </div>
 
@@ -488,21 +502,15 @@ export function HubWorkbenchPage() {
           />
         ) : (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-surface-secondary px-3 py-2">
-              <div className="flex flex-wrap items-center gap-3 text-xs">
-                <span className="text-default">已选 {selectedIds.length} 家</span>
-                <span className="text-secondary">本页可选 {selectableRows.length} 家 · 已选 {pageSelected.length} 家</span>
-                <span className="text-tertiary">上限 {HUB_SELECTION_LIMIT} 家，翻页后选择保留</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button color="secondary" variant="ghost" size="sm" disabled={!selectedIds.length} onClick={() => setSelectedOpen(true)}>
-                  查看已选
-                </Button>
-                <Button color="secondary" variant="ghost" size="sm" disabled={!selectedIds.length} onClick={() => setSelectedIds([])}>
-                  清空全部
-                </Button>
-              </div>
-            </div>
+            <BulkActionBar
+              count={selectedIds.length}
+              hint={`本页可选 ${selectableRows.length} 家 · 已选 ${pageSelected.length} 家 · 上限 ${HUB_SELECTION_LIMIT} 家，翻页后选择保留`}
+              onClear={() => setSelectedIds([])}
+            >
+              <Button color="secondary" variant="ghost" size="sm" onClick={() => setSelectedOpen(true)}>
+                查看已选
+              </Button>
+            </BulkActionBar>
 
             <AppDataTable
               caption="Hub 门店列表"

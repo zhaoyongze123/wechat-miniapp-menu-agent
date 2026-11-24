@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
 import { StatusBadge } from '../../components/StatusBadge'
+import { SettingRow } from '../../components/SettingsLayout'
+import type { AppRole } from '../../api/types'
 import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   playNotificationSound,
@@ -11,20 +13,68 @@ import {
   type NotificationPreferences,
 } from './preferences'
 
-const EVENT_OPTIONS: { key: NotificationEventKind; label: string; description: string }[] = [
-  { key: 'manual_wait', label: '半自动等待人工操作', description: '每个新的 wait_id 提醒一次；相同事件刷新或开新标签不会重复提醒。' },
-  { key: 'task_complete', label: '采集任务完成', description: '仅在本机观察到运行态转为终态时提醒；提醒不代表结果已同步。' },
-  { key: 'materials_complete', label: '素材分析完成', description: '观察到分析任务从运行态转为完成或失败时提醒。' },
-  { key: 'abnormal', label: '异常中断或需恢复', description: '采集或分析进入失败、中断、待恢复等异常终态时提醒。' },
-  { key: 'sync_failure', label: '共享同步失败', description: '采集端配对连接或历史同步从正常转为失败时提醒。' },
-  { key: 'device_offline', label: '采集电脑离线/恢复', description: '共享端沿用 60 秒心跳口径，只在在线状态发生变化后提醒。' },
+interface EventOption {
+  key: NotificationEventKind
+  label: string
+  description: string
+  roles: AppRole[]
+}
+
+/**
+ * 事件文案使用业务语言，并标注真实来源与去重口径。
+ * roles 与 NotificationRuntime 的实际角色分支保持一致，避免展示不会触发的开关。
+ */
+const EVENT_OPTIONS: EventOption[] = [
+  {
+    key: 'manual_wait',
+    label: '等待人工操作',
+    description: '半自动采集停在同一家门店等待人工操作时提醒一次；同一等待不会因刷新重复提醒。',
+    roles: ['worker'],
+  },
+  {
+    key: 'task_complete',
+    label: '采集任务完成',
+    description: '仅在本机观察到运行中的采集任务结束时提醒；提醒不代表结果已经同步到共享后台。',
+    roles: ['hub', 'worker', 'standalone'],
+  },
+  {
+    key: 'materials_complete',
+    label: '素材分析完成',
+    description: '素材分析任务结束时提醒，包含成功与失败结果。',
+    roles: ['hub', 'worker', 'standalone'],
+  },
+  {
+    key: 'abnormal',
+    label: '异常中断或需恢复',
+    description: '采集或分析异常结束、被终止或需要人工恢复时提醒，便于尽快处理。',
+    roles: ['hub', 'worker', 'standalone'],
+  },
+  {
+    key: 'sync_failure',
+    label: '同步失败',
+    description: '采集端与共享后台的连接中断、凭证失效或结果同步失败时提醒。',
+    roles: ['worker'],
+  },
+  {
+    key: 'device_offline',
+    label: '采集电脑离线或恢复',
+    description: '共享后台按 60 秒心跳判断设备状态，只在在线状态发生变化时提醒。',
+    roles: ['hub'],
+  },
 ]
 
-export function NotificationPreferencesPanel() {
+interface NotificationPreferencesPanelProps {
+  /** 只展示当前角色真实会触发的事件与设置。 */
+  role: AppRole
+}
+
+export function NotificationPreferencesPanel({ role }: NotificationPreferencesPanelProps) {
   const [preferences, setPreferences] = useState<NotificationPreferences>(() => readNotificationPreferences())
   const [permission, setPermission] = useState<NotificationPermission | 'unsupported' | 'insecure'>(() => permissionState())
   const [message, setMessage] = useState('')
   const canUseSound = typeof window !== 'undefined' && 'AudioContext' in window
+  const events = EVENT_OPTIONS.filter((event) => event.roles.includes(role))
+  const supportsRepeat = events.some((event) => event.key === 'manual_wait')
 
   useEffect(() => {
     const refresh = () => setPreferences(readNotificationPreferences())
@@ -39,10 +89,10 @@ export function NotificationPreferencesPanel() {
     }
   }, [])
 
-  const update = (next: NotificationPreferences) => {
+  const update = (next: NotificationPreferences, feedback?: string) => {
     setPreferences(next)
     saveNotificationPreferences(next)
-    setMessage('偏好已保存在此浏览器。')
+    if (feedback) setMessage(feedback)
   }
 
   const requestDesktopPermission = async () => {
@@ -51,11 +101,9 @@ export function NotificationPreferencesPanel() {
       const result = await Notification.requestPermission()
       setPermission(result)
       if (result === 'granted') {
-        update({ ...preferences, desktop: true })
-        setMessage('桌面通知已启用。')
+        update({ ...preferences, desktop: true }, '桌面通知已启用。')
       } else {
-        update({ ...preferences, desktop: false })
-        setMessage(result === 'denied' ? '浏览器已拒绝通知；可在站点设置中更改。' : '尚未授予通知权限。')
+        update({ ...preferences, desktop: false }, result === 'denied' ? '浏览器已拒绝通知；可在站点设置中更改。' : '尚未授予通知权限。')
       }
     } catch {
       setMessage('浏览器未能请求通知权限；站内提醒仍可使用。')
@@ -64,70 +112,98 @@ export function NotificationPreferencesPanel() {
 
   const toggleDesktop = (checked: boolean) => {
     if (!checked) {
-      update({ ...preferences, desktop: false })
+      update({ ...preferences, desktop: false }, '已关闭桌面通知。')
       return
     }
     if (permission === 'granted') {
-      update({ ...preferences, desktop: true })
+      update({ ...preferences, desktop: true }, '已启用桌面通知。')
       return
     }
     void requestDesktopPermission()
   }
 
+  const volumePercent = Math.round(preferences.volume * 100)
+  const silent = volumePercent === 0
+
   return (
-    <section className="space-y-4 rounded-xl border border-subtle bg-surface p-4" aria-labelledby="notification-settings-heading">
+    <div className="space-y-4">
       <div>
-        <h2 id="notification-settings-heading" className="heading-xs">通知与提醒</h2>
-        <p className="mt-1 text-xs text-secondary">设置只保存在当前浏览器，不改变 Windows 执行配置或 Hub 共享配置。</p>
+        <h3 className="text-sm text-default">提醒事件</h3>
+        <p className="mt-1 text-xs text-secondary">设置只保存在当前浏览器，不改变 Windows 执行配置或共享后台配置。</p>
       </div>
 
       <div className="space-y-3">
-        {EVENT_OPTIONS.map((event) => (
-          <div key={event.key} className="flex items-start gap-3">
-            <Checkbox
-              label={event.label}
-              checked={preferences.enabled[event.key]}
-              onCheckedChange={(checked) => update({
-                ...preferences,
-                enabled: { ...preferences.enabled, [event.key]: checked },
-              })}
-            />
-            <p className="pt-0.5 text-2xs text-tertiary">{event.description}</p>
+        {events.map((event) => (
+          <div key={event.key} className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <Checkbox
+                label={event.label}
+                checked={preferences.enabled[event.key]}
+                onCheckedChange={(checked) =>
+                  update(
+                    { ...preferences, enabled: { ...preferences.enabled, [event.key]: checked } },
+                    checked ? `已开启“${event.label}”提醒。` : `已关闭“${event.label}”提醒。`,
+                  )
+                }
+              />
+              <p className="mt-1 pl-6 text-2xs leading-relaxed text-tertiary">{event.description}</p>
+            </div>
           </div>
         ))}
+        {events.length === 0 ? <p className="text-xs text-secondary">当前角色没有可配置的提醒事件。</p> : null}
       </div>
 
       <div className="grid gap-4 border-t border-subtle pt-4 sm:grid-cols-2">
-        <div className="space-y-2">
-          <Checkbox
-            label="启用提示音"
-            checked={preferences.sound}
-            disabled={!canUseSound}
-            onCheckedChange={(checked) => update({ ...preferences, sound: checked })}
-          />
-          <label className="block text-xs text-secondary" htmlFor="notification-volume">提示音音量</label>
-          <input
-            id="notification-volume"
-            className="w-full accent-current"
-            type="range"
-            min="0"
-            max="1"
-            step="0.05"
-            value={preferences.volume}
-            disabled={!canUseSound || !preferences.sound}
-            onChange={(event) => update({ ...preferences, volume: Number(event.target.value) })}
-          />
+        <div className="space-y-3">
+          <SettingRow label="提示音" description="浏览器可能阻止后台自动播放；首次使用请先点击“测试提示音”。">
+            <Checkbox
+              label={preferences.sound ? '启用提示音' : '已静音'}
+              checked={preferences.sound}
+              disabled={!canUseSound}
+              onCheckedChange={(checked) => update({ ...preferences, sound: checked }, checked ? '已启用提示音。' : '已关闭提示音。')}
+            />
+          </SettingRow>
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <label htmlFor="notification-volume" className="text-xs text-secondary">
+                提示音音量
+              </label>
+              <span className="text-xs tabular-nums text-default">
+                {volumePercent}%{silent ? ' · 静音' : ''}
+              </span>
+            </div>
+            <input
+              id="notification-volume"
+              className="volume-slider w-full"
+              style={{ '--volume': `${volumePercent}%` } as CSSProperties}
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={preferences.volume}
+              disabled={!canUseSound || !preferences.sound}
+              aria-valuetext={silent ? '静音' : `${volumePercent}%`}
+              onChange={(event) => update({ ...preferences, volume: Number(event.target.value) })}
+            />
+            <p className="text-2xs text-tertiary">可用方向键微调；0% 等同于静音。</p>
+          </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button color="secondary" variant="outline" size="sm" disabled={!canUseSound} onClick={() => {
-              void playNotificationSound(preferences.volume, 'task_complete').then((played) => {
-                setMessage(played ? '已播放测试提示音。' : '浏览器阻止了音频播放；请检查站点声音设置后重试。')
-              })
-            }}>
+            <Button
+              color="secondary"
+              variant="outline"
+              size="sm"
+              disabled={!canUseSound || !preferences.sound || silent}
+              onClick={() => {
+                void playNotificationSound(preferences.volume, 'task_complete').then((played) => {
+                  setMessage(played ? '已播放测试提示音。' : '浏览器阻止了音频播放；请检查站点声音设置后重试。')
+                })
+              }}
+            >
               测试提示音
             </Button>
             {!canUseSound ? <span className="text-2xs text-tertiary">当前浏览器不支持 Web Audio。</span> : null}
+            {canUseSound && silent ? <span className="text-2xs text-tertiary">音量为 0，测试前请先调高音量。</span> : null}
           </div>
-          <p className="text-2xs text-tertiary">浏览器可能阻止后台自动播放；可先点击测试提示音激活音频。提醒不会持续报警。</p>
         </div>
 
         <div className="space-y-2">
@@ -146,33 +222,50 @@ export function NotificationPreferencesPanel() {
               请求桌面通知权限
             </Button>
           )}
-          <p className="text-2xs text-tertiary">需安全上下文及浏览器支持。拒绝权限不会影响站内提醒。</p>
+          <p className="text-2xs text-tertiary">需安全上下文及浏览器支持。拒绝权限不会影响站内提醒与提示音。</p>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 border-t border-subtle pt-4">
-        <label className="text-sm text-default" htmlFor="repeat-wait">人工等待重复提醒</label>
-        <select
-          id="repeat-wait"
-          className="rounded-md border border-subtle bg-surface px-2.5 py-1.5 text-sm text-default"
-          value={preferences.repeatWaitMinutes}
-          onChange={(event) => update({ ...preferences, repeatWaitMinutes: Number(event.target.value) as NotificationPreferences['repeatWaitMinutes'] })}
+      {supportsRepeat ? (
+        <SettingRow
+          label="等待人工操作的重复提醒"
+          description="只重复提示音，不重复弹窗；等待结束或关闭提示音后自动停止。"
+          htmlFor="repeat-wait"
         >
-          <option value={0}>关闭（默认）</option>
-          <option value={1}>每 1 分钟重复提示音</option>
-          <option value={5}>每 5 分钟重复提示音</option>
-        </select>
-      </div>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-2xs text-tertiary" role="status" aria-live="polite">{message || '关闭所有页面后不会继续接收提醒。'}</p>
-        <Button color="secondary" variant="ghost" size="sm" onClick={() => {
-          update({ ...DEFAULT_NOTIFICATION_PREFERENCES, enabled: { ...DEFAULT_NOTIFICATION_PREFERENCES.enabled } })
-          setMessage('已恢复此浏览器的通知默认值。')
-        }}>
+          <select
+            id="repeat-wait"
+            className="w-full rounded-md border border-subtle bg-surface px-2.5 py-1.5 text-sm text-default"
+            value={preferences.repeatWaitMinutes}
+            onChange={(event) =>
+              update(
+                { ...preferences, repeatWaitMinutes: Number(event.target.value) as NotificationPreferences['repeatWaitMinutes'] },
+                '重复提醒设置已保存。',
+              )
+            }
+          >
+            <option value={0}>关闭（默认）</option>
+            <option value={1}>每 1 分钟重复提示音</option>
+            <option value={5}>每 5 分钟重复提示音</option>
+          </select>
+        </SettingRow>
+      ) : null}
+
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-subtle pt-4">
+        <p className="text-2xs text-tertiary" role="status" aria-live="polite">
+          {message || '关闭所有页面后不会继续接收提醒；浏览器后台节流可能延迟提醒。'}
+        </p>
+        <Button
+          color="secondary"
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            update({ ...DEFAULT_NOTIFICATION_PREFERENCES, enabled: { ...DEFAULT_NOTIFICATION_PREFERENCES.enabled } }, '已恢复此浏览器的通知默认值。')
+          }}
+        >
           恢复默认
         </Button>
       </div>
-    </section>
+    </div>
   )
 }
 

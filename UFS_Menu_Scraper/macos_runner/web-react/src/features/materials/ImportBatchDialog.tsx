@@ -117,6 +117,7 @@ export function ImportBatchDialog({ open, onOpenChange, onCreated }: ImportBatch
       onOpenChange={(next) => {
         if (!next) close()
       }}
+      busy={busy}
       title="新建素材批次"
       widthClass="w-[min(640px,94vw)]"
       footer={

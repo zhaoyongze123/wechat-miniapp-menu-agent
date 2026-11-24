@@ -74,6 +74,7 @@ export function StartRunDialog({ open, onOpenChange, tasks, defaultMode, blocked
     <AppDialog
       open={open}
       onOpenChange={onOpenChange}
+      busy={mutation.isPending}
       title="开跑采集"
       widthClass="w-[min(640px,94vw)]"
       footer={

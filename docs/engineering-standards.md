@@ -29,7 +29,7 @@
 | 纯文档 / 配置 | 无（云端不自动构建，合并前按需本地检查） |
 | 服务端路由、共享同步 | 对应 `tests/test_server.py`、`test_shared_workbench.py` 等契约测试 |
 | 采集执行、窗口契约 | `test_windows_compat.py`、`test_environment.py` 与相关回归 |
-| 前端 | `typecheck` + `vitest` + `build`，并确认 `web/react` 产物一致 |
+| 前端 | `typecheck` + `vitest` + `build`，并确认 `web/react` 产物一致；公共组件改动附 Storybook 证据 |
 | 安装器 / Hub / 升级回滚 | `smoke.ps1` 或手动发布工作流的升级-回滚链路，附日志 |
 
 - 优先跑相关测试，避免无依据的全量重复执行。
@@ -43,6 +43,14 @@
   - 本地命令：`uvx ruff check .`；批量修复仅在对应模块的独立提交中进行。
 - 前端：`tsc -b --noEmit`（`npm run typecheck`）与 Vitest 作为门禁；ESLint 暂不引入，原因见 [治理报告](governance/repository-audit-2026-11.md)，如需引入须先固化基线并只拦截新增问题。
 - 编码统一 UTF-8（无 BOM），换行 LF，规则见 `.editorconfig`。
+
+## 前端设计体系
+
+- 入口：[docs/design-system/README.md](design-system/README.md)。四层模型为 L1/L2 OpenAI Apps SDK UI、L3 自有复合组件、L4 Cloudscape/Carbon 产品模式参考。
+- 新页面先复用 `src/components` 契约；表格、筛选、分页、批量操作、设置布局、表单、弹窗/抽屉、图片预览与反馈不得在页面内重复实现。
+- 视觉只使用官方语义 Token；不引入 Ant Design/Carbon/Cloudscape 运行时依赖或额外主题。
+- Storybook 为开发依赖：`npm run storybook`、`npm run build-storybook`；产物 `storybook-static/` 已忽略，不进入安装包或镜像。
+- 组件状态至少覆盖适用的正常、加载、空态、错误、禁用、长文本与窄容器；交互测试优先稳定 DOM/布局断言。
 
 ## 发布与云端构建
 

@@ -28,6 +28,8 @@
 - 云端 CI 不自动触发；合并前按改动风险在本地执行相关检查，不等待 GitHub Actions 反馈。
 - 正式发布仅通过手动 `workflow_dispatch`，复用同一次构建产物；PR、提交和标签推送不重新打包。
 - 前端改动需 `npm run typecheck`、`npm test`、`npm run build` 并提交 `web/react` 产物。
+- 前端新增或修改表格、筛选、分页、批量操作、设置布局、表单、弹窗/抽屉、图片预览与反馈时，先查 [docs/design-system](docs/design-system/README.md) 与 `src/components` 现有契约，优先复用，不重复造同类组件。
+- Storybook 仅用于开发与回归：`npm run storybook` / `npm run build-storybook`，不进入生产安装包或 Hub 镜像。
 - Python 改动需 `ruff check .` 通过（门禁规则见 `pyproject.toml`）。
 
 ## 提交与交付
@@ -39,4 +41,6 @@
 ## 文档
 
 - 当前有效文档放 `docs/`，历史阶段文档按 `docs/archive/<年月>-<主题>/` 归档并在索引说明替代关系。
+- 前端设计体系入口为 [docs/design-system/README.md](docs/design-system/README.md)：四层模型、上游索引、页面模式、组件契约与验收矩阵。
+- 新功能（包括 #32 软件更新、备份恢复、健康监控、设备管理）默认先选择现有模式与公共组件，禁止另起一套表格、弹窗、设置布局或反馈机制。
 - 产品需求放 `docs/product/`；发布说明记录在 [CHANGELOG.md](CHANGELOG.md)。

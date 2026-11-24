@@ -53,12 +53,27 @@ export function RejectionDetailDrawer({
 }: RejectionDetailDrawerProps) {
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null)
   const status = statusOf(record?.status)
+  const previewItems =
+    record && record.source_type === 'capture' && record.task_id
+      ? [
+          { src: captureEvidenceUrl(record.task_id), alt: '不合格证据' },
+          { src: taskSourceUrl(record.task_id), alt: '任务源图' },
+        ]
+      : record && record.source_type === 'materials' && record.batch_id && record.store_id
+        ? [
+            {
+              src: `/api/materials/batches/${encodeURIComponent(record.batch_id)}/stores/${encodeURIComponent(record.store_id)}/selected`,
+              alt: '当前使用的候选二维码',
+            },
+          ]
+        : []
 
   return (
     <>
       <AppDrawer
         open={record !== null}
         onOpenChange={onOpenChange}
+        busy={busy}
         title={record ? formatStore(record.store_name).name : '不合格详情'}
         description={
           record ? `${sourceLabelOf(record)} · ${record.batch_name || '未关联批次'}` : ''
@@ -214,6 +229,8 @@ export function RejectionDetailDrawer({
         src={preview?.src ?? ''}
         alt={preview?.alt ?? ''}
         caption={preview?.alt ?? ''}
+        items={previewItems}
+        initialIndex={Math.max(0, previewItems.findIndex((item) => item.src === preview?.src))}
         onOpenChange={(open) => {
           if (!open) setPreview(null)
         }}

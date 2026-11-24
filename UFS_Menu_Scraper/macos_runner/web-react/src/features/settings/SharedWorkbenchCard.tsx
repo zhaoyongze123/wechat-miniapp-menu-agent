@@ -23,12 +23,12 @@ export function SharedWorkbenchCard() {
   if (role.role === 'standalone') return null
 
   return (
-    <section className="rounded-xl border border-subtle p-4" aria-labelledby="shared-heading">
+    <div className="space-y-3" aria-labelledby="shared-heading">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 id="shared-heading" className="heading-xs">
+          <h3 id="shared-heading" className="text-sm text-default">
             共享工作台
-          </h2>
+          </h3>
           <p className="mt-1 text-sm text-secondary">{summaryText(role)}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -66,7 +66,7 @@ export function SharedWorkbenchCard() {
           配对码在“采集电脑”页面生成，一次性有效；解除配对或移除设备同样在该页面操作。
         </p>
       ) : null}
-    </section>
+    </div>
   )
 }
 

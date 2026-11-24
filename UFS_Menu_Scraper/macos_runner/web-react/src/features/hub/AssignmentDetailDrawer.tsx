@@ -4,6 +4,7 @@ import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Image } from '@openai/apps-sdk-ui/components/Image'
 import { AppDrawer } from '../../components/AppDrawer'
+import { CellText } from '../../components/CellText'
 import { ImagePreview } from '../../components/ImagePreview'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -40,6 +41,11 @@ export function AssignmentDetailDrawer({ record, onOpenChange, onReclaim }: Assi
   const jsonFiles = useMemo(
     () => (filesQuery.data?.files ?? []).filter((file) => file.toLowerCase().endsWith('.json')),
     [filesQuery.data],
+  )
+  // 证据按结果目录顺序连续浏览，避免每次只看一张后重新打开。
+  const previewItems = useMemo(
+    () => (record ? images.map((file) => ({ src: resultFileUrl(record.id, file), alt: file })) : []),
+    [images, record],
   )
 
   if (!record) return null
@@ -83,10 +89,10 @@ export function AssignmentDetailDrawer({ record, onOpenChange, onReclaim }: Assi
         <dl className="grid grid-cols-1 gap-x-4 gap-y-3 text-sm sm:grid-cols-2">
           <Fact label="结果处置">{record.disposition === 'history' ? '历史留档' : record.disposition || '未上传'}</Fact>
           <Fact label="任务 ID">
-            <code className="break-all font-mono text-xs">{record.task_id}</code>
+            <CellText copyable copyLabel="任务 ID" mono>{record.task_id}</CellText>
           </Fact>
           <Fact label="分配 ID">
-            <code className="break-all font-mono text-xs">{record.id}</code>
+            <CellText copyable copyLabel="分配 ID" mono>{record.id}</CellText>
           </Fact>
         </dl>
 
@@ -163,6 +169,8 @@ export function AssignmentDetailDrawer({ record, onOpenChange, onReclaim }: Assi
         src={preview?.src ?? ''}
         alt={preview?.alt ?? ''}
         {...(preview ? { caption: `${store.name || record.store} · ${preview.alt}` } : {})}
+        items={previewItems}
+        initialIndex={preview ? Math.max(0, images.indexOf(preview.alt)) : 0}
         onOpenChange={(open) => {
           if (!open) setPreview(null)
         }}
