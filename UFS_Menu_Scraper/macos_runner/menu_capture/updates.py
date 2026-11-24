@@ -362,6 +362,10 @@ class UpdateService:
         self.rollback_capability: Callable[[], bool] | None = None
         # 安装/回滚期间必须禁止清理历史版本，否则可能删掉正在使用的回滚目标。
         self.cleanup_guard: Callable[[], tuple[bool, str]] | None = None
+        # Worker 可由共享后台分发版本元数据；只有 Hub 校验后且未过期的结果才会被采纳。
+        self.hub_target_provider: Callable[[], dict | None] | None = None
+        # Worker 向 Hub 上报安装状态时使用；执行器未接入时留空，不推测。
+        self.install_status_provider: Callable[[], str] | None = None
 
     # ---------- 对外状态 ----------
 
@@ -418,6 +422,8 @@ class UpdateService:
             "latest": latest,
             "update_available": _update_available(latest, current, self.platform, self.local_arch),
             "last_checked": _iso(cache.get("checked_at")),
+            # 元数据来源：github 为本机检查，hub 为共享后台分发；默认不伪装。
+            "source": str(cache.get("source") or "github"),
             "stale": _is_stale(cache, now),
             "error": str(cache.get("error") or ""),
             "checking": checking,
@@ -435,6 +441,99 @@ class UpdateService:
             },
             "inventory": self.inventory(),
         }
+
+    def release_target(self) -> dict | None:
+        """Hub 向 Worker 分发的版本元数据；只返回新鲜且已通过清单校验的结果。"""
+        with self._lock:
+            cache = dict(self._cache)
+            channel = str(self._preferences.get("channel") or "stable")
+        latest = cache.get("latest")
+        checked_at = float(cache.get("checked_at") or 0)
+        if not isinstance(latest, dict) or not latest.get("eligible"):
+            return None
+        if not checked_at or self._clock() - checked_at > CACHE_TTL_SECONDS:
+            return None
+        return {"channel": channel, "checked_at": checked_at, "latest": latest}
+
+    def worker_software_status(self) -> dict:
+        """采集端向 Hub 上报的精简状态；不含路径、凭证或业务数据。"""
+        payload = self.status_no_check()
+        latest = payload.get("latest") or {}
+        download = payload.get("download") or {}
+        preferences = payload.get("preferences") or {}
+        install_status = ""
+        if self.install_status_provider is not None:
+            try:
+                install_status = str(self.install_status_provider() or "")[:32]
+            except Exception:  # noqa: BLE001 - 状态上报失败不影响采集
+                install_status = ""
+        return {
+            "current_version": str(payload.get("current_version") or ""),
+            "platform": str(payload.get("platform") or ""),
+            "latest_version": str(latest.get("version") or "") if latest.get("eligible") else "",
+            "update_available": bool(payload.get("update_available")),
+            "channel": str(preferences.get("channel") or "stable"),
+            "checked_at": str(payload.get("last_checked") or ""),
+            "download_status": str(download.get("status") or ""),
+            "install_status": install_status,
+        }
+
+    def _adopt_hub_target(self, target: Any, channel: str) -> tuple[dict, float] | None:
+        """复用 Hub 校验结果前重新核对版本、渠道、资产与 URL，避免盲信跨端数据。"""
+        if not isinstance(target, dict):
+            return None
+        latest = target.get("latest")
+        if not isinstance(latest, dict) or not latest.get("eligible"):
+            return None
+        try:
+            checked_at = float(target.get("checked_at") or 0)
+            version = Version.parse(str(latest.get("version") or ""))
+            tag = str(latest.get("tag") or f"v{latest.get('version')}")
+            if Version.parse(tag) != version:
+                return None
+        except (TypeError, ValueError):
+            return None
+        if not checked_at or self._clock() - checked_at > CACHE_TTL_SECONDS:
+            return None
+        manifest_channel = str(latest.get("channel") or "")
+        # Worker 只采纳与自身渠道一致、且新鲜的分发结果。
+        if manifest_channel not in CHANNELS or str(target.get("channel") or "") != channel:
+            return None
+        if manifest_channel != channel:
+            return None
+        if channel == "stable" and version.is_prerelease:
+            return None
+        min_supported = str(latest.get("min_supported_version") or "")
+        if min_supported:
+            try:
+                Version.parse(min_supported)
+            except ValueError:
+                return None
+        assets = latest.get("assets")
+        if not isinstance(assets, list) or not assets:
+            return None
+        seen: set[str] = set()
+        for asset in assets:
+            if not isinstance(asset, dict):
+                return None
+            kind = str(asset.get("kind") or "")
+            name = str(asset.get("name") or "")
+            if kind not in ASSET_KINDS or kind in seen or not name or Path(name).name != name:
+                return None
+            seen.add(kind)
+            expected = "windows" if kind == "windows_installer" else "linux"
+            if asset.get("platform") != expected or not _normalize_arch(asset.get("arch")):
+                return None
+            size = asset.get("size")
+            if not isinstance(size, int) or size <= 0:
+                return None
+            if not _SHA256_RE.fullmatch(str(asset.get("sha256") or "").lower()):
+                return None
+            try:
+                _safe_asset_url(str(asset.get("url") or ""), tag)
+            except ValueError:
+                return None
+        return latest, checked_at
 
     def save_preferences(self, payload: dict) -> dict:
         if not isinstance(payload, dict) or set(payload) - {"auto_check", "channel"}:
@@ -1138,6 +1237,31 @@ class UpdateService:
                     and str(self._preferences.get("channel") or "stable") == channel
                 )
 
+        # 优先采用共享后台校验并分发的元数据，避免每台 Worker 重复请求 GitHub；
+        # 分发结果过期、渠道不符或结构异常时回退本机检查。
+        adopted = None
+        if self.hub_target_provider is not None:
+            try:
+                adopted = self._adopt_hub_target(self.hub_target_provider(), channel)
+            except Exception:  # noqa: BLE001 - 分发失败不能阻塞本机检查
+                adopted = None
+        if adopted is not None:
+            latest, checked_at = adopted
+            if not still_current():
+                return
+            with self._lock:
+                self._cache = {
+                    "latest": latest,
+                    "checked_at": checked_at,
+                    "error": "",
+                    "backoff_until": 0,
+                    "source": "hub",
+                }
+                self._write_json(self.cache_path, self._cache)
+            self._append_history("check", "ok", "使用共享后台分发的版本信息",
+                                 str((latest or {}).get("version") or ""))
+            return
+
         headers = {"Accept": "application/vnd.github+json", "User-Agent": "menu-capture-updater"}
         if cache.get("etag"):
             headers["If-None-Match"] = str(cache["etag"])
@@ -1150,7 +1274,8 @@ class UpdateService:
                     return
                 with self._lock:
                     latest_cache = dict(self._cache)
-                    latest_cache.update({"checked_at": now, "error": "", "backoff_until": 0})
+                    latest_cache.update({"checked_at": now, "error": "", "backoff_until": 0,
+                                         "source": "github"})
                     self._cache = latest_cache
                     self._write_json(self.cache_path, latest_cache)
                 return
@@ -1186,6 +1311,7 @@ class UpdateService:
                 "error": "",
                 "backoff_until": 0,
                 "channel": channel,
+                "source": "github",
             })
             self._cache = updated
             self._write_json(self.cache_path, updated)

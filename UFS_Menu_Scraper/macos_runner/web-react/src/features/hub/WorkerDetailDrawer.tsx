@@ -138,6 +138,16 @@ export function WorkerDetailDrawer({
           <Fact label="最近连接">{formatTime(worker.last_seen)}</Fact>
           <Fact label="配对时间">{formatTime(worker.paired_at)}</Fact>
           <Fact label="待补传文件">{worker.pending_uploads ? `${worker.pending_uploads} 份` : '无'}</Fact>
+          <Fact label="当前版本">{worker.software?.current_version || '未上报'}</Fact>
+          <Fact label="更新状态">
+            {worker.software
+              ? worker.software.update_available
+                ? `可更新至 ${worker.software.latest_version || '新版本'}`
+                : worker.software.latest_version
+                  ? '已是最新'
+                  : '更新状态未知'
+              : '未上报'}
+          </Fact>
           <Fact label="最近任务">
             {worker.last_run
               ? [

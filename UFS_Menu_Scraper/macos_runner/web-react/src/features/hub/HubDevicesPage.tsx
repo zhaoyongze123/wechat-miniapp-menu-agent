@@ -47,7 +47,8 @@ export function HubDevicesPage() {
   const activeWorkers = workers.filter((worker) => isWorkerActive(worker) && !worker.archived_at)
   const onlineCount = activeWorkers.filter((worker) => deviceStateOf(worker).key === 'online').length
   const occupiedCount = assignments.filter((record) => record.status === 'assigned' || record.status === 'ready').length
-  const pendingUploads = activeWorkers.reduce((sum, worker) => sum + (worker.pending_uploads ?? 0), 0)
+  const updateSummary = sharedQuery.data?.update_summary
+  const outdatedCount = updateSummary?.update_available ?? 0
 
   const detailWorker = workers.find((worker) => worker.id === detailId) ?? null
   const detailAssignments = detailWorker ? activeAssignmentsOf(sharedQuery.data, detailWorker.id) : []
@@ -131,6 +132,29 @@ export function HubDevicesPage() {
       },
     },
     {
+      id: 'version',
+      header: '版本',
+      className: 'whitespace-nowrap',
+      width: '9.5rem',
+      cell: (worker) => {
+        const software = worker.software
+        // 未上报 ≠ 已是最新；只有采集端明确检查过才判断更新状态。
+        if (!software) return <span className="text-tertiary">未上报</span>
+        return (
+          <div className="space-y-0.5">
+            <span className="block text-default tabular-nums">{software.current_version || '未知'}</span>
+            {software.update_available ? (
+              <StatusBadge tone="warning">可更新至 {software.latest_version || '新版本'}</StatusBadge>
+            ) : (
+              <span className="block text-2xs text-tertiary">
+                {software.latest_version ? '已是最新' : '更新状态未知'}
+              </span>
+            )}
+          </div>
+        )
+      },
+    },
+    {
       id: 'last_seen',
       header: '最近连接',
       className: 'whitespace-nowrap',
@@ -185,6 +209,11 @@ export function HubDevicesPage() {
       <PageHeader
         title="采集电脑"
         headingId="hub-devices-heading"
+        description={
+          updateSummary?.target_version
+            ? `集中更新目标 ${updateSummary.target_version}；版本与更新状态由采集端同步时上报。`
+            : '版本与更新状态由采集端同步时上报。'
+        }
         actions={
           <Button color="primary" size="sm" onClick={() => setPairOpen(true)}>
             配对采集电脑
@@ -192,11 +221,16 @@ export function HubDevicesPage() {
         }
       />
 
-      <section className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="采集电脑统计">
+      <section className="grid grid-cols-2 gap-3 sm:grid-cols-5" aria-label="采集电脑统计">
         <Metric label="已配对" value={activeWorkers.length} />
         <Metric label="在线" value={onlineCount} />
         <Metric label="占用门店" value={occupiedCount} />
-        <Metric label="待补传文件" value={pendingUploads} {...(pendingUploads ? { tone: 'warning' as const } : {})} />
+        <Metric label="待更新" value={outdatedCount} {...(outdatedCount ? { tone: 'warning' as const } : {})} />
+        <Metric
+          label="版本未上报"
+          value={updateSummary?.unreported ?? 0}
+          {...(updateSummary?.unreported ? { tone: 'warning' as const } : {})}
+        />
       </section>
 
       <section className="rounded-xl border border-subtle bg-surface space-y-4 p-4 md:p-5" aria-labelledby="hub-device-list-heading">
@@ -232,7 +266,7 @@ export function HubDevicesPage() {
             caption="采集电脑列表"
             columns={columns}
             rows={visibleWorkers}
-            minWidthClass="min-w-[1000px]"
+            minWidthClass="min-w-[1120px]"
             rowKey={(worker) => worker.id}
             loading={sharedQuery.isFetching && !sharedQuery.data}
             onRowActivate={(worker) => setDetailId(worker.id)}

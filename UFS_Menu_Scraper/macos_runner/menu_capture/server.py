@@ -151,6 +151,15 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     updates.cleanup_guard = lambda: (
         (True, "安装或回滚进行中，请完成后再清理") if install.active() else (False, "")
     )
+    # 安装状态上报给 Hub；执行器未接入时返回空，不推测状态。
+    updates.install_status_provider = lambda: str(install.status().get("status") or "")
+    if hub is not None:
+        # Hub 集中检查 GitHub 后向 Worker 分发元数据，避免每台设备重复请求。
+        hub.update_metadata = updates.release_target
+    if worker is not None:
+        worker.software_provider = updates.worker_software_status
+        # Worker 优先采用 Hub 分发的新鲜元数据；Hub 未启用或过期时自动回退本机检查。
+        updates.hub_target_provider = lambda: worker.hub_update_target
     # 采集与人工标注的启动入口与安装共用同一闸门，闭合「检查空闲 → 写任务」之间的竞态窗口。
     runner.update_gate = install.gate
     runner.update_blocked = install.active

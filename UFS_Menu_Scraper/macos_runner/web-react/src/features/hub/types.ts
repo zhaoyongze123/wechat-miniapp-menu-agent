@@ -94,6 +94,19 @@ export interface HubWorkerRun {
   reported_at?: string
 }
 
+/** 采集端在同步时上报的软件状态；未上报为 null，不用空对象冒充最新。 */
+export interface HubWorkerSoftware {
+  current_version: string
+  platform: string
+  latest_version: string
+  update_available: boolean
+  channel: string
+  checked_at: string
+  download_status: string
+  install_status: string
+  reported_at: string
+}
+
 export interface HubWorker {
   id: string
   name: string
@@ -104,6 +117,7 @@ export interface HubWorker {
   revoked_at?: string
   archived_at?: string
   last_run?: HubWorkerRun | null
+  software?: HubWorkerSoftware | null
 }
 
 export interface HubAssignment {
@@ -123,10 +137,20 @@ export interface HubAssignment {
   current_task_id?: string
 }
 
+export interface HubUpdateSummary {
+  reported: number
+  unreported: number
+  update_available: number
+  target_version: string
+  versions: Record<string, number>
+}
+
 export interface HubSharedStatus {
   role: 'hub'
   workers: HubWorker[]
   assignments: HubAssignment[]
+  update_summary?: HubUpdateSummary
+  update_target?: { version: string; channel: string; checked_at: number } | null
 }
 
 export interface AssignmentRecord {
