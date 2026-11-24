@@ -353,6 +353,16 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             )]
         workflow = {batch["id"]: materials.workflow_stage(batch) for batch in batches}
         names = {batch["id"]: batch["name"] or batch["id"] for batch in batches}
+        # 历史记录需要真实轮次身份：取每个任务最近一次动作所属轮次，避免前端按门店名猜。
+        with store.connect() as db:
+            run_by_task = {
+                row["id"]: row["run_id"]
+                for row in db.execute(
+                    "SELECT t.id, a.run_id FROM tasks t LEFT JOIN run_actions a ON a.id="
+                    "(SELECT MAX(latest.id) FROM run_actions latest WHERE latest.task_id=t.id)"
+                )
+                if row["run_id"]
+            }
         selected = set()
         if batch_ids and batch_ids != "all":
             selected = {value.strip() for value in batch_ids.split(",") if value.strip()}
@@ -384,6 +394,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 "reject_reason": task.get("reject_reason", ""),
                 "reject_detail": task.get("reject_detail", ""),
                 "updated_at": task.get("updated_at", ""),
+                "run_id": run_by_task.get(task["id"], ""),
                 "batch_id": batch_id,
                 "batch_name": task.get("material_batch_name") or names.get(batch_id, ""),
                 "workflow": workflow.get(batch_id, {}),

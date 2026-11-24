@@ -106,6 +106,8 @@ export interface PendingReviewRecord {
   reject_reason: string
   reject_detail: string
   updated_at: string
+  /** 最近一次采集轮次；用于查看真实历史与同步状态，缺失时如实提示。 */
+  run_id?: string
   batch_id: string
   batch_name: string
   workflow: WorkflowStage

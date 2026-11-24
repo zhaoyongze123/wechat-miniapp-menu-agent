@@ -234,6 +234,21 @@ export function QualityPage() {
     reviewDrawerIndex >= 0 ? filteredReviews[reviewDrawerIndex] ?? null : null
 
   const reviewBatches = reviewsQuery.data?.batches ?? []
+  // 任务中心逐店下钻带 task 参数：自动打开同一家门店的待检查详情，避免重新搜索。
+  const deepLinkTask = searchParams.get('task') ?? ''
+  const deepLinkHandled = useRef('')
+  useEffect(() => {
+    if (!deepLinkTask || deepLinkHandled.current === deepLinkTask) return
+    if (reviewsQuery.isPending) return
+    deepLinkHandled.current = deepLinkTask
+    if (reviewsQuery.isError) {
+      toast.push('待检查清单读取失败，无法定位该门店', 'danger')
+      return
+    }
+    const found = (reviewsQuery.data?.records ?? []).some((record) => record.task_id === deepLinkTask)
+    if (found) setReviewDrawerId(deepLinkTask)
+    else toast.push('该门店已不在待检查清单中，可能已完成处置', 'info')
+  }, [deepLinkTask, reviewsQuery.isPending, reviewsQuery.isError, reviewsQuery.data, toast])
   const approveBatchIds = reviewBatchIds.length
     ? reviewBatchIds
     : reviewBatches.map((batch) => batch.id)
@@ -1120,7 +1135,17 @@ export function QualityPage() {
         hasPrev={reviewDrawerIndex > 0}
         hasNext={reviewDrawerIndex >= 0 && reviewDrawerIndex < filteredReviews.length - 1}
         onOpenChange={(open) => {
-          if (!open) setReviewDrawerId(null)
+          if (!open) {
+            setReviewDrawerId(null)
+            // 关闭后清除深链参数，返回/刷新不再重新打开同一家门店。
+            if (searchParams.has('task')) {
+              setSearchParams((current) => {
+                const params = new URLSearchParams(current)
+                params.delete('task')
+                return params
+              }, { replace: true })
+            }
+          }
         }}
         onPrev={() => {
           const targetIndex = reviewDrawerIndex - 1
