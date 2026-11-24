@@ -204,3 +204,54 @@ def test_worker_reports_software_only_after_hub_advertises_support(tmp_path):
 
     worker._heartbeat()
     assert client.payloads[1]["software"]["current_version"] == "0.2.2"
+
+
+def test_hub_batch_rollout_limits_distribution(tmp_path):
+    hub, first = make_hub(tmp_path)
+    second = hub.pair(hub.pairing_code()["code"], "第二台")
+    hub.update_metadata = lambda: _target()
+
+    # 未设置分批时按全量分发，保持既有集中更新行为。
+    assert hub.sync(first["id"], [], 0)["update_target"]["latest"]["version"] == "0.2.3"
+    assert hub.sync(second["id"], [], 0)["update_target"]["latest"]["version"] == "0.2.3"
+
+    saved = hub.set_update_rollout("batch", [first["id"]])
+    assert saved["mode"] == "batch"
+    assert saved["worker_ids"] == [first["id"]]
+    assert saved["target_version"] == "0.2.3"
+
+    assert hub.sync(first["id"], [], 0)["update_target"]["latest"]["version"] == "0.2.3"
+    assert hub.sync(second["id"], [], 0)["update_target"] is None
+
+    status = hub.status()
+    rows = {item["id"]: item for item in status["workers"]}
+    assert rows[first["id"]]["in_rollout"] is True
+    assert rows[second["id"]]["in_rollout"] is False
+    assert status["update_summary"]["rollout_mode"] == "batch"
+    assert status["update_summary"]["rollout_scope"] == 1
+
+    # 终止分批后恢复全量分发。
+    assert hub.set_update_rollout("all", [])["mode"] == "all"
+    assert hub.sync(second["id"], [], 0)["update_target"]["latest"]["version"] == "0.2.3"
+
+
+def test_hub_rollout_drops_archived_worker(tmp_path):
+    hub, first = make_hub(tmp_path)
+    second = hub.pair(hub.pairing_code()["code"], "第二台")
+    hub.set_update_rollout("batch", [first["id"], second["id"]])
+    hub.revoke_worker(second["id"])
+    hub.archive_worker(second["id"])
+
+    rollout = hub.update_rollout()
+    assert rollout["worker_ids"] == [first["id"]]
+    assert [row["id"] for row in rollout["workers"]] == [first["id"]]
+
+
+@pytest.mark.parametrize(
+    "mode,worker_ids",
+    [("batch", []), ("bogus", []), ("batch", ["ghost"]), ("batch", [1])],
+)
+def test_hub_rejects_invalid_rollout(tmp_path, mode, worker_ids):
+    hub, _ = make_hub(tmp_path)
+    with pytest.raises(ValueError):
+        hub.set_update_rollout(mode, worker_ids)

@@ -67,6 +67,18 @@ def register_shared_routes(app: FastAPI, role: str, hub: SharedHub | None,
         with control_lock:
             return hub.archive_worker(worker_id)
 
+    @app.get("/api/shared/update-rollout")
+    def update_rollout():
+        return hub.update_rollout()
+
+    @app.put("/api/shared/update-rollout")
+    def save_update_rollout(payload: dict):
+        # 分批推广只改变分发范围；实际安装仍在各设备本地确认，不扩大远程控制权限。
+        if set(payload) != {"mode", "worker_ids"}:
+            raise ValueError("分批更新参数无效")
+        with control_lock:
+            return hub.set_update_rollout(payload["mode"], payload["worker_ids"])
+
     @app.get("/api/shared/assignments")
     def assignment_records(worker_id: Annotated[str, Query(max_length=64)] = "",
                            phase: Literal["", "assigned", "ready", "completed", "reclaimed", "history"] = "",

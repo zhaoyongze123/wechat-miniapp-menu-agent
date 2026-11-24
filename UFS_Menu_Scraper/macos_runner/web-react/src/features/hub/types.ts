@@ -118,6 +118,8 @@ export interface HubWorker {
   archived_at?: string
   last_run?: HubWorkerRun | null
   software?: HubWorkerSoftware | null
+  /** 是否在本次版本分发范围内；未上报 ≠ 不在范围。 */
+  in_rollout?: boolean
 }
 
 export interface HubAssignment {
@@ -143,6 +145,17 @@ export interface HubUpdateSummary {
   update_available: number
   target_version: string
   versions: Record<string, number>
+  rollout_mode?: 'all' | 'batch'
+  rollout_scope?: number
+}
+
+/** 分批推广只决定哪些设备收到目标版本，安装仍在各设备本地确认。 */
+export interface HubUpdateRollout {
+  mode: 'all' | 'batch'
+  worker_ids: string[]
+  updated_at: string
+  target_version: string
+  workers: { id: string; name: string; archived_at: string }[]
 }
 
 export interface HubSharedStatus {
@@ -150,6 +163,7 @@ export interface HubSharedStatus {
   workers: HubWorker[]
   assignments: HubAssignment[]
   update_summary?: HubUpdateSummary
+  update_rollout?: HubUpdateRollout
   update_target?: { version: string; channel: string; checked_at: number } | null
 }
 

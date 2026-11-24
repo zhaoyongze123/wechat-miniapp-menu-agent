@@ -6,6 +6,7 @@ import type {
   HubQueueParams,
   HubSharedStatus,
   HubStatus,
+  HubUpdateRollout,
   PairingCode,
   ReclaimResponse,
   ResultFilesResponse,
@@ -91,6 +92,14 @@ export function archiveWorker(workerId: string): Promise<{ id: string; archived_
   return apiFetch<{ id: string; archived_at: string }>(`/api/shared/workers/${encodeURIComponent(workerId)}/archive`, {
     method: 'POST',
     json: {},
+  })
+}
+
+/** 保存版本推送范围；batch 只对选中设备分发目标版本，安装仍由设备本地确认。 */
+export function saveUpdateRollout(mode: 'all' | 'batch', workerIds: string[]): Promise<HubUpdateRollout> {
+  return apiFetch<HubUpdateRollout>('/api/shared/update-rollout', {
+    method: 'PUT',
+    json: { mode, worker_ids: workerIds },
   })
 }
 
