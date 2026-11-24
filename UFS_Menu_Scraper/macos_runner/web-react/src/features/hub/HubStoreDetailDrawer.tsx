@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { AppDrawer } from '../../components/AppDrawer'
 import { AppPagination } from '../../components/AppPagination'
+import { CellText } from '../../components/CellText'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { errorMessage } from '../../api/client'
@@ -13,8 +14,27 @@ import type { AssignmentRecord, HubTask } from './types'
 
 const PAGE_SIZE = 20
 
+interface HubStoreDetailDrawerProps {
+  task: HubTask | null
+  onClose: () => void
+  /** 在当前筛选结果内连续查看；跨页只在稳定查询范围内提供。 */
+  onPrev?: () => void
+  onNext?: () => void
+  hasPrev?: boolean
+  hasNext?: boolean
+  position?: string
+}
+
 /** 只读门店详情。用当前任务 ID 精确关联分配结果，不按同名门店拼接其他批次/版本。 */
-export function HubStoreDetailDrawer({ task, onClose }: { task: HubTask | null; onClose: () => void }) {
+export function HubStoreDetailDrawer({
+  task,
+  onClose,
+  onPrev,
+  onNext,
+  hasPrev = false,
+  hasNext = false,
+  position,
+}: HubStoreDetailDrawerProps) {
   const [page, setPage] = useState(1)
   const [assignment, setAssignment] = useState<AssignmentRecord | null>(null)
   const taskId = task?.id ?? ''
@@ -33,14 +53,45 @@ export function HubStoreDetailDrawer({ task, onClose }: { task: HubTask | null; 
     return <AssignmentDetailDrawer key={assignment.id} record={assignment} onOpenChange={(open) => { if (!open) setAssignment(null) }} />
   }
   return (
-    <AppDrawer open onOpenChange={(open) => { if (!open) onClose() }} title={store.name || task.source_name || '门店详情'} description={[store.code, task.batch_name, task.version].filter(Boolean).join(' · ')}>
+    <AppDrawer
+      open
+      onOpenChange={(open) => { if (!open) onClose() }}
+      title={store.name || task.source_name || '门店详情'}
+      description={[store.code, task.batch_name, task.version].filter(Boolean).join(' · ')}
+      {...(onPrev || onNext
+        ? {
+            headerActions: (
+              <div className="flex items-center gap-2">
+                {position ? <span className="text-2xs text-tertiary">{position}</span> : null}
+                <Button color="secondary" variant="outline" size="sm" disabled={!hasPrev} onClick={onPrev}>
+                  上一家
+                </Button>
+                <Button color="secondary" variant="outline" size="sm" disabled={!hasNext} onClick={onNext}>
+                  下一家
+                </Button>
+              </div>
+            ),
+          }
+        : {})}
+    >
       <div className="space-y-5">
         <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
         <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
-          <div><dt className="text-xs text-tertiary">原始门店名称</dt><dd className="break-all">{task.source_name || '未记录'}</dd></div>
+          <div className="min-w-0">
+            <dt className="text-xs text-tertiary">原始门店名称</dt>
+            <dd className="mt-0.5"><CellText copyable copyLabel="门店名称">{task.source_name}</CellText></dd>
+          </div>
           <div><dt className="text-xs text-tertiary">批次 / 版本</dt><dd>{[task.batch_name, task.version].filter(Boolean).join(' · ') || '未记录'}</dd></div>
-          <div><dt className="text-xs text-tertiary">任务 ID</dt><dd className="break-all font-mono text-xs">{task.id}</dd></div>
-          <div><dt className="text-xs text-tertiary">采集说明</dt><dd className="break-words">{task.reject_reason || task.reject_label || task.message || task.label || '未记录'}</dd></div>
+          <div className="min-w-0">
+            <dt className="text-xs text-tertiary">任务 ID</dt>
+            <dd className="mt-0.5"><CellText copyable copyLabel="任务 ID" mono>{task.id}</CellText></dd>
+          </div>
+          <div className="min-w-0">
+            <dt className="text-xs text-tertiary">采集说明</dt>
+            <dd className="mt-0.5">
+              <CellText>{task.reject_reason || task.reject_label || task.message || task.label || '未记录'}</CellText>
+            </dd>
+          </div>
         </dl>
         <a className="text-sm underline underline-offset-2" href={`/api/tasks/${encodeURIComponent(task.id)}/source`} target="_blank" rel="noreferrer">查看当前任务二维码</a>
         <section className="space-y-3">

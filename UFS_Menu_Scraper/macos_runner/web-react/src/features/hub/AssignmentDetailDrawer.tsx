@@ -17,12 +17,27 @@ interface AssignmentDetailDrawerProps {
   record: AssignmentRecord | null
   onOpenChange: (open: boolean) => void
   onReclaim?: (record: AssignmentRecord) => void
+  /** 在当前筛选结果内连续查看。 */
+  onPrev?: () => void
+  onNext?: () => void
+  hasPrev?: boolean
+  hasNext?: boolean
+  position?: string
 }
 
 const RECLAIMABLE = new Set(['assigned', 'ready'])
 
 /** 分配详情：状态、设备、结果文件与回收影响范围。结果文件只在后端确有记录时请求。 */
-export function AssignmentDetailDrawer({ record, onOpenChange, onReclaim }: AssignmentDetailDrawerProps) {
+export function AssignmentDetailDrawer({
+  record,
+  onOpenChange,
+  onReclaim,
+  onPrev,
+  onNext,
+  hasPrev = false,
+  hasNext = false,
+  position,
+}: AssignmentDetailDrawerProps) {
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null)
   const hasResult = Boolean(record && record.disposition && record.disposition !== '')
 
@@ -59,6 +74,21 @@ export function AssignmentDetailDrawer({ record, onOpenChange, onReclaim }: Assi
       onOpenChange={onOpenChange}
       title={store.name || record.store}
       description={[store.code, record.batch_name, record.revision].filter(Boolean).join(' · ')}
+      {...(onPrev || onNext
+        ? {
+            headerActions: (
+              <div className="flex items-center gap-2">
+                {position ? <span className="text-2xs text-tertiary">{position}</span> : null}
+                <Button color="secondary" variant="outline" size="sm" disabled={!hasPrev} onClick={onPrev}>
+                  上一条
+                </Button>
+                <Button color="secondary" variant="outline" size="sm" disabled={!hasNext} onClick={onNext}>
+                  下一条
+                </Button>
+              </div>
+            ),
+          }
+        : {})}
       footer={
         reclaimable && onReclaim ? (
           <div className="space-y-2">

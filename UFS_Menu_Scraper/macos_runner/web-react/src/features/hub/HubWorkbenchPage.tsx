@@ -361,6 +361,8 @@ export function HubWorkbenchPage() {
     },
   ]
 
+  const detailIndex = detailTask ? records.findIndex((task) => task.id === detailTask.id) : -1
+
   return (
     <section className="space-y-6" aria-labelledby="hub-workbench-heading">
       <PageHeader
@@ -610,6 +612,21 @@ export function HubWorkbenchPage() {
       <HubStoreDetailDrawer
         task={detailTask ? records.find((task) => task.id === detailTask.id) ?? detailTask : null}
         onClose={() => setDetailTask(null)}
+        {...(detailIndex >= 0
+          ? {
+              onPrev: () => {
+                const previous = records[detailIndex - 1]
+                if (previous) setDetailTask(previous)
+              },
+              onNext: () => {
+                const next = records[detailIndex + 1]
+                if (next) setDetailTask(next)
+              },
+              hasPrev: detailIndex > 0,
+              hasNext: detailIndex < records.length - 1,
+              position: `${detailIndex + 1} / ${records.length}`,
+            }
+          : {})}
       />
 
       <SelectedStoresDrawer
