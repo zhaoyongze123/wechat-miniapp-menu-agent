@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, userEvent, within } from 'storybook/test'
 import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
 import { useState } from 'react'
@@ -60,6 +61,12 @@ type Story = StoryObj<typeof meta>
 
 export const Default: Story = {
   render: () => <SettingsDemo />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const model = canvas.getByRole('button', { name: /模型服务/ })
+    await userEvent.click(model)
+    await expect(model).toHaveAttribute('aria-current', 'true')
+  },
 }
 
 export const SavingError: Story = {

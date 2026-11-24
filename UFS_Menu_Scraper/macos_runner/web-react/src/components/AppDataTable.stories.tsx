@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, fn, userEvent, within } from 'storybook/test'
 import { AppDataTable, type DataColumn } from './AppDataTable'
 import { CellText } from './CellText'
 import { StatusBadge } from './StatusBadge'
@@ -124,4 +125,27 @@ export const NarrowStickyColumns: Story = {
       />
     </div>
   ),
+}
+
+const rowActivate = fn()
+
+export const KeyboardRowActivation: Story = {
+  render: () => (
+    <AppDataTable
+      caption="键盘进入详情"
+      columns={columns}
+      rows={rows}
+      rowKey={(row) => row.id}
+      onRowActivate={rowActivate}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    rowActivate.mockClear()
+    const canvas = within(canvasElement)
+    const row = canvas.getAllByRole('row')[1]
+    if (!row) throw new Error('缺少示例数据行')
+    row.focus()
+    await userEvent.keyboard('{Enter}')
+    await expect(rowActivate).toHaveBeenCalledTimes(1)
+  },
 }

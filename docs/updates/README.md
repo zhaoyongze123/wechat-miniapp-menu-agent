@@ -9,6 +9,8 @@
 - Hub 与 Worker 各自在服务端检查并缓存，默认有效期 1 小时；失败退避 5 分钟并保留最近一次成功信息，标记为过期。
 - 版本按语义版本比较（含预发布），不按字符串或发布时间；禁止自动降级。
 - 手动检查通过 `POST /api/updates/check`；状态通过 `GET /api/updates/status`；偏好 `PUT /api/updates/preferences`；审计 `GET /api/updates/history`。
+- 网络请求不持有状态锁；自动检查在后台线程执行，状态查询只读取缓存快照，慢网络不会阻塞设置页。
+- 缓存是否过期按 `checked_at` 与 1 小时有效期计算；检查失败保留上次成功信息，但信息随年龄正确标记为过期。
 
 ## Release 资产契约
 
@@ -43,7 +45,8 @@
 
 服务端校验：
 
-- 清单 `version` 必须与 Release 标签一致，渠道必须与当前渠道一致。
+- 清单 `version` 必须与 Release 标签一致；清单渠道必须与版本本身一致（正式版 `stable`、预发布版 `preview`）。
+- `stable` 渠道只接收正式版；`preview` 渠道同时接收正式版与预发布版，因此预览用户仍能升级到更新的正式版。
 - 资产 `kind` 只能是 `windows_installer` / `hub_image`，不可重复；名称必须存在于同一 Release。
 - 大小与 Release 资产一致；SHA-256 为 64 位十六进制；若 Release 提供 `digest: sha256:...` 必须一致。
 - 资产 URL 只允许 HTTPS 的 `github.com` / `objects.githubusercontent.com` / `release-assets.githubusercontent.com`，且路径必须包含 `/releases/download/<tag>/`。
@@ -70,6 +73,7 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 
 尚未实现（不得在 UI 中伪造）：
 
+- Hub 集中检查并向 Worker 分发版本元数据；当前 Hub 与 Worker 各自检查并缓存（设备量少时可接受，后续再收敛）。
 - 安装包/镜像下载、断点续传、取消、下载进度与磁盘空间预检。
 - Windows 独立更新执行器、事务锁、安全空闲检查、安装后健康验证与自动回滚。
 - Hub 宿主机受限更新执行器与镜像保留。

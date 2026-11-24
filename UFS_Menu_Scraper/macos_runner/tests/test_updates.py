@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
-from menu_capture.updates import UpdateService, Version, is_newer
+from menu_capture.updates import CACHE_TTL_SECONDS, UpdateService, Version, is_newer
 
 
 @pytest.fixture(autouse=True)
@@ -86,6 +88,21 @@ class Fetcher:
         raise AssertionError(f"unexpected url {url}")
 
 
+class BlockingFetcher(Fetcher):
+    """模拟慢网络：在 GitHub 列表请求处阻塞，用于验证状态查询不被锁阻塞。"""
+
+    def __init__(self, releases, manifests):
+        super().__init__(releases, manifests)
+        self.entered = threading.Event()
+        self.release_event = threading.Event()
+
+    def __call__(self, url, headers, timeout):
+        if "api.github.com" in url:
+            self.entered.set()
+            self.release_event.wait(5)
+        return super().__call__(url, headers, timeout)
+
+
 def make_service(tmp_path: Path, releases, manifests, *, current="0.2.0", channel="stable", fetcher=None):
     service = UpdateService(tmp_path, role="worker", fetcher=fetcher or Fetcher(releases, manifests))
     service.save_preferences({"channel": channel})
@@ -131,6 +148,23 @@ def test_preview_channel_can_use_rc(tmp_path):
     status = service.check(force=True)
 
     assert status["latest"]["version"] == "0.4.0-rc.1"
+    assert status["update_available"] is True
+
+
+def test_preview_channel_accepts_newer_stable(tmp_path):
+    stable = release("v0.3.0", manifest=manifest("0.3.0"))
+    rc = release("v0.2.5-rc.1", manifest=manifest("0.2.5-rc.1", "preview"), prerelease=True)
+    service = make_service(
+        tmp_path,
+        [stable, rc],
+        {"v0.3.0": manifest("0.3.0"), "v0.2.5-rc.1": manifest("0.2.5-rc.1", "preview")},
+        channel="preview",
+    )
+
+    status = service.check(force=True)
+
+    assert status["latest"]["version"] == "0.3.0"
+    assert status["latest"]["channel"] == "stable"
     assert status["update_available"] is True
 
 
@@ -241,6 +275,38 @@ def test_history_records_preferences_and_check(tmp_path):
 
     history = service.history()
     assert [row["action"] for row in history[:2]] == ["preferences", "check"]
+
+
+def test_stale_is_based_on_cache_age(tmp_path):
+    now = [1000.0]
+    service = UpdateService(tmp_path, role="worker", fetcher=Fetcher([], {}), clock=lambda: now[0])
+    service.save_preferences({"auto_check": False})
+
+    service._cache = {"checked_at": now[0] - CACHE_TTL_SECONDS - 1, "latest": None}
+    assert service.status()["stale"] is True
+
+    service._cache = {"checked_at": now[0] - 10, "latest": None}
+    assert service.status()["stale"] is False
+
+
+def test_status_is_not_blocked_by_slow_network(tmp_path):
+    rel = release("v0.3.0", manifest=manifest("0.3.0"))
+    fetcher = BlockingFetcher([rel], {"v0.3.0": manifest("0.3.0")})
+    service = make_service(tmp_path, [rel], {"v0.3.0": manifest("0.3.0")}, fetcher=fetcher)
+
+    worker = threading.Thread(target=service.check, kwargs={"force": True})
+    worker.start()
+    assert fetcher.entered.wait(2)
+
+    started = time.monotonic()
+    status = service.status()
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.5
+    assert status["checking"] is True
+
+    fetcher.release_event.set()
+    worker.join(5)
+    assert service.status()["checking"] is False
 
 
 def test_invalid_version_is_rejected():

@@ -107,6 +107,12 @@ def _update_available(latest: dict | None, current: str) -> bool:
     return _meets_min_supported(latest, current)
 
 
+def _is_stale(cache: dict, now: float) -> bool:
+    """缓存是否超过有效期；失败后保留的旧信息也会随年龄变为过期。"""
+    checked = float(cache.get("checked_at") or 0)
+    return not checked or now - checked > CACHE_TTL_SECONDS
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -129,8 +135,12 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
     if Version.parse(version) != tag_version:
         raise ValueError("发布清单版本与 Release 标签不一致")
     manifest_channel = str(manifest.get("channel") or "stable")
-    if manifest_channel not in CHANNELS or manifest_channel != channel:
-        raise ValueError("发布清单渠道与当前渠道不一致")
+    actual_channel = "preview" if tag_version.is_prerelease else "stable"
+    # preview 渠道同时接收稳定版与预发布版；清单渠道必须与版本本身一致。
+    if manifest_channel not in CHANNELS or manifest_channel != actual_channel:
+        raise ValueError("发布清单渠道与版本不一致")
+    if channel == "stable" and actual_channel != "stable":
+        raise ValueError("正式渠道不接受预发布版本")
     min_supported = str(manifest.get("min_supported_version") or "")
     if min_supported:
         Version.parse(min_supported)
@@ -207,54 +217,47 @@ class UpdateService:
     # ---------- 对外状态 ----------
 
     def status(self) -> dict:
+        start_background = False
         with self._lock:
-            preferences = self._preferences
-            cache = self._cache
+            preferences = dict(self._preferences)
+            cache = dict(self._cache)
             now = self._clock()
-            stale = not cache.get("checked_at")
-            if preferences.get("auto_check") and (stale or now - float(cache.get("checked_at") or 0) > CACHE_TTL_SECONDS):
-                if now >= float(cache.get("backoff_until") or 0):
-                    # 自动检查放到后台，避免设置页首次打开被 GitHub 超时阻塞。
-                    self._start_background_check_locked()
-                    cache = self._cache
-                    stale = not cache.get("checked_at")
-            current = self.current_version()
-            latest = cache.get("latest")
-            update_available = _update_available(latest, current)
-            capabilities = {
-                "check": True,
-                # 下载/安装/切换执行器尚未纳入本阶段，UI 必须如实展示为不支持。
-                "download": False,
-                "install": False,
-                "rollback": False,
-                "inventory": self._inventory_supported(),
-            }
-            return {
-                "role": self.role,
-                "repository": self.repository,
-                "platform": _platform_name(),
-                "current_version": current,
-                "channel": preferences.get("channel", "stable"),
-                "preferences": preferences,
-                "latest": latest,
-                "update_available": update_available,
-                "last_checked": _iso(cache.get("checked_at")),
-                "stale": stale,
-                "error": str(cache.get("error") or ""),
-                "checking": self._checking,
-                "capabilities": capabilities,
-                "inventory": self.inventory(),
-            }
+            stale = _is_stale(cache, now)
+            if (
+                preferences.get("auto_check")
+                and stale
+                and now >= float(cache.get("backoff_until") or 0)
+                and not self._checking
+            ):
+                # 只置位并启动后台线程；网络请求不占用状态锁。
+                self._checking = True
+                start_background = True
+            checking = self._checking
+        if start_background:
+            self._spawn_background_check()
+        return self._status_payload(preferences, cache, checking)
 
     def check(self, *, force: bool = True) -> dict:
         with self._lock:
-            self._check_locked(force=force)
+            if not force and not _is_stale(self._cache, self._clock()):
+                return self.status_no_check()
+            self._checking = True
+        try:
+            self._run_check(force=force)
+        finally:
+            with self._lock:
+                self._checking = False
         return self.status_no_check()
 
     def status_no_check(self) -> dict:
-        # 供 check 返回时复用，避免再次触发自动检查。
-        preferences = self._preferences
-        cache = self._cache
+        with self._lock:
+            preferences = dict(self._preferences)
+            cache = dict(self._cache)
+            checking = self._checking
+        return self._status_payload(preferences, cache, checking)
+
+    def _status_payload(self, preferences: dict, cache: dict, checking: bool) -> dict:
+        now = self._clock()
         current = self.current_version()
         latest = cache.get("latest")
         return {
@@ -265,16 +268,14 @@ class UpdateService:
             "channel": preferences.get("channel", "stable"),
             "preferences": preferences,
             "latest": latest,
-            "update_available": bool(
-                latest and latest.get("eligible") and current and is_newer(str(latest.get("version") or ""), current)
-                and _meets_min_supported(latest, current)
-            ),
+            "update_available": _update_available(latest, current),
             "last_checked": _iso(cache.get("checked_at")),
-            "stale": not cache.get("checked_at"),
+            "stale": _is_stale(cache, now),
             "error": str(cache.get("error") or ""),
-            "checking": self._checking,
+            "checking": checking,
             "capabilities": {
                 "check": True,
+                # 下载/安装/切换执行器尚未纳入本阶段，UI 必须如实展示为不支持。
                 "download": False,
                 "install": False,
                 "rollback": False,
@@ -402,65 +403,70 @@ class UpdateService:
 
     # ---------- 内部实现 ----------
 
-    def _start_background_check_locked(self) -> None:
-        if self._checking:
-            return
-        self._checking = True
-
+    def _spawn_background_check(self) -> None:
         def run() -> None:
             try:
-                with self._lock:
-                    self._check_locked(force=False)
+                self._run_check(force=False)
             finally:
                 with self._lock:
                     self._checking = False
 
         threading.Thread(target=run, name="menu-capture-update-check", daemon=True).start()
 
-    def _check_locked(self, *, force: bool) -> None:
-        now = self._clock()
-        cache = dict(self._cache)
-        if not force and cache.get("checked_at") and now - float(cache["checked_at"]) <= CACHE_TTL_SECONDS:
-            return
+    def _run_check(self, *, force: bool) -> None:
+        """网络请求完全不持有状态锁；只在读取快照与写回结果时短暂加锁。"""
+        with self._lock:
+            cache = dict(self._cache)
+            now = self._clock()
+            if not force and cache.get("checked_at") and now - float(cache["checked_at"]) <= CACHE_TTL_SECONDS:
+                return
+            if not force and now < float(cache.get("backoff_until") or 0):
+                return
+            channel = str(self._preferences.get("channel") or "stable")
         headers = {"Accept": "application/vnd.github+json", "User-Agent": "menu-capture-updater"}
         if cache.get("etag"):
             headers["If-None-Match"] = str(cache["etag"])
-        channel = str(self._preferences.get("channel") or "stable")
         try:
             status, response_headers, body = self._fetcher(
                 f"https://api.github.com/repos/{self.repository}/releases?per_page=20", headers, 10.0
             )
             if status == 304:
-                cache["checked_at"] = now
-                cache["error"] = ""
-                cache["backoff_until"] = 0
-                self._cache = cache
-                self._write_json(self.cache_path, cache)
+                with self._lock:
+                    latest_cache = dict(self._cache)
+                    latest_cache.update({"checked_at": now, "error": "", "backoff_until": 0})
+                    self._cache = latest_cache
+                    self._write_json(self.cache_path, latest_cache)
                 return
             if status != 200:
                 raise ValueError(f"GitHub 返回 HTTP {status}")
             releases = json.loads(body.decode("utf-8"))
             if not isinstance(releases, list):
                 raise ValueError("GitHub Release 响应格式无效")
+            # 清单下载也在锁外完成，避免慢网络阻塞 /api/updates/status。
             latest = self._select_release(releases, channel)
-            cache.update({
+        except Exception as exc:  # 网络、清单或格式错误都保留上次成功信息
+            with self._lock:
+                failed = dict(self._cache)
+                failed["error"] = str(exc) or "更新检查失败"
+                failed["backoff_until"] = now + FAILURE_BACKOFF_SECONDS
+                self._cache = failed
+                self._write_json(self.cache_path, failed)
+                self._append_history("check", "failed", str(exc) or "更新检查失败", "")
+            return
+        with self._lock:
+            updated = dict(self._cache)
+            updated.update({
                 "checked_at": now,
-                "etag": response_headers.get("etag") or response_headers.get("ETag") or cache.get("etag", ""),
+                "etag": response_headers.get("etag") or response_headers.get("ETag") or updated.get("etag", ""),
                 "latest": latest,
                 "error": "",
                 "backoff_until": 0,
                 "channel": channel,
             })
-            self._cache = cache
-            self._write_json(self.cache_path, cache)
+            self._cache = updated
+            self._write_json(self.cache_path, updated)
             message = f"最新版本 {latest.get('version')}" if latest else "没有可用的正式发布"
             self._append_history("check", "ok", message, str((latest or {}).get("version") or ""))
-        except Exception as exc:  # 网络、清单或格式错误都保留上次成功信息
-            cache["error"] = str(exc) or "更新检查失败"
-            cache["backoff_until"] = now + FAILURE_BACKOFF_SECONDS
-            self._cache = cache
-            self._write_json(self.cache_path, cache)
-            self._append_history("check", "failed", str(exc) or "更新检查失败", "")
 
     def _select_release(self, releases: list[dict], channel: str) -> dict | None:
         candidates: list[tuple[Version, dict]] = []
