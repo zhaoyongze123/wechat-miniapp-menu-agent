@@ -27,7 +27,7 @@
 | AssignDialog | 保留现状 | 处理中防重复、冲突排除与选择保留已有 |
 | HubAssignmentsPage | 已完成 | 详情任务/分配 ID 可复制；证据连续浏览；详情支持上一条/下一条；批量回收沿用既有逐项结果 |
 | AssignmentDetailDrawer | 已完成 | 结果图片序列连续浏览；ID 复制；忙碌/处理中保持现状 |
-| HubDevicesPage / WorkerDetailDrawer | 部分完成 | 长名称/ID 沿用 #30 表格约束；设备搜索未加（设备数量少，避免无效控件） |
+| HubDevicesPage / WorkerDetailDrawer | 已完成 | 长名称/ID 沿用 #30 表格约束；设备详情可直接查看该设备分配记录并返回设备列表；未保存备注受导航守卫保护；设备搜索暂不添加（数量少） |
 | PairingDialog | 保留现状 | 生成防重、有效期与一次性说明已有 |
 | Worker 工作台 | 已完成 | 开始弹窗处理中禁止关闭；运行/暂停/终止/同步语义保持；筛选与页码沿用 URL 参数，刷新保留 |
 | StartRunDialog | 已完成 | 提交中锁定 Esc/遮罩/关闭 |
