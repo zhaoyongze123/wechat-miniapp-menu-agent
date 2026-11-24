@@ -89,7 +89,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <h2 className="truncate heading-xs">{currentItem?.label ?? '菜单采集工作台'}</h2>
           </div>
           <div className="ml-auto flex shrink-0 items-center gap-2.5">
-            <ActiveTaskIndicator />
+            {currentKey === 'task-center' ? null : <ActiveTaskIndicator />}
             <span className="hidden text-xs text-tertiary sm:inline">{connection}</span>
             <Badge color={role.role === 'standalone' ? 'warning' : 'secondary'} variant="soft" size="sm">
               {ROLE_LABEL[role.role]}
@@ -152,15 +152,27 @@ function ActiveTaskIndicator() {
     refetchInterval: 5_000,
     staleTime: 4_000,
   })
-  const count = query.data?.tasks.length ?? 0
-  if (!count) return null
+  const active = query.data?.tasks.filter((task) => !['completed', 'failed', 'terminated', 'cancelled'].includes(task.status)) ?? []
+  if (!active.length) return null
   return (
-    <Link
-      to="/task-center"
-      className="rounded-full border border-subtle bg-secondary-soft px-2.5 py-1 text-2xs text-default transition-colors hover:bg-secondary-ghost-hover"
-    >
-      运行中 {count} 个任务
-    </Link>
+    <details className="relative">
+      <summary className="cursor-pointer rounded-full border border-subtle bg-secondary-soft px-2.5 py-1 text-xs">
+        运行中 {active.length} 个任务
+      </summary>
+      <ul className="absolute right-0 top-full z-20 mt-2 max-h-72 w-64 overflow-auto rounded-lg border border-subtle bg-surface p-2 shadow-md">
+        {active.map((task) => (
+          <li key={`${task.source}:${task.id}`}>
+            <Link
+              to={`/task-center?${new URLSearchParams({ detail: `${task.source}:${task.id}` })}`}
+              className="block rounded px-2 py-2 text-sm hover:bg-secondary-soft"
+            >
+              <span className="block break-words">{task.title}</span>
+              <span className="text-xs text-secondary">{task.progress.done} / {task.progress.total}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </details>
   )
 }
 

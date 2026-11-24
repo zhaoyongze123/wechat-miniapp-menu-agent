@@ -131,8 +131,10 @@ class SharedHub:
                 ORDER BY w.name,w.id
             """)]
             runs = {row["worker_id"]: dict(row) for row in db.execute("SELECT * FROM shared_worker_runs")}
+            history_times = dict(db.execute("SELECT worker_id,MAX(synced_at) FROM shared_run_history GROUP BY worker_id"))
             for worker in workers:
                 worker["last_run"] = runs.get(worker["id"])
+                worker["history_synced_at"] = history_times.get(worker["id"], "")
             assignments = [dict(row) for row in db.execute("""
                 SELECT a.*, COALESCE(r.disposition, '') AS disposition, COALESCE(r.message, '') AS result_message
                 FROM shared_assignments a LEFT JOIN shared_results r ON a.id=r.assignment_id

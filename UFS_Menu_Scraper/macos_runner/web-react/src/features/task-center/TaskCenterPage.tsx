@@ -54,13 +54,16 @@ export function TaskCenterPage() {
   const kind = parseKind(searchParams.get('kind'))
   const status = searchParams.get('status') ?? 'all'
   const q = searchParams.get('q') ?? ''
+  const workerId = searchParams.get('worker') ?? ''
+  const workers = role.status?.role === 'hub' ? role.status.workers : []
+  const selectedWorker = workers.find((worker) => worker.id === workerId)
   const page = parsePositiveInt(searchParams.get('page'), 1)
   const pageSize = PAGE_SIZES.includes(parsePositiveInt(searchParams.get('size'), 20))
     ? parsePositiveInt(searchParams.get('size'), 20)
     : 20
   const filters = useMemo<TaskFilters>(
-    () => ({ kind, status, q, page, pageSize }),
-    [kind, status, q, page, pageSize],
+    () => ({ kind, status, q, page, pageSize, workerId }),
+    [kind, status, q, page, pageSize, workerId],
   )
 
   const updateQuery = useCallback(
@@ -91,7 +94,7 @@ export function TaskCenterPage() {
   }, [queryText, q, updateQuery])
 
   const historyQuery = useQuery({
-    queryKey: ['task-history', filters.kind, filters.status, filters.q, filters.page, filters.pageSize],
+    queryKey: ['task-history', filters.kind, filters.status, filters.q, filters.page, filters.pageSize, filters.workerId],
     queryFn: ({ signal }) => fetchTaskHistory(filters, signal),
     placeholderData: keepPreviousData,
     enabled: role.role !== 'standalone',
@@ -99,7 +102,7 @@ export function TaskCenterPage() {
   })
 
   // 服务端会按真实总数收敛页码；把收敛结果写回 URL，避免刷新后停在空页。
-  const serverPage = historyQuery.data?.page
+  const serverPage = historyQuery.isPlaceholderData ? undefined : historyQuery.data?.page
   useEffect(() => {
     if (serverPage && serverPage !== page) updateQuery({ page: String(serverPage) }, { resetPage: false })
   }, [serverPage, page, updateQuery])
@@ -154,7 +157,7 @@ export function TaskCenterPage() {
   const handleRenamed = useCallback(
     (updated: HistoryRecord) => {
       queryClient.setQueryData<HistoryResponse>(
-        ['task-history', filters.kind, filters.status, filters.q, filters.page, filters.pageSize],
+        ['task-history', filters.kind, filters.status, filters.q, filters.page, filters.pageSize, filters.workerId],
         (current) =>
           current
             ? {
@@ -207,7 +210,7 @@ export function TaskCenterPage() {
   const records = data?.records ?? []
   const summary = data?.summary ?? {}
   const total = Number(summary.total) || 0
-  const hasFilters = kind !== 'all' || status !== 'all' || q.trim() !== ''
+  const hasFilters = kind !== 'all' || status !== 'all' || q.trim() !== '' || Boolean(workerId)
   const columns: DataColumn<HistoryRecord>[] = [
     {
       id: 'title',
@@ -235,6 +238,21 @@ export function TaskCenterPage() {
       className: 'min-w-32',
       cell: (record) => <BatchCell record={record} />,
     },
+    ...(role.role === 'hub' ? [{
+      id: 'worker',
+      header: '任务来源',
+      className: 'min-w-36',
+      cell: (record: HistoryRecord) => (
+        <div>
+          <div>{record.worker_name || (record.kind === 'materials' ? '共享后台' : '本地历史')}</div>
+          {record.synced_at ? (
+            <span className="text-xs text-secondary">
+              {record.history_status === 'partial' ? '部分记录' : '上次同步'} · {formatTime(record.synced_at)}
+            </span>
+          ) : null}
+        </div>
+      ),
+    }] : []),
     {
       id: 'status',
       header: '任务状态',
@@ -341,10 +359,22 @@ export function TaskCenterPage() {
                 onChange={(option) => updateQuery({ status: option.value })}
               />
             </div>
+            {role.role === 'hub' ? (
+              <div className="w-44">
+                <Select
+                  aria-label="来源电脑"
+                  value={workerId || 'all'}
+                  options={[{ value: 'all', label: '全部来源' }, ...workers.map((worker) => ({
+                    value: worker.id, label: worker.archived_at ? `${worker.name}（已归档）` : worker.name,
+                  }))]}
+                  onChange={(option) => updateQuery({ worker: option.value })}
+                />
+              </div>
+            ) : null}
             <div className="w-60">
               <Input
                 aria-label="搜索历史任务"
-                placeholder="搜索任务名、批次或任务 ID"
+                placeholder="搜索任务名、批次、电脑或 ID"
                 value={queryText}
                 onChange={(event) => setQueryText(event.target.value)}
               />
@@ -352,7 +382,15 @@ export function TaskCenterPage() {
           </div>
         </div>
 
-        {historyQuery.isError ? (
+        {selectedWorker && !selectedWorker.history_synced_at ? (
+          <p role="status" className="text-sm text-secondary">这台采集电脑还没有同步轮次历史。</p>
+        ) : null}
+        {historyQuery.isError && data ? (
+          <p role="status" className="text-sm text-secondary">
+            更新失败，显示 {formatTime(new Date(historyQuery.dataUpdatedAt).toISOString())} 的记录。
+          </p>
+        ) : null}
+        {historyQuery.isError && !data ? (
           <StatePanel
             variant="error"
             title="任务历史读取失败"

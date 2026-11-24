@@ -14,6 +14,7 @@ function historyParams(filters: TaskFilters): string {
     q: filters.q.trim(),
     page: String(filters.page),
     page_size: String(filters.pageSize),
+    worker_id: filters.workerId,
   })
   return params.toString()
 }

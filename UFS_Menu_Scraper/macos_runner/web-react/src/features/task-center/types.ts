@@ -110,4 +110,5 @@ export interface TaskFilters {
   q: string
   page: number
   pageSize: number
+  workerId: string
 }

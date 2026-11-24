@@ -5,6 +5,7 @@ export interface WorkerSummary {
   id: string
   name: string
   last_seen?: string
+  history_synced_at?: string
   pending_uploads?: number
   description?: string
   paired_at?: string
@@ -42,6 +43,7 @@ export interface WorkerConnectionStatus {
   online: boolean
   name?: string
   error?: string
+  history_error?: string
   credential_invalid?: boolean
   pending_uploads?: number
   assignments?: WorkerAssignmentRecord[]
