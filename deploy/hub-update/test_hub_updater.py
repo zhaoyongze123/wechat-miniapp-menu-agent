@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 from collections.abc import Callable
@@ -62,9 +63,15 @@ class FakeDocker:
     def run(self, args: list[str], timeout: float) -> tuple[int, str]:
         command = args[:2]
         if command == ["docker", "volume"]:
-            if "--format" in args:
-                return (0, str(self.volume_path)) if self.volume_path else (1, "missing mountpoint")
             return 0, "[]"
+        if command == ["docker", "run"]:
+            assert args[args.index("--network") + 1] == "none"
+            assert "--read-only" in args
+            assert "--cap-drop=ALL" in args
+            assert "--security-opt=no-new-privileges" in args
+            assert args[args.index("--mount") + 1].endswith(",readonly")
+            assert args[args.index("--entrypoint") + 1] == "python"
+            return 0, json.dumps(schema_probe_payload(self.volume_path))
         if command == ["docker", "load"]:
             if self.fail_load:
                 return 1, "invalid archive"
@@ -101,7 +108,47 @@ def create_hub_db(tmp_path: Path) -> Path:
     with sqlite3.connect(path) as db:
         db.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending')")
         db.execute("CREATE TABLE events (task_id TEXT REFERENCES tasks(id))")
+        db.execute("CREATE VIEW task_status AS SELECT id, status FROM tasks")
+        db.execute("CREATE TRIGGER tasks_noop AFTER INSERT ON tasks BEGIN SELECT 1; END")
     return path
+
+
+def schema_probe_payload(volume_path: Path | None) -> dict:
+    if volume_path is None:
+        return {"exists": False, "tables": [], "objects": []}
+    path = volume_path / "data" / "tasks.sqlite3"
+    if not path.exists():
+        return {"exists": False, "tables": [], "objects": []}
+
+    def quote(identifier: str) -> str:
+        return '"' + identifier.replace('"', '""') + '"'
+
+    with sqlite3.connect(path) as db:
+        tables = []
+        for name, sql in db.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ):
+            indexes = []
+            for row in db.execute(f"PRAGMA index_list({quote(name)})"):
+                index_name = row[1]
+                index_sql = db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (index_name,),
+                ).fetchone()[0]
+                columns = [item[2] for item in db.execute(f"PRAGMA index_info({quote(index_name)})")]
+                indexes.append({
+                    "name": index_name, "unique": int(row[2]), "origin": row[3], "partial": int(row[4]),
+                    "columns": columns, "sql": index_sql or "",
+                })
+            tables.append({
+                "name": name, "sql": sql or "",
+                "columns": [list(row) for row in db.execute(f"PRAGMA table_xinfo({quote(name)})")],
+                "indexes": indexes,
+                "foreign_keys": [list(row) for row in db.execute(f"PRAGMA foreign_key_list({quote(name)})")],
+            })
+        objects = [list(row) for row in db.execute(
+            "SELECT type,name,sql FROM sqlite_master WHERE type IN ('view','trigger') ORDER BY type,name"
+        )]
+    return {"exists": True, "tables": tables, "objects": objects}
 
 
 def test_apply_switches_and_records_previous(tmp_path: Path) -> None:
@@ -294,6 +341,60 @@ def test_explicit_rollback_blocks_incompatible_schema_change(tmp_path: Path) -> 
 
     assert docker.switched == []
     assert updater.journal()["status"] == "needs_manual_recovery"
+
+
+def test_schema_guard_blocks_new_unique_index_on_existing_table(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    updater = make_updater(tmp_path, FakeDocker(), healthy=lambda version: {"ok": True, "version": version})
+    before = updater._schema_snapshot()
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE UNIQUE INDEX tasks_status_unique ON tasks(status)")
+
+    compatible, reason = updater._schema_compatibility(before, updater._schema_snapshot())
+
+    assert not compatible
+    assert "唯一索引" in reason
+
+
+def test_schema_guard_blocks_new_constraint_on_existing_table(tmp_path: Path) -> None:
+    create_hub_db(tmp_path)
+    updater = make_updater(tmp_path, FakeDocker(), healthy=lambda version: {"ok": True, "version": version})
+    before = updater._schema_snapshot()
+    after = json.loads(json.dumps(before))
+    after["tables"]["tasks"]["constraints"].append("CHECK (status <> 'invalid')")
+
+    compatible, reason = updater._schema_compatibility(before, after)
+
+    assert not compatible
+    assert "约束发生变化" in reason
+
+
+def test_schema_guard_blocks_new_foreign_key_on_existing_table(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    updater = make_updater(tmp_path, FakeDocker(), healthy=lambda version: {"ok": True, "version": version})
+    before = updater._schema_snapshot()
+    with sqlite3.connect(database) as db:
+        db.executescript("""
+            CREATE TABLE statuses (code TEXT PRIMARY KEY);
+            CREATE TABLE events_new (task_id TEXT REFERENCES tasks(id), status TEXT REFERENCES statuses(code));
+            INSERT INTO events_new SELECT task_id, NULL FROM events;
+            DROP TABLE events;
+            ALTER TABLE events_new RENAME TO events;
+        """)
+
+    compatible, reason = updater._schema_compatibility(before, updater._schema_snapshot())
+
+    assert not compatible
+    assert "外键发生变化" in reason
+
+
+def test_schema_sql_normalization_preserves_quoted_whitespace() -> None:
+    before = "CREATE TABLE t (value TEXT DEFAULT 'two  spaces')"
+    same = "CREATE  TABLE t (value TEXT DEFAULT 'two  spaces')"
+    changed = "CREATE TABLE t (value TEXT DEFAULT 'two spaces')"
+
+    assert hub_updater._table_definitions(before)[0] == hub_updater._table_definitions(same)[0]
+    assert hub_updater._table_definitions(before)[0] != hub_updater._table_definitions(changed)[0]
 
 
 def test_active_transaction_blocks_second_apply(tmp_path: Path) -> None:

@@ -22,7 +22,6 @@ import json
 import os
 import re
 import shutil
-import sqlite3
 import subprocess
 import sys
 import threading
@@ -51,6 +50,29 @@ MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 DISK_MARGIN_BYTES = 512 * 1024 * 1024
 DOWNLOAD_TIMEOUT_SECONDS = 1800
 DOCKER_TIMEOUT_SECONDS = 900
+SCHEMA_PROBE = r'''import json, pathlib, sqlite3
+def q(value): return '"' + value.replace('"', '""') + '"'
+root = pathlib.Path('/hub-data')
+data = root / 'data'
+path = data / 'tasks.sqlite3'
+if data.is_symlink() or path.is_symlink(): raise RuntimeError('Hub 数据库路径不能是符号链接')
+if not path.exists(): print(json.dumps({'exists': False, 'tables': [], 'objects': []}))
+else:
+    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5)
+    db.execute('PRAGMA query_only=ON')
+    tables = []
+    for name, sql in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
+        indexes = []
+        for row in db.execute('PRAGMA index_list(' + q(name) + ')'):
+            index_name = row[1]
+            index_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (index_name,)).fetchone()[0]
+            columns = [item[2] for item in db.execute('PRAGMA index_info(' + q(index_name) + ')')]
+            indexes.append({'name': index_name, 'unique': int(row[2]), 'origin': row[3], 'partial': int(row[4]), 'columns': columns, 'sql': index_sql or ''})
+        tables.append({'name': name, 'sql': sql or '', 'columns': [list(row) for row in db.execute('PRAGMA table_xinfo(' + q(name) + ')')], 'indexes': indexes, 'foreign_keys': [list(row) for row in db.execute('PRAGMA foreign_key_list(' + q(name) + ')')]})
+    objects = [list(row) for row in db.execute("SELECT type,name,sql FROM sqlite_master WHERE type IN ('view','trigger') ORDER BY type,name")]
+    print(json.dumps({'exists': True, 'tables': tables, 'objects': objects}))
+    db.close()
+'''
 
 
 def _utc_now() -> str:
@@ -72,8 +94,39 @@ def _write_json(path: Path, payload: Any) -> None:
 
 
 def _normalize_sql(sql: str) -> str:
-    """收敛 SQLite 自动保存的空白差异，保留定义本身用于保守比较。"""
-    return re.sub(r"\s+", " ", sql).strip()
+    """只折叠 SQL 引号之外的空白，不能改写字符串/标识符内部内容。"""
+    result = []
+    quote = ""
+    pending_space = False
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if quote:
+            result.append(char)
+            if quote == "]":
+                if char == "]":
+                    quote = ""
+            elif char == quote:
+                if index + 1 < len(sql) and sql[index + 1] == quote:
+                    index += 1
+                    result.append(sql[index])
+                else:
+                    quote = ""
+        elif char in "'\"`[":
+            if pending_space and result:
+                result.append(" ")
+            pending_space = False
+            quote = "]" if char == "[" else char
+            result.append(char)
+        elif char.isspace():
+            pending_space = True
+        else:
+            if pending_space and result:
+                result.append(" ")
+            pending_space = False
+            result.append(char)
+        index += 1
+    return "".join(result).strip()
 
 
 def _table_definitions(sql: str) -> tuple[dict[str, str], list[str], str]:
@@ -128,10 +181,6 @@ def _table_definitions(sql: str) -> tuple[dict[str, str], list[str], str]:
             columns[name] = _normalize_sql(chunk)
     table_options = _normalize_sql(sql[closing + 1:]) if closing >= 0 else ""
     return columns, constraints, table_options
-
-
-def _quote_identifier(value: str) -> str:
-    return '"' + value.replace('"', '""') + '"'
 
 
 def _pid_alive(pid: int) -> bool:
@@ -432,80 +481,60 @@ class HubUpdater:
 
     def _schema_snapshot(self) -> dict:
         """只读记录 Hub 唯一 SQLite 状态库的架构，用于判断旧镜像能否读新库。"""
-        if not self.config.data_volume:
+        if not self.config.data_volume or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", self.config.data_volume):
             raise UpdateError("未配置 Hub 数据卷，无法建立数据库回滚基线")
-        code, output = self.run(
-            ["docker", "volume", "inspect", "--format", "{{.Mountpoint}}", self.config.data_volume], 30,
-        )
-        if code != 0 or not output.strip():
-            raise UpdateError("无法定位 Hub 数据卷，已拒绝更新以保护数据库回滚边界")
-        volume_root = Path(output.strip())
+        image = self._schema_probe_image()
+        mount = f"type=volume,source={self.config.data_volume},target=/hub-data,readonly"
+        code, output = self.run([
+            "docker", "run", "--rm", "--network", "none", "--read-only", "--cap-drop=ALL",
+            "--security-opt=no-new-privileges", "--mount", mount,
+            "--entrypoint", "python", image, "-c", SCHEMA_PROBE,
+        ], 30)
+        if code != 0:
+            raise UpdateError("无法通过只读容器读取 Hub 数据库架构，已拒绝回滚判定")
         try:
-            root = volume_root.resolve(strict=True)
-        except OSError:
-            raise UpdateError("Hub 数据卷挂载目录不可用，已拒绝更新") from None
-        if not root.is_dir():
-            raise UpdateError("Hub 数据卷挂载目录无效，已拒绝更新")
-        # compose 将该卷挂载到 /var/lib/menu-capture；server.py 的 TaskStore
-        # 在 data/tasks.sqlite3 中保存任务、共享设备与素材批次等 Hub 状态。
-        data_root = root / "data"
-        if data_root.is_symlink():
-            raise UpdateError("Hub 数据目录不能是符号链接")
-        database = data_root / "tasks.sqlite3"
-        if database.is_symlink():
-            raise UpdateError("Hub 状态数据库不能是符号链接")
-        if not database.exists():
-            return {"exists": False, "tables": {}, "objects": []}
-        if not database.is_file():
-            raise UpdateError("Hub 状态数据库路径不是普通文件")
-        uri = database.as_uri() + "?mode=ro"
-        try:
-            with sqlite3.connect(uri, uri=True, timeout=5) as db:
-                db.execute("PRAGMA query_only=ON")
-                tables: dict[str, dict] = {}
-                for (name, sql) in db.execute(
-                    "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-                ):
-                    columns = {}
-                    quoted_table = _quote_identifier(name)
-                    for row in db.execute(f"PRAGMA table_xinfo({quoted_table})"):
-                        columns[row[1]] = {
-                            "type": row[2] or "", "notnull": int(row[3]), "default": row[4],
-                            "pk": int(row[5]), "hidden": int(row[6]),
-                        }
-                    indexes = {}
-                    for row in db.execute(f"PRAGMA index_list({quoted_table})"):
-                        index_name = row[1]
-                        index_columns = [item[2] for item in db.execute(
-                            f"PRAGMA index_info({_quote_identifier(index_name)})"
-                        )]
-                        index_sql = db.execute(
-                            "SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (index_name,),
-                        ).fetchone()[0]
-                        indexes[index_name] = {
-                            "unique": int(row[2]), "origin": row[3], "partial": int(row[4]),
-                            "columns": index_columns, "sql": _normalize_sql(index_sql or ""),
-                        }
-                    foreign_keys = [list(row) for row in db.execute(
-                        f"PRAGMA foreign_key_list({quoted_table})"
-                    )]
-                    foreign_keys.sort(key=lambda item: tuple(item))
-                    column_defs, constraints, table_options = _table_definitions(sql or "")
-                    tables[name] = {
-                        "columns": columns, "column_defs": column_defs,
-                        "constraints": sorted(constraints), "indexes": indexes,
-                        "foreign_keys": foreign_keys, "table_options": table_options,
-                    }
-                objects = sorted(
-                    (row[0], row[1], _normalize_sql(row[2] or ""))
-                    for row in db.execute(
-                        "SELECT type, name, sql FROM sqlite_master "
-                        "WHERE type IN ('view','trigger') ORDER BY type,name"
-                    )
-                )
-        except (OSError, sqlite3.Error, ValueError) as exc:
-            raise UpdateError(f"无法读取 Hub 数据库架构，已拒绝更新：{exc}") from None
-        return {"exists": True, "tables": tables, "objects": objects}
+            payload = json.loads(output)
+            tables: dict[str, dict] = {}
+            for table in payload["tables"]:
+                name = table["name"]
+                columns = {
+                    row[1]: {"type": row[2] or "", "notnull": int(row[3]), "default": row[4],
+                             "pk": int(row[5]), "hidden": int(row[6])}
+                    for row in table["columns"]
+                }
+                indexes = {
+                    item["name"]: {key: item[key] for key in ("unique", "origin", "partial", "columns", "sql")}
+                    for item in table["indexes"]
+                }
+                column_defs, constraints, table_options = _table_definitions(table["sql"])
+                tables[name] = {
+                    "columns": columns, "column_defs": column_defs,
+                    "constraints": sorted(constraints), "indexes": indexes,
+                    "foreign_keys": table["foreign_keys"], "table_options": table_options,
+                }
+            objects = sorted(
+                (str(row[0]), str(row[1]), _normalize_sql(row[2] or ""))
+                for row in payload["objects"]
+            )
+            return {"exists": bool(payload["exists"]), "tables": tables, "objects": [list(row) for row in objects]}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise UpdateError(f"只读容器返回了无效的数据库架构：{exc}") from None
+
+    def _schema_probe_image(self) -> str:
+        current = self._current_image_ref()
+        prefix = f"{self.config.image_repo}:"
+        if current.startswith(prefix) and VERSION_RE.fullmatch(current[len(prefix):]):
+            return current
+        journal = self.journal()
+        for key in ("target_version", "previous_version"):
+            version = str(journal.get(key) or "")
+            if not VERSION_RE.fullmatch(version):
+                continue
+            image = self.config.image_ref(version)
+            code, _ = self.run(["docker", "image", "inspect", image], 30)
+            if code == 0:
+                return image
+        raise UpdateError("没有可用的 Hub 应用镜像读取数据库架构")
 
     @staticmethod
     def _schema_compatibility(before: dict, after: dict) -> tuple[bool, str]:
@@ -528,13 +557,13 @@ class HubUpdater:
             for column_name, definition in old_defs.items():
                 if new_defs.get(column_name) != definition:
                     return False, f"数据库列 {table_name}.{column_name} 的定义发生变化"
-            if not set(old.get("constraints", [])).issubset(current.get("constraints", [])):
+            if old.get("constraints", []) != current.get("constraints", []):
                 return False, f"数据库表 {table_name} 的约束发生变化"
             if old.get("table_options") != current.get("table_options"):
                 return False, f"数据库表 {table_name} 的存储选项发生变化"
             old_foreign_keys = {tuple(item) for item in old.get("foreign_keys", [])}
             current_foreign_keys = {tuple(item) for item in current.get("foreign_keys", [])}
-            if not old_foreign_keys.issubset(current_foreign_keys):
+            if old_foreign_keys != current_foreign_keys:
                 return False, f"数据库表 {table_name} 的外键发生变化"
             for column_name in set(new_columns) - set(old_columns):
                 column = new_columns[column_name]
@@ -543,6 +572,9 @@ class HubUpdater:
             for index_name, index in old.get("indexes", {}).items():
                 if current.get("indexes", {}).get(index_name) != index:
                     return False, f"数据库表 {table_name} 的索引 {index_name} 被删除或修改"
+            for index_name in set(current.get("indexes", {})) - set(old.get("indexes", {})):
+                if current["indexes"][index_name]["unique"]:
+                    return False, f"数据库表 {table_name} 新增了唯一索引 {index_name}，旧版本写入兼容性未知"
         if before.get("exists") and not after.get("exists"):
             return False, "Hub 状态数据库已丢失"
         return True, "数据库仅有向后兼容的扩展"
