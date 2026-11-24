@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fetchAssignmentRecords, fetchResultFiles } from './api'
 import { HubStoreDetailDrawer } from './HubStoreDetailDrawer'
@@ -40,7 +41,9 @@ function renderDrawer(overrides: Partial<HubTask> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <HubStoreDetailDrawer task={{ ...task, ...overrides }} onClose={() => undefined} />
+      <MemoryRouter>
+        <HubStoreDetailDrawer task={{ ...task, ...overrides }} onClose={() => undefined} />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -63,13 +66,12 @@ describe('HubStoreDetailDrawer', () => {
     })
     renderDrawer()
 
+    const user = userEvent.setup()
     expect(screen.getByText('测试酒店')).toBeInTheDocument()
     expect(screen.getByText('原始门店名称')).toBeInTheDocument()
     expect(screen.getByText(task.id)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '查看当前任务二维码' })).toHaveAttribute(
-      'href',
-      `/api/tasks/${task.id}/source`,
-    )
+    await user.click(screen.getByRole('button', { name: '查看二维码' }))
+    expect(screen.getByAltText('任务二维码')).toHaveAttribute('src', `/api/tasks/${task.id}/source`)
     expect(await screen.findByText('采集电脑A')).toBeInTheDocument()
     expect(screen.queryByText('其他批次设备')).not.toBeInTheDocument()
     expect(fetchAssignmentRecords).toHaveBeenCalledWith(
@@ -110,7 +112,8 @@ describe('HubStoreDetailDrawer', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={client}>
-        <HubStoreDetailDrawer
+        <MemoryRouter>
+          <HubStoreDetailDrawer
           task={task}
           onClose={() => undefined}
           onPrev={onPrev}
@@ -119,6 +122,7 @@ describe('HubStoreDetailDrawer', () => {
           hasNext
           position="2 / 5"
         />
+        </MemoryRouter>
       </QueryClientProvider>,
     )
     expect(screen.getByText('2 / 5')).toBeInTheDocument()
