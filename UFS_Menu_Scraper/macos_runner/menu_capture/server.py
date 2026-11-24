@@ -543,7 +543,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                queue_scope: Literal["all", "current"] = "all",
                queue_batch: Annotated[str, Query(max_length=128)] = "",
                queue_q: Annotated[str, Query(max_length=300)] = "",
-               queue_filter: Literal["all", "pending", "running", "captured", "rejected", "review"] = "all",
+               queue_filter: Literal["all", "pending", "running", "captured", "rejected", "review", "returned"] = "all",
                queue_sort: Literal["source", "recent", "status"] = "source",
                selected: Annotated[str, Query(max_length=9000)] = "",
                include_events: bool = True):

@@ -13,6 +13,7 @@ import { AppPagination } from '../../components/AppPagination'
 import { PageHeader } from '../../components/PageHeader'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
+import { StatCard } from '../../components/StatCard'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
@@ -38,6 +39,7 @@ const STATUS_OPTIONS = [
   { value: 'captured', label: '已截图待复核' },
   { value: 'rejected', label: '不合格' },
   { value: 'review', label: '待检查' },
+  { value: 'returned', label: '待重新选码' },
 ]
 
 const SORT_OPTIONS = [
@@ -46,7 +48,7 @@ const SORT_OPTIONS = [
   { value: 'status', label: '按状态' },
 ]
 
-const FILTER_VALUES: HubQueueFilter[] = ['all', 'pending', 'running', 'captured', 'rejected', 'review']
+const FILTER_VALUES: HubQueueFilter[] = ['all', 'pending', 'running', 'captured', 'rejected', 'review', 'returned']
 const SORT_VALUES: HubQueueSort[] = ['source', 'recent', 'status']
 
 function parseScope(value: string | null): HubQueueScope {
@@ -377,13 +379,14 @@ export function HubWorkbenchPage() {
         }
       />
 
-      <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6" aria-label="门店状态统计">
+      <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-7" aria-label="门店状态统计">
         <StatCard label="门店总数" value={totalStores} active={filter === 'all'} onClick={() => updateQuery({ filter: 'all' })} />
         <StatCard label="待采集" value={Number(counts.pending) || 0} active={filter === 'pending'} onClick={() => updateQuery({ filter: 'pending' })} />
         <StatCard label="采集中" value={Number(counts.running) || 0} active={filter === 'running'} onClick={() => updateQuery({ filter: 'running' })} />
         <StatCard label="已截图待复核" value={Number(counts.captured) || 0} active={filter === 'captured'} onClick={() => updateQuery({ filter: 'captured' })} />
         <StatCard label="待检查" value={Number(counts.review) || 0} active={filter === 'review'} onClick={() => updateQuery({ filter: 'review' })} />
         <StatCard label="不合格" value={Number(counts.rejected) || 0} tone="danger" active={filter === 'rejected'} onClick={() => updateQuery({ filter: 'rejected' })} />
+        <StatCard label="待重新选码" value={Number(counts.returned) || 0} tone="warning" active={filter === 'returned'} onClick={() => updateQuery({ filter: 'returned' })} />
       </section>
 
       <section className="rounded-xl border border-subtle bg-surface flex flex-wrap items-center justify-between gap-3 px-4 py-3" aria-label="采集电脑概况">
@@ -391,7 +394,6 @@ export function HubWorkbenchPage() {
           <span className="text-default">采集电脑 {activeWorkers.length} 台</span>
           <span className="text-secondary">在线 {onlineWorkers.length} 台</span>
           <span className="text-secondary">已分配门店 {assignedCount} 家</span>
-          {Number(counts.returned) ? <span className="text-warning">待重新选码 {Number(counts.returned)} 家</span> : null}
         </div>
         <Link className="text-sm text-default underline-offset-2 hover:underline" to="/devices">
           管理采集电脑
@@ -593,37 +595,6 @@ export function HubWorkbenchPage() {
         }}
       />
     </section>
-  )
-}
-
-function StatCard({
-  label,
-  value,
-  active,
-  tone,
-  onClick,
-}: {
-  label: string
-  value: number
-  active: boolean
-  tone?: 'danger'
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={[
-        'rounded-xl border px-4 py-3 text-left transition-colors',
-        active ? 'border-subtle bg-secondary-soft' : 'border-subtle bg-surface hover:bg-secondary-ghost-hover',
-      ].join(' ')}
-    >
-      <span className="block text-xs text-secondary">{label}</span>
-      <span className={`mt-1 block heading-lg tabular-nums ${tone === 'danger' && value > 0 ? 'text-danger' : 'text-default'}`}>
-        {value}
-      </span>
-    </button>
   )
 }
 

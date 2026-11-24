@@ -1,7 +1,7 @@
 /** Hub 工作台、设备与分配记录的 DTO；字段缺失显示未知，不推断事实。 */
 
 export type HubQueueScope = 'all' | 'current'
-export type HubQueueFilter = 'all' | 'pending' | 'running' | 'captured' | 'rejected' | 'review'
+export type HubQueueFilter = 'all' | 'pending' | 'running' | 'captured' | 'rejected' | 'review' | 'returned'
 export type HubQueueSort = 'source' | 'recent' | 'status'
 export type AssignmentPhase = '' | 'assigned' | 'ready' | 'completed' | 'reclaimed' | 'history'
 

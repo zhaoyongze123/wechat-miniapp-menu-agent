@@ -11,6 +11,8 @@ import { AppPagination } from '../../components/AppPagination'
 import { PageHeader } from '../../components/PageHeader'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
+import { StatCard } from '../../components/StatCard'
+import { FilterToolbar } from '../../components/FilterToolbar'
 import { errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
 import { ActiveTasksPanel } from './ActiveTasksPanel'
@@ -339,7 +341,7 @@ export function TaskCenterPage() {
               任务历史
             </h2>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <FilterToolbar label="任务历史筛选">
             <SegmentedControl
               aria-label="任务类型"
               value={kind}
@@ -379,7 +381,7 @@ export function TaskCenterPage() {
                 onChange={(event) => setQueryText(event.target.value)}
               />
             </div>
-          </div>
+          </FilterToolbar>
         </div>
 
         {selectedWorker && !selectedWorker.history_synced_at ? (
@@ -427,7 +429,7 @@ export function TaskCenterPage() {
                         size="sm"
                         onClick={() => {
                           setQueryText('')
-                          updateQuery({ kind: '', status: '', q: '' })
+                          updateQuery({ kind: '', status: '', q: '', worker: '' })
                         }}
                       >
                         清除筛选
@@ -457,15 +459,6 @@ export function TaskCenterPage() {
         onRenamed={handleRenamed}
       />
     </section>
-  )
-}
-
-function StatCard({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-xl border border-subtle bg-surface px-4 py-3">
-      <p className="text-xs text-secondary">{label}</p>
-      <p className="mt-1 heading-lg tabular-nums">{value}</p>
-    </div>
   )
 }
 
