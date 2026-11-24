@@ -162,6 +162,29 @@ def test_rollback_uses_previous_version(tmp_path: Path) -> None:
     assert docker.switched == ["menu-capture-hub:0.2.3"]
 
 
+def test_rollback_health_failure_restores_running_version(tmp_path: Path) -> None:
+    """回滚目标起不来时必须切回原版本，不能让采集服务停在停机状态。"""
+    docker = FakeDocker(current="menu-capture-hub:0.2.4")
+
+    def healthy(version: str) -> dict:
+        if version == "0.2.3":
+            return {"ok": False, "version": "", "detail": "容器启动失败"}
+        return {"ok": True, "version": version}
+
+    updater = make_updater(tmp_path, docker, healthy=healthy)
+    updater.journal_path.parent.mkdir(parents=True, exist_ok=True)
+    hub_updater._write_json(updater.journal_path, {
+        "status": "completed", "target_version": "0.2.4", "previous_version": "0.2.3", "pid": 0,
+    })
+
+    with pytest.raises(UpdateError, match="恢复运行 0.2.4"):
+        updater.rollback({"version": "0.2.3", "confirm": "0.2.3"})
+
+    assert docker.switched == ["menu-capture-hub:0.2.3", "menu-capture-hub:0.2.4"]
+    assert updater.journal()["status"] == "failed"
+    assert "0.2.4" in updater.journal()["message"]
+
+
 def test_rollback_rejects_unrecorded_version(tmp_path: Path) -> None:
     updater = make_updater(tmp_path, FakeDocker(), healthy=lambda version: {"ok": True, "version": version})
 

@@ -267,15 +267,20 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         env:
           MENU_CAPTURE_HOST_PORT: '18788'
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # 与 Windows 验收一致：基线用同一份源码构建、只改版本号，
-          # 这样验证的是镜像加载/切换/回滚链路本身，而不是跨版本数据库结构兼容性。
+          # 基线直接使用 v0.2.2 正式发布镜像（不重新打包），覆盖“生产 0.2.2 → 新版 → 回滚 0.2.2”
+          # 的真实跨版本场景，并验证旧版本能在新版本迁移过的数据库上启动（回滚兼容性）。
           base_version=0.2.2
           project=menu-capture-updater
           compose=(docker compose -p "$project" -f deploy/compose.yaml)
-          docker build --build-arg VERSION=$base_version -t "menu-capture-hub:$base_version" \
-            -f deploy/Dockerfile.hub .
+          baseline_dir="$RUNNER_TEMP/baseline"
+          mkdir -p "$baseline_dir"
+          gh release download "v$base_version" --repo "$GITHUB_REPOSITORY" \
+            --pattern "menu-capture-hub-$base_version-linux-amd64.tar.gz" --dir "$baseline_dir"
+          docker load -i "$baseline_dir/menu-capture-hub-$base_version-linux-amd64.tar.gz"
+          docker image inspect "menu-capture-hub:$base_version" > /dev/null
 
           state="$RUNNER_TEMP/hub-updater"
           mkdir -p "$state/archives"

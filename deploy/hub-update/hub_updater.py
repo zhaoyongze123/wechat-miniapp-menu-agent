@@ -494,8 +494,13 @@ class HubUpdater:
                 raise UpdateError(f"回滚切换失败：{output}")
             healthy, detail = self._wait_healthy(target)
             if not healthy:
-                self._fail(f"回滚后健康检查未通过：{detail}", target)
-                raise UpdateError(f"回滚后健康检查未通过：{detail}")
+                # 回滚目标不可用时绝不能把采集服务留在停机状态：优先切回回滚前仍在运行的版本。
+                restored, restore_output = self._restore_after_failed_rollback(current)
+                message = f"回滚后健康检查未通过：{detail}"
+                message += (f"；已恢复运行 {current}" if restored
+                            else f"；恢复运行 {current or '原版本'} 也失败：{restore_output or '未知原因'}")
+                self._fail(message, target)
+                raise UpdateError(message)
             self._write("rolled_back", f"已回滚到 {target}")
             self._audit("rollback", "ok", f"已回滚到 {target}", target)
             return self.status()
@@ -549,6 +554,20 @@ class HubUpdater:
         self._write("rolled_back", f"{message}；已回滚到 {previous}", target_version=version)
         self._audit("install", "rolled_back", message, version)
         return self.status()
+
+    def _restore_after_failed_rollback(self, version: str) -> tuple[bool, str]:
+        """回滚目标不可用时切回回滚前运行的版本，保证采集服务不因回滚失败而停机。"""
+        if not version or not VERSION_RE.match(version):
+            return False, "没有可恢复的原版本"
+        code, _ = self.run(["docker", "image", "inspect", self.config.image_ref(version)], 30)
+        if code != 0:
+            return False, f"原版本镜像 {self.config.image_ref(version)} 不存在"
+        self._write("rolling_back", f"回滚未通过健康检查，正在恢复运行 {version}", target_version=version)
+        switched, output = self._switch(version)
+        if not switched:
+            return False, output
+        healthy, detail = self._wait_healthy(version)
+        return healthy, detail
 
     def _fail(self, message: str, version: str) -> None:
         self._write("failed", message, target_version=version)
