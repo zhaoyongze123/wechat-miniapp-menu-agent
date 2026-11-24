@@ -248,7 +248,7 @@ export function SettingsPage() {
             {active === 'model' ? (
               <SettingSection id="model" title="模型服务" description="用于采集后的菜单识别与素材分析；密钥只在服务端保存。">
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <FormField label="供应商" htmlFor="settings-provider">
+                  <FormField label="供应商">
                     <Select
                       aria-label="模型供应商"
                       value={form.provider}
@@ -304,7 +304,7 @@ export function SettingsPage() {
                       onCheckedChange={(next) => patch({ clear_api_key: next })}
                     />
                   </div>
-                  <FormField label="模型思考模式" htmlFor="settings-thinking">
+                  <FormField label="模型思考模式">
                     <Select
                       aria-label="模型思考模式"
                       value={form.enable_thinking}
@@ -631,7 +631,7 @@ function DirectoryField({
   busy: boolean
   onPick: () => void
 }) {
-  const id = `directory-${label}`
+  const id = `directory-${label === '输入目录' ? 'input' : 'output'}`
   return (
     <SettingRow label={label} htmlFor={id} {...(note ? { description: note } : {})} wide>
       <div className="flex gap-2">
