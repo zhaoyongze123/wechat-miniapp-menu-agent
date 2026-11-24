@@ -101,7 +101,7 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 必须配置的环境变量：`HUB_UPDATE_TOKEN`（≥16 字符）、`HUB_UPDATE_COMPOSE_FILE`、`HUB_UPDATE_PROJECT`、`HUB_UPDATE_DATA_VOLUME`、`HUB_UPDATE_STATE_DIR`；可选 `HUB_UPDATE_ARCHIVE_DIR`、`HUB_UPDATE_HEALTH_URL`、`HUB_UPDATE_HEALTH_USER`/`HUB_UPDATE_HEALTH_PASSWORD`（Hub 的 `/api/version` 走基本认证）、`HUB_UPDATE_BIND`、`HUB_UPDATE_PORT`、`HUB_UPDATE_ALLOWED_CLIENTS`、`HUB_UPDATE_HEALTH_TIMEOUT`。
 - Hub 服务端通过 `HUB_UPDATE_URL` / `HUB_UPDATE_TOKEN` 代理调用执行器（`deploy/compose.yaml` 已声明 `host.docker.internal:host-gateway`）；未配置时设置页只显示原因，不提供安装按钮。容器只提交「最新版本 + 清单校验后的 SHA-256/大小/URL」，由执行器再次校验。
 - 部署时执行器必须监听容器可达的地址，并把 `HUB_UPDATE_ALLOWED_CLIENTS` 收敛到 Docker 网桥网段；切勿对公网开放。
-- 当前限制：在线拉取仓库镜像不在本期范围（以 tar.gz 归档分发）；手动回滚入口尚未开放，失败时由执行器自动回滚；历史镜像保留数量与清理策略见后续存储治理阶段。
+- 已知限制：自动回滚只保证镜像切回；若新版本已迁移数据库结构，旧版本可能启动失败。此时健康检查会如实失败并保留状态与审计，跨版本回滚前需确认数据结构兼容（Windows 执行器已做结构指纹拦截，Hub 侧尚未实现）。
 
 ## 本地版本清点（Windows）
 
