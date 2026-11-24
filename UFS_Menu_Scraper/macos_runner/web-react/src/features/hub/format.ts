@@ -75,7 +75,7 @@ export function conflictReasonText(reason: string, workerName?: string): string 
   return CONFLICT_REASON[reason] ?? reason
 }
 
-const STORE_COORDINATES = /^[[(]?\s*[+-]?\d{1,3}(?:\.\s*\d+)?\s*[,，]\s*[+-]?\d{1,3}(?:\.\s*\d+)?\s*[\])]?$/
+const STORE_COORDINATES = /^[[(]?\s*[+\-−－]?\d{1,3}(?:[.．]\s*\d+)?\s*[,，]\s*[+\-−－]?\d{1,3}(?:[.．]\s*\d+)?\s*[\])]?$/
 const STORE_CITY = /[市州区县旗盟]$/
 /** LCA 段在部分批次中存在，也可能是 `LCA-123` / `LCA 123` 等空格变体。 */
 const STORE_LCA = /^LCA[-_ ]?\d+$/i
