@@ -1,0 +1,4 @@
+# React 前端入口需要与 CI（Linux）构建产物保持字节一致，固定为 LF，
+# 避免 Windows 本地构建写入 CRLF 导致“产物与源码不一致”校验失败。
+UFS_Menu_Scraper/macos_runner/web-react/index.html text eol=lf
+UFS_Menu_Scraper/macos_runner/web/react/index.html text eol=lf
