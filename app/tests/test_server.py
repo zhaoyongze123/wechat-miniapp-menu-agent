@@ -298,3 +298,14 @@ def test_update_download_endpoint_requires_checked_release(tmp_path: Path) -> No
     cancelled = client.post("/api/updates/download/cancel", headers=headers)
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "idle"
+
+
+def test_extracted_task_center_and_model_usage_routes_keep_hub_auth(tmp_path: Path) -> None:
+    from base64 import b64encode
+
+    app = create_app(tmp_path, role="hub", admin_password="isolated-test-password")
+    basic = {"Authorization": "Basic " + b64encode(b"admin:isolated-test-password").decode()}
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        for path in ("/api/tasks/active", "/api/tasks/history", "/api/model-usage"):
+            assert client.get(path).status_code == 401
+            assert client.get(path, headers=basic).status_code == 200
