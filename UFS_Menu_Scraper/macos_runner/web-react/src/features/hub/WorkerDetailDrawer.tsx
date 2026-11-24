@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
@@ -8,6 +9,7 @@ import { AppDrawer } from '../../components/AppDrawer'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
+import { useUnsavedChanges } from '../../components/UnsavedChangesProvider'
 import { errorMessage } from '../../api/client'
 import { editWorker } from './api'
 import { assignmentStatusOf, deviceStateOf, formatStore, formatTime } from './format'
@@ -54,6 +56,11 @@ export function WorkerDetailDrawer({
     },
   })
 
+  const dirty = Boolean(
+    open && worker && (name.trim() !== worker.name || description.trim() !== (worker.description ?? '')),
+  )
+  useUnsavedChanges(dirty, '设备信息有未保存的修改，离开后会丢失。')
+
   if (!open) return null
   if (!worker) {
     return (
@@ -64,7 +71,6 @@ export function WorkerDetailDrawer({
   }
 
   const state = deviceStateOf(worker)
-  const dirty = name.trim() !== worker.name || description.trim() !== (worker.description ?? '')
 
   const save = () => {
     const trimmed = name.trim()
@@ -150,7 +156,15 @@ export function WorkerDetailDrawer({
         </dl>
 
         <section className="space-y-2">
-          <h3 className="heading-xs">当前分配</h3>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="heading-xs">当前分配</h3>
+            <Link
+              to={`/assignments?worker=${encodeURIComponent(worker.id)}&from=devices`}
+              className="text-xs text-default underline-offset-2 hover:underline"
+            >
+              查看该设备分配记录
+            </Link>
+          </div>
           {assignments.length === 0 ? (
             <p className="rounded-lg bg-surface-secondary px-3 py-2 text-xs text-secondary">没有占用中的门店。</p>
           ) : (

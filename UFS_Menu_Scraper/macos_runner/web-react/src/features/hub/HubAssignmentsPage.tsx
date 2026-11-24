@@ -58,6 +58,7 @@ export function HubAssignmentsPage() {
   const [reclaimResult, setReclaimResult] = useState<ReclaimResponse | null>(null)
 
   const workerId = searchParams.get('worker') ?? ''
+  const fromDevices = searchParams.get('from') === 'devices'
   const phase = parsePhase(searchParams.get('phase'))
   const q = searchParams.get('q') ?? ''
   const page = parsePositiveInt(searchParams.get('page'), 1)
@@ -309,6 +310,14 @@ export function HubAssignmentsPage() {
         headingId="hub-assignments-heading"
         actions={
           <>
+            {fromDevices ? (
+              <Link
+                to="/devices"
+                className="rounded-md border border-subtle px-3 py-1.5 text-sm text-default hover:bg-secondary-ghost-hover"
+              >
+                返回采集电脑
+              </Link>
+            ) : null}
             <Button color="secondary" variant="outline" size="sm" onClick={() => void recordsQuery.refetch()}>
               刷新
             </Button>
