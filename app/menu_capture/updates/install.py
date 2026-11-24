@@ -23,7 +23,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.request import urlopen
 
-from menu_capture.updates.service import Version, _SHA256_RE, _file_sha256, _is_reparse, _normalize_arch
+from menu_capture.updates.release import Version, _SHA256_RE, _normalize_arch
+from menu_capture.updates.service import _file_sha256, _is_reparse
 
 INSTALL_TIMEOUT_SECONDS = 900
 HEALTH_TIMEOUT_SECONDS = 240
