@@ -6,6 +6,7 @@ import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { errorMessage } from '../../api/client'
 import { statusOf } from '../task-center/format'
 import { ManualPanel } from '../worker/ManualPanel'
+import { activateNotificationAudio, playNotificationSound, readNotificationPreferences } from '../notifications/preferences'
 import { fetchManualState, manualCapture, manualCommandContext, manualReject } from '../worker/api'
 
 interface DocumentPictureInPicture {
@@ -19,6 +20,13 @@ export function RemoteControlPage() {
   const [pinned, setPinned] = useState<Window | null>(null)
   const opening = useRef(false)
   const [windowError, setWindowError] = useState('')
+  const [soundMessage, setSoundMessage] = useState('')
+  async function testSound() {
+    const prefs = readNotificationPreferences()
+    if (!prefs.sound || prefs.volume <= 0) { setSoundMessage('当前浏览器提示音已关闭或音量为零。'); return }
+    const played = await playNotificationSound(prefs.volume, 'manual_wait')
+    setSoundMessage(played ? '已发起测试提示音。' : '音频未激活，请在原始控制页点击测试提示音。')
+  }
   const api = (window as Window & { documentPictureInPicture?: DocumentPictureInPicture }).documentPictureInPicture
   const query = useQuery({
     queryKey: ['manual-control'],
@@ -53,6 +61,8 @@ export function RemoteControlPage() {
       return
     }
     opening.current = true
+    // 在打开画中画的同一次用户手势内尝试激活父页面音频，不等待后再调用 requestWindow。
+    if (readNotificationPreferences().sound) void activateNotificationAudio()
     setWindowError('')
     try {
       const child = await api.requestWindow({ width: 352, height: 410 })
@@ -96,6 +106,10 @@ export function RemoteControlPage() {
           onReject={(reason, detail) => command.mutate({ kind: 'reject', reason, detail })}
         />
       ) : query.isPending ? <p role="status">正在读取采集状态…</p> : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button color="secondary" variant="ghost" size="sm" onClick={() => void testSound()}>测试提示音</Button>
+        {soundMessage ? <span className="text-2xs text-secondary" role="status">{soundMessage}</span> : null}
+      </div>
       {pinned ? (
         <Button color="secondary" variant="ghost" size="sm" onClick={() => { pinned.close(); window.focus() }}>
           返回控制页
@@ -113,6 +127,8 @@ export function RemoteControlPage() {
             {pinned ? '查看置顶控制窗' : '打开置顶控制窗'}
           </Button>
         ) : <p className="text-xs text-secondary">当前浏览器或连接不支持置顶。此页可作为普通独立控制窗使用。</p>}
+        {pinned ? <Button color="secondary" variant="ghost" size="sm" onClick={() => void testSound()}>测试提示音</Button> : null}
+        {pinned && soundMessage ? <p className="text-xs text-secondary" role="status">{soundMessage}</p> : null}
         {windowError ? <p role="status" className="text-xs text-secondary">{windowError}</p> : null}
         <p className="text-xs text-secondary">关闭控制窗后，Windows 上的采集任务会继续运行。</p>
         {window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? (

@@ -201,6 +201,8 @@ export function HubAssignmentsPage() {
         />
       ),
       className: 'w-10',
+      width: '3.25rem',
+      sticky: 'left',
       cell: (record) => (
         <span className="inline-flex" onClick={(event) => event.stopPropagation()}>
           <Checkbox
@@ -216,15 +218,17 @@ export function HubAssignmentsPage() {
       id: 'store',
       header: '门店',
       className: 'min-w-48',
+      width: '18rem',
       cell: (record) => {
         const store = formatStore(record.store)
+        const meta = [store.code, record.batch_name, record.revision].filter(Boolean).join(' · ')
         return (
           <div className="min-w-0">
             <span className="block truncate text-default" title={record.store}>
               {store.name || record.store}
             </span>
-            <span className="mt-0.5 block truncate text-2xs text-tertiary">
-              {[store.code, record.batch_name, record.revision].filter(Boolean).join(' · ')}
+            <span className="mt-0.5 block truncate text-2xs text-tertiary" title={meta}>
+              {meta}
             </span>
           </div>
         )
@@ -234,16 +238,21 @@ export function HubAssignmentsPage() {
       id: 'worker',
       header: '采集电脑',
       className: 'whitespace-nowrap',
-      cell: (record) => <span className="text-default">{record.worker_name || record.worker_id}</span>,
+      width: '10rem',
+      cell: (record) => {
+        const name = record.worker_name || record.worker_id
+        return <span className="block truncate text-default" title={name}>{name}</span>
+      },
     },
     {
       id: 'status',
       header: '状态',
       className: 'whitespace-nowrap',
+      width: '13rem',
       cell: (record) => {
         const meta = assignmentStatusOf(record.status, record.disposition)
         return (
-          <span className="inline-flex flex-col gap-0.5">
+          <span className="inline-flex min-w-0 flex-col gap-0.5">
             <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
             {record.result_message ? (
               <span className="max-w-44 truncate text-2xs text-tertiary" title={record.result_message}>
@@ -258,6 +267,8 @@ export function HubAssignmentsPage() {
       id: 'actions',
       header: '',
       className: 'w-32 whitespace-nowrap text-right',
+      width: '10rem',
+      sticky: 'right',
       cell: (record) => (
         <span className="inline-flex gap-1" onClick={(event) => event.stopPropagation()}>
           <Button color="secondary" variant="ghost" size="sm" onClick={() => setDetailId(record.id)}>
@@ -425,6 +436,7 @@ export function HubAssignmentsPage() {
               caption="门店分配记录"
               columns={columns}
               rows={records}
+              minWidthClass="min-w-[900px]"
               rowKey={(record) => record.id}
               loading={recordsQuery.isFetching && !recordsQuery.data}
               onRowActivate={(record) => setDetailId(record.id)}

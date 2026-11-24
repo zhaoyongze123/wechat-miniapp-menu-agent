@@ -12,6 +12,7 @@ import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
+import { formatStore } from '../hub/format'
 import { fetchTaskDetail, renameCaptureRun } from './api'
 import { KIND_LABEL, formatTime, shortTime, statusOf } from './format'
 import type { CaptureTaskEntry, HistoryRecord, TaskDetail } from './types'
@@ -304,7 +305,7 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                 caption="本轮逐店采集结果"
                 rows={pageTasks}
                 rowKey={(row) => row.task_id}
-                minWidthClass="min-w-[680px]"
+                minWidthClass="min-w-[760px]"
                 emptyState={
                   <StatePanel
                     variant="empty"
@@ -316,10 +317,13 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                   {
                     id: 'store',
                     header: '门店',
+                    width: '14rem',
                     cell: (row) => (
                       <div className="min-w-0">
-                        <p className="break-words font-medium" title={row.store_name || row.source_name || row.task_id}>{row.store_name || row.source_name || row.task_id}</p>
-                        <p className="mt-1 break-all font-mono text-xs text-tertiary" title={row.task_id}>{row.task_id}</p>
+                        <p className="truncate font-medium" title={row.store_name || row.source_name || row.task_id}>
+                          {formatStore(row.store_name || row.source_name || '').name || row.task_id}
+                        </p>
+                        <p className="mt-1 truncate font-mono text-xs text-tertiary" title={row.task_id}>{row.task_id}</p>
                         {row.source_name && row.store_name && row.source_name !== row.store_name ? (
                           <details className="mt-1 text-xs text-secondary">
                             <summary className="cursor-pointer">查看原始来源</summary>
@@ -332,8 +336,9 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                   {
                     id: 'batch',
                     header: '批次 / 版本',
+                    width: '9rem',
                     cell: (row) => (
-                      <span className="text-secondary">
+                      <span className="block truncate text-secondary" title={[row.batch_name, row.version].filter(Boolean).join(' · ')}>
                         {[row.batch_name, row.version].filter(Boolean).join(' · ') || '—'}
                       </span>
                     ),
@@ -341,13 +346,19 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                   {
                     id: 'result',
                     header: '结果',
-                    cell: (row) => row.label || row.status || '未处理',
+                    width: '9rem',
+                    cell: (row) => (
+                      <span className="block truncate" title={row.label || row.status || '未处理'}>
+                        {row.label || row.status || '未处理'}
+                      </span>
+                    ),
                   },
                   {
                     id: 'message',
                     header: '说明',
+                    width: '14rem',
                     cell: (row) => (
-                      <span className="break-words text-secondary" title={row.reject_reason || row.message || ''}>{row.reject_reason || row.message || '—'}</span>
+                      <span className="line-clamp-2 text-secondary" title={row.reject_reason || row.message || ''}>{row.reject_reason || row.message || '—'}</span>
                     ),
                   },
                 ]}

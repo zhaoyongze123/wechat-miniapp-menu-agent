@@ -29,3 +29,13 @@
     outline-offset: 2px;
   }
 }
+
+/*
+ * apps-sdk-ui 的 Select 下拉通过 Radix Popper 挂到 body，组件本身未设置层级，
+ * 且 Radix 会在 wrapper 上写内联 `z-index: auto`，所以必须用 !important 覆盖，
+ * 否则会被吸顶表头（z-20）和弹窗/抽屉遮罩（z-40）与面板（z-50）盖住，
+ * 表现为点击无下拉或表头文字穿透。
+ */
+[data-radix-popper-content-wrapper] {
+  z-index: 60 !important;
+}

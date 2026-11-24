@@ -75,23 +75,69 @@ export function conflictReasonText(reason: string, workerName?: string): string 
   return CONFLICT_REASON[reason] ?? reason
 }
 
+const STORE_COORDINATES = /^[[(]?\s*[+-]?\d{1,3}(?:\.\s*\d+)?\s*[,，]\s*[+-]?\d{1,3}(?:\.\s*\d+)?\s*[\])]?$/
+const STORE_CITY = /[市州区县旗盟]$/
+/** LCA 段在部分批次中存在，也可能是 `LCA-123` / `LCA 123` 等空格变体。 */
+const STORE_LCA = /^LCA[-_ ]?\d+$/i
+/** 门店编码通常为字母数字组合（如 `E0005`、`SH001`），纯数字目录名同样视为编码。 */
+const STORE_CODE = /^(?=.*\d)[A-Za-z0-9_-]{2,24}$/
+
 /**
- * 门店名来自素材目录名：`编码__城市__名称__坐标`（部分批次多一段 LCA）。
- * 解析失败时原样返回，避免把无法识别的目录名截断成错误信息。
+ * 门店名来自素材目录名，常见格式为 `编码__[LCA]__城市__名称__坐标`。
+ * 真实目录可能包含全角下划线、多余空格、坐标括号或空格变体，因此按尾部坐标与城市段定位，
+ * 而不是依赖固定下标。无法可靠解析时原样返回，避免把目录名截断成错误信息。
  */
 export function formatStore(value: string): { name: string; code: string } {
-  const raw = String(value || '')
-  const parts = raw.split(/__+/).map((part) => part.trim())
-  const hasLca = /^LCA\d+$/i.test(parts[1] ?? '')
-  const nameIndex = hasLca ? 3 : 2
-  if (parts.length <= nameIndex || !/^[A-Z]+\d+$/i.test(parts[0] ?? '')) return { name: raw, code: '' }
-  const tail = parts.at(-1) ?? ''
-  const coordinates = /^[+-]?\d+(?:\.\s*\d+)?\s*[,，]\s*[+-]?\d+(?:\.\s*\d+)?$/.test(tail)
-  if (!hasLca && (!coordinates || !/[市区县旗州盟]$/.test(parts[1] ?? ''))) return { name: raw, code: '' }
-  return {
-    name: parts.slice(nameIndex, coordinates ? -1 : undefined).join(' ').trim() || raw,
-    code: parts[0] ?? '',
+  const raw = String(value || '').trim()
+  if (!raw) return { name: '', code: '' }
+
+  // 生产目录实际使用全角下划线 `＿`，且可能只出现一次；统一归一为 `__` 后再分段，
+  // 避免把单个 ASCII `_` 误当分隔符，也兼容连续全角下划线。
+  const normalized = raw.replace(/\u3000/g, ' ').replace(/＿+/g, '__')
+  const parts = normalized
+    .split(/_{2,}/)
+    .map((part) => part.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+
+  // 单段目录名通常已经是门店名，直接展示。
+  if (parts.length < 2) return { name: raw, code: '' }
+
+  let coordinateIndex = -1
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    if (STORE_COORDINATES.test(parts[index] ?? '')) {
+      coordinateIndex = index
+      break
+    }
   }
+
+  const tokens = (coordinateIndex >= 0 ? parts.slice(0, coordinateIndex) : parts)
+    .filter((token) => !STORE_LCA.test(token))
+
+  let code = ''
+  if (tokens.length >= 2 && STORE_CODE.test(tokens[0] ?? '')) code = tokens.shift() ?? ''
+
+  // 城市段之后可能是名称，名称本身也可能带空格（如“上海 人民广场店”）。
+  let cityIndex = -1
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    if (STORE_CITY.test(tokens[index] ?? '')) {
+      cityIndex = index
+      break
+    }
+  }
+  if (cityIndex >= 0 && cityIndex < tokens.length - 1) {
+    const name = tokens.slice(cityIndex + 1).join(' ').trim()
+    if (name) return { name, code }
+  }
+
+  // 没有可识别城市段时，退化为坐标前最后一段，至少避免整段原始目录名撑满列表。
+  if (tokens.length >= 1) {
+    const name = tokens[tokens.length - 1] ?? ''
+    // 只有编码、没有名称时无法可靠解析，保留原始目录名。
+    const onlyCode = tokens.length === 1 && !code && STORE_CODE.test(name)
+    if (name && !onlyCode) return { name, code }
+  }
+
+  return { name: raw, code: '' }
 }
 
 export function formatTime(value: string | undefined, fallback = '—'): string {

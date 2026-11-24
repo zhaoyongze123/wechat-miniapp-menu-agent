@@ -110,9 +110,10 @@ export function HubDevicesPage() {
       id: 'name',
       header: '采集电脑',
       className: 'min-w-48',
+      width: '16rem',
       cell: (worker) => (
         <div className="min-w-0">
-          <span className="block truncate text-default">{worker.name}</span>
+          <span className="block truncate text-default" title={worker.name}>{worker.name}</span>
           <span className="mt-0.5 block truncate font-mono text-2xs text-tertiary" title={worker.id}>
             {worker.id}
           </span>
@@ -123,6 +124,7 @@ export function HubDevicesPage() {
       id: 'state',
       header: '状态',
       className: 'whitespace-nowrap',
+      width: '7rem',
       cell: (worker) => {
         const state = deviceStateOf(worker)
         return <StatusBadge tone={state.tone}>{state.label}</StatusBadge>
@@ -132,12 +134,14 @@ export function HubDevicesPage() {
       id: 'last_seen',
       header: '最近连接',
       className: 'whitespace-nowrap',
+      width: '10rem',
       cell: (worker) => <span className="text-secondary">{formatTime(worker.last_seen)}</span>,
     },
     {
       id: 'pending',
       header: '待补传',
       className: 'whitespace-nowrap',
+      width: '6rem',
       cell: (worker) =>
         worker.pending_uploads ? (
           <StatusBadge tone="warning">{worker.pending_uploads} 份</StatusBadge>
@@ -149,6 +153,7 @@ export function HubDevicesPage() {
       id: 'occupied',
       header: '占用门店',
       className: 'whitespace-nowrap',
+      width: '6rem',
       cell: (worker) => {
         const count = activeAssignmentsOf(sharedQuery.data, worker.id).length
         return <span className={count ? 'text-default tabular-nums' : 'text-tertiary'}>{count} 家</span>
@@ -158,12 +163,15 @@ export function HubDevicesPage() {
       id: 'paired',
       header: '配对时间',
       className: 'whitespace-nowrap',
+      width: '10rem',
       cell: (worker) => <span className="text-secondary">{formatTime(worker.paired_at)}</span>,
     },
     {
       id: 'actions',
       header: '',
       className: 'w-20 whitespace-nowrap text-right',
+      width: '5.5rem',
+      sticky: 'right',
       cell: (worker) => (
         <Button color="secondary" variant="outline" size="sm" onClick={() => setDetailId(worker.id)}>
           详情
@@ -224,6 +232,7 @@ export function HubDevicesPage() {
             caption="采集电脑列表"
             columns={columns}
             rows={visibleWorkers}
+            minWidthClass="min-w-[1000px]"
             rowKey={(worker) => worker.id}
             loading={sharedQuery.isFetching && !sharedQuery.data}
             onRowActivate={(worker) => setDetailId(worker.id)}

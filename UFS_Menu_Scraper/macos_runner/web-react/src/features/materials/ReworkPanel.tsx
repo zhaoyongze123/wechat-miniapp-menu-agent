@@ -11,6 +11,7 @@ import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
+import { formatStore } from '../hub/format'
 import { decisionMeta, storeKey } from './format'
 import { useRework, useReworkActions } from './hooks'
 import type { ReworkCategory, ReworkRecord, ReworkPublishResponse } from './types'
@@ -148,7 +149,9 @@ export function ReworkPanel() {
           aria-label="全选当前页"
         />
       ),
-      className: 'w-28',
+      className: 'w-10',
+      width: '3.25rem',
+      sticky: 'left',
       cell: (record) => {
         const key = storeKey(record.batch_id, record.store_id)
         return (
@@ -164,20 +167,25 @@ export function ReworkPanel() {
       id: 'store',
       header: '门店 / 批次',
       className: 'min-w-56',
-      cell: (record) => (
-        <div className="min-w-0">
-          <span className="block truncate text-default">{record.store_name}</span>
-          <span className="mt-0.5 block truncate text-2xs text-tertiary">
-            {record.batch_name}
-            {record.source_folder ? ` · ${record.source_folder}` : ''}
-          </span>
-        </div>
-      ),
+      width: '18rem',
+      cell: (record) => {
+        const store = formatStore(record.store_name)
+        const meta = [store.code, record.batch_name].filter(Boolean).join(' · ')
+        return (
+          <div className="min-w-0">
+            <span className="block truncate text-default" title={record.store_name}>{store.name || record.store_name}</span>
+            <span className="mt-0.5 block truncate text-2xs text-tertiary" title={[meta, record.source_folder].filter(Boolean).join(' · ')}>
+              {meta || record.source_folder || '批次信息未记录'}
+            </span>
+          </div>
+        )
+      },
     },
     {
       id: 'category',
       header: '分类',
       className: 'whitespace-nowrap',
+      width: '6rem',
       cell: (record) => (
         <StatusBadge tone={CATEGORY_META[record.category]?.tone ?? 'secondary'}>
           {CATEGORY_META[record.category]?.label ?? record.category}
@@ -188,6 +196,7 @@ export function ReworkPanel() {
       id: 'decision',
       header: '当前决策',
       className: 'whitespace-nowrap',
+      width: '8rem',
       cell: (record) => {
         const meta = decisionMeta(record.decision)
         return <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
@@ -197,11 +206,14 @@ export function ReworkPanel() {
       id: 'reason',
       header: '原因',
       className: 'min-w-40',
+      width: '14rem',
       cell: (record) =>
         record.reason_label ? (
           <span className="text-secondary">
-            {record.reason_label}
-            {record.reason_detail ? <span className="block text-2xs text-tertiary">{record.reason_detail}</span> : null}
+            <span className="block truncate" title={record.reason_label}>{record.reason_label}</span>
+            {record.reason_detail ? (
+              <span className="line-clamp-2 text-2xs text-tertiary" title={record.reason_detail}>{record.reason_detail}</span>
+            ) : null}
           </span>
         ) : (
           <span className="text-tertiary">—</span>
@@ -211,12 +223,14 @@ export function ReworkPanel() {
       id: 'version',
       header: '版本',
       className: 'whitespace-nowrap',
+      width: '6rem',
       cell: (record) => <span className="text-secondary">{record.version || '未发布'}</span>,
     },
     {
       id: 'publishable',
       header: '可发布',
       className: 'whitespace-nowrap',
+      width: '6rem',
       cell: (record) =>
         record.publishable ? <StatusBadge tone="success">可发布</StatusBadge> : <span className="text-tertiary">否</span>,
     },
@@ -224,6 +238,8 @@ export function ReworkPanel() {
       id: 'actions',
       header: '',
       className: 'w-24 whitespace-nowrap text-right',
+      width: '5rem',
+      sticky: 'right',
       cell: (record) => (
         <Button
           color="secondary"
@@ -336,6 +352,7 @@ export function ReworkPanel() {
             caption="跨批次返工清单"
             columns={columns}
             rows={pageRows}
+            minWidthClass="min-w-[1080px]"
             rowKey={(record) => storeKey(record.batch_id, record.store_id)}
             loading={reworkQuery.isFetching && !reworkQuery.data}
             emptyState={

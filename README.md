@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="UFS_Menu_Scraper/macos_runner/web-react/public/favicon.svg" width="88" height="88" alt="Menu Capture Workbench" />
+</p>
+
 # 菜单智能采集工作台 · Menu Capture Workbench
 
 面向餐饮菜单批量采集的桌面自动化与多设备协作系统。将门店二维码素材、微信小程序菜单截图、任务调度和质量审核纳入同一工作流，支持集中管理、分布式执行与结果追溯。

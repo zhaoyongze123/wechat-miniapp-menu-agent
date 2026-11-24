@@ -15,7 +15,7 @@ import type { AssignmentRecord } from './types'
 interface AssignmentDetailDrawerProps {
   record: AssignmentRecord | null
   onOpenChange: (open: boolean) => void
-  onReclaim: (record: AssignmentRecord) => void
+  onReclaim?: (record: AssignmentRecord) => void
 }
 
 const RECLAIMABLE = new Set(['assigned', 'ready'])
@@ -54,7 +54,7 @@ export function AssignmentDetailDrawer({ record, onOpenChange, onReclaim }: Assi
       title={store.name || record.store}
       description={[store.code, record.batch_name, record.revision].filter(Boolean).join(' · ')}
       footer={
-        reclaimable ? (
+        reclaimable && onReclaim ? (
           <div className="space-y-2">
             <Button color="danger" size="sm" onClick={() => onReclaim(record)}>
               回收这条分配
@@ -65,7 +65,7 @@ export function AssignmentDetailDrawer({ record, onOpenChange, onReclaim }: Assi
           </div>
         ) : (
           <p className="text-xs text-tertiary">
-            {record.disposition === 'history'
+            {!onReclaim ? '此入口仅用于查看分配和结果。' : record.disposition === 'history'
               ? '该结果已转为历史留档，只读保留。'
               : meta.label === '已收回'
                 ? '这条分配已回收，门店可重新分配。'

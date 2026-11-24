@@ -218,6 +218,7 @@ export function TaskCenterPage() {
       id: 'title',
       header: '任务名称',
       className: 'min-w-50 max-w-80',
+      width: '16rem',
       cell: (record) => (
         <div className="min-w-0">
           <span className="block truncate" title={`${record.title ?? record.id} · ${record.id}`}>
@@ -237,16 +238,20 @@ export function TaskCenterPage() {
     {
       id: 'batch',
       header: '批次范围',
-      className: 'min-w-32',
+      className: 'w-40 min-w-32',
+      width: '10rem',
       cell: (record) => <BatchCell record={record} />,
     },
     ...(role.role === 'hub' ? [{
       id: 'worker',
       header: '任务来源',
       className: 'min-w-36',
+      width: '10rem',
       cell: (record: HistoryRecord) => (
-        <div>
-          <div>{record.worker_name || (record.kind === 'materials' ? '共享后台' : '本地历史')}</div>
+        <div className="min-w-0">
+          <div className="truncate" title={record.worker_name || (record.kind === 'materials' ? '共享后台' : '本地历史')}>
+            {record.worker_name || (record.kind === 'materials' ? '共享后台' : '本地历史')}
+          </div>
           {record.synced_at ? (
             <span className="text-xs text-secondary">
               {record.history_status === 'partial' ? '部分记录' : '上次同步'} · {formatTime(record.synced_at)}
@@ -259,6 +264,7 @@ export function TaskCenterPage() {
       id: 'status',
       header: '任务状态',
       className: 'whitespace-nowrap',
+      width: '7rem',
       cell: (record) => {
         const statusMeta = statusOf(record.status)
         return <StatusBadge tone={statusMeta.tone}>{statusMeta.label}</StatusBadge>
@@ -268,18 +274,22 @@ export function TaskCenterPage() {
       id: 'result',
       header: '结果摘要',
       className: 'min-w-42',
+      width: '14rem',
       cell: (record) => <ResultCell record={record} />,
     },
     {
       id: 'created',
       header: '开始时间',
       className: 'whitespace-nowrap text-secondary',
+      width: '10rem',
       cell: (record) => formatTime(record.created_at),
     },
     {
       id: 'actions',
       header: '操作',
       className: 'whitespace-nowrap',
+      width: '5.5rem',
+      sticky: 'right',
       cell: (record) => (
         <Button
           color="secondary"
@@ -409,6 +419,7 @@ export function TaskCenterPage() {
               caption="任务历史列表"
               columns={columns}
               rows={records}
+              minWidthClass={role.role === 'hub' ? 'min-w-[1160px]' : 'min-w-[1000px]'}
               rowKey={(record) => `${record.kind}:${record.id}`}
               loading={historyQuery.isFetching && !historyQuery.data}
               onRowActivate={(record) => openDetail(record.kind, record.id)}
@@ -462,44 +473,22 @@ export function TaskCenterPage() {
   )
 }
 
-function BatchCell({ record }: { record: HistoryRecord }) {
+export function BatchCell({ record }: { record: HistoryRecord }) {
   const batches = record.batches ?? []
-  if (batches.length > 1) {
-    const description = batches.map((batch) => [batch.name, ...(batch.versions ?? [])].filter(Boolean).join(' · ')).join('，')
+  const first = batches[0]
+  const description = batches.map((batch) => [batch.name, ...(batch.versions ?? [])].filter(Boolean).join(' · ')).join('，')
+  if (first) {
+    const firstLabel = [first.name, first.versions?.[0]].filter(Boolean).join(' · ')
     return (
-      <span title={description} className="inline-flex flex-col">
-        <span>涉及 {batches.length} 个批次</span>
-        <span className="text-2xs text-secondary">{description}</span>
-      </span>
-    )
-  }
-  const single = batches[0]
-  if (single) {
-    return (
-      <span className="inline-flex flex-col">
-        <span className="truncate" title={single.name}>
-          {single.name}
+      <div className="max-w-40 min-w-0" title={description}>
+        <span className="block truncate">{batches.length > 1 ? `涉及 ${batches.length} 个批次` : first.name}</span>
+        <span className="mt-0.5 block truncate text-2xs text-secondary">
+          {batches.length > 1 ? firstLabel + ` 等 ${batches.length} 个` : (first.versions ?? []).join(' / ')}
         </span>
-        {single.versions.length ? (
-          <span className="mt-0.5 flex flex-wrap gap-1">
-            {single.versions.map((version) => (
-              <span key={version} className="rounded-xs bg-surface-tertiary px-1.5 py-0.5 text-2xs text-secondary">
-                {version}
-              </span>
-            ))}
-          </span>
-        ) : null}
-      </span>
+      </div>
     )
   }
-  if (record.batch_name) {
-    return (
-      <span className="truncate" title={record.batch_name}>
-        {record.batch_name}
-      </span>
-    )
-  }
-  return <span className="text-tertiary">—</span>
+  return <span className="block max-w-40 truncate" title={record.batch_name}>{record.batch_name || '—'}</span>
 }
 
 function ResultCell({ record }: { record: HistoryRecord }) {

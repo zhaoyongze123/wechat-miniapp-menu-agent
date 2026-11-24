@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   claimNotificationEvent,
   DEFAULT_NOTIFICATION_PREFERENCES,
+  deliverNotificationSound,
   manualWaitEventId,
   readNotificationPreferences,
   saveNotificationPreferences,
@@ -62,6 +63,16 @@ describe('浏览器通知偏好和事件身份', () => {
     expect(await claimNotificationEvent(event)).toBe(true)
     expect(await claimNotificationEvent(event)).toBe(false)
     expect(await claimNotificationEvent(manualWaitEventId('device-1', 'run-1', 'wait-2'))).toBe(true)
+  })
+
+  it('音频失败不消耗等待事件，成功后独立去重', async () => {
+    const id = manualWaitEventId('device-sound', 'run', 'wait')
+    expect(await claimNotificationEvent(id)).toBe(true)
+    expect(await deliverNotificationSound(id, async () => false)).toBe(false)
+    const play = vi.fn(async () => true)
+    expect(await deliverNotificationSound(id, play)).toBe(true)
+    expect(await deliverNotificationSound(id, play)).toBe(false)
+    expect(play).toHaveBeenCalledTimes(1)
   })
 
   it('任务/连接状态转换保留首次变化时间，只有新状态产生新转换', async () => {

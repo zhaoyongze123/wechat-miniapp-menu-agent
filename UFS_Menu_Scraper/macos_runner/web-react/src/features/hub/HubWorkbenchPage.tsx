@@ -18,6 +18,7 @@ import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
 import { AssignDialog } from './AssignDialog'
+import { HubStoreDetailDrawer } from './HubStoreDetailDrawer'
 import { fetchHubStatus } from './api'
 import { assignmentStatusOf, deviceStateOf, formatStore, storeStateOf } from './format'
 import { activeAssignmentMap, isWorkerActive, useHubSharedStatus } from './hooks'
@@ -80,6 +81,7 @@ export function HubWorkbenchPage() {
   })
   const [assignOpen, setAssignOpen] = useState(false)
   const [selectedOpen, setSelectedOpen] = useState(false)
+  const [detailTask, setDetailTask] = useState<HubTask | null>(null)
 
   // 一次性消费地址栏中的选择参数，后续翻页与筛选不再受其影响。
   useEffect(() => {
@@ -284,6 +286,8 @@ export function HubWorkbenchPage() {
         />
       ),
       className: 'w-10',
+      width: '3.25rem',
+      sticky: 'left',
       cell: (task) => (
         <span className="inline-flex" onClick={(event) => event.stopPropagation()}>
           <Checkbox
@@ -299,18 +303,19 @@ export function HubWorkbenchPage() {
       id: 'store',
       header: '门店 / 批次版本',
       className: 'min-w-56',
+      width: '18rem',
       cell: (task) => {
         const store = formatStore(task.source_name)
         return (
           <div className="min-w-0">
-            <span className="block truncate text-default" title={task.source_name}>
+            <button type="button" className="block max-w-full truncate text-left text-default hover:underline focus-visible:underline" title={task.source_name} onClick={(event) => { event.stopPropagation(); setDetailTask(task) }}>
               {store.name || '未命名门店'}
-            </span>
-            <span className="mt-0.5 block truncate text-2xs text-tertiary">
+            </button>
+            <span className="mt-0.5 block truncate text-2xs text-tertiary" title={[store.code, task.batch_name, task.version].filter(Boolean).join(' · ')}>
               {[store.code, task.batch_name, task.version].filter(Boolean).join(' · ') || '批次信息未记录'}
             </span>
             {task.runnable !== true ? (
-              <span className="mt-1 block text-2xs text-warning">
+              <span className="mt-1 block truncate text-2xs text-warning" title={task.reject_label || task.label || task.message || '当前不可分配'}>
                 {task.reject_label || task.label || task.message || '当前不可分配'}
               </span>
             ) : null}
@@ -322,13 +327,14 @@ export function HubWorkbenchPage() {
       id: 'device',
       header: '采集电脑',
       className: 'min-w-32 whitespace-nowrap',
+      width: '11rem',
       cell: (task) => {
         const assignment = assignmentMap.get(task.id)
         if (!assignment) return <span className="text-tertiary">待分配</span>
         const name = assignment.worker_name || workers.find((worker) => worker.id === assignment.worker_id)?.name || assignment.worker_id
         return (
-          <span className="inline-flex flex-col">
-            <span className="text-default">{name}</span>
+          <span className="inline-flex min-w-0 flex-col">
+            <span className="truncate text-default" title={name}>{name}</span>
             <span className="text-2xs text-secondary">{assignmentStatusOf(assignment.status).label}</span>
           </span>
         )
@@ -338,10 +344,19 @@ export function HubWorkbenchPage() {
       id: 'status',
       header: '采集状态',
       className: 'whitespace-nowrap',
+      width: '7rem',
       cell: (task) => {
         const meta = storeStateOf(task)
         return <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
       },
+    },
+    {
+      id: 'detail',
+      header: '操作',
+      className: 'whitespace-nowrap',
+      width: '5.5rem',
+      sticky: 'right',
+      cell: (task) => <Button color="secondary" variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); setDetailTask(task) }}>详情</Button>,
     },
   ]
 
@@ -493,9 +508,10 @@ export function HubWorkbenchPage() {
               caption="Hub 门店列表"
               columns={columns}
               rows={records}
+              minWidthClass="min-w-[820px]"
               rowKey={(task) => task.id}
               loading={statusQuery.isFetching && !statusQuery.data}
-              onRowActivate={toggleSelection}
+              onRowActivate={setDetailTask}
               emptyState={
                 <StatePanel
                   variant="empty"
@@ -581,6 +597,11 @@ export function HubWorkbenchPage() {
         workers={workers}
         onExclude={(ids) => setSelectedIds((current) => removeSelection(current, ids))}
         onAssigned={handleAssigned}
+      />
+
+      <HubStoreDetailDrawer
+        task={detailTask ? records.find((task) => task.id === detailTask.id) ?? detailTask : null}
+        onClose={() => setDetailTask(null)}
       />
 
       <SelectedStoresDrawer
