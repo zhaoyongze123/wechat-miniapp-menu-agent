@@ -6,12 +6,12 @@ import threading
 import time
 
 import pytest
-from menu_capture.config import ConfigStore
+from menu_capture.core.config import ConfigStore
 from menu_capture.materials import MaterialService
-from menu_capture.shared import SharedHub
-from menu_capture.shared_worker import SharedWorker
-from menu_capture.store import TaskStore
-from menu_capture.updates import UpdateService
+from menu_capture.shared.hub import SharedHub
+from menu_capture.shared.worker import SharedWorker
+from menu_capture.storage.store import TaskStore
+from menu_capture.updates.service import UpdateService
 
 SOFTWARE = {
     "current_version": "0.2.2",

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from menu_capture.window_contract import validate_target_window
+from menu_capture.desktop.window_contract import validate_target_window
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2] / "compat/uipath"

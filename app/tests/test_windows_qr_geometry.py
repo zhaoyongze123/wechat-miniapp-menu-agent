@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 
 from PIL import Image
 
-from menu_capture.uipath_runner import FileRobotTransport
+from menu_capture.capture.runner import FileRobotTransport
 
 
 class _LocalWindowDriver:
@@ -66,7 +66,7 @@ def test_qr_click_uses_geometry_of_its_selector_after_other_window_screenshot(tm
 def test_preview_must_show_current_photo(tmp_path):
     from PIL import ImageDraw
 
-    from menu_capture.chat_image_locator import match_preview_source
+    from menu_capture.vision.chat_image_locator import match_preview_source
 
     current = Image.new("RGB", (240, 270), (225, 153, 30))
     draw = ImageDraw.Draw(current)
@@ -91,7 +91,7 @@ def test_preview_must_show_current_photo(tmp_path):
 
 
 def test_window_identity_stays_stable_through_title_and_size_change():
-    from menu_capture.uipath_runner import UiPathRunner
+    from menu_capture.capture.runner import UiPathRunner
 
     prior = {"window_id": "42:100", "title": "", "position": {"width": 100}}
     same = {"window_id": "42:100", "title": "微信", "position": {"width": 450}}

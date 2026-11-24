@@ -25,7 +25,7 @@ _DETECT_BUDGET_SECONDS = 1.8
 # 圆形小程序码定位能力保留，但当前不接入主链路：所有素材统一按方形二维码处理，
 # 圆形码无法定位时直接进入人工，避免圆形候选参与自动推荐。
 _ENABLE_WEAPP_LOCATE = False
-_WEAPP_WORKER = Path(__file__).resolve().parents[1] / "qr_detector" / "detect.mjs"
+_WEAPP_WORKER = Path(__file__).resolve().parents[2] / "qr_detector" / "detect.mjs"
 _WEAPP_TIMEOUT = 0.9
 
 

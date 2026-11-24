@@ -163,7 +163,7 @@ app/
 | 启动控制台（Windows） | 从仓库根目录执行 `.\app\scripts\启动菜单采集.ps1` |
 | 启动控制台（macOS 调试） | `cd app && .venv/bin/python -m menu_capture.server` |
 | 跑针对性测试 | `uv run --frozen pytest -q <相关测试路径>` |
-| 无人值守批量采集 | `uv run --frozen python -m menu_capture.auto_pipeline --batches <batch_id> [...]` |
+| 无人值守批量采集 | `uv run --frozen python -m menu_capture.capture.auto_pipeline --batches <batch_id> [...]` |
 | 查看任务/运行状态 | `GET /api/status`、`GET /api/tasks/active` |
 | 不合格清单 | `GET /api/rejections`、`GET /api/rejections/export.xlsx` |
 | 待检查清单 | `GET /api/reviews/pending` |

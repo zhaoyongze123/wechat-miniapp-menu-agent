@@ -16,7 +16,7 @@ import pytest
 
 from menu_capture import material_jobs
 from menu_capture.material_jobs import JobRunner, JobStore
-from menu_capture.store import TaskStore
+from menu_capture.storage.store import TaskStore
 
 
 def _store(tmp_path) -> JobStore:

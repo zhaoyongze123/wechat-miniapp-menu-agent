@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from menu_capture.model_usage import UsageLedger, usage_context
-from menu_capture.store import TaskStore
+from menu_capture.agent.model_usage import UsageLedger, usage_context
+from menu_capture.storage.store import TaskStore
 
 
 def ledger(tmp_path):

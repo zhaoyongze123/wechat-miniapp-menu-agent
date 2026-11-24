@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from menu_capture.ui_tars_trial import _HOST_COMMANDS
+from menu_capture.agent.ui_tars_trial import _HOST_COMMANDS
 
 SCHEMA_PATH = Path(__file__).resolve().parents[1] / "ui_tars" / "action-schema.json"
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from menu_capture.annotation import (
+from menu_capture.annotation.session import (
     AnnotationError,
     AnnotationSession,
     archive_samples,
@@ -16,12 +16,12 @@ from menu_capture.annotation import (
     map_box_to_window,
     suggest_target,
 )
-from menu_capture.config import ConfigStore, Settings
-from menu_capture.model import Region
-from menu_capture.rejections import RejectionService
-from menu_capture.scene_agent import SceneDecision
-from menu_capture.store import TaskStore
-from menu_capture.uipath_runner import RobotCommandError, UiPathRunner
+from menu_capture.core.config import ConfigStore, Settings
+from menu_capture.agent.model import Region
+from menu_capture.quality.rejections import RejectionService
+from menu_capture.agent.scene_agent import SceneDecision
+from menu_capture.storage.store import TaskStore
+from menu_capture.capture.runner import RobotCommandError, UiPathRunner
 
 
 class FakeConfigs:
@@ -170,7 +170,7 @@ def test_map_box_to_window_rejects_invalid_box(box):
 
 
 def test_scene_categories_keep_page_state_in_sync():
-    from menu_capture.annotation import _resolve_page_state
+    from menu_capture.annotation.session import _resolve_page_state
     assert _resolve_page_state("miniapp_home", "") == "miniapp_home"
     assert _resolve_page_state("store_select", "unknown") == "store_select"
     assert _resolve_page_state("people_grid", "") == "people_select"
@@ -179,7 +179,7 @@ def test_scene_categories_keep_page_state_in_sync():
 
 
 def test_scene_layouts_stay_inside_the_current_category(monkeypatch):
-    from menu_capture import annotation
+    from menu_capture.annotation import session as annotation
     # 归纳前变体表为空：只标场景，任何样式都按未细分处理。
     assert annotation._resolve_layout("miniapp_home", "home_tabbar_scan") == ""
     monkeypatch.setitem(annotation.LAYOUTS, "miniapp_home",
@@ -192,7 +192,7 @@ def test_scene_layouts_stay_inside_the_current_category(monkeypatch):
 
 
 def test_session_click_records_layout_for_scene_variant(tmp_path, monkeypatch):
-    from menu_capture import annotation
+    from menu_capture.annotation import session as annotation
     monkeypatch.setitem(annotation.LAYOUTS, "miniapp_home",
                         (("home_tabbar_scan", "底部标签栏入口"),))
     executor = FakeExecutor()
@@ -475,13 +475,13 @@ def test_activate_wechat_skips_open_when_wechat_is_frontmost(tmp_path, monkeypat
     executor = FakeExecutor()
     session, task = build_session(tmp_path, executor)
     session.activator = None
-    monkeypatch.setattr("menu_capture.annotation.sys.platform", "darwin")
-    monkeypatch.setattr("menu_capture.annotation.AnnotationSession._frontmost_bundle",
+    monkeypatch.setattr("menu_capture.annotation.session.sys.platform", "darwin")
+    monkeypatch.setattr("menu_capture.annotation.session.AnnotationSession._frontmost_bundle",
                         staticmethod(lambda: "com.tencent.xinWeChat"))
     calls = []
-    monkeypatch.setattr("menu_capture.annotation.subprocess.run",
+    monkeypatch.setattr("menu_capture.annotation.session.subprocess.run",
                         lambda *args, **kwargs: calls.append(args[0]) or types.SimpleNamespace(returncode=0))
-    monkeypatch.setattr("menu_capture.annotation.time.sleep", lambda _: None)
+    monkeypatch.setattr("menu_capture.annotation.session.time.sleep", lambda _: None)
     session._activate_wechat()
     assert calls == []
 
@@ -712,7 +712,7 @@ def test_decide_chain_reports_fused_ocr_hit(tmp_path):
 
 
 def test_decide_chain_records_model_usage_as_annotation(tmp_path, monkeypatch):
-    from menu_capture.model_usage import UsageLedger
+    from menu_capture.agent.model_usage import UsageLedger
 
     ledger = UsageLedger(TaskStore(tmp_path / "tasks.sqlite3"))
     session = object.__new__(AnnotationSession)
@@ -742,8 +742,8 @@ def test_decide_chain_records_model_usage_as_annotation(tmp_path, monkeypatch):
                                response={"usage": {"prompt_tokens": 3, "completion_tokens": 4}})
             return decision
 
-    monkeypatch.setattr("menu_capture.annotation.VisionModel", FakeVision)
-    monkeypatch.setattr("menu_capture.annotation.SceneAgent", FakeAgent)
+    monkeypatch.setattr("menu_capture.annotation.session.VisionModel", FakeVision)
+    monkeypatch.setattr("menu_capture.annotation.session.SceneAgent", FakeAgent)
 
     result = session._decide_with_chain(runner, tmp_path / "f.png",
                                         {"id": "t1", "source_name": "测试店"}, settings, ([], []))

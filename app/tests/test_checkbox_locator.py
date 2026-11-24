@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from menu_capture.checkbox_locator import refine_consent_checkbox
-from menu_capture.config import ConfigStore
-from menu_capture.model import Region
-from menu_capture.scene_agent import SceneDecision
-from menu_capture.store import TaskStore
-from menu_capture.uipath_runner import UiPathRunner
+from menu_capture.vision.checkbox_locator import refine_consent_checkbox
+from menu_capture.core.config import ConfigStore
+from menu_capture.agent.model import Region
+from menu_capture.agent.scene_agent import SceneDecision
+from menu_capture.storage.store import TaskStore
+from menu_capture.capture.runner import UiPathRunner
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -7,9 +7,9 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from menu_capture.config import ModelConfig
-from menu_capture.model import ModelError, VisionModel
-from menu_capture.model_usage import usage_context
+from menu_capture.core.config import ModelConfig
+from menu_capture.agent.model import ModelError, VisionModel
+from menu_capture.agent.model_usage import usage_context
 from menu_capture.server import create_app
 
 

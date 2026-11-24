@@ -24,11 +24,11 @@ from typing import Any, Callable
 
 from PIL import Image, ImageChops, ImageStat
 
-from .config import WORKSPACE_ROOT, ConfigStore, atomic_json
-from .model import VisionModel
-from .model_usage import usage_context
-from .scene_agent import SceneAgent, SceneError
-from .uipath_runner import production_window_geometry
+from menu_capture.core.config import WORKSPACE_ROOT, ConfigStore, atomic_json
+from menu_capture.agent.model import VisionModel
+from menu_capture.agent.model_usage import usage_context
+from menu_capture.agent.scene_agent import SceneAgent, SceneError
+from menu_capture.capture.runner import production_window_geometry
 
 CATEGORIES = ("miniapp_home", "store_select", "people_grid", "consent_checkbox",
               "close_icon", "system_notification", "resting_menu", "other")

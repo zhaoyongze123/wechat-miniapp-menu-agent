@@ -8,8 +8,8 @@ from typing import Callable, Literal
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator, field_validator
 
-from .model import Region, parse_json
-from .target_candidates import candidate_by_id, candidate_by_label, candidate_table
+from menu_capture.agent.model import Region, parse_json
+from menu_capture.vision.target_candidates import candidate_by_id, candidate_by_label, candidate_table
 
 
 class SceneError(RuntimeError):

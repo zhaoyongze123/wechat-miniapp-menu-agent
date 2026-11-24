@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from menu_capture.store import TaskStore, now
+from menu_capture.storage.store import TaskStore, now
 
 
 def _image(path: Path, color: str = "navy") -> Path:

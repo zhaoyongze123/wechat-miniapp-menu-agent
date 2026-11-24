@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from menu_capture.close_icon_locator import refine_close_icon
+from menu_capture.vision.close_icon_locator import refine_close_icon
 
 
 ROOT = Path(__file__).resolve().parents[1]

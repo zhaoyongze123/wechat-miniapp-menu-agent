@@ -8,9 +8,11 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from menu_capture import model as model_module
-from menu_capture import environment as environment_module, image_tools, window_contract
-from menu_capture.environment import EnvironmentDiagnostics, _item
+from menu_capture.agent import model as model_module
+from menu_capture.core import environment as environment_module
+from menu_capture.vision import image_tools
+from menu_capture.desktop import window_contract
+from menu_capture.core.environment import EnvironmentDiagnostics, _item
 from menu_capture.server import create_app
 
 
@@ -69,7 +71,7 @@ def test_windows_diagnostics_use_original_window_pixels_without_uipath(tmp_path,
             Image.new("RGB", (900, 800), "white").save(path)
             return 900, 800
 
-    monkeypatch.setitem(sys.modules, "menu_capture.windows_desktop", SimpleNamespace(WindowsDesktop=FakeDesktop))
+    monkeypatch.setitem(sys.modules, "menu_capture.desktop.windows_desktop", SimpleNamespace(WindowsDesktop=FakeDesktop))
     monkeypatch.setattr(image_tools, "image_ocr", lambda _path: [
         {"text": "文件传输助手", "x": 500, "y": 20, "width": 90, "height": 18},
     ])

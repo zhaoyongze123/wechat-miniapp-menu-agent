@@ -7,8 +7,8 @@ import cv2
 import numpy as np
 import pytest
 
-from menu_capture.chat_anchor import find_store_name_matches
-from menu_capture.chat_layout import ChatImageUnreadable, find_sent_text_bubbles
+from menu_capture.vision.chat_anchor import find_store_name_matches
+from menu_capture.vision.chat_layout import ChatImageUnreadable, find_sent_text_bubbles
 
 
 ROOT = Path(__file__).resolve().parents[1]

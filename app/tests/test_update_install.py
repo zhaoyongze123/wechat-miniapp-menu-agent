@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from menu_capture.update_install import (
+from menu_capture.updates.install import (
     JOB_SCHEMA,
     InstallController,
     InstallOrchestrator,
@@ -312,7 +312,7 @@ def test_controller_spawns_detached_install_and_records_job(tmp_path):
     assert status["active"] is True and status["status"] == "starting"
     assert len(commands) == 1
     command, kwargs = commands[0]
-    assert command[1:4] == ["-m", "menu_capture.update_install", "--job"]
+    assert command[1:4] == ["-m", "menu_capture.updates.install", "--job"]
     assert kwargs["cwd"] == str(tmp_path)
     job = json.loads((Path(tmp_path) / "data" / "update-install-job.json").read_text(encoding="utf-8"))
     assert job["target_version"] == "0.3.0"

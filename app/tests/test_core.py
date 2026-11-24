@@ -11,9 +11,9 @@ import httpx
 import pytest
 from PIL import Image
 
-from menu_capture.config import ConfigStore, ModelConfig
-from menu_capture.model import ModelError, VisionModel
-from menu_capture.store import TaskStore
+from menu_capture.core.config import ConfigStore, ModelConfig
+from menu_capture.agent.model import ModelError, VisionModel
+from menu_capture.storage.store import TaskStore
 
 
 def settings_payload(input_dir: Path, output_dir: Path, *, api_key: str = "") -> dict:

@@ -13,8 +13,8 @@ from typing import Literal
 
 from pydantic import Field, field_validator
 
-from .config import StrictModel, atomic_json
-from .window_contract import is_windows_wechat_app
+from menu_capture.core.config import StrictModel, atomic_json
+from menu_capture.desktop.window_contract import is_windows_wechat_app
 
 
 class RobotProfile(StrictModel):

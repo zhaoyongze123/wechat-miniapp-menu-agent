@@ -37,32 +37,32 @@ from typing import Any, Callable
 from PIL import Image, ImageChops, ImageFilter, ImageStat
 from pydantic import ValidationError
 
-from .config import ConfigStore, atomic_json
-from .core.runtime_files import atomic_write_json as _atomic_write_json, is_within as _inside
-from .desktop.robot_transport import (
+from menu_capture.core.config import ConfigStore, atomic_json
+from menu_capture.core.runtime_files import atomic_write_json as _atomic_write_json, is_within as _inside
+from menu_capture.desktop.robot_transport import (
     FileRobotTransport, RobotCancelled, RobotCommandError, RobotProtocolError, RobotTimeout,
 )
-from .model import Region
-from .model_usage import usage_context
-from .chat_anchor import find_store_name_matches
-from .chat_layout import ChatImageUnreadable, find_sent_text_bubbles
-from .failures import classify as classify_failure
-from .window_contract import is_windows_miniapp_app, is_windows_wechat_app, select_wechat_selector, window_selector, windows_app_name, windows_selectors_overlap
-from .close_icon_locator import refine_close_icon, locate_close_icon, refine_back_arrow
-from .checkbox_locator import refine_consent_checkbox
-from .scene_agent import SceneDecision
-from .target_candidates import build_text_candidates
-from .store import TaskStore
-from .capture.results import waiting_for_materials
-from .preview_locator import PreviewIconNotFound, locate_preview_recognize
-from .chat_image_locator import (ChatImageNotFound, locate_chat_image_bubble, locate_sent_image,
+from menu_capture.agent.model import Region
+from menu_capture.agent.model_usage import usage_context
+from menu_capture.vision.chat_anchor import find_store_name_matches
+from menu_capture.vision.chat_layout import ChatImageUnreadable, find_sent_text_bubbles
+from menu_capture.core.failures import classify as classify_failure
+from menu_capture.desktop.window_contract import is_windows_miniapp_app, is_windows_wechat_app, select_wechat_selector, window_selector, windows_app_name, windows_selectors_overlap
+from menu_capture.vision.close_icon_locator import refine_close_icon, locate_close_icon, refine_back_arrow
+from menu_capture.vision.checkbox_locator import refine_consent_checkbox
+from menu_capture.agent.scene_agent import SceneDecision
+from menu_capture.vision.target_candidates import build_text_candidates
+from menu_capture.storage.store import TaskStore
+from menu_capture.capture.results import waiting_for_materials
+from menu_capture.vision.preview_locator import PreviewIconNotFound, locate_preview_recognize
+from menu_capture.vision.chat_image_locator import (ChatImageNotFound, locate_chat_image_bubble, locate_sent_image,
                                  match_preview_source)
-from .ui_tars_trial import GUI_PLUS_MODEL, TrialModel, TrialProtocolError, run_navigation, trial_model_from_env
-from .robot_profile import RobotProfile
-from .capture.outputs import (
+from menu_capture.agent.ui_tars_trial import GUI_PLUS_MODEL, TrialModel, TrialProtocolError, run_navigation, trial_model_from_env
+from menu_capture.desktop.robot_profile import RobotProfile
+from menu_capture.capture.outputs import (
     archive_unqualified, retire_store_dir, store_output_dir, unqualified_store_dir,
 )
-from .uipath_cli import cli_entry
+from menu_capture.desktop.uipath_cli import cli_entry
 
 # 预览按钮、小程序窗口与关闭动作统一改为短间隔轮询：条件满足即停，避免固定等待。
 _PREVIEW_ICON_POLL_INTERVAL = 0.35
@@ -536,7 +536,7 @@ class UiPathRunner:
         if isinstance(transport, FileRobotTransport):
             transport.retain_command_history = self.debug_log is None
             if sys.platform == "win32":
-                from .windows_desktop import WindowsDesktop
+                from menu_capture.desktop.windows_desktop import WindowsDesktop
 
                 transport.local = WindowsDesktop()
         return transport
@@ -818,7 +818,7 @@ class UiPathRunner:
         """接收人工决定；同一门店只接受第一次，重复或过期页面请求直接拒绝。"""
         if kind not in {"capture", "reject", "skip"}:
             raise ValueError("人工操作类型无效")
-        from .materials import REJECTION_REASONS
+        from menu_capture.materials import REJECTION_REASONS
 
         with self._manual_cond:
             state = self._manual_state or {}
@@ -844,7 +844,7 @@ class UiPathRunner:
 
     def set_manual_reason(self, reason: str) -> str:
         """保存当前不合格原因，供前台 F9 快捷键复用。"""
-        from .materials import REJECTION_REASONS
+        from menu_capture.materials import REJECTION_REASONS
 
         if reason not in REJECTION_REASONS:
             raise ValueError("不合格原因无效")
@@ -1432,7 +1432,7 @@ class UiPathRunner:
             # 与全自动一致：批次版面先校准一次，后面各店复用同一窗口尺寸。
             with self._trace("wechat_batch_frame"):
                 self._prepare_batch_wechat_frame(profile)
-            from .manual_hotkeys import ManualHotkeys
+            from menu_capture.desktop.manual_hotkeys import ManualHotkeys
 
             hotkeys = ManualHotkeys(
                 on_capture=lambda: self._manual_hotkey("capture"),
@@ -1579,7 +1579,7 @@ class UiPathRunner:
 
     def _persist_manual_case(self, task: dict, case_dir: Path, report: dict, settings) -> str:
         """半自动结果落库：截图发布为 captured；不合格记录原因；跳过留待检查。"""
-        from .materials import REJECTION_REASONS
+        from menu_capture.materials import REJECTION_REASONS
 
         binding = self.store.material_binding(
             str(Path(task["source_path"]).expanduser().resolve().parent.parent)) or {}

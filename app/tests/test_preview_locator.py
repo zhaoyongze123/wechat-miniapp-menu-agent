@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from menu_capture.preview_locator import PreviewIconNotFound, locate_preview_recognize
+from menu_capture.vision.preview_locator import PreviewIconNotFound, locate_preview_recognize
 
 
 ROOT = Path(__file__).resolve().parents[1]

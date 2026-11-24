@@ -1,15 +1,15 @@
 import os
 from unittest.mock import Mock, patch
 
-from menu_capture.config import ModelConfig
-from menu_capture.model import VisionModel
+from menu_capture.core.config import ModelConfig
+from menu_capture.agent.model import VisionModel
 from menu_capture.server import create_app
 
 
 def test_model_client_ignores_proxy_environment():
     # 即使调用方没有走服务入口，模型客户端也不能继承失效的环境代理。
     with patch.dict(os.environ, {"HTTPS_PROXY": "http://127.0.0.1:1"}):
-        with patch("menu_capture.model.httpx.Client") as client:
+        with patch("menu_capture.agent.model.httpx.Client") as client:
             client.return_value = Mock()
             model = VisionModel(ModelConfig(base_url="https://example.com/v1", model="test"), "test-key")
             assert client.call_args.kwargs["trust_env"] is False

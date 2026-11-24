@@ -230,7 +230,7 @@ def test_qr_detections_keeps_second_undecodable_box(monkeypatch, tmp_path: Path)
     cv2 = pytest.importorskip("cv2")
     import numpy as np
 
-    from menu_capture import windows_image
+    from menu_capture.vision import windows_image
 
     image_path = tmp_path / "menu.png"
     cv2.imwrite(str(image_path), np.full((400, 600, 3), 255, dtype=np.uint8))

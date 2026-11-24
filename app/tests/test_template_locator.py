@@ -8,8 +8,8 @@ import cv2
 import numpy as np
 import pytest
 
-from menu_capture import template_locator
-from menu_capture.template_locator import (
+from menu_capture.vision import template_locator
+from menu_capture.vision.template_locator import (
     ASSETS_DIR,
     TemplateNotFound,
     locate_control,

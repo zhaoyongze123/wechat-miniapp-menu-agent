@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .model import VisionModel, parse_json
+from menu_capture.agent.model import VisionModel, parse_json
 
 PURPOSES = {"ordering", "enterprise_wechat", "other", "unknown"}
 MAX_IMAGE_EDGE = 1280

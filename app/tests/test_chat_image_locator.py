@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
-from menu_capture.chat_image_locator import ChatImageNotFound, locate_sent_image
+from menu_capture.vision.chat_image_locator import ChatImageNotFound, locate_sent_image
 
 pytestmark = pytest.mark.unit
 

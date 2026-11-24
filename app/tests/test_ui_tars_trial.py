@@ -14,10 +14,10 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from menu_capture.config import ConfigStore
+from menu_capture.core.config import ConfigStore
 from menu_capture.materials import MaterialService
-from menu_capture.store import TaskStore
-from menu_capture.ui_tars_trial import (
+from menu_capture.storage.store import TaskStore
+from menu_capture.agent.ui_tars_trial import (
     GUI_PLUS_MODEL,
     TrialModel,
     TrialProtocolError,
@@ -25,7 +25,7 @@ from menu_capture.ui_tars_trial import (
     run_navigation,
     trial_model_from_env,
 )
-from menu_capture.uipath_runner import NeedsReview, RobotCommandError, UiPathRunner
+from menu_capture.capture.runner import NeedsReview, RobotCommandError, UiPathRunner
 
 
 _SDK = Path(__file__).resolve().parents[1] / "ui_tars/node_modules/@gui-agent/agent-sdk/package.json"
@@ -373,7 +373,7 @@ def test_success_menu_box_far_outside_tolerance_is_rejected(model_server, tmp_pa
 
 
 def test_scroll_pixels_map_to_direction_and_bounded_units():
-    from menu_capture.ui_tars_trial import _action_command
+    from menu_capture.agent.ui_tars_trial import _action_command
 
     frame = {"window_width": 100, "window_height": 200}
     cases = [(-100, "Down", 1), (-800, "Down", 5), (1000, "Up", 6), (9000, "Up", 6)]
@@ -401,7 +401,7 @@ def _png_frame(tmp_path: Path, name: str, *, size=(1000, 1000), block=None) -> d
 
 
 def test_click_roi_delta_sees_small_control_change_that_global_delta_misses(tmp_path):
-    from menu_capture.ui_tars_trial import _frame_facts
+    from menu_capture.agent.ui_tars_trial import _frame_facts
 
     before = _png_frame(tmp_path, "before.png")
     after = _png_frame(tmp_path, "after.png", block=(470, 470, 60))
@@ -416,7 +416,7 @@ def test_click_roi_delta_sees_small_control_change_that_global_delta_misses(tmp_
 
 
 def test_roi_crop_keeps_native_resolution_for_small_controls(tmp_path):
-    from menu_capture.ui_tars_trial import _frame_facts
+    from menu_capture.agent.ui_tars_trial import _frame_facts
 
     # 24px 是“选人数”圆点的常见尺寸；先缩整图再裁只剩几个像素，原图裁剪才看得见。
     before = _png_frame(tmp_path, "before-small.png")
@@ -431,7 +431,7 @@ def test_roi_crop_keeps_native_resolution_for_small_controls(tmp_path):
 
 
 def test_roi_delta_is_skipped_when_window_size_changes(tmp_path):
-    from menu_capture.ui_tars_trial import _frame_facts
+    from menu_capture.agent.ui_tars_trial import _frame_facts
 
     before = _png_frame(tmp_path, "before.png")
     after = _png_frame(tmp_path, "after.png", block=(470, 470, 60))
@@ -818,7 +818,7 @@ def test_missing_success_menu_box_fails_closed(model_server, tmp_path):
 
 
 def test_stale_frame_action_is_rejected_before_transport_execution(tmp_path):
-    from menu_capture.ui_tars_trial import _exchange
+    from menu_capture.agent.ui_tars_trial import _exchange
 
     read_fd, write_fd = os.pipe()
     png = io.BytesIO()
@@ -850,7 +850,7 @@ def test_stale_frame_action_is_rejected_before_transport_execution(tmp_path):
 
 
 def test_windows_pipe_transport_reads_jsonl_and_reports_eof():
-    from menu_capture.ui_tars_trial import _exchange
+    from menu_capture.agent.ui_tars_trial import _exchange
 
     read_fd, write_fd = os.pipe()
     events = [{"type": "result", "outcome": "needs_review", "reason": "窗口需要人工确认"}]
@@ -884,7 +884,7 @@ def test_windows_pipe_transport_reads_jsonl_and_reports_eof():
 
 
 def test_windows_pipe_transport_keeps_existing_message_size_limit():
-    from menu_capture.ui_tars_trial import _exchange
+    from menu_capture.agent.ui_tars_trial import _exchange
 
     # Windows 匿名管道容量小于这条超限消息。必须边读边写，否则 os.write 会在读取线程启动前永久阻塞。
     read_fd, write_fd = os.pipe()
@@ -1185,8 +1185,8 @@ def test_model_call_trace_keeps_raw_text_but_references_images(model_server, tmp
 
 
 def test_agent_usage_is_written_to_existing_ledger(tmp_path):
-    from menu_capture.model_usage import UsageLedger
-    from menu_capture.uipath_runner import UiPathRunner
+    from menu_capture.agent.model_usage import UsageLedger
+    from menu_capture.capture.runner import UiPathRunner
 
     store = TaskStore(tmp_path / "tasks.sqlite3")
     runner = object.__new__(UiPathRunner)
@@ -1222,8 +1222,8 @@ def test_agent_usage_is_written_to_existing_ledger(tmp_path):
 
 
 def test_agent_usage_records_failed_calls_and_skips_reimport(tmp_path):
-    from menu_capture.model_usage import UsageLedger
-    from menu_capture.uipath_runner import UiPathRunner
+    from menu_capture.agent.model_usage import UsageLedger
+    from menu_capture.capture.runner import UiPathRunner
 
     store = TaskStore(tmp_path / "tasks.sqlite3")
     runner = object.__new__(UiPathRunner)
@@ -1277,7 +1277,7 @@ def test_host_trace_keeps_failed_tool_attempt():
 
 
 def test_trial_window_calibration_checks_both_axes(tmp_path):
-    from menu_capture.window_contract import window_selector
+    from menu_capture.desktop.window_contract import window_selector
 
     runner = object.__new__(UiPathRunner)
     runner._move_window_on_screen = lambda _selector: None
@@ -1377,7 +1377,7 @@ def test_window_tools_feed_titles_back_and_reobserve_after_switch(model_server, 
 def test_window_and_handoff_contract_rejects_mismatched_evidence(tmp_path):
     from types import SimpleNamespace
 
-    from menu_capture.ui_tars_trial import _exchange
+    from menu_capture.agent.ui_tars_trial import _exchange
 
     read_fd, write_fd = os.pipe()
     png = io.BytesIO()
@@ -1421,7 +1421,7 @@ def test_window_and_handoff_contract_rejects_mismatched_evidence(tmp_path):
     finally:
         os.close(write_fd)
 
-    from menu_capture.uipath_runner import UiPathRunner
+    from menu_capture.capture.runner import UiPathRunner
 
     runner = object.__new__(UiPathRunner)
     runner.transport = SimpleNamespace(_window_selector="门店B", _window_pixels=(20, 10))
@@ -1434,7 +1434,7 @@ def test_window_and_handoff_contract_rejects_mismatched_evidence(tmp_path):
 
 
 def test_switch_window_updates_active_selector_by_exact_title():
-    from menu_capture.uipath_runner import UiPathRunner
+    from menu_capture.capture.runner import UiPathRunner
 
     runner = object.__new__(UiPathRunner)
     windows = [{
@@ -1509,7 +1509,7 @@ def test_agent_request_excludes_qr_reference_and_store_name(model_server, tmp_pa
 
 
 def test_click_marker_keeps_target_visible_and_image_size(tmp_path):
-    from menu_capture.ui_tars_trial import _mark_click
+    from menu_capture.agent.ui_tars_trial import _mark_click
 
     frame = _png_frame(tmp_path, "mark.png", size=(292, 980))
     raw = Path(frame["path"]).read_bytes()
@@ -1526,7 +1526,7 @@ def test_click_marker_keeps_target_visible_and_image_size(tmp_path):
 
 
 def test_click_marker_skipped_for_invalid_point(tmp_path):
-    from menu_capture.ui_tars_trial import _mark_click
+    from menu_capture.agent.ui_tars_trial import _mark_click
 
     frame = _png_frame(tmp_path, "mark-invalid.png", size=(292, 980))
     raw = Path(frame["path"]).read_bytes()
@@ -1536,7 +1536,7 @@ def test_click_marker_skipped_for_invalid_point(tmp_path):
 
 
 def test_ocr_near_puts_containing_box_first_and_normalizes_coordinates():
-    from menu_capture.ui_tars_trial import _ocr_near
+    from menu_capture.agent.ui_tars_trial import _ocr_near
 
     rows = [
         {"text": "关闭", "x": 160, "y": 900, "width": 40, "height": 30, "confidence": .9},
@@ -1557,7 +1557,7 @@ def test_ocr_near_puts_containing_box_first_and_normalizes_coordinates():
 
 
 def test_zoom_reference_scales_click_and_nearby_ocr_boxes(tmp_path):
-    from menu_capture.ui_tars_trial import _zoom_reference
+    from menu_capture.agent.ui_tars_trial import _zoom_reference
 
     frame = _png_frame(tmp_path, "zoom.png", size=(292, 980))
     rows = [{"text": "开始点餐", "x": 100, "y": 470, "width": 90, "height": 40, "confidence": .95}]
@@ -1575,7 +1575,7 @@ def test_zoom_reference_scales_click_and_nearby_ocr_boxes(tmp_path):
 
 
 def test_zoom_reference_clamps_at_window_edge_and_rejects_invalid_click(tmp_path):
-    from menu_capture.ui_tars_trial import _zoom_reference
+    from menu_capture.agent.ui_tars_trial import _zoom_reference
 
     frame = _png_frame(tmp_path, "zoom-edge.png", size=(292, 980))
     # 底部落点：裁剪框必须整体留在窗口内，红叉随裁剪偏移

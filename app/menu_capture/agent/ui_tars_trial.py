@@ -19,12 +19,12 @@ from urllib.parse import urlsplit
 
 from PIL import Image
 
-from .config import ConfigStore
-from .model import Region
+from menu_capture.core.config import ConfigStore
+from menu_capture.agent.model import Region
 
 
-_ENTRY = Path(__file__).resolve().parent.parent / "ui_tars" / "adapter.mjs"
-_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "ui_tars" / "action-schema.json"
+_ENTRY = Path(__file__).resolve().parents[2] / "ui_tars" / "adapter.mjs"
+_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "ui_tars" / "action-schema.json"
 GUI_PLUS_MODEL = "gui-plus-2026-02-26"
 _GUI_PLUS_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 _MAX_MODEL_IMAGE_PIXELS = 1_003_520
@@ -534,7 +534,7 @@ def _frame_ocr_rows(cache: dict, frame_id: str, frame: dict) -> list:
     if cache.get("frame_id") == frame_id:
         return cache.get("rows") or []
     try:
-        from .image_tools import image_ocr
+        from menu_capture.vision.image_tools import image_ocr
         rows = image_ocr(Path(frame["path"]))
     except Exception:
         rows = []
@@ -667,7 +667,7 @@ def _ocr_context(frame: dict, image_size: tuple[int, int], params: dict, rows=No
     }
     if rows is None:
         try:
-            from .image_tools import image_ocr
+            from menu_capture.vision.image_tools import image_ocr
             rows = image_ocr(Path(frame["path"]))
         except Exception:
             return empty

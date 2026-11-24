@@ -6,7 +6,7 @@ import re
 import uuid
 from pathlib import Path
 
-from .store import TaskStore, now
+from menu_capture.storage.store import TaskStore, now
 
 
 class MaterialVersions:

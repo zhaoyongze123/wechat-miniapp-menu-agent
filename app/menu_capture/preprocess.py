@@ -104,7 +104,7 @@ def _payload_purpose(payload) -> str:
 def _apple_vision_inspector(path: Path) -> list[dict]:
     """使用本机二维码扫描器；payload 只在本函数调用链内存活。"""
     if sys.platform == "win32":
-        from .windows_image import qr_detections
+        from menu_capture.vision.windows_image import qr_detections
         return qr_detections(path)
     if sys.platform != "darwin":
         raise RuntimeError("默认二维码检查器仅支持 macOS Apple Vision 或 Windows OpenCV")

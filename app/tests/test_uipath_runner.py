@@ -12,18 +12,18 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image, ImageDraw
 
-from menu_capture.config import ConfigStore
-from menu_capture.store import TaskStore
-from menu_capture.model import Region
-from menu_capture.scene_agent import SceneDecision
-from menu_capture.uipath_runner import (
+from menu_capture.core.config import ConfigStore
+from menu_capture.storage.store import TaskStore
+from menu_capture.agent.model import Region
+from menu_capture.agent.scene_agent import SceneDecision
+from menu_capture.capture.runner import (
     FileRobotTransport,
     NeedsReview,
     RobotProtocolError,
     RobotTimeout,
     UiPathRunner,
 )
-import menu_capture.uipath_runner as uipath_runner_module
+import menu_capture.capture.runner as uipath_runner_module
 
 @pytest.fixture(autouse=True)
 def _no_render_wait(monkeypatch):
@@ -199,7 +199,7 @@ class FakeActor:
     def run(self, command, timeout=90, *, cancel_event=None):
         self.run_timeouts.append(timeout)
         if cancel_event and cancel_event.is_set():
-            from menu_capture.uipath_runner import RobotCancelled
+            from menu_capture.capture.runner import RobotCancelled
             raise RobotCancelled("paused")
         command = {"id": "fake-" + str(len(self.commands)), **command}
         self.commands.append(command)
@@ -320,7 +320,7 @@ def _configure_cli_launch(runner, profile_path: Path, project_dir: Path, monkeyp
     profile.update(launch_mode="cli", **profile_overrides)
     profile_path.write_text(json.dumps(profile), encoding="utf-8")
     runner.project_dir = project_dir
-    monkeypatch.setattr("menu_capture.uipath_runner.shutil.which", lambda name, path=None: "/test/bin/uip" if name == "uip" else None)
+    monkeypatch.setattr("menu_capture.capture.runner.shutil.which", lambda name, path=None: "/test/bin/uip" if name == "uip" else None)
 
 def test_cli_launch_passes_private_run_directory_and_reaps_own_process(tmp_path: Path, monkeypatch):
     runner, store, selected, _, profile_path, _ = _setup(tmp_path)
@@ -1394,7 +1394,7 @@ def test_input_content_detects_short_left_aligned_name(tmp_path):
 def test_chat_image_bubble_located_while_still_loading(tmp_path):
     # 图片刚发出、缩略图还是灰色占位时也能定位：只认门店名下方最新的一块非背景区域，
     # 上方的旧气泡不参与，也不再要求原图模板匹配成功。
-    from menu_capture.chat_image_locator import locate_chat_image_bubble
+    from menu_capture.vision.chat_image_locator import locate_chat_image_bubble
 
     shot = tmp_path / "chat.png"
     Image.new("RGB", (999, 749), "#F5F5F5").save(shot)

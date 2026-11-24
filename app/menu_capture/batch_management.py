@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import re
 
-from .config import atomic_json
+from menu_capture.core.config import atomic_json
 from .materials import _now
 
 

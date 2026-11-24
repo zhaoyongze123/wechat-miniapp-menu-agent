@@ -33,30 +33,30 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from PIL import Image
 from starlette.background import BackgroundTask
 
-from .config import ConfigStore, ROOT, WORKSPACE_ROOT
+from menu_capture.core.config import ConfigStore, ROOT, WORKSPACE_ROOT
 from .capture.outputs import batch_output_dir
-from .failures import describe as describe_failure
+from menu_capture.core.failures import describe as describe_failure
 from .capture.history import ACTIVE_RUN_STATUSES, capture_history_row, history_timestamp
 from .capture.results import capture_outcome, state_counts, store_state, waiting_for_materials
-from .store import TaskStore
-from .uipath_runner import UiPathRunner
-from .robot_profile import ProfileStore
-from .image_tools import image_ocr, qr_boxes, prepare_clipboard_image, prepare_clipboard_text
+from menu_capture.storage.store import TaskStore
+from menu_capture.capture.runner import UiPathRunner
+from menu_capture.desktop.robot_profile import ProfileStore
+from menu_capture.vision.image_tools import image_ocr, qr_boxes, prepare_clipboard_image, prepare_clipboard_text
 from .materials import MaterialService
-from .rejections import RejectionService
-from .environment import EnvironmentDiagnostics
-from .connections import ConnectionManager
-from .debug_log import DebugLog
-from .model_usage import UsageLedger
-from .updates import UpdateService
-from .update_install import InstallController
-from .hub_update import HubInstallProxy
-from .annotation import AnnotationSession, RunnerExecutor
-from .instance_lock import InstanceLockedError, instance_lock
-from .shared import SharedConflict, SharedHub, WorkerUnauthorized
+from .quality.rejections import RejectionService
+from menu_capture.core.environment import EnvironmentDiagnostics
+from menu_capture.core.connections import ConnectionManager
+from menu_capture.core.debug_log import DebugLog
+from menu_capture.agent.model_usage import UsageLedger
+from menu_capture.updates.service import UpdateService
+from menu_capture.updates.install import InstallController
+from menu_capture.updates.hub_proxy import HubInstallProxy
+from menu_capture.annotation.session import AnnotationSession, RunnerExecutor
+from menu_capture.core.instance_lock import InstanceLockedError, instance_lock
+from menu_capture.shared.hub import SharedConflict, SharedHub, WorkerUnauthorized
 from .api.shared_routes import register_shared_routes
-from .shared_worker import SharedWorker
-from .workbench_page import workbench_page
+from menu_capture.shared.worker import SharedWorker
+from menu_capture.api.workbench_page import workbench_page
 from .api.update_routes import register_update_routes
 
 logger = logging.getLogger(__name__)

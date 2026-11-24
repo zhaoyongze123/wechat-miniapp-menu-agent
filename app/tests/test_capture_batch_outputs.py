@@ -81,7 +81,7 @@ def test_archive_unqualified_copies_originals_and_keeps_source(tmp_path: Path):
 
 
 def test_form_save_keeps_archive_settings(tmp_path: Path):
-    from menu_capture.config import ConfigStore, Settings
+    from menu_capture.core.config import ConfigStore, Settings
 
     store = ConfigStore(tmp_path)
     seeded = Settings(output_dir=str(tmp_path / "合格"), unqualified_dir=str(tmp_path / "不合格"), flat_store_output=True)
@@ -164,7 +164,7 @@ def test_failed_publish_retry_preserves_previous_output(tmp_path: Path):
             raise OSError("simulated publish failure")
         return real_replace(src, dst)
 
-    with patch("menu_capture.uipath_runner.os.replace", side_effect=fail_new_directory_once):
+    with patch("menu_capture.capture.runner.os.replace", side_effect=fail_new_directory_once):
         with pytest.raises(OSError, match="simulated publish failure"):
             app.state.runner._publish_store_output(tmp_path / "output", task, staging, batch_id="f" * 32)
 

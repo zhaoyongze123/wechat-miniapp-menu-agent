@@ -22,17 +22,17 @@ from typing import Callable, Iterable
 
 from PIL import Image
 
-from .config import ConfigStore, atomic_json
+from menu_capture.core.config import ConfigStore, atomic_json
 from .preprocess import (
     CROP_MARGIN_RATIO, SUPPORTED_EXTENSIONS,
     _apple_vision_inspector, _apply_orientation, _crop_candidate, _enumerate_images,
     _inspect_image, analyze_store, discover_stores,
 )
-from .image_tools import image_ocr
+from menu_capture.vision.image_tools import image_ocr
 from .material_jobs import JobRunner, JobStore, OPEN_STATUSES
 from .material_versions import MaterialVersions
-from .store_material_versions import StoreMaterialVersions
-from .store import TaskStore
+from menu_capture.storage.store_material_versions import StoreMaterialVersions
+from menu_capture.storage.store import TaskStore
 
 logger = logging.getLogger(__name__)
 

@@ -4,9 +4,9 @@ import shutil
 
 import pytest
 
-from menu_capture.config import ConfigStore
-from menu_capture.store import TaskStore
-from menu_capture.uipath_runner import UiPathRunner, NeedsReview
+from menu_capture.core.config import ConfigStore
+from menu_capture.storage.store import TaskStore
+from menu_capture.capture.runner import UiPathRunner, NeedsReview
 
 
 ROOT = Path(__file__).resolve().parents[1]

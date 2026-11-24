@@ -8,11 +8,11 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from menu_capture.config import ConfigStore
-from menu_capture.debug_log import DebugLog
-from menu_capture.scene_agent import SceneDecision
-from menu_capture.store import TaskStore
-from menu_capture.uipath_runner import UiPathRunner
+from menu_capture.core.config import ConfigStore
+from menu_capture.core.debug_log import DebugLog
+from menu_capture.agent.scene_agent import SceneDecision
+from menu_capture.storage.store import TaskStore
+from menu_capture.capture.runner import UiPathRunner
 
 
 def _log(tmp_path: Path, **kwargs) -> DebugLog:

@@ -5,9 +5,9 @@ from pathlib import Path
 
 from PIL import Image
 
-from menu_capture.config import ConfigStore
-from menu_capture.store import TaskStore
-from menu_capture.uipath_runner import AgentUnqualified, RobotTimeout, UiPathRunner
+from menu_capture.core.config import ConfigStore
+from menu_capture.storage.store import TaskStore
+from menu_capture.capture.runner import AgentUnqualified, RobotTimeout, UiPathRunner
 
 
 class _Model:

@@ -15,11 +15,11 @@ from zipfile import BadZipFile, ZipFile
 
 from PIL import Image
 
-from .capture.history import ACTIVE_RUN_STATUSES, capture_history_row
-from .capture.results import store_state, waiting_for_materials
-from .materials import REJECTION_REASONS, MaterialService
-from .store import TaskStore
-from .shared_history import HistoryReport
+from menu_capture.capture.history import ACTIVE_RUN_STATUSES, capture_history_row
+from menu_capture.capture.results import store_state, waiting_for_materials
+from menu_capture.materials import REJECTION_REASONS, MaterialService
+from menu_capture.storage.store import TaskStore
+from menu_capture.shared.history import HistoryReport
 
 MAX_RESULT_SIZE = 1024**3
 MAX_ARTIFACT_SIZE = 32 * 1024**2

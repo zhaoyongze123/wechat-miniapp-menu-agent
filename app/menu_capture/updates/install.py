@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.request import urlopen
 
-from .updates import Version, _SHA256_RE, _file_sha256, _is_reparse, _normalize_arch
+from menu_capture.updates.service import Version, _SHA256_RE, _file_sha256, _is_reparse, _normalize_arch
 
 INSTALL_TIMEOUT_SECONDS = 900
 HEALTH_TIMEOUT_SECONDS = 240
@@ -580,7 +580,7 @@ class InstallController:
         self.idle_check = idle_check
         self.popen = popen
         self.python = python or sys.executable
-        self.app_dir = Path(app_dir) if app_dir is not None else Path(__file__).resolve().parent.parent
+        self.app_dir = Path(app_dir) if app_dir is not None else Path(__file__).resolve().parents[2]
         self.pid_alive = pid_alive
         self._supported = bool(supported and self.install_root is not None
                                and role == "worker" and platform == "windows")
@@ -727,7 +727,7 @@ class InstallController:
             "updated_at": _utc_now(),
         })
         command = [
-            self.python, "-m", "menu_capture.update_install",
+            self.python, "-m", "menu_capture.updates.install",
             "--job", str(self.job_path), "--journal", str(self.journal_path),
         ]
         kwargs: dict[str, Any] = {

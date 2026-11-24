@@ -12,7 +12,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-from .environment import EnvironmentDiagnostics, _now
+from menu_capture.core.environment import EnvironmentDiagnostics, _now
 
 
 class ConnectionManager:

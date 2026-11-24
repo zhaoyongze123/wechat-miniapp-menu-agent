@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config import ROOT
+from menu_capture.core.config import ROOT
 
 LABEL = "com.yipu.menu-capture"
 

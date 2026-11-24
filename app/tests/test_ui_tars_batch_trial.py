@@ -5,14 +5,14 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import menu_capture.uipath_runner as uipath_runner_module
+import menu_capture.capture.runner as uipath_runner_module
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from menu_capture.config import ConfigStore
+from menu_capture.core.config import ConfigStore
 from menu_capture.server import create_app
-from menu_capture.store import TaskStore
-from menu_capture.uipath_runner import UiPathRunner
+from menu_capture.storage.store import TaskStore
+from menu_capture.capture.runner import UiPathRunner
 
 
 def _published_task(root: Path, snapshot_id: str, shop_name: str) -> Path:

@@ -16,7 +16,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-ASSETS_DIR = Path(__file__).parent / "assets"
+ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
 DEFAULT_SCALES = tuple(float(value) for value in np.geomspace(0.6, 3.0, 20))
 DEFAULT_MIN_SCORE = 0.70
 DEFAULT_MIN_MARGIN = 0.045

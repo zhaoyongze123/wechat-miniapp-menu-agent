@@ -2,7 +2,7 @@
 
 import pytest
 
-from menu_capture import failures
+from menu_capture.core import failures
 
 
 @pytest.mark.parametrize("stage,message,code", [

@@ -13,10 +13,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .config import ConfigStore
-from .uipath_runner import FileRobotTransport, UiPathRunner
-from .uipath_cli import cli_entry
-from .window_contract import is_windows_wechat_app, select_wechat_selector
+from menu_capture.core.config import ConfigStore
+from menu_capture.capture.runner import FileRobotTransport, UiPathRunner
+from menu_capture.desktop.uipath_cli import cli_entry
+from menu_capture.desktop.window_contract import is_windows_wechat_app, select_wechat_selector
 
 
 _STATUS = {"checking", "ready", "warning", "error", "unknown"}
@@ -196,7 +196,7 @@ class EnvironmentDiagnostics:
 
     @staticmethod
     def _windows_ocr_check() -> dict:
-        from .windows_image import _tesseract_command
+        from menu_capture.vision.windows_image import _tesseract_command
 
         try:
             command = _tesseract_command()
@@ -219,7 +219,7 @@ class EnvironmentDiagnostics:
             return _item(check_id, name, "unknown", "请以 UiPath 桌面实测为准",
                          "这些系统权限状态适用于 macOS。", actions=actions)
         try:
-            from .macos import MacDesktop
+            from menu_capture.desktop.macos import MacDesktop
             state = MacDesktop().permissions().get(permission)
         except Exception as exc:
             return _item(check_id, name, "unknown", "无法读取本机服务进程权限", type(exc).__name__, actions=actions)
@@ -442,7 +442,7 @@ class EnvironmentDiagnostics:
         checked_at = _now()
         result = {"at": time.monotonic(), "checked_at": checked_at}
         try:
-            from .model import ModelError, VisionModel
+            from menu_capture.agent.model import ModelError, VisionModel
             model = VisionModel(self.configs.load().model, self.configs.key())
             if hasattr(model, "usage_ledger"):
                 model.usage_ledger = getattr(self.runner, "usage_ledger", None)
@@ -465,9 +465,9 @@ class EnvironmentDiagnostics:
         return result
 
     def _test_windows_and_wechat(self) -> dict:
-        from .image_tools import image_ocr
-        from .window_contract import is_windows_miniapp_app
-        from .windows_desktop import WindowsDesktop
+        from menu_capture.vision.image_tools import image_ocr
+        from menu_capture.desktop.window_contract import is_windows_miniapp_app
+        from menu_capture.desktop.windows_desktop import WindowsDesktop
 
         result = {"at": time.monotonic(), "checked_at": _now()}
         try:
@@ -620,7 +620,7 @@ class EnvironmentDiagnostics:
                     result["uipath_screenshot"] = {"status": "ready", "summary": "UiPath 成功截取微信窗口",
                                                     "detail": f"临时截图 {screenshot['width']}×{screenshot['height']}；像素内容可读；测试结束自动删除，不进入采集输出。"}
                     try:
-                        from .image_tools import image_ocr
+                        from menu_capture.vision.image_tools import image_ocr
                         rows = image_ocr(wechat_path)
                         login, assistant = self._classify_wechat_screen(rows, screenshot["width"], screenshot["height"])
                         result["wechat_login"] = login

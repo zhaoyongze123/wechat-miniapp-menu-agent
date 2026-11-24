@@ -11,8 +11,8 @@ from unittest.mock import Mock
 import pytest
 from fastapi.testclient import TestClient
 
-from menu_capture.config import ModelConfig
-from menu_capture.connections import ConnectionManager
+from menu_capture.core.config import ModelConfig
+from menu_capture.core.connections import ConnectionManager
 from menu_capture.server import create_app
 
 

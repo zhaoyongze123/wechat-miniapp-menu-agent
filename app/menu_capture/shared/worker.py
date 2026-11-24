@@ -16,10 +16,10 @@ from zipfile import ZIP_STORED, ZipFile
 
 import httpx
 
-from .config import atomic_json
-from .shared import IMAGE_SUFFIXES, MAX_RESULT_SIZE, MAX_SOURCE_SIZE, REPORTED_RUN_STATUSES, safe_artifact
-from .shared_history import WorkerHistoryDelivery
-from .store import TaskStore, now
+from menu_capture.core.config import atomic_json
+from menu_capture.shared.hub import IMAGE_SUFFIXES, MAX_RESULT_SIZE, MAX_SOURCE_SIZE, REPORTED_RUN_STATUSES, safe_artifact
+from menu_capture.shared.history import WorkerHistoryDelivery
+from menu_capture.storage.store import TaskStore, now
 
 
 TAILSCALE_IPV4 = ip_network("100.64.0.0/10")

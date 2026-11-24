@@ -14,8 +14,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import ROOT
-from .failures import classify as classify_failure
+from menu_capture.core.config import ROOT
+from menu_capture.core.failures import classify as classify_failure
 
 
 def now() -> str:

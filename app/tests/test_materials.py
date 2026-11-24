@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from menu_capture.config import ConfigStore
+from menu_capture.core.config import ConfigStore
 from menu_capture.materials import MaterialService, _classify_local_purpose, _mkdir_ok
-from menu_capture.store import TaskStore
+from menu_capture.storage.store import TaskStore
 
 
 PAYLOAD = "https://private.example/material-secret"
@@ -1244,7 +1244,7 @@ def test_rejection_review_mark_is_persistent_and_resets_with_new_reason(tmp_path
 def test_manual_action_accepts_only_first_decision_per_store() -> None:
     import threading
 
-    from menu_capture.uipath_runner import UiPathRunner
+    from menu_capture.capture.runner import UiPathRunner
 
     runner = object.__new__(UiPathRunner)
     runner.run_id = "run-1"

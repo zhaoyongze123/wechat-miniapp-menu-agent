@@ -6,9 +6,9 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from menu_capture.config import ModelConfig
-from menu_capture.model import VisionModel
-from menu_capture.scene_agent import SceneAgent, SceneError
+from menu_capture.core.config import ModelConfig
+from menu_capture.agent.model import VisionModel
+from menu_capture.agent.scene_agent import SceneAgent, SceneError
 
 
 class FakeVisionModel:
@@ -171,9 +171,9 @@ def test_resting_store_prompt_explicitly_allows_readonly_menu(tmp_path):
 
 
 def test_observed_mixed_unit_confirm_point_is_recovered_by_named_ocr_target(tmp_path):
-    from menu_capture.config import ConfigStore
-    from menu_capture.store import TaskStore
-    from menu_capture.uipath_runner import UiPathRunner
+    from menu_capture.core.config import ConfigStore
+    from menu_capture.storage.store import TaskStore
+    from menu_capture.capture.runner import UiPathRunner
     path = _image(tmp_path, (310, 1312))
     rows = [{"text": "确定", "x": 410.75, "y": 3800, "width": 81.375, "height": 47, "confidence": 0.3}]
     runner = UiPathRunner(ConfigStore(tmp_path), TaskStore(tmp_path / "tasks.sqlite3"), tmp_path / "profile.json", ocr_reader=lambda _: rows)
@@ -191,9 +191,9 @@ def test_observed_mixed_unit_confirm_point_is_recovered_by_named_ocr_target(tmp_
 
 
 def test_low_confidence_duplicate_named_targets_do_not_pick_arbitrarily(tmp_path):
-    from menu_capture.config import ConfigStore
-    from menu_capture.store import TaskStore
-    from menu_capture.uipath_runner import UiPathRunner
+    from menu_capture.core.config import ConfigStore
+    from menu_capture.storage.store import TaskStore
+    from menu_capture.capture.runner import UiPathRunner
     path = _image(tmp_path, (310, 1312))
     rows = [{"text": "确定", "x": 410.75, "y": y, "width": 81.375, "height": 47, "confidence": 0.3}
             for y in (3500, 3800)]
@@ -231,7 +231,7 @@ def test_invalid_normalized_region_runs_resolver_but_cannot_execute_if_not_corre
     {"x": 165, "y": 430, "width": 145, "height": 820},
 ])
 def test_observed_menu_region_overflow_can_be_replaced_by_local_ocr(tmp_path, raw_region):
-    from menu_capture.model import Region
+    from menu_capture.agent.model import Region
     response = _response(action="ready", x=None, y=None, menu_region=raw_region,
                          item_names_visible=["菜单菜品"], prices_visible=["¥9.9"])
     local_region = Region(x=70, y=360, width=232, height=870)
@@ -249,9 +249,9 @@ def test_observed_menu_region_overflow_can_be_replaced_by_local_ocr(tmp_path, ra
 
 
 def test_narrow_menu_content_heading_does_not_shift_sidebar_boundary(tmp_path):
-    from menu_capture.config import ConfigStore
-    from menu_capture.store import TaskStore
-    from menu_capture.uipath_runner import UiPathRunner
+    from menu_capture.core.config import ConfigStore
+    from menu_capture.storage.store import TaskStore
+    from menu_capture.capture.runner import UiPathRunner
     runner = UiPathRunner(ConfigStore(tmp_path), TaskStore(tmp_path / "tasks.sqlite3"), tmp_path / "profile.json", ocr_reader=lambda _: [])
     def row(text, x, y, width):
         return {"text": text, "x": x * 3, "y": y * 3, "width": width * 3, "height": 30, "confidence": 1.0}
@@ -330,9 +330,9 @@ def test_scroll_still_rejects_null_distance(tmp_path):
 
 
 def test_runner_refines_normalized_close_target_on_same_frame(tmp_path):
-    from menu_capture.config import ConfigStore
-    from menu_capture.store import TaskStore
-    from menu_capture.uipath_runner import UiPathRunner
+    from menu_capture.core.config import ConfigStore
+    from menu_capture.storage.store import TaskStore
+    from menu_capture.capture.runner import UiPathRunner
     path = Path(__file__).resolve().parents[1] / "data/action-evidence/b86c9a9398054a559f6e974eba4a394b.png"
     if not path.exists():
         pytest.skip("real evidence unavailable")
@@ -349,13 +349,13 @@ def test_runner_refines_normalized_close_target_on_same_frame(tmp_path):
 
 
 def test_ordinary_text_button_does_not_run_close_icon_detection(tmp_path, monkeypatch):
-    from menu_capture.config import ConfigStore
-    from menu_capture.store import TaskStore
-    from menu_capture.uipath_runner import UiPathRunner
+    from menu_capture.core.config import ConfigStore
+    from menu_capture.storage.store import TaskStore
+    from menu_capture.capture.runner import UiPathRunner
     runner = UiPathRunner(ConfigStore(tmp_path), TaskStore(tmp_path / "tasks.sqlite3"), tmp_path / "profile.json")
     def unexpected(*args):
         raise AssertionError("ordinary text targets must not trigger icon matching")
-    monkeypatch.setattr("menu_capture.uipath_runner.refine_close_icon", unexpected)
+    monkeypatch.setattr("menu_capture.capture.runner.refine_close_icon", unexpected)
     response = SceneAgent(FakeVisionModel(_response(target_label="开始点餐"))).decide(_image(tmp_path, (440, 1013)), "prepare")
     assert runner._resolve_click_coordinates(tmp_path / "unused.png", response, 1) is response
 

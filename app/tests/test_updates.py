@@ -15,7 +15,7 @@ from urllib.request import Request
 
 import pytest
 
-from menu_capture.updates import CACHE_TTL_SECONDS, UpdateService, Version, is_newer
+from menu_capture.updates.service import CACHE_TTL_SECONDS, UpdateService, Version, is_newer
 
 pytestmark = pytest.mark.unit
 
@@ -284,7 +284,7 @@ def test_inventory_protects_current_and_recent_two(tmp_path, monkeypatch):
     decoy = tmp_path / "runtime" / "releases" / "9.9.9" / "app"
     decoy.mkdir(parents=True)
     monkeypatch.setenv("MENU_CAPTURE_VERSION", "0.2.0")
-    monkeypatch.setattr("menu_capture.updates.sys.platform", "win32")
+    monkeypatch.setattr("menu_capture.updates.service.sys.platform", "win32")
 
     # 数据目录与程序目录分离：data_root 只存缓存/审计，安装根由 app_root 推导。
     service = UpdateService(tmp_path / "runtime", role="worker", app_root=current_app, machine="AMD64")
@@ -616,7 +616,7 @@ def test_download_rejects_sha_mismatch(tmp_path):
 
 
 def test_download_cancel_keeps_partial_for_resume(tmp_path, monkeypatch):
-    monkeypatch.setattr("menu_capture.updates.DOWNLOAD_CHUNK_BYTES", 8)
+    monkeypatch.setattr("menu_capture.updates.service.DOWNLOAD_CHUNK_BYTES", 8)
     body = b"abcdefgh" * 10
     opener = GatedOpener(body)
     service = prepared_service(tmp_path, body, opener)
@@ -660,7 +660,7 @@ def test_download_prechecks_disk_space(tmp_path, monkeypatch):
     body = b"y" * 100
     opener = FakeOpener(body)
     service = prepared_service(tmp_path, body, opener)
-    monkeypatch.setattr("menu_capture.updates.shutil.disk_usage",
+    monkeypatch.setattr("menu_capture.updates.service.shutil.disk_usage",
                         lambda path: SimpleNamespace(free=0))
 
     service.start_download()
@@ -800,7 +800,7 @@ def test_ignored_range_rechecks_disk_for_full_size(tmp_path, monkeypatch):
         # 第一次续传预检通过；忽略 Range 后需要完整文件大小，第二次返回不足。
         return SimpleNamespace(free=10 ** 12) if len(calls) == 1 else SimpleNamespace(free=0)
 
-    monkeypatch.setattr("menu_capture.updates.shutil.disk_usage", fake_usage)
+    monkeypatch.setattr("menu_capture.updates.service.shutil.disk_usage", fake_usage)
     service.start_download()
     state = wait_download(service)
 
@@ -809,7 +809,7 @@ def test_ignored_range_rechecks_disk_for_full_size(tmp_path, monkeypatch):
 
 
 def test_redirect_handler_rejects_untrusted_hosts():
-    from menu_capture.updates import _TrustedRedirectHandler
+    from menu_capture.updates.service import _TrustedRedirectHandler
 
     handler = _TrustedRedirectHandler()
     request = Request("https://github.com/zhaoyongze123/example/releases/download/v1/a.exe")
@@ -829,7 +829,7 @@ def test_install_supported_requires_windows_worker_and_opt_in(tmp_path, monkeypa
     (install / "releases").mkdir(parents=True)
     app.mkdir(parents=True)
     service = UpdateService(tmp_path / "runtime", role="worker", app_root=app, machine="AMD64")
-    monkeypatch.setattr("menu_capture.updates.sys.platform", "win32")
+    monkeypatch.setattr("menu_capture.updates.service.sys.platform", "win32")
     monkeypatch.delenv("MENU_CAPTURE_ALLOW_SELF_UPDATE", raising=False)
 
     assert service.install_supported() is False
@@ -857,7 +857,7 @@ def _win_install(tmp_path: Path, monkeypatch, versions: list[str]) -> tuple[Path
         )
     (install / "current-version").write_text(versions[0], encoding="utf-8")
     monkeypatch.setenv("MENU_CAPTURE_VERSION", versions[0])
-    monkeypatch.setattr("menu_capture.updates.sys.platform", "win32")
+    monkeypatch.setattr("menu_capture.updates.service.sys.platform", "win32")
     return install, current_app
 
 

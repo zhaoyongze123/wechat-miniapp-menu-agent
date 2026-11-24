@@ -11,8 +11,8 @@ import httpx
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
-from .config import ModelConfig
-from .model_usage import usage_context
+from menu_capture.core.config import ModelConfig
+from menu_capture.agent.model_usage import usage_context
 
 
 _logger = logging.getLogger(__name__)

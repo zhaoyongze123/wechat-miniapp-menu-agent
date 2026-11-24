@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from menu_capture.server import create_app
-from menu_capture.rejections import RejectionService
+from menu_capture.quality.rejections import RejectionService
 
 
 def _source(root: Path) -> Path:

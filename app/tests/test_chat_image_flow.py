@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from menu_capture.config import ConfigStore
-from menu_capture.store import TaskStore
-from menu_capture.uipath_runner import RobotCommandError, UiPathRunner
+from menu_capture.core.config import ConfigStore
+from menu_capture.storage.store import TaskStore
+from menu_capture.capture.runner import RobotCommandError, UiPathRunner
 
 
 NAME = "ZA0070214＿再回首＿宁波市＿再回首单店"
@@ -51,7 +51,7 @@ def setup_flow(tmp_path):
 def test_normal_path_double_clicks_fixed_latest_image_point(tmp_path, monkeypatch):
     runner, task, profile, commands, clipboard = setup_flow(tmp_path)
     calls = []
-    monkeypatch.setattr("menu_capture.uipath_runner.locate_sent_image",
+    monkeypatch.setattr("menu_capture.capture.runner.locate_sent_image",
                         lambda *args: calls.append(args))
     assert runner._open_source_automatic(task, profile, tmp_path, .3) == {"preview_opened": True}
     # 正常路径不再截图做原图匹配，直接双击固定中心。
@@ -155,7 +155,7 @@ def test_composer_draft_is_not_a_sent_store_name():
 
 def test_visible_thumbnail_opens_preview_without_resending(tmp_path, monkeypatch):
     runner, task, profile, commands, clipboard = setup_flow(tmp_path)
-    monkeypatch.setattr("menu_capture.uipath_runner.locate_sent_image", lambda *_: {
+    monkeypatch.setattr("menu_capture.capture.runner.locate_sent_image", lambda *_: {
         "box_image_px": [628, 629, 788, 789], "center_image_px": {"x": 708, "y": 709}})
     assert runner._open_source_automatic(task, profile, tmp_path, .3) == {"preview_opened": True}
     assert clipboard == [NAME, Path(task["source_path"])]

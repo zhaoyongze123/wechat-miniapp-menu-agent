@@ -8,12 +8,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .template_locator import DEFAULT_SCALES as _SCALES, locate_templates
+from menu_capture.vision.template_locator import DEFAULT_SCALES as _SCALES, locate_templates
 
 
-_TEMPLATE_PATH = Path(__file__).parent / "assets" / "preview-recognize.png"
+_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "assets" / "preview-recognize.png"
 # Windows 微信 4.x 的入口在工具栏“用 AI 处理”左侧，图标与 mac 版不同，必须单独取样。
-_WINDOWS_TEMPLATE_PATH = Path(__file__).parent / "assets" / "preview-recognize-windows.png"
+_WINDOWS_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "assets" / "preview-recognize-windows.png"
 _MIN_SCORE = 0.70
 _MIN_MARGIN = 0.045
 

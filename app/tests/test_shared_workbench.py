@@ -526,7 +526,7 @@ def test_single_store_release_keeps_sibling_assignment_and_versions(tmp_path):
 
 def test_material_version_digest_ignores_png_metadata_and_compression(tmp_path):
     from PIL.PngImagePlugin import PngInfo
-    from menu_capture.store_material_versions import pixel_digest
+    from menu_capture.storage.store_material_versions import pixel_digest
 
     first, second = tmp_path / "original.png", tmp_path / "reencoded.png"
     image = Image.new("RGB", (80, 90), "red")

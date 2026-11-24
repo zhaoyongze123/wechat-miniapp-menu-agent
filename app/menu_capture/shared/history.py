@@ -7,7 +7,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from .store import TaskStore
+from menu_capture.storage.store import TaskStore
 
 Identifier = Annotated[str, StringConstraints(min_length=1, max_length=128)]
 ShortText = Annotated[str, StringConstraints(max_length=1024)]

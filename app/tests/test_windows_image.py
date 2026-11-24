@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from menu_capture import windows_image
-from menu_capture import image_tools
+from menu_capture.vision import windows_image
+from menu_capture.vision import image_tools
 
 
 TSV = (

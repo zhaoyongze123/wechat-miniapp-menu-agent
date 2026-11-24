@@ -9,8 +9,11 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from menu_capture import robot_profile, uipath_cli, uipath_runner, window_contract
-from menu_capture.instance_lock import instance_lock
+from menu_capture.desktop import robot_profile
+from menu_capture.desktop import uipath_cli
+from menu_capture.capture import runner as uipath_runner
+from menu_capture.desktop import window_contract
+from menu_capture.core.instance_lock import instance_lock
 
 
 def test_instance_lock_excludes_another_service_and_keeps_file(tmp_path):
@@ -18,7 +21,7 @@ def test_instance_lock_excludes_another_service_and_keeps_file(tmp_path):
     path.write_bytes(b"owner")
     code = (
         "import sys; from pathlib import Path; "
-        "from menu_capture.instance_lock import InstanceLockedError, instance_lock\n"
+        "from menu_capture.core.instance_lock import InstanceLockedError, instance_lock\n"
         "try:\n"
         "    with instance_lock(Path(sys.argv[1])):\n"
         "        pass\n"

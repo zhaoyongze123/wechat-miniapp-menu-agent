@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from menu_capture.hub_update import HubInstallProxy
+from menu_capture.updates.hub_proxy import HubInstallProxy
 
 pytestmark = pytest.mark.contract
 

@@ -10,10 +10,10 @@ from PIL import Image
 
 def image_ocr(path: Path) -> list[dict]:
     if sys.platform == "win32" or sys.platform.startswith("linux"):
-        from .windows_image import image_ocr as tesseract_compatible_ocr
+        from menu_capture.vision.windows_image import image_ocr as tesseract_compatible_ocr
         return tesseract_compatible_ocr(path)
     if sys.platform == "darwin":
-        from .macos import MacDesktop, Frame, Window
+        from menu_capture.desktop.macos import MacDesktop, Frame, Window
         with Image.open(path) as image:
             width, height = image.size
         return MacDesktop().ocr(Frame(Path(path), Window(0, 0, "image-only", 0, 0, width, height), width, height))
@@ -22,10 +22,10 @@ def image_ocr(path: Path) -> list[dict]:
 
 def qr_boxes(path: Path) -> list[dict]:
     if sys.platform == "win32" or sys.platform.startswith("linux"):
-        from .windows_image import qr_detections
+        from menu_capture.vision.windows_image import qr_detections
         return [detection["box"] for detection in qr_detections(path)]
     if sys.platform == "darwin":
-        from .macos import MacDesktop, Frame, Window
+        from menu_capture.desktop.macos import MacDesktop, Frame, Window
         with Image.open(path) as image:
             width, height = image.size
         return MacDesktop().detect_qr(Frame(Path(path), Window(0, 0, "image-only", 0, 0, width, height), width, height))
@@ -35,7 +35,7 @@ def qr_boxes(path: Path) -> list[dict]:
 def prepare_clipboard_image(path: Path) -> None:
     """只准备图片。粘贴及发送必须由 UiPath 发出，并在确认收件窗口后执行。"""
     if sys.platform == "win32":
-        from .windows_image import prepare_clipboard_image as windows_clipboard_image
+        from menu_capture.vision.windows_image import prepare_clipboard_image as windows_clipboard_image
         windows_clipboard_image(path)
         return
     if sys.platform != "darwin":
@@ -55,7 +55,7 @@ def prepare_clipboard_image(path: Path) -> None:
 def prepare_clipboard_text(text: str) -> None:
     """把门店名称写入系统剪贴板；实际粘贴和发送仍由 UiPath 控制。"""
     if sys.platform == "win32":
-        from .windows_image import prepare_clipboard_text as windows_clipboard_text
+        from menu_capture.vision.windows_image import prepare_clipboard_text as windows_clipboard_text
         windows_clipboard_text(text)
         return
     if sys.platform != "darwin":

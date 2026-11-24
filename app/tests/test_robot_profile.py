@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from menu_capture.robot_profile import ProfileStore, RobotProfile
+from menu_capture.desktop.robot_profile import ProfileStore, RobotProfile
 from menu_capture.server import create_app
 
 

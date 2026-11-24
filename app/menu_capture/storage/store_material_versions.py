@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .store import TaskStore, now
+from menu_capture.storage.store import TaskStore, now
 
 
 def pixel_digest(path: Path) -> str:

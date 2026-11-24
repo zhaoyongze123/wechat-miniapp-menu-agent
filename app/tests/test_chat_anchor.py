@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from menu_capture.chat_anchor import find_store_name_matches
+from menu_capture.vision.chat_anchor import find_store_name_matches
 
 
 def _row(text: str, x: float, y: float, width: float, height: float = 20) -> dict:

@@ -12,7 +12,7 @@ from typing import Any
 from PIL import Image
 
 from ..core.runtime_files import atomic_write_json as _atomic_write_json, is_within as _inside
-from ..window_contract import validate_target_window
+from menu_capture.desktop.window_contract import validate_target_window
 
 
 class RobotProtocolError(RuntimeError):
