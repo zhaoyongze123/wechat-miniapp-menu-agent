@@ -107,6 +107,12 @@ class SharedHub:
                     download_status TEXT NOT NULL DEFAULT '', install_status TEXT NOT NULL DEFAULT '',
                     reported_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS shared_update_rollout (
+                    id INTEGER PRIMARY KEY CHECK (id=1),
+                    mode TEXT NOT NULL DEFAULT 'all',
+                    worker_ids TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                );
                 CREATE TABLE IF NOT EXISTS shared_run_history (
                     worker_id TEXT NOT NULL REFERENCES shared_workers(id), run_id TEXT NOT NULL,
                     generation INTEGER NOT NULL, status TEXT NOT NULL, summary TEXT NOT NULL,
@@ -144,6 +150,8 @@ class SharedHub:
             runs = {row["worker_id"]: dict(row) for row in db.execute("SELECT * FROM shared_worker_runs")}
             software = {row["worker_id"]: dict(row) for row in db.execute("SELECT * FROM shared_worker_software")}
             history_times = dict(db.execute("SELECT worker_id,MAX(synced_at) FROM shared_run_history GROUP BY worker_id"))
+            rollout_row = db.execute(
+                "SELECT mode,worker_ids,updated_at FROM shared_update_rollout WHERE id=1").fetchone()
             for worker in workers:
                 worker["last_run"] = runs.get(worker["id"])
                 worker["history_synced_at"] = history_times.get(worker["id"], "")
@@ -178,6 +186,13 @@ class SharedHub:
                 if row["status"] in ACTIVE:
                     row["current_task_id"] = current.get((row["batch_id"], row["store"]), row["task_id"])
         target = self._update_target()
+        rollout = self._rollout_payload(rollout_row, workers)
+        target_version = str((target.get("latest") or {}).get("version") or "") if target else ""
+        for worker in workers:
+            # 设备是否在本次分发范围内，供设备页展示“本批目标”而不是让用户自行推断。
+            worker["in_rollout"] = (not worker.get("archived_at") and not worker.get("revoked_at")
+                                    and (rollout["mode"] == "all"
+                                         or worker["id"] in rollout["worker_ids"]))
         reported = [worker["software"] for worker in workers if worker.get("software")]
         versions: dict[str, int] = {}
         for row in reported:
@@ -187,21 +202,82 @@ class SharedHub:
             "reported": len(reported),
             "unreported": len([w for w in workers if not w.get("archived_at") and not w.get("software")]),
             "update_available": sum(1 for row in reported if row["update_available"]),
-            "target_version": str(((target or {}).get("latest") or {}).get("version") or ""),
+            "target_version": target_version,
             "versions": versions,
+            "rollout_mode": rollout["mode"],
+            "rollout_scope": len([w for w in workers if w.get("in_rollout")]),
         }
         return {
             "role": "hub",
             "workers": workers,
             "assignments": assignments,
             "update_summary": update_summary,
+            # 分批推广只决定哪些设备收到目标版本；安装仍由各设备在本地确认。
+            "update_rollout": {**rollout, "target_version": target_version},
             # 面板只展示目标版本摘要；完整资产元数据只在 Worker 同步响应中分发。
             "update_target": ({
-                "version": str((target.get("latest") or {}).get("version") or ""),
+                "version": target_version,
                 "channel": str(target.get("channel") or ""),
                 "checked_at": float(target.get("checked_at") or 0),
             } if target else None),
         }
+
+    def _rollout_payload(self, row, workers: list[dict]) -> dict:
+        """分批推广范围：all 覆盖所有在用设备，batch 只覆盖选中设备。"""
+        mode = str(row["mode"]) if row else "all"
+        try:
+            selected = json.loads(row["worker_ids"]) if row else []
+        except (TypeError, ValueError):
+            selected = []
+        known = {worker["id"] for worker in workers if not worker.get("archived_at") and not worker.get("revoked_at")}
+        # 设备解除配对或移除后自动退出范围，不继续向已不在用的设备分发。
+        ids = [worker_id for worker_id in selected if worker_id in known]
+        if mode not in {"all", "batch"}:
+            mode = "all"
+        return {"mode": mode, "worker_ids": ids, "updated_at": str(row["updated_at"]) if row else ""}
+
+    def update_rollout(self) -> dict:
+        """设备页读取分批范围；目标版本仍来自本机已校验的更新元数据。"""
+        with self.store.connect() as db:
+            row = db.execute(
+                "SELECT mode,worker_ids,updated_at FROM shared_update_rollout WHERE id=1").fetchone()
+            workers = [dict(item) for item in db.execute("""
+                SELECT w.id,w.name,COALESCE(p.archived_at,'') AS archived_at
+                FROM shared_workers w LEFT JOIN shared_worker_profiles p ON p.worker_id=w.id
+                ORDER BY w.name,w.id
+            """)]
+        rollout = self._rollout_payload(row, workers)
+        target = self._update_target()
+        return {
+            **rollout,
+            "target_version": str((target.get("latest") or {}).get("version") or "") if target else "",
+            "workers": [worker for worker in workers if not worker["archived_at"]],
+        }
+
+    def set_update_rollout(self, mode: str, worker_ids: list[str]) -> dict:
+        """保存分批范围；只接受当前在用设备，避免把已移除设备写进分发名单。"""
+        if mode not in {"all", "batch"}:
+            raise ValueError("分批模式无效")
+        if (not isinstance(worker_ids, list) or len(worker_ids) > 200
+                or any(not isinstance(value, str) or len(value) > 64 for value in worker_ids)):
+            raise ValueError("分批设备无效")
+        selected = list(dict.fromkeys(worker_ids))
+        with self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            known = {row["id"] for row in db.execute("""
+                SELECT w.id FROM shared_workers w LEFT JOIN shared_worker_profiles p ON p.worker_id=w.id
+                WHERE COALESCE(p.archived_at,'')='' AND COALESCE(p.revoked_at,'')=''
+            """)}
+            if any(worker_id not in known for worker_id in selected):
+                raise ValueError("分批设备不存在或已移除")
+            if mode == "batch" and not selected:
+                raise ValueError("分批推广至少选择一台设备")
+            db.execute("""
+                INSERT INTO shared_update_rollout(id,mode,worker_ids,updated_at) VALUES(1,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET mode=excluded.mode,worker_ids=excluded.worker_ids,
+                    updated_at=excluded.updated_at
+            """, (mode, json.dumps(selected if mode == "batch" else []), utc_stamp()))
+        return self.update_rollout()
 
     def _update_target(self) -> dict | None:
         """调用服务端注入的版本元数据提供者；未注入或异常时按不可用处理。"""
@@ -551,6 +627,8 @@ class SharedHub:
             worker = self._worker(db, worker_id)
             if worker["revoked_at"]:
                 raise WorkerUnauthorized("采集电脑已解除配对")
+            rollout_row = db.execute(
+                "SELECT mode,worker_ids FROM shared_update_rollout WHERE id=1").fetchone()
             db.execute("UPDATE shared_workers SET last_seen=?,pending_uploads=? WHERE id=?",
                        (stamp, pending_uploads, worker_id))
             if run_summary is not None:
@@ -590,13 +668,21 @@ class SharedHub:
             task = current.get((row["batch_id"], row["store"]))
             if self._valid_current(row, task):
                 states[row["task_id"]] = {"state": store_state(task), "reject_reason": task["reject_reason"] or ""}
+        rollout_mode = str(rollout_row["mode"]) if rollout_row else "all"
+        try:
+            rollout_ids = json.loads(rollout_row["worker_ids"]) if rollout_row else []
+        except (TypeError, ValueError):
+            rollout_ids = []
+        # 分批模式下只有本批设备收到目标版本；其余设备保持本机检查，不被动升级。
+        in_rollout = rollout_mode != "batch" or worker_id in rollout_ids
         return {"assignments": rows,
                 "batches": [{"batch_id": batch_id, "snapshot_id": snapshot_id}
                             for batch_id, snapshot_id in batch_snapshots.items()],
                 "states": states, "supports_run_summary": True, "supports_run_history": True,
                 "supports_software_status": True,
                 # Hub 已校验且未过期时分发完整元数据；Worker 会再次校验后才采纳。
-                "update_target": self._update_target(),
+                "update_target": self._update_target() if in_rollout else None,
+                "update_rollout": {"mode": rollout_mode, "in_rollout": in_rollout},
                 "worker_name": worker["name"]}
 
     def record_run_history(self, worker_id: str, report: HistoryReport) -> dict:

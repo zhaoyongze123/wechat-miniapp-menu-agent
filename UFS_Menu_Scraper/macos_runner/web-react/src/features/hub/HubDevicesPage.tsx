@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
@@ -11,7 +11,7 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
-import { archiveWorker, revokeWorker } from './api'
+import { archiveWorker, revokeWorker, saveUpdateRollout } from './api'
 import { deviceStateOf, formatTime } from './format'
 import { activeAssignmentsOf, isWorkerActive, useHubSharedStatus } from './hooks'
 import { PairingDialog } from './PairingDialog'
@@ -82,6 +82,26 @@ export function HubDevicesPage() {
     onError: (cause) => setConfirmError(errorMessage(cause)),
   })
 
+  const rollout = sharedQuery.data?.update_rollout
+  const [rolloutMode, setRolloutMode] = useState<'all' | 'batch'>('all')
+  const [rolloutIds, setRolloutIds] = useState<string[]>([])
+  // 以服务端值为准初始化编辑态；轮询刷新时只有范围真正变化才覆盖，避免打断正在勾选的用户。
+  const rolloutKey = rollout ? `${rollout.mode}:${rollout.worker_ids.join(',')}` : ''
+  useEffect(() => {
+    setRolloutMode(rollout?.mode ?? 'all')
+    setRolloutIds(rollout?.worker_ids ?? [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅按稳定 key 同步，避免数组引用变化重置编辑
+  }, [rolloutKey])
+
+  const rolloutMutation = useMutation({
+    mutationFn: () => saveUpdateRollout(rolloutMode, rolloutMode === 'batch' ? rolloutIds : []),
+    onSuccess: (saved) => {
+      toast.push(saved.mode === 'batch' ? `已限定 ${saved.worker_ids.length} 台设备接收更新` : '已恢复全部设备接收更新', 'success')
+      invalidate()
+    },
+    onError: (cause) => toast.push(errorMessage(cause), 'danger'),
+  })
+
   const openConfirm = (target: NonNullable<ConfirmTarget>) => {
     setConfirmError('')
     setConfirmTarget(target)
@@ -139,7 +159,16 @@ export function HubDevicesPage() {
       cell: (worker) => {
         const software = worker.software
         // 未上报 ≠ 已是最新；只有采集端明确检查过才判断更新状态。
-        if (!software) return <span className="text-tertiary">未上报</span>
+        if (!software) {
+          return (
+            <div className="space-y-0.5">
+              <span className="text-tertiary">未上报</span>
+              {worker.in_rollout === false ? (
+                <span className="block text-2xs text-tertiary">本批不推送</span>
+              ) : null}
+            </div>
+          )
+        }
         return (
           <div className="space-y-0.5">
             <span className="block text-default tabular-nums">{software.current_version || '未知'}</span>
@@ -150,6 +179,9 @@ export function HubDevicesPage() {
                 {software.latest_version ? '已是最新' : '更新状态未知'}
               </span>
             )}
+            {worker.in_rollout === false ? (
+              <span className="block text-2xs text-tertiary">本批不推送</span>
+            ) : null}
           </div>
         )
       },
@@ -231,6 +263,79 @@ export function HubDevicesPage() {
           value={updateSummary?.unreported ?? 0}
           {...(updateSummary?.unreported ? { tone: 'warning' as const } : {})}
         />
+      </section>
+
+      <section
+        className="rounded-xl border border-subtle bg-surface space-y-4 p-4 md:p-5"
+        aria-labelledby="hub-rollout-heading"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 id="hub-rollout-heading" className="heading-xs">
+              版本推送范围
+            </h2>
+            <p className="mt-1 max-w-3xl text-sm text-secondary">
+              {rollout?.target_version
+                ? `把目标版本 ${rollout.target_version} 推送给指定采集电脑；各设备仍需在本地确认安装。`
+                : '本机尚未检查到可分发版本，请先在设置中心完成检查。'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2" role="group" aria-label="推送范围模式">
+            <Button
+              color={rolloutMode === 'all' ? 'primary' : 'secondary'}
+              variant={rolloutMode === 'all' ? 'solid' : 'outline'}
+              size="sm"
+              onClick={() => setRolloutMode('all')}
+            >
+              全部设备
+            </Button>
+            <Button
+              color={rolloutMode === 'batch' ? 'primary' : 'secondary'}
+              variant={rolloutMode === 'batch' ? 'solid' : 'outline'}
+              size="sm"
+              onClick={() => setRolloutMode('batch')}
+            >
+              分批设备
+            </Button>
+          </div>
+        </div>
+
+        {rolloutMode === 'batch' ? (
+          activeWorkers.length === 0 ? (
+            <p className="text-sm text-secondary">暂无可选的已配对设备。</p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {activeWorkers.map((worker) => (
+                <Checkbox
+                  key={worker.id}
+                  label={`${worker.name}（${worker.software?.current_version || '版本未上报'}）`}
+                  checked={rolloutIds.includes(worker.id)}
+                  onCheckedChange={(next) =>
+                    setRolloutIds((previous) =>
+                      next ? [...previous, worker.id] : previous.filter((id) => id !== worker.id),
+                    )
+                  }
+                />
+              ))}
+            </div>
+          )
+        ) : null}
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            color="primary"
+            size="sm"
+            disabled={rolloutMutation.isPending || (rolloutMode === 'batch' && rolloutIds.length === 0)}
+            onClick={() => rolloutMutation.mutate()}
+          >
+            {rolloutMutation.isPending ? '保存中…' : '保存推送范围'}
+          </Button>
+          <span className="text-xs text-tertiary">
+            {rolloutMode === 'batch'
+              ? `当前生效：${rollout?.worker_ids.length ?? 0} 台设备接收更新`
+              : `当前生效：全部在用设备（${activeWorkers.length} 台）`}
+          </span>
+        </div>
       </section>
 
       <section className="rounded-xl border border-subtle bg-surface space-y-4 p-4 md:p-5" aria-labelledby="hub-device-list-heading">
