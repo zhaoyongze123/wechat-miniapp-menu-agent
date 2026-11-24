@@ -59,6 +59,8 @@ export interface WorkerQueue {
 }
 
 export interface ManualState {
+  run_id?: string
+  wait_id?: string
   task_id: string
   store_name: string
   index: number

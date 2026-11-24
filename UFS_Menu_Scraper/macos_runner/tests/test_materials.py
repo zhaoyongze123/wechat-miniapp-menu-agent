@@ -1247,6 +1247,7 @@ def test_manual_action_accepts_only_first_decision_per_store() -> None:
     from menu_capture.uipath_runner import UiPathRunner
 
     runner = object.__new__(UiPathRunner)
+    runner.run_id = "run-1"
     runner._manual_cond = threading.Condition()
     runner._manual_state = {"task_id": "t1", "store_name": "Shop A", "index": 1, "total": 2,
                             "stage": "waiting_human", "waiting": True, "decision": ""}

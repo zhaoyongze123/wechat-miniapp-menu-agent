@@ -5,6 +5,7 @@ import { AppsSDKUIProvider } from '@openai/apps-sdk-ui/components/AppsSDKUIProvi
 import { HashRouter } from 'react-router-dom'
 import './styles/index.css'
 import { App } from './app/App'
+import { RemoteControlPage } from './features/manual-control/RemoteControlPage'
 import { queryClient } from './api/query'
 
 const container = document.getElementById('root')
@@ -21,9 +22,11 @@ createRoot(container).render(
   <StrictMode>
     <AppsSDKUIProvider linkComponent="a">
       <QueryClientProvider client={queryClient}>
-        <HashRouter>
-          <App />
-        </HashRouter>
+        {window.location.pathname === '/remote-control' ? <RemoteControlPage /> : (
+          <HashRouter>
+            <App />
+          </HashRouter>
+        )}
       </QueryClientProvider>
     </AppsSDKUIProvider>
   </StrictMode>,

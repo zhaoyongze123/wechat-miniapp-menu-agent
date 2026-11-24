@@ -222,3 +222,47 @@ def test_materials_history_detail_counts_match_list(tmp_path: Path) -> None:
     assert detail["batch_name"] == "演示批次"
     listed = client.get("/api/tasks/history", params={"kind": "materials"}).json()["records"]
     assert listed[0]["counts"] == detail["counts"]
+
+
+def test_remote_manual_control_is_scoped_and_rejects_stale_commands(tmp_path):
+    from base64 import b64encode
+
+    password = "isolated-test-password"
+    origin = "https://capture.test"
+    auth = {"Authorization": "Basic " + b64encode(f"operator:{password}".encode()).decode()}
+    app = create_app(tmp_path, role="worker", remote_control_host="capture.test",
+                     remote_control_password=password)
+    client = TestClient(app, base_url=origin)
+    local = TestClient(app, base_url="http://127.0.0.1")
+    runner = app.state.runner
+    runner.run_id = "run-1"
+    task = {"id": "task-a", "source_name": "测试门店"}
+    runner._set_manual_state(task, 0, 1, "waiting_human", waiting=True)
+
+    assert client.get("/remote-control").status_code == 401
+    assert client.get("/remote-control", headers=auth).status_code == 200
+    assert client.get("/api/config", headers=auth).status_code == 403
+    assert client.get("/", headers=auth).status_code == 403
+    assert TestClient(app, base_url="http://capture.test").get("/remote-control", headers=auth).status_code == 403
+
+    state = client.get("/api/manual/state", headers=auth).json()
+    context = {key: state["manual"][key] for key in ("run_id", "task_id", "wait_id")}
+    context["device_id"] = state["device_id"]
+    command = {"context": context}
+    token = client.get("/api/session", headers=auth).json()["token"]
+    assert token != local.get("/api/session").json()["token"]
+    headers = auth | {"x-capture-token": token, "Origin": origin}
+    assert client.post("/api/manual/capture", headers=auth | {"x-capture-token": token}, json=command).status_code == 403
+    assert client.post("/api/manual/capture", headers=headers, json={}).status_code == 409
+    assert client.post("/api/manual/capture", headers=headers,
+                       json={"context": context | {"device_id": "other"}}).status_code == 409
+
+    # 同一家店重新进入等待时，以新等待标识校验，旧标签页不能触发动作。
+    runner._set_manual_state(task, 0, 1, "waiting_human", waiting=True)
+    assert client.post("/api/manual/capture", headers=headers, json=command).status_code == 409
+    command["context"]["wait_id"] = runner.manual_state()["wait_id"]
+    accepted = client.post("/api/manual/capture", headers=headers, json=command)
+    assert accepted.status_code == 200 and accepted.json()["task_id"] == "task-a"
+    assert "status" not in accepted.json()
+    assert client.post("/api/manual/capture", headers=headers, json=command).status_code == 409
+    app.state.shared_worker.close()

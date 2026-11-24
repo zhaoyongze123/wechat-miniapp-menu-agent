@@ -1148,7 +1148,8 @@ class UiPathRunner:
         state["last_result"] = self._manual_last_result
         return state
 
-    def manual_action(self, kind: str, reason: str = "", detail: str = "") -> dict:
+    def manual_action(self, kind: str, reason: str = "", detail: str = "", *,
+                      expected: dict | None = None) -> dict:
         """接收人工决定；同一门店只接受第一次，重复或过期页面请求直接拒绝。"""
         if kind not in {"capture", "reject", "skip"}:
             raise ValueError("人工操作类型无效")
@@ -1156,6 +1157,9 @@ class UiPathRunner:
 
         with self._manual_cond:
             state = self._manual_state or {}
+            if expected is not None and any(expected.get(key) != state.get(key)
+                                            for key in ("run_id", "task_id", "wait_id")):
+                raise ValueError("当前门店已经切换，请重新确认后操作")
             if not state.get("waiting") or not state.get("task_id"):
                 raise ValueError("当前没有等待人工操作的门店")
             if state.get("decision"):
@@ -1202,6 +1206,7 @@ class UiPathRunner:
                 self._manual_action = None
             self._manual_state = {
                 "task_id": task["id"], "store_name": task["source_name"],
+                "run_id": self.run_id or "", "wait_id": uuid.uuid4().hex if waiting else "",
                 "index": index + 1, "total": total, "stage": stage,
                 "waiting": waiting, "decision": "",
             }
