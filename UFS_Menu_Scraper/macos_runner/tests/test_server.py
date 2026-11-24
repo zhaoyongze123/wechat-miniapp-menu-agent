@@ -268,6 +268,21 @@ def test_remote_manual_control_is_scoped_and_rejects_stale_commands(tmp_path):
     app.state.shared_worker.close()
 
 
+def test_update_install_is_disabled_without_explicit_opt_in(tmp_path: Path) -> None:
+    app = create_app(tmp_path)
+    client = TestClient(app, base_url="http://127.0.0.1")
+    headers = {"x-capture-token": client.get("/api/session").json()["token"]}
+
+    status = client.get("/api/updates/install")
+    assert status.status_code == 200
+    assert status.json()["supported"] is False
+
+    response = client.post("/api/updates/install", headers=headers,
+                           json={"version": "0.3.0", "confirm": "0.3.0"})
+    assert response.status_code == 409
+    assert "未启用自动安装" in response.json()["detail"]
+
+
 def test_update_download_endpoint_requires_checked_release(tmp_path: Path) -> None:
     app = create_app(tmp_path)
     client = TestClient(app, base_url="http://127.0.0.1")

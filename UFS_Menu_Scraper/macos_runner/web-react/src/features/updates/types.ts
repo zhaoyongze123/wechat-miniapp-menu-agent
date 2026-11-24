@@ -80,6 +80,7 @@ export interface UpdateDownloadState {
   version: string
   asset_kind: string
   asset_name: string
+  arch: string
   sha256: string
   etag: string
   last_modified: string
