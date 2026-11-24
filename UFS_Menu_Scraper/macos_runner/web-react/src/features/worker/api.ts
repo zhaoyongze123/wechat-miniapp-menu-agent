@@ -79,3 +79,27 @@ export function setManualReason(reason: string): Promise<{ ok: boolean; reason: 
 export function fetchManualState(signal?: AbortSignal): Promise<{ manual: ManualState | null }> {
   return apiFetch<{ manual: ManualState | null }>('/api/manual/state', { signal })
 }
+
+export interface WorkerAction {
+  id: number
+  run_id: string
+  task_id: string
+  attempt_id: string
+  stage: string
+  step: number | null
+  action: string
+  started_at: string
+  elapsed_ms: number | null
+  result: string
+  details: Record<string, unknown>
+  debug_state?: string
+}
+
+export function fetchTaskActions(taskId: string, before: number | null, signal?: AbortSignal): Promise<{ actions: WorkerAction[] }> {
+  const cursor = before === null ? '' : `?before=${encodeURIComponent(String(before))}`
+  return apiFetch<{ actions: WorkerAction[] }>(`/api/tasks/${encodeURIComponent(taskId)}/actions${cursor}`, { signal })
+}
+
+export function fetchTaskArtifacts(taskId: string, signal?: AbortSignal): Promise<{ files: string[] }> {
+  return apiFetch<{ files: string[] }>(`/api/artifacts/${encodeURIComponent(taskId)}`, { signal })
+}

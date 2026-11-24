@@ -35,6 +35,7 @@ import { useRefreshWorkerStatus, useWorkerStatus } from './hooks'
 import { ManualPanel } from './ManualPanel'
 import { StartRunDialog } from './StartRunDialog'
 import { WorkerSyncDialog } from './WorkerSyncDialog'
+import { WorkerTaskDetailDrawer } from './WorkerTaskDetailDrawer'
 import type { CaptureMode, WorkerFilter, WorkerSort, WorkerTask } from './types'
 import { START_RUN_LIMIT } from './types'
 
@@ -160,6 +161,8 @@ export function WorkerWorkbenchPage() {
   const [startMode, setStartMode] = useState<CaptureMode>('auto')
   const [terminateOpen, setTerminateOpen] = useState(false)
   const [syncOpen, setSyncOpen] = useState(false)
+  const [detailTask, setDetailTask] = useState<WorkerTask | null>(null)
+  const [debugView, setDebugView] = useState(false)
   const [commandError, setCommandError] = useState('')
   const [manualError, setManualError] = useState('')
 
@@ -343,15 +346,20 @@ export function WorkerWorkbenchPage() {
       header: '操作',
       className: 'whitespace-nowrap',
       cell: (task) => (
-        <Button
-          color="secondary"
-          variant="outline"
-          size="sm"
-          disabled={running || !canRetry(task) || retry.isPending}
-          onClick={() => retry.mutate(task.id)}
-        >
-          重新排队
-        </Button>
+        <div className="flex flex-wrap gap-1.5">
+          <Button color="secondary" variant="outline" size="sm" onClick={() => setDetailTask(task)}>
+            详情
+          </Button>
+          <Button
+            color="secondary"
+            variant="outline"
+            size="sm"
+            disabled={running || !canRetry(task) || retry.isPending}
+            onClick={() => retry.mutate(task.id)}
+          >
+            重新排队
+          </Button>
+        </div>
       ),
     },
   ]
@@ -363,6 +371,9 @@ export function WorkerWorkbenchPage() {
         headingId="worker-workbench-heading"
         actions={
           <>
+            <Button color="secondary" variant="outline" size="sm" aria-pressed={debugView} onClick={() => setDebugView((value) => !value)}>
+              {debugView ? '关闭调试视图' : '调试视图'}
+            </Button>
             <Button color="secondary" variant="outline" size="sm" onClick={() => setSyncOpen(true)}>
               同步状态{pendingUploads ? ` · 待上传 ${pendingUploads}` : ''}
             </Button>
@@ -654,6 +665,8 @@ export function WorkerWorkbenchPage() {
       />
 
       <WorkerSyncDialog open={syncOpen} onOpenChange={setSyncOpen} connection={connection} />
+
+      <WorkerTaskDetailDrawer task={detailTask} debugView={debugView} onOpenChange={(open) => { if (!open) setDetailTask(null) }} />
 
       <ConfirmActionDialog
         open={terminateOpen}

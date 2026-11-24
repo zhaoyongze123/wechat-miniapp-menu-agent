@@ -10,6 +10,7 @@ export interface WorkerTask {
   store_state?: string
   reject_reason?: string
   reject_label?: string
+  reject_evidence?: string
   capture_outcome?: string
   runnable?: boolean
   batch_id?: string
