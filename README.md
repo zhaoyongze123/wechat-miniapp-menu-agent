@@ -4,9 +4,9 @@
 
 **React · TypeScript · Python · GUI Agent · Windows · Docker**
 
-[快速开始](#快速开始) · [核心功能](#核心功能) · [系统架构](#系统架构) · [部署指南](deploy/README.md) · [版本发布](../../releases)
+[快速开始](#快速开始) · [核心功能](#核心功能) · [系统架构](#系统架构) · [部署指南](deploy/README.md) · [生产交付报告](docs/react-migration/production-delivery-report.md) · [版本发布](../../releases)
 
-> 当前分支为 React 新版本交付候选。新增能力以实际代码为准；正式上线仍须通过安装、升级、回滚及现场采集验收。生产使用请选择已批准的发布版本，不直接用开发分支覆盖现有环境。
+> 当前分支为 React 新版本交付分支。新增能力以实际代码为准。`0.2.0-rc.3` 已完成安装、升级、回滚及单台现场采集验收，并已切换生产环境；验收详情见 [生产交付报告](docs/react-migration/production-delivery-report.md)。
 
 ## 产品预览
 
@@ -21,7 +21,7 @@
 
 [共享工作台界面](docs/react-migration/verify/final/final-hub-workbench.jpg) · [采集端同步界面](docs/react-migration/verify/final/final-worker-sync.jpg) · [人工标注界面](docs/react-migration/verify/final/final-worker-annotation.jpg)
 
-以上为 React 迁移阶段的浏览器验收截图，并非最终生产版本截图。
+以上为 React 迁移阶段的浏览器验收截图。生产版本 `0.2.0-rc.3` 切换后的实机界面见 [生产工作台截图](docs/react-migration/screenshots/release/prod-rc3-workbench.jpg)。
 
 ## 核心功能
 
@@ -181,7 +181,7 @@ npm run build
 - **Hub**：通过明确的镜像版本标签升级或回退，保留持久化数据卷；首次迁移须先用副本验证数据兼容性。
 - **版本核对**：新版本提供 `/api/version`，用于核对运行版本与前端构建入口；迁移前版本需使用相应的兼容验证方式。
 
-完整操作、旧数据迁移及验收步骤见 [部署与回滚指南](deploy/README.md)。发布候选通过验收之前不得替换正在运行的生产服务。
+完整操作、旧数据迁移及验收步骤见 [部署与回滚指南](deploy/README.md)。`0.2.0-rc.3` 已于 2026-11-24 完成本机 `0.1.2 → 0.2.0-rc.3 → 0.1.2` 安装、升级、回滚 smoketest 并切换生产；详见 [生产交付报告](docs/react-migration/production-delivery-report.md)。
 
 ## 文档与维护
 
@@ -192,6 +192,7 @@ npm run build
 | [开发与优化规范](docs/gui-agent-development.md) | Agent 决策权、业务边界与回归口径。 |
 | [问题与回归台账](docs/menu-capture-regression.md) | 采集问题及复测记录。 |
 | [React 迁移报告](docs/react-migration/final-migration-report.md) | 迁移阶段的技术架构、测试和已知限制。 |
+| [生产交付报告](docs/react-migration/production-delivery-report.md) | 生产验收结论、测试证据、上线与回滚方案。 |
 | [仓库协作规范](AGENTS.md) | 开发协作及交接要求。 |
 | [Issues](../../issues) · [Releases](../../releases) | 需求、缺陷、发布记录与安装产物。 |
 
