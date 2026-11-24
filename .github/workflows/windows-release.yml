@@ -162,12 +162,25 @@ jobs:
           if (-not $env:PREVIOUS_INSTALLER) {
             Write-Host 'Upgrade/rollback smoke skipped. Dispatch with previous_installer_tag or previous_installer_run to verify the previous release.'
           }
+      - name: 验收应用内更新接口
+        if: env.PREVIOUS_INSTALLER != ''
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
+        run: |
+          $version = $env:BUILD_VERSION
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
+          $installer = Get-ChildItem deploy/artifacts -Filter '*.exe' -File | Select-Object -First 1
+          ./deploy/windows/ota-smoke.ps1 -Installer $installer.FullName -Version $version `
+            -PreviousInstaller $env:PREVIOUS_INSTALLER -PreviousVersion $env:PREVIOUS_VERSION
       - name: 上传验收日志
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: menu-capture-smoke-logs
-          path: ${{ runner.temp }}/menu-capture-smoke-logs-*
+          path: |
+            ${{ runner.temp }}/menu-capture-smoke-logs-*
+            ${{ runner.temp }}/menu-capture-ota-logs-*
           if-no-files-found: warn
           retention-days: 14
       - uses: actions/upload-artifact@v4

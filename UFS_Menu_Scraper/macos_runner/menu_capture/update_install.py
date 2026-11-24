@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -28,6 +29,76 @@ HEALTH_TIMEOUT_SECONDS = 240
 HEALTH_INTERVAL_SECONDS = 3
 ACTIVE_STATUSES = {"starting", "installing", "verifying", "restarting", "rolling_back"}
 ASSET_KIND = {"windows": "windows_installer"}
+# 安装任务契约版本：控制器写、独立执行器读，字段只在 build_job 中定义一次。
+JOB_SCHEMA = 1
+# 兼容没有 pid 的旧任务：超过该时限仍未推进，视为执行器已异常退出。
+STALE_JOB_GRACE_SECONDS = 120
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def build_job(
+    *,
+    artifact: dict,
+    install_root: Path,
+    download_dir: Path,
+    data_dir: Path,
+    target_version: str,
+    previous_version: str,
+    port: int,
+) -> dict:
+    """生成安装任务文件内容，作为控制器与执行器之间唯一的字段契约。"""
+    return {
+        "schema": JOB_SCHEMA,
+        "artifact_path": artifact["path"],
+        "asset_name": artifact["asset_name"],
+        "asset_kind": artifact["asset_kind"],
+        "sha256": artifact["sha256"],
+        "size": int(artifact["size"]),
+        "download_dir": str(download_dir),
+        "data_dir": str(data_dir),
+        "install_root": str(install_root),
+        "target_version": target_version,
+        "previous_version": previous_version,
+        "port": int(port),
+        "created_at": _utc_now(),
+    }
+
+
+def _is_reparse(path: Path) -> bool:
+    """判定符号链接/目录联接。Windows 上 is_symlink() 只能识别部分重解析点。"""
+    try:
+        if path.is_symlink():
+            return True
+        info = path.lstat()
+    except OSError:
+        return False
+    return bool(getattr(info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _safe_join(base: Path, *parts: str) -> Path:
+    """按受控片段拼接路径并逐级拒绝链接，返回解析后的真实路径。
+
+    不能先 resolve() 再判断 is_symlink()：resolve 会把链接展开，检查必然失效。
+    这里的顺序是校验片段 → 逐级检查链接 → 解析后确认仍位于 base 之内。
+    """
+    base = Path(base)
+    for part in parts:
+        text = str(part or "")
+        if text in {"", ".", ".."} or Path(text).name != text:
+            raise ValueError("更新包路径包含非法片段")
+    current = base
+    for part in parts:
+        current = current / part
+        if current.exists() and _is_reparse(current):
+            raise ValueError("更新包路径经过符号链接或重解析点")
+    try:
+        root = base.resolve(strict=True)
+        resolved = current.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("更新包文件不存在或不是普通文件，请重新下载") from exc
+    if resolved != root and root not in resolved.parents:
+        raise ValueError("更新包路径超出下载目录")
+    return resolved
 
 
 def _utc_now() -> str:
@@ -60,6 +131,10 @@ def verify_artifact(
     name = str(state.get("asset_name") or "")
     if not name or Path(name).name != name:
         raise ValueError("更新包名称无效")
+    try:
+        Version.parse(version)
+    except ValueError as exc:
+        raise ValueError("更新包版本号无效") from exc
     sha = str(state.get("sha256") or "").lower()
     if not _SHA256_RE.fullmatch(sha):
         raise ValueError("下载记录缺少有效 SHA-256")
@@ -69,11 +144,17 @@ def verify_artifact(
         size = 0
     if size <= 0:
         raise ValueError("下载记录大小无效")
-    # 路径由服务端按 数据目录/版本/资产名 推导，绝不使用状态文件里的任意路径。
-    expected = (Path(download_dir) / version / name).resolve()
+    # 路径由服务端按 数据目录/版本/资产名 推导，绝不使用状态文件里的任意路径；
+    # 拼装过程逐级拒绝链接与越界，避免下载目录被替换后指到别处。
+    expected = _safe_join(download_dir, version, name)
     recorded = str(state.get("path") or "")
-    if recorded and Path(recorded).resolve() != expected:
-        raise ValueError("更新包路径与版本目录不一致")
+    if recorded:
+        try:
+            recorded_path = Path(recorded).resolve()
+        except OSError as exc:
+            raise ValueError("更新包路径与版本目录不一致") from exc
+        if recorded_path != expected:
+            raise ValueError("更新包路径与版本目录不一致")
     if not expected.is_file() or expected.is_symlink():
         raise ValueError("更新包文件不存在或不是普通文件，请重新下载")
     if expected.stat().st_size != size:
@@ -116,13 +197,113 @@ def _run_command(args: list[str], timeout: float) -> tuple[int, str]:
     return completed.returncode, output
 
 
-def _probe_version(port: int, timeout: float = 2.0) -> str:
+def _probe_status(port: int, timeout: float = 2.0) -> dict:
+    """同时探测版本与角色：只报对版本号不足以证明切换后的服务真的可用。"""
+    result: dict = {}
     try:
         with urlopen(f"http://127.0.0.1:{port}/api/version", timeout=timeout) as response:  # noqa: S310
             payload = json.loads(response.read(64 * 1024).decode("utf-8"))
-        return str(payload.get("version") or "")
     except Exception:
-        return ""
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    for key in ("version", "frontend", "commit"):
+        if key in payload:
+            result[key] = str(payload.get(key) or "")
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/healthz", timeout=timeout) as response:  # noqa: S310
+            health = json.loads(response.read(16 * 1024).decode("utf-8"))
+    except Exception:
+        result["ok"] = False
+        return result
+    if isinstance(health, dict):
+        result["ok"] = bool(health.get("ok"))
+        result["role"] = str(health.get("role") or "")
+    return result
+
+
+def _verify_authenticode(path: Path) -> dict:
+    """读取安装包 Authenticode 签名状态，作为可信发布证明的一部分。
+
+    当前发布流程未做代码签名，因此“未签名”需运维显式放行；签名被篡改必须直接拒绝。
+    """
+    if sys.platform != "win32":
+        return {"status": "unsigned", "detail": "当前平台无法验证代码签名"}
+    powershell = Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    # 单引号字符串里的引号用双写转义，避免安装包路径含引号时拼出可执行脚本。
+    literal = str(path).replace("'", "''")
+    script = (
+        f"$s = Get-AuthenticodeSignature -LiteralPath '{literal}'; "
+        "$signer = if ($s.SignerCertificate) { $s.SignerCertificate.Subject } else { '' }; "
+        "[pscustomobject]@{ status = $s.Status.ToString(); signer = $signer } | ConvertTo-Json -Compress"
+    )
+    code, output = _run_command(
+        [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script], 30,
+    )
+    if code != 0:
+        return {"status": "unknown", "detail": output.strip()[:300]}
+    try:
+        payload = json.loads(output.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        return {"status": "unknown", "detail": output.strip()[:300]}
+    label = str(payload.get("status") or "").lower()
+    mapping = {"valid": "valid", "notsigned": "unsigned"}
+    status = mapping.get(label, f"invalid:{label or 'unknown'}")
+    return {"status": status, "signer": str(payload.get("signer") or "")}
+
+
+def _check_publisher(result: dict) -> dict:
+    status = str(result.get("status") or "")
+    if status == "valid":
+        return result
+    if status == "unsigned":
+        if os.environ.get("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE") != "1":
+            raise ValueError("安装包未通过可信发布证明校验（无有效代码签名）")
+        return result
+    raise ValueError(f"安装包数字签名无效（{status or '未知'}）")
+
+
+def _schema_fingerprint(data_dir: Path) -> list:
+    """记录数据库结构，用于回滚前判断新版本是否已经改动过存储。"""
+    db_path = Path(data_dir) / "tasks.sqlite3"
+    if not db_path.is_file():
+        return []
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as db:
+            tables = [row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+            )]
+            return [
+                [table, [row[1] for row in db.execute(f'PRAGMA table_info("{table}")')]]
+                for table in tables
+            ]
+    except sqlite3.Error:
+        return []
+
+
+def _pid_alive(pid: int) -> bool:
+    """判断安装进程是否仍在运行；Windows 上不能用 os.kill(pid, 0)。"""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 class InstallOrchestrator:
@@ -134,7 +315,8 @@ class InstallOrchestrator:
         job: dict,
         journal_path: Path,
         run_command: Callable[[list[str], float], tuple[int, str]] = _run_command,
-        probe_version: Callable[[int], str] | None = None,
+        probe_version: Callable[[int], Any] = _probe_status,
+        verify_publisher: Callable[[Path], dict] = _verify_authenticode,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
         health_timeout: float = HEALTH_TIMEOUT_SECONDS,
@@ -142,29 +324,43 @@ class InstallOrchestrator:
         self.job = job
         self.journal_path = Path(journal_path)
         self.run_command = run_command
-        self.probe_version = probe_version or _probe_version
+        self.probe_version = probe_version
+        self.verify_publisher = verify_publisher
         self.sleep = sleep
         self.clock = clock
         self.health_timeout = health_timeout
         self.install_root = Path(str(job.get("install_root") or ""))
         self.target = str(job.get("target_version") or "")
         self.previous = str(job.get("previous_version") or "")
+        self.data_dir = Path(str(job.get("data_dir") or "")) if job.get("data_dir") else None
+        self.artifact: Path | None = None
+        self.expected_commit = ""
+        self.schema_before: list = []
 
     def execute(self) -> dict:
-        self._write("installing", "正在运行安装程序")
+        self._write("installing", "正在校验安装包")
         try:
             self._validate_job()
+            publisher = _check_publisher(self.verify_publisher(self.artifact))
+            self._write("installing", f"安装包校验通过（签名状态：{publisher.get('status')}），正在运行安装程序")
             self._run_installer()
             self._write("verifying", "安装完成，正在核对目标版本文件")
             self._verify_installed()
             self._write("restarting", "等待采集端切换到目标版本")
-            if not self._wait_for_version(self.target):
+            if not self._wait_for_version(self.target, self.expected_commit):
                 raise RuntimeError(f"服务未在 {self.health_timeout:.0f} 秒内切换到 {self.target}")
             self._write("completed", f"已切换到 {self.target}")
             return self.journal()
         except Exception as exc:
             message = str(exc) or "安装失败"
             if self._should_rollback():
+                # 新版本可能已经迁移数据；此时切回旧版本会读不懂结构，必须拦下交人工处理。
+                if self.schema_before and _schema_fingerprint(self.data_dir) != self.schema_before:
+                    self._write(
+                        "failed",
+                        f"{message}；检测到数据库结构已被新版本修改，已阻止自动回滚，请人工确认兼容后回滚",
+                    )
+                    return self.journal()
                 self._write("rolling_back", f"安装失败，正在回滚：{message}")
                 rollback_ok, rollback_message = self._rollback()
                 if rollback_ok and self._wait_for_version(self.previous):
@@ -181,17 +377,26 @@ class InstallOrchestrator:
     # ---------- 步骤 ----------
 
     def _validate_job(self) -> None:
+        if int(self.job.get("schema") or 0) != JOB_SCHEMA:
+            raise ValueError("安装任务格式不受支持，请重新发起安装")
         if not self.install_root.is_absolute() or not self.install_root.is_dir():
             raise ValueError("安装目录无效")
-        if self.install_root.is_symlink():
+        if _is_reparse(self.install_root):
             raise ValueError("安装目录不允许是符号链接")
+        if self.install_root == self.install_root.parent or not (self.install_root / "releases").is_dir():
+            raise ValueError("安装目录不是有效的多版本安装根")
         if not self.previous or not self.target:
             raise ValueError("缺少上一版本或目标版本")
         if Version.parse(self.target) <= Version.parse(self.previous):
             raise ValueError("目标版本必须高于当前版本")
-        artifact = Path(str(self.job.get("artifact_path") or ""))
-        if not artifact.is_absolute() or not artifact.is_file():
-            raise ValueError("更新包不存在")
+        # 产物路径必须由下载目录 + 版本 + 资产名推导，并在此刻重新校验大小与 SHA-256。
+        download_dir = str(self.job.get("download_dir") or "")
+        if not download_dir or not Path(download_dir).is_absolute():
+            raise ValueError("下载目录无效")
+        artifact = _safe_join(Path(download_dir), self.target, str(self.job.get("asset_name") or ""))
+        recorded = str(self.job.get("artifact_path") or "")
+        if not recorded or Path(recorded).resolve() != artifact:
+            raise ValueError("安装任务中的更新包路径与下载目录不一致")
         expected_sha = str(self.job.get("sha256") or "").lower()
         if not _SHA256_RE.fullmatch(expected_sha):
             raise ValueError("更新包 SHA-256 无效")
@@ -199,16 +404,24 @@ class InstallOrchestrator:
             raise ValueError("更新包大小与安装任务不一致")
         if _file_sha256(artifact) != expected_sha:
             raise ValueError("更新包 SHA-256 校验失败")
+        manifest = _read_json(self.install_root / "releases" / self.target / "release-manifest.json", {})
+        self.expected_commit = str(manifest.get("git_commit") or "")
+        self.artifact = artifact
+        if self.data_dir is not None:
+            self.schema_before = _schema_fingerprint(self.data_dir)
 
     def _run_installer(self) -> None:
-        artifact = str(self.job.get("artifact_path") or "")
+        assert self.artifact is not None
+        log_path = self.journal_path.parent / "update-install.log"
         code, output = self.run_command([
-            artifact,
+            str(self.artifact),
             "/VERYSILENT",
             "/SUPPRESSMSGBOXES",
             "/NORESTART",
             "/SP-",
-            f"/LOG={self.journal_path.parent / 'update-install.log'}",
+            # 显式指定安装目录，避免依赖安装器默认路径或历史注册表值把文件装到别处。
+            f'/DIR="{self.install_root}"',
+            f'/LOG="{log_path}"',
         ], INSTALL_TIMEOUT_SECONDS)
         if code != 0:
             raise RuntimeError(f"安装程序退出码 {code}：{output.strip()[:500]}")
@@ -240,10 +453,32 @@ class InstallOrchestrator:
         if registered != self.target:
             raise RuntimeError(f"版本登记未切换到 {self.target}（当前 {registered or '空'}）")
 
-    def _wait_for_version(self, version: str) -> bool:
+    def _probe(self, port: int) -> dict:
+        value = self.probe_version(port)
+        if isinstance(value, str):
+            return {"version": value}
+        return value if isinstance(value, dict) else {}
+
+    def _wait_for_version(self, version: str, expected_commit: str = "") -> bool:
+        """等待运行中的采集端真正切到目标版本，并核对角色与构建提交。"""
+        port = int(self.job.get("port") or 0)
         deadline = self.clock() + self.health_timeout
         while self.clock() < deadline:
-            if self.probe_version(int(self.job.get("port") or 0)) == version:
+            info = self._probe(port)
+            if str(info.get("version") or "") == version:
+                role = str(info.get("role") or "")
+                if role and role != "worker":
+                    self.sleep(HEALTH_INTERVAL_SECONDS)
+                    continue
+                if info.get("ok") is False:
+                    self.sleep(HEALTH_INTERVAL_SECONDS)
+                    continue
+                if "frontend" in info and not info["frontend"]:
+                    self.sleep(HEALTH_INTERVAL_SECONDS)
+                    continue
+                if expected_commit and str(info.get("commit") or "") != expected_commit:
+                    self.sleep(HEALTH_INTERVAL_SECONDS)
+                    continue
                 return True
             self.sleep(HEALTH_INTERVAL_SECONDS)
         return False
@@ -278,6 +513,8 @@ class InstallOrchestrator:
             "status": status,
             "message": message,
             "error": error or (message if status in {"failed", "rolled_back"} else ""),
+            # 记录执行进程，服务端重启后可据此判断事务是否仍有活着的执行器。
+            "pid": os.getpid(),
             "updated_at": _utc_now(),
         })
         if status in {"completed", "rolled_back", "failed"}:
@@ -318,9 +555,11 @@ class InstallController:
         popen: Callable[..., Any] = subprocess.Popen,
         python: str | None = None,
         app_dir: Path | None = None,
+        pid_alive: Callable[[int], bool] = _pid_alive,
     ) -> None:
         self.download_dir = Path(download_dir)
         self.install_root = Path(install_root) if install_root is not None else None
+        self.data_dir = Path(data_dir)
         self.journal_path = Path(data_dir) / "update-install.json"
         self.job_path = Path(data_dir) / "update-install-job.json"
         self.role = role
@@ -334,20 +573,31 @@ class InstallController:
         self.popen = popen
         self.python = python or sys.executable
         self.app_dir = Path(app_dir) if app_dir is not None else Path(__file__).resolve().parent.parent
+        self.pid_alive = pid_alive
         self._supported = bool(supported and self.install_root is not None
                                and role == "worker" and platform == "windows")
-        # 单进程内串行化「检查状态 → 校验产物 → 写任务 → 启动进程」，避免两个请求同时通过空闲检查。
-        self._lock = threading.Lock()
+        # 串行化「检查状态 → 校验产物 → 写任务 → 启动进程」，避免两个请求同时通过空闲检查；
+        # 同一线程内的 active()/status() 会递归进入，必须用可重入锁。
+        self._lock = threading.RLock()
 
     @property
     def supported(self) -> bool:
         return self._supported
 
+    @property
+    def gate(self) -> threading.RLock:
+        """与采集/标注启动共享的互斥闸门，闭合空闲检查到写任务之间的竞态窗口。"""
+        return self._lock
+
     def active(self) -> bool:
-        return str(_read_json(self.journal_path, {}).get("status") or "") in ACTIVE_STATUSES
+        with self._lock:
+            self._refresh()
+            return str(_read_json(self.journal_path, {}).get("status") or "") in ACTIVE_STATUSES
 
     def status(self) -> dict:
-        journal = _read_json(self.journal_path, {})
+        with self._lock:
+            self._refresh()
+            journal = _read_json(self.journal_path, {})
         status = str(journal.get("status") or "idle")
         return {
             "supported": self.supported,
@@ -355,6 +605,58 @@ class InstallController:
             "active": status in ACTIVE_STATUSES,
             **journal,
         }
+
+    def recover(self) -> None:
+        """服务启动时调用：把上次进程遗留的活动事务收尾，避免界面永久停在 installing。"""
+        with self._lock:
+            self._refresh()
+
+    def _refresh(self) -> None:
+        journal = _read_json(self.journal_path, {})
+        if str(journal.get("status") or "") not in ACTIVE_STATUSES:
+            return
+        pid = int(journal.get("pid") or 0)
+        if pid:
+            if self.pid_alive(pid):
+                return
+        else:
+            # 任务刚写出、执行器尚未记录 pid 时不判定超时。
+            try:
+                age = time.time() - self.journal_path.stat().st_mtime
+            except OSError:
+                return
+            if age < STALE_JOB_GRACE_SECONDS:
+                return
+        self._resolve_stale(journal)
+
+    def _resolve_stale(self, journal: dict) -> None:
+        target = str(journal.get("target_version") or "")
+        registered = ""
+        try:
+            registered = (self.install_root / "current-version").read_text(encoding="utf-8").strip()
+        except (AttributeError, OSError):
+            registered = ""
+        try:
+            running = str(self.current_version() or "").strip()
+        except Exception:
+            running = ""
+        if registered and registered == target == running:
+            status = "completed"
+            message = f"安装进程已退出，服务已运行 {target}"
+        elif registered == target:
+            status = "failed"
+            message = f"安装进程异常退出：版本登记为 {target}，运行版本为 {running or '未知'}，请检查或手动回滚"
+        else:
+            status = "failed"
+            message = f"安装进程异常退出，安装未生效（登记版本 {registered or '空'}）"
+        journal.update({
+            "status": status,
+            "message": message,
+            "error": "" if status == "completed" else message,
+            "finished_at": _utc_now(),
+            "updated_at": _utc_now(),
+        })
+        _write_json(self.journal_path, journal)
 
     def start(self, version: str, confirm: str) -> dict:
         with self._lock:
@@ -396,14 +698,15 @@ class InstallController:
         idle, reason = self.idle_check()
         if not idle:
             raise ValueError(reason or "采集或标注仍在执行，暂不能安装")
-        job = {
-            **artifact,
-            "install_root": str(self.install_root),
-            "target_version": version,
-            "previous_version": previous,
-            "port": self.port,
-            "created_at": _utc_now(),
-        }
+        job = build_job(
+            artifact=artifact,
+            install_root=self.install_root,
+            download_dir=self.download_dir,
+            data_dir=self.data_dir,
+            target_version=version,
+            previous_version=previous,
+            port=self.port,
+        )
         _write_json(self.job_path, job)
         _write_json(self.journal_path, {
             "status": "starting",
@@ -431,7 +734,13 @@ class InstallController:
             kwargs["creationflags"] = 0x00000008 | 0x00000200
         else:
             kwargs["start_new_session"] = True
-        self.popen(command, **kwargs)
+        process = self.popen(command, **kwargs)
+        pid = int(getattr(process, "pid", 0) or 0)
+        if pid:
+            # 立即登记执行器进程，避免状态刷新把刚启动的任务误判为异常退出。
+            journal = _read_json(self.journal_path, {})
+            journal["pid"] = pid
+            _write_json(self.journal_path, journal)
         return self.status()
 
 

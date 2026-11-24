@@ -133,6 +133,13 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         ),
         supported=updates.install_supported(),
     )
+    # 上次进程可能在安装中途退出；启动时先收尾遗留事务，避免界面永久停在 installing。
+    install.recover()
+    # 采集与人工标注的启动入口与安装共用同一闸门，闭合「检查空闲 → 写任务」之间的竞态窗口。
+    runner.update_gate = install.gate
+    runner.update_blocked = install.active
+    annotations.update_gate = install.gate
+    annotations.update_blocked = install.active
     token = secrets.token_urlsafe(32)
     def _warm_local_ocr() -> None:
         """后台预热 Apple Vision：首次 OCR 要加载框架约 3-4 秒，别让它落在第一次截图之后。"""
@@ -464,15 +471,18 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         except RuntimeError:
             frontend = ""
         version = os.environ.get("MENU_CAPTURE_VERSION", "")
+        commit = ""
         # 老守护进程升级时仍在内存中执行旧启动脚本，可能没有传入版本环境变量。
-        # 从本次运行目录的发布清单补齐，绝不根据其他版本目录推断。
-        if worker:
-            try:
-                release = json.loads((ROOT.parent / "release-manifest.json").read_text(encoding="utf-8"))
+        # 从本次运行目录的发布清单补齐，绝不根据其他版本目录推断；提交号用于确认运行的就是已安装构建。
+        try:
+            release = json.loads((ROOT.parent / "release-manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, AttributeError):
+            release = {}
+        if isinstance(release, dict):
+            if worker:
                 version = str(release.get("version") or version)
-            except (OSError, ValueError, AttributeError):
-                pass
-        return {"version": version, "frontend": frontend}
+            commit = str(release.get("git_commit") or "")
+        return {"version": version, "frontend": frontend, "commit": commit}
 
     @app.get("/api/updates/status")
     def updates_status():

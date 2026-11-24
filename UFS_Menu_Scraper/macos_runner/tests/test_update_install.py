@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from menu_capture.update_install import (
+    JOB_SCHEMA,
     InstallController,
     InstallOrchestrator,
+    _check_publisher,
     verify_artifact,
 )
 
@@ -64,13 +67,19 @@ class FakeClock:
         return self.now
 
 
-def make_orchestrator(tmp_path: Path, *, run_command, probe, health_timeout=0.05):
+def make_orchestrator(tmp_path: Path, *, run_command, probe, health_timeout=0.05,
+                      publisher=None):
     root = make_install_root(tmp_path)
     state = make_artifact(tmp_path)
     job = {
+        "schema": JOB_SCHEMA,
         "artifact_path": state["path"],
+        "asset_name": state["asset_name"],
+        "asset_kind": state["asset_kind"],
         "sha256": state["sha256"],
         "size": state["total"],
+        "download_dir": str(tmp_path / "download"),
+        "data_dir": str(tmp_path / "data"),
         "target_version": "0.3.0",
         "previous_version": "0.2.2",
         "install_root": str(root),
@@ -85,6 +94,7 @@ def make_orchestrator(tmp_path: Path, *, run_command, probe, health_timeout=0.05
     path.parent.mkdir(parents=True, exist_ok=True)
     return InstallOrchestrator(
         job=job, journal_path=path, run_command=run_command, probe_version=probe,
+        verify_publisher=publisher or (lambda artifact: {"status": "valid", "signer": "CN=Test"}),
         sleep=sleep, clock=clock, health_timeout=health_timeout,
     ), root, state
 
@@ -134,6 +144,8 @@ def test_orchestrator_installs_verifies_and_completes(tmp_path):
     def run(args, timeout):
         assert args[0] == state["path"]
         assert "/VERYSILENT" in args
+        # 安装目录必须显式传给安装器，不能依赖默认路径或历史注册表值。
+        assert f'/DIR="{root}"' in args
         make_release(root, "0.3.0")
         (root / "current-version").write_text("0.3.0", encoding="utf-8")
         return 0, ""
@@ -220,7 +232,8 @@ def test_orchestrator_refuses_tampered_artifact_before_running_installer(tmp_pat
 
 
 def make_controller(tmp_path: Path, *, supported=True, latest_sha: str | None = None,
-                    idle=(True, ""), current="0.2.2", journal: dict | None = None):
+                    idle=(True, ""), current="0.2.2", journal: dict | None = None,
+                    pid_alive=None):
     root = make_install_root(tmp_path, current)
     state = make_artifact(tmp_path)
     latest = {
@@ -259,6 +272,7 @@ def make_controller(tmp_path: Path, *, supported=True, latest_sha: str | None = 
         popen=fake_popen,
         python="python.exe",
         app_dir=tmp_path,
+        pid_alive=pid_alive or (lambda pid: True),
     )
     return controller, commands, root
 
@@ -317,3 +331,172 @@ def test_controller_rejects_concurrent_install(tmp_path):
     with pytest.raises(ValueError, match="已有安装任务"):
         controller.start("0.3.0", "0.3.0")
     assert commands == []
+
+
+def test_controller_job_contract_runs_in_orchestrator(tmp_path):
+    """回归：控制器写出的任务文件必须能被独立执行器直接消费。"""
+    root = make_install_root(tmp_path)
+    state = make_artifact(tmp_path)
+    controller, commands, _ = make_controller(tmp_path)
+    controller.start("0.3.0", "0.3.0")
+    assert len(commands) == 1
+
+    job_path = tmp_path / "data" / "update-install-job.json"
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    assert job["schema"] == JOB_SCHEMA
+    assert job["artifact_path"] == state["path"]
+    assert job["asset_name"] == state["asset_name"]
+
+    def run(args, timeout):
+        assert args[0] == job["artifact_path"]
+        make_release(root, "0.3.0")
+        (root / "current-version").write_text("0.3.0", encoding="utf-8")
+        return 0, ""
+
+    orchestrator = InstallOrchestrator(
+        job=job,
+        journal_path=tmp_path / "data" / "update-install.json",
+        run_command=run,
+        probe_version=lambda port: "0.3.0",
+        verify_publisher=lambda artifact: {"status": "valid", "signer": "CN=Test"},
+        sleep=lambda seconds: None,
+        clock=FakeClock(),
+        health_timeout=0.05,
+    )
+    journal = orchestrator.execute()
+
+    assert journal["status"] == "completed"
+    assert journal["message"] == "已切换到 0.3.0"
+
+
+def test_verify_artifact_rejects_traversal_and_symlinked_download(tmp_path):
+    state = make_artifact(tmp_path)
+    state["asset_name"] = "../evil.exe"
+    with pytest.raises(ValueError, match="名称无效"):
+        verify_artifact(tmp_path / "download", state, expected_version="0.3.0",
+                        platform="windows", arch="x64")
+
+    # 版本目录被替换成指向别处的链接时，不能顺着链接读文件。
+    download = tmp_path / "download"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "MenuCapture-v0.3.0.exe").write_bytes(b"installer-bytes")
+    (download / "0.3.0").rename(tmp_path / "real-0.3.0")
+    try:
+        (download / "0.3.0").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("当前环境不支持创建符号链接")
+    state = make_artifact(tmp_path)
+    state["path"] = str(outside / state["asset_name"])
+    with pytest.raises(ValueError, match="符号链接|重解析点"):
+        verify_artifact(download, state, expected_version="0.3.0",
+                        platform="windows", arch="x64")
+
+
+def test_orchestrator_rejects_unsigned_artifact_without_opt_in(tmp_path, monkeypatch):
+    monkeypatch.delenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", raising=False)
+    calls: list[str] = []
+    orchestrator, _, _ = make_orchestrator(
+        tmp_path, run_command=lambda args, timeout: calls.append(args[0]) or (0, ""),
+        probe=lambda port: "0.3.0",
+        publisher=lambda artifact: {"status": "unsigned"},
+    )
+    journal = orchestrator.execute()
+
+    assert journal["status"] == "failed"
+    assert "可信发布证明" in journal["error"]
+    assert calls == []
+
+
+def test_check_publisher_allows_unsigned_only_with_explicit_flag(monkeypatch):
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
+    assert _check_publisher({"status": "unsigned"})["status"] == "unsigned"
+    with pytest.raises(ValueError, match="数字签名无效"):
+        _check_publisher({"status": "invalid:hashmismatch"})
+    with pytest.raises(ValueError, match="数字签名无效"):
+        _check_publisher({"status": "unknown"})
+
+
+def test_orchestrator_blocks_rollback_when_schema_changed(tmp_path):
+    root = make_install_root(tmp_path)
+    state = make_artifact(tmp_path)
+    data_dir = tmp_path / "data"
+    db_path = data_dir / "tasks.sqlite3"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as db:
+        db.execute("CREATE TABLE tasks (id TEXT)")
+    calls: list[str] = []
+
+    def run(args, timeout):
+        calls.append(args[0])
+        if args[0] == state["path"]:
+            make_release(root, "0.3.0")
+            (root / "current-version").write_text("0.3.0", encoding="utf-8")
+            # 模拟新版本启动时执行了前向迁移。
+            with sqlite3.connect(db_path) as db:
+                db.execute("CREATE TABLE task_events (id TEXT)")
+            return 0, ""
+        return 1, "rollback exploded"
+
+    orchestrator, _, _ = make_orchestrator(tmp_path, run_command=run, probe=lambda port: "0.2.9")
+    journal = orchestrator.execute()
+
+    assert journal["status"] == "failed"
+    assert "已阻止自动回滚" in journal["message"]
+    assert all("rollback.ps1" not in call for call in calls)
+
+
+def test_orchestrator_does_not_accept_wrong_role_after_switch(tmp_path):
+    root = make_install_root(tmp_path)
+    state = make_artifact(tmp_path)
+
+    def run(args, timeout):
+        if args[0] == state["path"]:
+            make_release(root, "0.3.0")
+            (root / "current-version").write_text("0.3.0", encoding="utf-8")
+            return 0, ""
+        return 0, "rolled back"
+
+    orchestrator, _, _ = make_orchestrator(
+        tmp_path, run_command=run,
+        probe=lambda port: {"version": "0.3.0", "role": "hub", "ok": True, "frontend": "index.js"},
+    )
+    journal = orchestrator.execute()
+
+    assert journal["status"] == "failed"
+    assert "回滚失败" in journal["message"]
+
+
+def test_controller_recovers_stale_install_journal(tmp_path):
+    controller, _, _ = make_controller(
+        tmp_path, journal={"status": "installing", "pid": 4242, "target_version": "0.3.0"},
+        pid_alive=lambda pid: False,
+    )
+    controller.recover()
+    status = controller.status()
+
+    assert status["status"] == "failed"
+    assert "异常退出" in status["message"]
+    assert status["active"] is False
+
+
+def test_controller_recovery_accepts_already_switched_version(tmp_path):
+    controller, _, _ = make_controller(
+        tmp_path, current="0.3.0",
+        journal={"status": "verifying", "pid": 4242, "target_version": "0.3.0"},
+        pid_alive=lambda pid: False,
+    )
+    controller.recover()
+
+    assert controller.status()["status"] == "completed"
+
+
+def test_controller_keeps_journal_while_executor_alive(tmp_path):
+    controller, _, _ = make_controller(
+        tmp_path, journal={"status": "installing", "pid": 4242, "target_version": "0.3.0"},
+        pid_alive=lambda pid: True,
+    )
+    controller.recover()
+
+    assert controller.status()["status"] == "installing"
+    assert controller.active() is True
