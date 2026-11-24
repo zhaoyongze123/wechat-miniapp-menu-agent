@@ -133,7 +133,8 @@ jobs:
             'tests/test_server.py', 'tests/test_shared_workbench.py', 'tests/test_windows_compat.py',
             'tests/test_environment.py', 'tests/test_workbench_page.py', 'tests/test_model_usage.py',
             'tests/test_model_usage_integration.py', 'tests/test_materials.py', 'tests/test_rejections_batch.py',
-            'tests/test_review_queue.py', 'tests/test_capture_outcomes.py'
+            'tests/test_review_queue.py', 'tests/test_capture_outcomes.py',
+            'tests/test_updates.py', 'tests/test_update_install.py'
           )
           uv run --frozen pytest -q --basetemp (Join-Path $env:RUNNER_TEMP 'mc-py') @suite
       - name: 构建 Windows x64 安装包

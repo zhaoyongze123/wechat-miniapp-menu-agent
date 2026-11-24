@@ -819,3 +819,23 @@ def test_redirect_handler_rejects_untrusted_hosts():
     )
     assert allowed is not None and allowed.full_url.startswith("https://release-assets.githubusercontent.com/")
 
+
+def test_install_supported_requires_windows_worker_and_opt_in(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    app = install / "releases" / "0.2.0" / "app"
+    (install / "releases").mkdir(parents=True)
+    app.mkdir(parents=True)
+    service = UpdateService(tmp_path / "runtime", role="worker", app_root=app, machine="AMD64")
+    monkeypatch.setattr("menu_capture.updates.sys.platform", "win32")
+    monkeypatch.delenv("MENU_CAPTURE_ALLOW_SELF_UPDATE", raising=False)
+
+    assert service.install_supported() is False
+    assert service.status_no_check()["capabilities"]["install"] is False
+
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_SELF_UPDATE", "1")
+    assert service.install_supported() is True
+    assert service.status_no_check()["capabilities"]["install"] is True
+
+    hub = UpdateService(tmp_path / "hub", role="hub", app_root=app, machine="AMD64")
+    assert hub.install_supported() is False
+

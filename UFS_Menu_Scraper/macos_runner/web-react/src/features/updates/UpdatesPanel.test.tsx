@@ -37,6 +37,7 @@ function downloadState(overrides: Partial<UpdateDownloadState> = {}): UpdateDown
     version: '',
     asset_kind: '',
     asset_name: '',
+    arch: '',
     sha256: '',
     etag: '',
     last_modified: '',

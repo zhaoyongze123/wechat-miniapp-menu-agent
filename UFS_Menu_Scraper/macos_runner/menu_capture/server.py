@@ -49,6 +49,7 @@ from .connections import ConnectionManager
 from .debug_log import DebugLog
 from .model_usage import UsageLedger
 from .updates import UpdateService
+from .update_install import InstallController
 from .annotation import AnnotationSession, RunnerExecutor
 from .instance_lock import InstanceLockedError, instance_lock
 from .shared import SharedConflict, SharedHub, WorkerUnauthorized
@@ -114,6 +115,24 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                                     root=root if role != "standalone" else root.parent.parent, ocr_reader=image_ocr,
                                     rejector=rejections.mark_annotation_task,
                                     usage_ledger=model_usage)
+    # 自动安装只在 Windows 采集端且运维显式启用后可用；执行器在独立进程中完成安装与回滚。
+    install = InstallController(
+        download_dir=updates.download_dir,
+        install_root=updates.install_root(),
+        data_dir=updates.data_dir,
+        role=role,
+        platform=updates.platform,
+        arch=updates.local_arch,
+        port=int(os.environ.get("MENU_CAPTURE_PORT", "8765")),
+        latest_provider=lambda: (updates.status_no_check().get("latest") or {}),
+        artifact_provider=updates.download_status,
+        current_version=updates.current_version,
+        idle_check=lambda: (
+            (True, "") if not (runner.running or annotations.active)
+            else (False, "采集或人工标注正在执行，请先结束或暂停后再安装")
+        ),
+        supported=updates.install_supported(),
+    )
     token = secrets.token_urlsafe(32)
     def _warm_local_ocr() -> None:
         """后台预热 Apple Vision：首次 OCR 要加载框架约 3-4 秒，别让它落在第一次截图之后。"""
@@ -175,6 +194,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     app.state.annotations = annotations
     app.state.shared_hub = hub
     app.state.shared_worker = worker
+    app.state.updates_install = install
     register_shared_routes(app, role, hub, worker, control_lock)
 
     def basic_authorized(header: str, expected_user: bytes, expected_password: str) -> bool:
@@ -226,6 +246,13 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             or re.fullmatch(r"/api/tasks/[^/]+/(reject|retry|mark-review|rejection/undo)", path)
         ):
             return JSONResponse({"detail": "请在共享工作台管理素材和审核结果"}, status_code=409)
+        # 安装期间禁止发起新的采集/标注，避免切换版本时仍有写入任务。
+        if install.active() and request.method not in {"GET", "HEAD"} and (
+            path in {"/api/start", "/api/scan", "/api/resume", "/api/capture/start",
+                     "/api/ui-tars/trial", "/api/manual/capture"}
+            or path.startswith("/api/annotation/")
+        ):
+            return JSONResponse({"detail": "更新安装进行中，已暂停新的采集操作"}, status_code=409)
         if request.method not in {"GET", "HEAD"} and not worker_protocol:
             supplied = request.headers.get("x-capture-token", "")
             origin = request.headers.get("origin")
@@ -473,6 +500,18 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     @app.post("/api/updates/download/cancel")
     def updates_download_cancel():
         return updates.cancel_download()
+
+    @app.get("/api/updates/install")
+    def updates_install_status():
+        return install.status()
+
+    @app.post("/api/updates/install")
+    def updates_install_start(payload: dict):
+        # confirm 必须等于目标版本，避免误触把生产采集端切到非预期版本。
+        try:
+            return install.start(str(payload.get("version") or ""), str(payload.get("confirm") or ""))
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
 
     @app.get("/api/model-usage")
     def model_usage_report(date_from: str | None = None, date_to: str | None = None,

@@ -414,11 +414,11 @@ class UpdateService:
             "download": self.download_status(),
             "capabilities": {
                 "check": True,
-                # 本阶段只提供受控下载（临时文件 + 断点续传 + SHA-256 校验）；
-                # 安装/切换仍需人工按发布说明执行，不能在前端伪造为可用。
+                # 本阶段提供受控下载（临时文件 + 断点续传 + SHA-256 校验）；
+                # 安装执行器需 Windows 采集端并显式启用，未验收前不默认暴露。
                 "download": True,
-                "install": False,
-                "rollback": False,
+                "install": self.install_supported(),
+                "rollback": self.install_supported(),
                 "inventory": self._inventory_supported(),
             },
             "inventory": self.inventory(),
@@ -492,6 +492,22 @@ class UpdateService:
 
     def _inventory_supported(self) -> bool:
         return self._install_root() is not None
+
+    def install_root(self) -> Path | None:
+        """安装根只用于安装执行器与清点；未启用安装时也允许只读调用。"""
+        return self._install_root()
+
+    def install_supported(self) -> bool:
+        """自动安装必须同时满足：Windows 采集端、可定位安装根、运维显式启用。
+
+        未在真实 Windows 升级/回滚验收前不默认开启，避免把未经环境验证的高权限链路暴露给业务页面。
+        """
+        return (
+            sys.platform == "win32"
+            and self.role == "worker"
+            and self._install_root() is not None
+            and os.environ.get("MENU_CAPTURE_ALLOW_SELF_UPDATE") == "1"
+        )
 
     def inventory(self) -> dict:
         install_root = self._install_root()
@@ -589,6 +605,7 @@ class UpdateService:
                 "version": version,
                 "asset_kind": str(asset.get("kind") or ""),
                 "asset_name": str(asset.get("name") or ""),
+                "arch": str(asset.get("arch") or ""),
                 # 记录资产身份，安装前与后续版本绑定判断都以它为准，不能只看 completed。
                 "sha256": str(asset.get("sha256") or ""),
                 "etag": str(previous.get("etag") or "") if same_asset else "",
@@ -1022,6 +1039,7 @@ def _empty_download_state() -> dict:
         "version": "",
         "asset_kind": "",
         "asset_name": "",
+        "arch": "",
         "sha256": "",
         "etag": "",
         "last_modified": "",
