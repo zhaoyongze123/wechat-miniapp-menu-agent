@@ -70,7 +70,7 @@ function Start-Worker {
     foreach ($file in $stdout, $stderr) {
         if (Test-Path -LiteralPath $file) { Move-Item -LiteralPath $file -Destination "$file.previous" -Force }
     }
-    $worker = Start-Process -FilePath $exe -ArgumentList '-X utf8 -E -s -B -m menu_capture.server' -WorkingDirectory $app `
+    $worker = Start-Process -FilePath $exe -ArgumentList '-X utf8 -E -s -B -m menu_capture.api.server' -WorkingDirectory $app `
         -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     Write-LauncherLog "采集端 $ActiveVersion 已启动，PID $($worker.Id)。"
     return $worker

@@ -9,7 +9,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Set-Item Env:UV_PYTHON_DOWNLOADS never
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$runner = Join-Path $repo 'UFS_Menu_Scraper\macos_runner'
+$runner = Join-Path $repo 'app'
 $runtime = Get-Content (Join-Path $PSScriptRoot 'runtimes.json') -Raw | ConvertFrom-Json
 
 function Invoke-Checked {
@@ -214,7 +214,7 @@ try {
     $env:PYTHONNOUSERSITE = '1'
     Push-Location $app
     try {
-        Invoke-Checked $python @('-c', 'import fastapi, cv2, zxingcpp, screeninfo, rapidocr_onnxruntime, menu_capture.server')
+        Invoke-Checked $python @('-c', 'import fastapi, cv2, zxingcpp, screeninfo, rapidocr_onnxruntime, menu_capture.api.server')
         Invoke-Checked (Join-Path $nodeDir 'node.exe') @('--version')
         Invoke-Checked $env:TESSERACT_CMD @('--version')
         $languages = & $env:TESSERACT_CMD --list-langs

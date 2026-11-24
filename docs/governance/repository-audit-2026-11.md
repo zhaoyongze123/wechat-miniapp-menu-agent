@@ -9,7 +9,7 @@
 | 跟踪文件数 | 601 | 429（含新增治理文档 7 个） |
 | 跟踪体积 | 62.8 MB | 11.33 MB |
 | 最大目录 | `输出/` 153 个文件 / 44.22 MB | `docs/` 136 个文件（含验收证据） |
-| 历史运行截图 | `UFS_Menu_Scraper/macos_runner/output/` 26 个文件 / 3.49 MB | 已退出跟踪 |
+| 历史运行截图 | `app/output/` 26 个文件 / 3.49 MB | 已退出跟踪 |
 
 处理方式：
 
@@ -21,7 +21,7 @@
 
 - 对全部跟踪文本文件扫描 `password|secret|token|api key|sk-*|wxid_*|手机号` 等模式：命中均为代码标识符与测试变量名，未发现硬编码真实凭据。
 - `输出/` 内含真实门店截图、运行记录与分配数据，属于业务敏感数据，已退出跟踪；本地副本保留。
-- 本机密钥文件（`config.local.json`、`secrets.local.json`、`deploy/.env`）均已忽略，未进入仓库。
+- 本机密钥文件（`config.local.json`、`secrets.local.json`、`deploy/hub/.env`）均已忽略，未进入仓库。
 - 历史版本仍保留被删除文件的 blob。当前仓库为私有；若后续公开，需要单独评估历史重写与凭据轮换。
 
 ## 3. 文档整理
@@ -31,8 +31,8 @@
 | 移动到 `docs/product/` | 微信小程序菜单导航 Agent PRD |
 | 归档到 `docs/archive/2026-11-capture-fixes/` | 根目录 `spec.md`/`tasks.md`、`macos_runner/spec.md`/`tasks.md` |
 | 新增索引 | `docs/archive/README.md`（时间、原位置、替代文档） |
-| 保持现状 | `docs/react-migration/`（当前版本的迁移与验收证据） |
-| 新增 | `AGENTS.md`（精简规则）、`docs/engineering-standards.md`、`CONTRIBUTING.md`、`SECURITY.md`、`CHANGELOG.md`、`.editorconfig` |
+| 保持现状 | `docs/archive/2026-11-react-migration/`（当前版本的迁移与验收证据） |
+| 新增 | `AGENTS.md`（精简规则）、`docs/governance/engineering-standards.md`、`CONTRIBUTING.md`、`SECURITY.md`、`CHANGELOG.md`、`.editorconfig` |
 
 `AGENTS.md` 已移除个人机器绝对路径，改为环境要求与约束说明；细节规范集中在工程规范文档，避免两份规则漂移。
 
@@ -49,7 +49,7 @@
 
 | 组件 | 使用方 | 生产是否必需 | 结论 |
 | --- | --- | --- | --- |
-| `UFS_Menu_Capture_CrossPlatform/`（UiPath xaml/json，21 个文件） | `server.py:89` 作为 `project_dir`；`tests/test_uipath_window_contract.py` | 否（Windows 原生执行为默认；安装包只打包 `menu_capture`、`web`、`ui_tars`） | 保留为 UiPath CLI 启动方式的兼容资产，标注 legacy |
+| `compat/uipath/`（UiPath xaml/json，21 个文件） | `server.py:89` 作为 `project_dir`；`tests/test_uipath_window_contract.py` | 否（Windows 原生执行为默认；安装包只打包 `menu_capture`、`web`、`ui_tars`） | 保留为 UiPath CLI 启动方式的兼容资产，标注 legacy |
 | `menu_capture/macos.py` | `environment.py`、`image_tools.py` 内惰性导入 | 否（Windows 分支不加载） | 保留，供跨平台调试 |
 | 目录名 `macos_runner` | 安装器、路径与文档 | 是（路径兼容） | 不改名，README 已说明历史命名 |
 | `ui_tars/` 适配层 | `build.ps1` 打包；`ui_tars_trial.py` | 是（模型试跑） | 保持现状 |
@@ -73,7 +73,7 @@
 
 1. ESLint 接入（含依赖与基线固化的独立 PR）。
 2. 仓库公开前评估历史 blob 重写与凭据轮换。
-3. `docs/react-migration/` 证据在下一版本稳定后可归档。
+3. `docs/archive/2026-11-react-migration/` 证据在下一版本稳定后可归档。
 4. `uipath_runner.py` 与 `materials.py` 的拆分按独立 Issue 推进。
 5. Ruff 存量 65 项按模块随改动顺带清理，不单独全量格式化。
 

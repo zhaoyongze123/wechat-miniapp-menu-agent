@@ -13,7 +13,7 @@
 
 ## 本仓库的安全边界
 
-- 采集端与共享后台使用配对码换取设备令牌；`config.local.json`、`secrets.local.json`、`deploy/.env` 只存在于本机，已被 `.gitignore` 排除。
+- 采集端与共享后台使用配对码换取设备令牌；`config.local.json`、`secrets.local.json`、`deploy/hub/.env` 只存在于本机，已被 `.gitignore` 排除。
 - 共享后台默认要求管理员口令；生产部署口令只保存在本机环境变量或未入库的 `.env` 中。
 - 控制台 API 需要会话令牌，写操作同时校验 `Origin`，非本机回环访问需显式允许主机名。
 - 采集输出、截图、SQLite 数据库属于业务数据，不进入版本库；如需外发，先脱敏并最小化。

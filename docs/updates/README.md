@@ -88,7 +88,7 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 安装器失败且已改动 `current-version`、或健康检查超时，自动调用 `rollback.ps1 -Version <上一版本>` 回滚并核对上一版本；回滚前比对数据库结构指纹，若新版本已执行迁移则阻止自动回滚并提示人工确认，避免旧版本读不懂新结构。
 - 单进程内串行化安装启动，同一时刻只允许一个安装任务。
 - 设置中心按 `GET /api/updates/install` 的真实能力显示安装入口：下载完成且能力可用时提供"安装并重启"，确认窗口写明重启与回滚影响；能力未启用时只说明原因，不显示按钮。
-- 隔离验收使用 `deploy/windows/ota-smoke.ps1`，覆盖安装 API、独立执行器、静默安装、版本切换和回滚。现有产物可用于本地验证。候选包需要复验时，在本轮唯一完整 CI 中使用适用的 OTA 基线参数。 [集成交付规则](../engineering-standards.md#发布与云端构建)
+- 隔离验收使用 `deploy/windows/ota-smoke.ps1`，覆盖安装 API、独立执行器、静默安装、版本切换和回滚。现有产物可用于本地验证。候选包需要复验时，在本轮唯一完整 CI 中使用适用的 OTA 基线参数。 [集成交付规则](../governance/engineering-standards.md#发布与云端构建)
 
 ## Hub 镜像更新执行器（宿主机，需显式部署）
 
@@ -99,7 +99,7 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 只对配置的 compose 文件、project 和 service 执行 `up -d`，从不执行 `down -v`、`prune` 或删除卷；更新前要求数据卷已存在，避免因拼错卷名创建空卷。
 - 事务状态写入 `HUB_UPDATE_STATE_DIR/hub-update.json`（含执行器 PID），执行器重启或状态查询发现进程已退出时，按实际运行镜像收尾，不会永久停在切换中；每次成功/失败/回滚追加到 `hub-update-audit.jsonl`。
 - 必须配置的环境变量：`HUB_UPDATE_TOKEN`（≥16 字符）、`HUB_UPDATE_COMPOSE_FILE`、`HUB_UPDATE_PROJECT`、`HUB_UPDATE_DATA_VOLUME`、`HUB_UPDATE_STATE_DIR`；可选 `HUB_UPDATE_ARCHIVE_DIR`、`HUB_UPDATE_HEALTH_URL`、`HUB_UPDATE_HEALTH_USER`/`HUB_UPDATE_HEALTH_PASSWORD`（Hub 的 `/api/version` 走基本认证）、`HUB_UPDATE_BIND`、`HUB_UPDATE_PORT`、`HUB_UPDATE_ALLOWED_CLIENTS`、`HUB_UPDATE_HEALTH_TIMEOUT`。
-- Hub 服务端通过 `HUB_UPDATE_URL` / `HUB_UPDATE_TOKEN` 代理调用执行器（`deploy/compose.yaml` 已声明 `host.docker.internal:host-gateway`）；未配置时设置页只显示原因，不提供安装按钮。容器只提交「最新版本 + 清单校验后的 SHA-256/大小/URL」，由执行器再次校验。
+- Hub 服务端通过 `HUB_UPDATE_URL` / `HUB_UPDATE_TOKEN` 代理调用执行器（`deploy/hub/compose.yaml` 已声明 `host.docker.internal:host-gateway`）；未配置时设置页只显示原因，不提供安装按钮。容器只提交「最新版本 + 清单校验后的 SHA-256/大小/URL」，由执行器再次校验。
 - 部署时执行器必须监听容器可达的地址，并把 `HUB_UPDATE_ALLOWED_CLIENTS` 收敛到 Docker 网桥网段；切勿对公网开放。
 - 回滚兜底：手动回滚或安装失败自动回滚时，若目标版本切回后健康检查不通过，执行器会立即切回回滚前仍在运行的版本并复核健康，避免把采集服务留在停机状态；恢复失败才标记失败并保留状态与审计。
 - 回滚架构边界：切换前用当前应用镜像启动一次隔离只读探测容器，禁用网络和 Linux capabilities，只挂载命名数据卷且为只读，不读取宿主机 Docker volume Mountpoint。探测器保存 `data/tasks.sqlite3` 架构快照。自动回退与显式回滚都比较快照；旧表/列/索引/约束被删除或改写、触发器/视图改变、基线缺失或无法读取时停止回滚并标记 `needs_manual_recovery`，保留当前容器与诊断信息，要求人工恢复。仅新增表、带可供旧代码写入的默认值（或允许为空）的列，以及非唯一索引，按向后兼容扩展处理，允许旧镜像回滚；新增唯一索引、既有表约束或外键都需人工判断。这对应现有初始化迁移以 `CREATE TABLE`、`ALTER TABLE ADD COLUMN` 和 `CREATE INDEX` 为主的机制。无法读取架构时不推断兼容。

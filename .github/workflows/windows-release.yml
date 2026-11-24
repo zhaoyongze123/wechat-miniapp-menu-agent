@@ -45,9 +45,9 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: UFS_Menu_Scraper/macos_runner/web-react/package-lock.json
+          cache-dependency-path: app/web-react/package-lock.json
       - name: 校验 React 底座、单测与提交的构建产物
-        working-directory: UFS_Menu_Scraper/macos_runner/web-react
+        working-directory: app/web-react
         run: |
           npm ci --no-audit --no-fund
           npm run typecheck
@@ -59,7 +59,7 @@ jobs:
             exit 1
           fi
       - name: 校验旧前端已清理且发布产物自包含
-        working-directory: UFS_Menu_Scraper/macos_runner
+        working-directory: app
         run: |
           legacy=$(find web -maxdepth 1 -type f \( -name '*.js' -o -name '*.css' -o -name 'index.html' \) -print)
           if [ -d web/vue ]; then legacy="$legacy web/vue"; fi
@@ -83,7 +83,7 @@ jobs:
         with:
           version: '0.11.3'
       - name: Ruff 门禁（配置见 pyproject.toml）
-        working-directory: UFS_Menu_Scraper/macos_runner
+        working-directory: app
         run: uvx ruff@0.17.6 check --no-cache .
 
   windows:
@@ -127,17 +127,19 @@ jobs:
           version: '0.11.3'
       - name: Python 回归与 Windows 原生执行契约
         shell: pwsh
-        working-directory: UFS_Menu_Scraper/macos_runner
+        working-directory: app
         run: |
           uv sync --frozen --python 3.12
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # 服务端静态资源、共享分配、Windows 兼容、环境诊断、工作台分页与模型用量契约。
           $suite = @(
-            'tests/test_server.py', 'tests/test_shared_workbench.py', 'tests/test_windows_compat.py',
-            'tests/test_environment.py', 'tests/test_workbench_page.py', 'tests/test_model_usage.py',
-            'tests/test_model_usage_integration.py', 'tests/test_materials.py', 'tests/test_rejections_batch.py',
-            'tests/test_review_queue.py', 'tests/test_capture_outcomes.py',
-            'tests/test_updates.py', 'tests/test_update_install.py'
+            'tests/integration/test_server.py', 'tests/integration/test_shared_workbench.py',
+            'tests/contract/test_windows_compat.py', 'tests/unit/test_environment.py',
+            'tests/integration/test_workbench_page.py', 'tests/unit/test_model_usage.py',
+            'tests/integration/test_model_usage_integration.py', 'tests/unit/test_materials.py',
+            'tests/unit/test_rejections_batch.py', 'tests/integration/test_review_queue.py',
+            'tests/unit/test_capture_outcomes.py', 'tests/unit/test_updates.py',
+            'tests/unit/test_update_install.py'
           )
           uv run --frozen pytest -q --basetemp (Join-Path $env:RUNNER_TEMP 'mc-py') @suite
       - name: 构建 Windows x64 安装包
@@ -218,7 +220,7 @@ jobs:
           echo "MENU_CAPTURE_IMAGE=menu-capture-hub:$version" >> "$GITHUB_ENV"
       - name: 验证共享后台容器、前端产物和数据卷
         run: |
-          docker compose -f deploy/compose.yaml up -d --build --wait
+          docker compose -f deploy/hub/compose.yaml up -d --build --wait
           curl --fail http://127.0.0.1:8766/healthz
           auth="admin:$MENU_CAPTURE_ADMIN_PASSWORD"
           curl --fail -u "$auth" http://127.0.0.1:8766/ | grep -q '<div id="root"></div>'
@@ -226,8 +228,8 @@ jobs:
           entry=$(curl --fail -u "$auth" http://127.0.0.1:8766/ | grep -o '/assets/[^"]*\.js' | head -n1)
           test -n "$entry" && curl --fail -u "$auth" -o /dev/null "http://127.0.0.1:8766$entry"
           curl --fail -u "$auth" -o /dev/null http://127.0.0.1:8766/favicon.svg
-          docker compose -f deploy/compose.yaml exec -T hub tesseract --list-langs | grep -w chi_sim
-          docker compose -f deploy/compose.yaml exec -T hub test -s /var/lib/menu-capture/data/tasks.sqlite3
+          docker compose -f deploy/hub/compose.yaml exec -T hub tesseract --list-langs | grep -w chi_sim
+          docker compose -f deploy/hub/compose.yaml exec -T hub test -s /var/lib/menu-capture/data/tasks.sqlite3
       - name: 验证共享后台原地升级与回滚
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -236,8 +238,10 @@ jobs:
         run: |
           git fetch --depth 1 origin "$BASELINE_REF"
           git worktree add --detach "$RUNNER_TEMP/hub-old" "$BASELINE_REF"
-          docker build -t menu-capture-hub:upgrade-baseline -f "$RUNNER_TEMP/hub-old/deploy/Dockerfile.hub" "$RUNNER_TEMP/hub-old"
-          compose=(docker compose -p menu-capture-upgrade -f deploy/compose.yaml)
+          # 基线提交是旧目录布局，按实际检出位置定位 Dockerfile，避免历史路径变化导致验收失效。
+          baseline_dockerfile=$(find "$RUNNER_TEMP/hub-old" -path '*/deploy/*' -name 'Dockerfile.hub' | head -1)
+          docker build -t menu-capture-hub:upgrade-baseline -f "$baseline_dockerfile" "$RUNNER_TEMP/hub-old"
+          compose=(docker compose -p menu-capture-upgrade -f deploy/hub/compose.yaml)
           candidate="$MENU_CAPTURE_IMAGE"
           base="http://127.0.0.1:$MENU_CAPTURE_HOST_PORT"
           auth="admin:$MENU_CAPTURE_ADMIN_PASSWORD"
@@ -273,7 +277,7 @@ jobs:
           # 的真实跨版本场景，并验证旧版本能在新版本迁移过的数据库上启动（回滚兼容性）。
           base_version=0.2.2
           project=menu-capture-updater
-          compose=(docker compose -p "$project" -f deploy/compose.yaml)
+          compose=(docker compose -p "$project" -f deploy/hub/compose.yaml)
           baseline_dir="$RUNNER_TEMP/baseline"
           mkdir -p "$baseline_dir"
           gh release download "v$base_version" --repo "$GITHUB_REPOSITORY" \
@@ -293,7 +297,7 @@ jobs:
           sha=$(sha256sum "$state/archives/$archive" | cut -d' ' -f1)
 
           export HUB_UPDATE_TOKEN=$(openssl rand -hex 24)
-          export HUB_UPDATE_COMPOSE_FILE="$PWD/deploy/compose.yaml"
+          export HUB_UPDATE_COMPOSE_FILE="$PWD/deploy/hub/compose.yaml"
           export HUB_UPDATE_PROJECT="$project" HUB_UPDATE_SERVICE=hub
           export HUB_UPDATE_DATA_VOLUME="${project}_hub-data"
           export HUB_UPDATE_STATE_DIR="$state" HUB_UPDATE_ARCHIVE_DIR="$state/archives"
@@ -353,7 +357,7 @@ jobs:
           retention-days: 14
       - name: 容器日志
         if: failure()
-        run: docker compose -f deploy/compose.yaml logs
+        run: docker compose -f deploy/hub/compose.yaml logs
 
   draft:
     if: github.event_name == 'workflow_dispatch' && inputs.create_release

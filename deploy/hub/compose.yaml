@@ -1,0 +1,41 @@
+# 一个 A 机、一个后台实例和一个本机卷；所有采集端经 HTTP API 使用同一状态。
+name: menu-capture
+services:
+  hub:
+    build:
+      context: ../..
+      dockerfile: deploy/hub/Dockerfile.hub
+      args:
+        VERSION: "${MENU_CAPTURE_VERSION:-0.1.0}"
+    # 固定镜像标签便于按发布版本升级与回滚：MENU_CAPTURE_IMAGE=menu-capture-hub:<版本>。
+    image: "${MENU_CAPTURE_IMAGE:-menu-capture-hub:local}"
+    restart: unless-stopped
+    init: true
+    environment:
+      MENU_CAPTURE_ADMIN_PASSWORD: "${MENU_CAPTURE_ADMIN_PASSWORD:?请在 deploy/hub/.env 中填写管理员口令}"
+      MENU_CAPTURE_ALLOWED_HOSTS: "${MENU_CAPTURE_ALLOWED_HOSTS:-}"
+      # 宿主机更新执行器地址与令牌：未配置时设置页只展示原因，不提供安装入口。
+      HUB_UPDATE_URL: "${HUB_UPDATE_URL:-}"
+      HUB_UPDATE_TOKEN: "${HUB_UPDATE_TOKEN:-}"
+    extra_hosts:
+      # 执行器跑在宿主机，容器通过 host-gateway 访问；仍需执行器令牌与来源网段校验。
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${MENU_CAPTURE_HOST_PORT:-8766}:8765"
+    volumes:
+      - hub-data:/var/lib/menu-capture
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8765/healthz', timeout=3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 15s
+volumes:
+  hub-data: {}
