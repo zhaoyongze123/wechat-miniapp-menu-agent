@@ -1,145 +1,203 @@
-# GUI Agent 菜单自动采集系统
+# 菜单智能采集工作台 · Menu Capture Workbench
 
-用 GUI Agent 打开微信里的商家小程序，确认菜单可采集后，交给 UiPath / 本地桌面驱动滚动截图；
-控制台负责素材清洗、批次发布、任务调度、结果审核与不合格清单。macOS 与 Windows 共用同一套业务流程。
+面向餐饮菜单批量采集的桌面自动化与多设备协作系统。将门店二维码素材、微信小程序菜单截图、任务调度和质量审核纳入同一工作流，支持集中管理、分布式执行与结果追溯。
 
-> 当前状态：macOS 链路稳定运行；Windows 桌面链路处于实机验收阶段，建议先按「快速开始」跑通单店再批量。
+**React · TypeScript · Python · GUI Agent · Windows · Docker**
 
-## 目录
+[快速开始](#快速开始) · [核心功能](#核心功能) · [系统架构](#系统架构) · [部署指南](deploy/README.md) · [版本发布](../../releases)
 
-- [项目简介](#项目简介)
-- [核心能力](#核心能力)
-- [系统架构](#系统架构)
-- [快速开始](#快速开始)
-- [使用流程](#使用流程)
-- [目录结构](#目录结构)
-- [开发与验证](#开发与验证)
-- [运行边界](#运行边界)
-- [文档索引](#文档索引)
+> 当前分支为 React 新版本交付候选。新增能力以实际代码为准；正式上线仍须通过安装、升级、回滚及现场采集验收。生产使用请选择已批准的发布版本，不直接用开发分支覆盖现有环境。
 
-## 项目简介
+## 产品预览
 
-门店二维码素材先经过本地清洗与人工确认，再发布为不可变快照。激活批次后，系统为每家门店生成采集任务：
-GUI Agent 在微信中打开对应小程序、导航到菜单页并交接；滚动截图由 UiPath（macOS）或 Win32 驱动（Windows）执行。
-结果按批次与门店归档，异常门店进入待检查/不合格清单，可撤销、重跑或人工修复。
+系统由共享工作台（Hub）和 Windows 采集端（Worker）组成，均通过浏览器操作。
 
-二维码只保存载荷哈希，不保留原文；Agent 不核对店名、不接触二维码原图。
-
-## 核心能力
-
-| 能力 | 说明 |
+| 共享工作台（Hub） | 采集端（Worker） |
 | --- | --- |
-| 素材清洗 | 本地二维码检测 + 用途分类 + 人工确认/跳过，发布快照不可变。 |
-| 批次管理 | 批次阶段（未采集/首轮已跑/已重跑/人工审核通过）自动维护，支持人工覆盖；软删除与回收站。 |
-| 采集执行 | GUI Agent 导航与交接校验，滚动截图、菜单语义与「到底」判定，失败码分流。 |
-| 结果审核 | 待检查清单跨批次筛选与批量重跑；不合格清单统一汇总、可撤销/重采集、支持 Excel 导出。 |
-| 任务中心 | 素材分析与采集运行共用入口，独立页面查看历史任务与运行详情。 |
-| 无人值守 | 串行自动流水线：分析 → 接受推荐 → 发布 → 激活 → 采集；单批超过 100 家自动分轮续跑。 |
+| 素材清洗、批次与素材发布 | 全自动 / 半自动菜单采集 |
+| 采集电脑管理与任务分配 | 本机采集队列、进度与同步状态 |
+| 质量审核与异常返工 | 人工标注与环境诊断 |
+| 多设备任务历史查询 | 本机任务历史与远程采集控制 |
+
+[共享工作台界面](docs/react-migration/verify/final/final-hub-workbench.jpg) · [采集端同步界面](docs/react-migration/verify/final/final-worker-sync.jpg) · [人工标注界面](docs/react-migration/verify/final/final-worker-annotation.jpg)
+
+以上为 React 迁移阶段的浏览器验收截图，并非最终生产版本截图。
+
+## 核心功能
+
+| 模块 | 能力 |
+| --- | --- |
+| 素材清洗 | 二维码识别、用途分析、人工选码、批次发布及素材返工。 |
+| 采集执行 | GUI Agent 自主导航至菜单，全自动或半自动采集，Windows 原生桌面驱动执行滚动截图。 |
+| 共享调度 | 设备配对、门店分配、回收与重新分配；已下载并校验的任务可离线处理。 |
+| 质量审核 | 逐店查看采集结果，处理待检查与不合格记录，按业务规则撤销、重采或打回素材清洗。 |
+| 任务中心 | 查看素材分析和采集任务、运行进度、逐店结果与历史；Hub 汇总已同步的采集端记录。 |
+| 远程辅助 | 操作者通过受保护的内网 HTTPS 页面控制半自动截图及不合格确认；兼容浏览器可打开文档画中画控制窗。 |
+| 设置与诊断 | 设备连接、同步状态、模型配置、用量统计与运行环境检查。 |
+
+本轮候选版的通知提醒、连续处理、图片交互与其他体验增强事项见 [#26 产品成熟度优化](../../issues/26)。功能是否正式可用以发布验收结果为准。
 
 ## 系统架构
 
 ```mermaid
-flowchart LR
-    A[二维码素材] --> B[素材清洗]
-    B --> C[人工确认/跳过]
-    C --> D[发布快照]
-    D --> E[激活批次 → 采集任务]
-    E --> F[GUI Agent 导航]
-    F --> G[滚动截图]
-    G --> H[合格输出]
-    G --> I[不合格归档]
-    H --> J[审核/清单]
-    I --> J
+flowchart TB
+    User["操作人员 / 浏览器"]
+    Hub["Hub 共享工作台<br/>React + Python API"]
+    WorkerA["Worker A<br/>Windows 采集服务"]
+    WorkerB["Worker B … N<br/>Windows 采集服务"]
+    HubData[("Hub 持久化数据")]
+    LocalA[("本机任务、素材缓存与待上传结果")]
+    Desktop["微信小程序<br/>GUI Agent + 原生桌面驱动"]
+
+    User <-->|管理与审核| Hub
+    User <-->|本机控制 / 受保护的远程控制| WorkerA
+    Hub <-->|任务分配与结果同步| WorkerA
+    Hub <-->|任务分配与结果同步| WorkerB
+    Hub --- HubData
+    WorkerA --- LocalA
+    WorkerA <-->|导航与截图| Desktop
 ```
 
-完整目录与模块职责见 [项目导航](docs/PROJECT_MAP.md)。
+- **Hub**：集中管理素材、任务分配、设备、审核及已同步的历史数据，可通过 Docker Compose 部署。
+- **Worker**：在已登录微信的 Windows 交互桌面执行任务，保留本机缓存及待上传结果；连接恢复后同步。
+- **浏览器**：统一 React 界面。远程桌面负责人工操作微信，远程控制页面只负责发起当前半自动任务的操作。
+- **GUI Agent**：负责菜单导航与业务终态判断；实际桌面执行、截图归档和任务状态管理由采集服务负责。
+
+Hub 与 Worker 可以部署于同一台机器，也可以分布在多台机器。实际并发能力取决于设备、网络与桌面环境。
+
+## 业务流程
+
+```mermaid
+flowchart TD
+    A["上传门店二维码素材"] --> B["分析与人工确认"]
+    B --> C["发布素材"]
+    C --> D["Hub 分配门店"]
+    D --> E{"采集模式"}
+    E -->|全自动| F["GUI Agent 导航"]
+    E -->|半自动| G["人工进入菜单"]
+    F --> H["滚动截图与结果归档"]
+    G --> H
+    H --> I["上传与同步"]
+    I --> J["质量审核"]
+    J --> K["结果交付"]
+    J -->|需要重新采集| D
+    J -->|需要重新选码| B
+```
+
+无法确认菜单或采集结果时保留待检查状态，不将不确定结果当作成功。素材版本、采集轮次、分配与审核结果各自保留业务身份，具体规则见 [#20 门店级素材版本与采集状态](../../issues/20)。
 
 ## 快速开始
 
-### macOS
+### 1. 部署共享工作台（Hub）
 
-准备 macOS、Python 3.12、[uv](https://docs.astral.sh/uv/)、Node.js 22.17.1 或更新版本，以及已登录的微信和 UiPath CLI。
-按 UiPath 工程要求授予辅助功能与屏幕录制权限。
+准备 Docker 和 Docker Compose。在仓库根目录将 `deploy/.env.example` 复制为 `deploy/.env`，配置管理员口令和允许访问的主机，再运行：
 
-```sh
-cd UFS_Menu_Scraper/macos_runner
-uv sync --frozen --python 3.12
-npm ci --prefix ui_tars
-.venv/bin/python -m menu_capture.server
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build --wait
 ```
 
-打开 [本机控制台](http://127.0.0.1:8765/)。在设置页配置百炼北京地域的 OpenAI 兼容接口、模型名和密钥，
-再通过环境诊断检查连接与桌面权限。使用自动扫码模式前，需完成 UiPath 窗口和坐标校准，并将微信停在文件传输助手。
+正式部署请使用对应发布版本及其构建产物，并按 [部署指南](deploy/README.md) 配置受信任的内网访问、持久化数据卷与鉴权。
 
-### Windows
+### 2. 安装 Windows 采集端（Worker）
 
-采集端在已登录的 Windows 桌面运行，使用 Win32 定位窗口、截图和发送输入。在双机模式中，
-A 机通过 Docker Compose 运行共享工作台，两台机器通过安装包部署采集端。操作人员登录微信，
-完成一次配对后即可接收管理员分配的门店。安装、离线操作、旧数据迁移与验收见 [双机部署和验收](deploy/README.md)。
+1. 在 [Releases](../../releases) 下载已批准版本的 Windows x64 安装包 `MenuCapture-Setup-<版本>-win-x64.exe`。
+2. 安装后从开始菜单打开「菜单采集工作台」；登录微信，在环境诊断中检查桌面、截图与 OCR。
+3. 在 Hub 的「采集电脑」生成配对码，在 Worker 输入共享工作台地址、设备名称及配对码。
+4. 需要全自动采集时，在执行端设置受支持的 GUI 模型及密钥。
 
-开发联调可在 `UFS_Menu_Scraper/macos_runner` 下运行 `启动菜单采集.ps1`。需预先准备 uv、
-Node.js、Tesseract 和 `chi_sim`、`eng`，自动导航还需要本机模型密钥。
+### 3. 完成首次采集
 
-## 使用流程
+在 Hub 创建素材批次，分析并确认二维码，发布后选择门店并分配至目标 Worker。确认任务已经下载，再启动全自动或半自动采集。先验证一家门店的截图、同步与审核结果，再扩大采集范围。
 
-1. **素材清洗**：上传或指定原图目录创建批次，运行分析；逐店确认候选二维码或标记跳过。
-2. **发布与激活**：发布快照后激活批次，系统按快照生成采集任务。
-3. **选择任务**：在总览页选择要采集的门店（可全选或按批次筛选）。
-4. **自动采集**：启动后由 GUI Agent 导航、UiPath/本地驱动截图，任务状态实时回写。
-5. **审核结果**：在待检查清单重跑异常门店；在不合格清单撤销误判或重新采集。
-6. **批量无人值守**（可选）：
+### 4. 使用远程半自动控制（可选）
 
-   ```sh
-   .venv/bin/python -m menu_capture.auto_pipeline --batches <batch_id> [<batch_id> ...]
-   ```
+在个人电脑上通过远程桌面操作 Windows 微信，并通过浏览器访问配置了可信 HTTPS 与操作员认证的 Worker `/remote-control` 页面。
 
-   流水线按传入顺序串行执行，前一批未结束不会启动下一批；单批超过 100 家时分轮续跑。
+进入菜单后点击「开始截图」；不能采集的门店按实际情况确认不合格。兼容的 Chromium 浏览器可由用户主动打开文档画中画窗口，实现跨应用置顶。该窗口关闭不等于停止采集。
 
-## 目录结构
+远程控制默认不应公开暴露 Worker；配置方式、认证要求及浏览器限制见 [Windows 半自动远程控制](deploy/README.md#windows-半自动远程控制)。
+
+## 技术栈
+
+| 层级 | 技术 |
+| --- | --- |
+| Web 前端 | React 19、TypeScript、Vite、Tailwind CSS 4、OpenAI Apps SDK UI、TanStack Query |
+| 后端与任务管理 | Python 3.12、FastAPI、SQLite |
+| 智能导航 | GUI Agent SDK、兼容视觉模型接口 |
+| Windows 桌面执行 | Win32 窗口操作、截图与输入，结合本地 OCR 和二维码检测 |
+| 发布与部署 | Windows 安装包、Docker Compose、GitHub Actions |
+
+React 前端统一构建为静态资源，由后端服务提供；业务界面不依赖外部 CDN。GUI Agent 的 Node.js 运行时依赖与前端构建依赖应区分。
+
+## 项目结构
 
 ```text
-小程序截图项目/
-├── UFS_Menu_Scraper/macos_runner/   # 主工程：后端、前端、测试、Agent 适配
-│   ├── menu_capture/                # Python 后端与采集执行
-│   ├── web/                         # 控制台前端（无构建步骤）
-│   ├── tests/                       # pytest 回归
-│   ├── ui_tars/                     # GUI Agent SDK 适配（Node.js）
-│   └── qr_detector/                 # 本地二维码检测（Node.js）
-├── UFS_Menu_Capture_CrossPlatform/  # UiPath 工程（Main.xaml 等）
-├── docs/                            # 开发规范、回归台账、项目导航
-├── 文档/                             # PRD 与历史说明
-├── 素材/                             # 规则样本、评测集、训练素材、原图
-├── outputs/                         # 专项排查与验收记录（非产品代码）
-└── 历史归档/                         # 旧工程与原有流程，仅作参考
+.
+├── UFS_Menu_Scraper/macos_runner/
+│   ├── menu_capture/      # Python 服务、任务状态、采集与同步
+│   ├── web-react/         # React + TypeScript 前端源码
+│   ├── web/react/         # Vite 构建产物
+│   ├── ui_tars/           # GUI Agent SDK 适配
+│   ├── qr_detector/       # 二维码检测
+│   └── tests/             # 后端与业务契约测试
+├── deploy/                # Hub 部署、Windows 构建、升级与回滚
+├── docs/                  # 架构、工程规范及验收记录
+├── AGENTS.md              # 仓库协作规范
+└── README.md
 ```
 
-每个关键目录与模块的职责、数据流和状态事实源见 [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md)。
+主工程保留历史目录名 `macos_runner`，不代表当前以 macOS 作为正式采集平台。历史 macOS、UiPath 与 Vue 实现不作为本轮新版本的主要部署和前端开发入口。
 
 ## 开发与验证
 
-```sh
+开发需要 Python 3.12、[uv](https://docs.astral.sh/uv/) 和与项目锁文件兼容的 Node.js / npm 环境。
+
+在主工程目录初始化后端及 Agent 依赖：
+
+```bash
 cd UFS_Menu_Scraper/macos_runner
-.venv/bin/python -m pytest -q
+uv sync --frozen --python 3.12
+npm ci --prefix ui_tars
+uv run pytest -q
 ```
 
-- 涉及导航、坐标或终态的改动，需再跑隔离试验，复测问题门店与已有成功门店。
-- 独立核对 Agent 最后看到的截图、执行动作与最终采集页，按实际可用菜单计算有效处理率。
-- 数据库、并发与桌面链路改动需做集成验证，不以单元测试代替实机验收。
+在同一主工程目录构建与验证前端：
 
-## 运行边界
+```bash
+cd web-react
+npm ci
+npm run typecheck
+npm test
+npm run build
+```
 
-- 生产数据只读排查：未经授权不清空、不覆盖、不修改正式批次与产物。
-- 页面不可采结论必须来自明确证据；无法判断时进入待检查，不伪装成成功或业务结论。
-- 发布快照不可变；批次改名或切换版本不会移动已产出的门店结果。
-- 密钥只保存在 `secrets.local.json`，连同本机配置与运行期数据都不要提交。
+前端构建产物位于 `web/react/`。本地开发服务可使用 `npm run dev`；启动完整业务服务前应按角色配置和部署指南准备后端环境。
 
-## 文档索引
+自动化测试不能替代真实 Windows 桌面验证。涉及导航、数据模型、同步及发布的修改，应按实际影响执行相应契约测试和现场回归。
+
+## 版本、升级与回滚
+
+- **Windows**：安装包按版本目录并存，使用安装目录中的 `rollback.ps1` 回退到已保留的版本。升级前确认采集及标注空闲，并备份运行数据。
+- **Hub**：通过明确的镜像版本标签升级或回退，保留持久化数据卷；首次迁移须先用副本验证数据兼容性。
+- **版本核对**：新版本提供 `/api/version`，用于核对运行版本与前端构建入口；迁移前版本需使用相应的兼容验证方式。
+
+完整操作、旧数据迁移及验收步骤见 [部署与回滚指南](deploy/README.md)。发布候选通过验收之前不得替换正在运行的生产服务。
+
+## 文档与维护
 
 | 文档 | 用途 |
 | --- | --- |
-| [项目导航](docs/PROJECT_MAP.md) | 目录、模块职责、数据流与状态事实源。 |
-| [长期开发与优化规范](docs/gui-agent-development.md) | Agent 决策权、只读边界、成功交接条件与回归口径。 |
-| [菜单采集问题与回归台账](docs/menu-capture-regression.md) | 按链路记录实跑问题、复测证据与版本对照。 |
-| [GUI Agent 联调说明](UFS_Menu_Scraper/macos_runner/ui_tars/README.md) | 模型配置、坐标协议、实机探测与隔离试验。 |
-| [UiPath Main.xaml](UFS_Menu_Capture_CrossPlatform/Main.xaml) | 窗口发现、截图、点击与滚动等桌面操作。 |
-| [首版 PRD](<文档/微信小程序菜单导航 Agent PRD.md>) | 早期试验的范围、背景与设计记录。 |
+| [部署指南](deploy/README.md) | 安装、设备配对、内网访问、升级、回滚与数据迁移。 |
+| [项目导航](docs/PROJECT_MAP.md) | 既有模块职责及数据流参考；历史技术描述以当前代码为准。 |
+| [开发与优化规范](docs/gui-agent-development.md) | Agent 决策权、业务边界与回归口径。 |
+| [问题与回归台账](docs/menu-capture-regression.md) | 采集问题及复测记录。 |
+| [React 迁移报告](docs/react-migration/final-migration-report.md) | 迁移阶段的技术架构、测试和已知限制。 |
+| [仓库协作规范](AGENTS.md) | 开发协作及交接要求。 |
+| [Issues](../../issues) · [Releases](../../releases) | 需求、缺陷、发布记录与安装产物。 |
+
+## 安全与运行边界
+
+- 仅采集有权访问且符合相关平台规则的菜单；遇到访问限制或无法判断的页面，按实际业务结果处理。
+- 不将模型密钥、认证令牌、客户素材、真实门店数据、运行数据库或未脱敏的诊断记录提交到公开仓库。
+- 生产数据未经授权不得清空、覆盖或修改；升级及迁移先备份，避免干扰正在运行的任务。
+- Windows 执行端需要可用的交互桌面与微信登录状态；全自动导航还依赖模型服务。远程控制不代表可以脱离这些运行条件。
