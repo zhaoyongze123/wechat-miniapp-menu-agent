@@ -1,0 +1,48 @@
+{
+  "worker_settings": {
+    "sections": [
+      "共享工作台",
+      "目录",
+      "模型服务",
+      "截图与循环参数",
+      "开发调试日志",
+      "模型连接",
+      "高级工具",
+      "采集边界"
+    ],
+    "output_dir": "D:\\menu-agent\\.tmp-quality-test\\worker\\output",
+    "debug_usage": [
+      "已用 2.7 MB / 上限 512 MB · 2 个文件"
+    ],
+    "capture_fields": true,
+    "save_roundtrip": true,
+    "clear_dialog": true,
+    "clear_cancel_closes": true
+  },
+  "worker_diagnostics": {
+    "summary_hint": [
+      "页面不会自动轮询检测；点击右上角检测按钮时执行一轮微信、采集引擎和 AI 模型验证。",
+      "连接需要处理，请查看下方提示。",
+      "微信：微信已打开，等待自动化引擎确认登录状态。",
+      "AI 模型：请先配置模型接口和密钥。"
+    ],
+    "modules": 11,
+    "actions": [
+      "重新检测",
+      "重新连接",
+      "配置模型"
+    ],
+    "settings_action_nav": true
+  },
+  "hub_settings": {
+    "shared_summary": [
+      "已配对 4 台采集电脑，当前在线 1 台。"
+    ],
+    "capture_section": false,
+    "manage_devices": true,
+    "dir_buttons": [],
+    "save_roundtrip": true
+  },
+  "hub_diagnostics": "仅 Windows 采集端可做环境诊断\n共享后台不直接控制微信与桌面自动化；请在已配对的采集端检查环境，或到“采集电脑”查看设备在线与分配状态。",
+  "page_errors": []
+}

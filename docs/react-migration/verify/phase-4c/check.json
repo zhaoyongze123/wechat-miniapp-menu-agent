@@ -1,0 +1,34 @@
+{
+  "pages": {
+    "annotation": {
+      "h1": "人工标注",
+      "has_nav": true,
+      "has_queue": true,
+      "has_empty_canvas": true,
+      "has_status_badges": true,
+      "default_selection_empty": true,
+      "store_rows": 6,
+      "screenshot": "phase-4c-worker-annotation.jpg"
+    },
+    "usage_stats": {
+      "title": "模型用量",
+      "has_summary": true,
+      "has_filters": true,
+      "rows": 2,
+      "screenshot": "phase-4c-worker-usage-stats.jpg"
+    },
+    "usage_calls": {
+      "has_call_table": true,
+      "has_call_detail": true,
+      "rows": 7,
+      "screenshot": "phase-4c-worker-usage-calls.jpg"
+    },
+    "hub_annotation_guard": {
+      "h1_count": 0,
+      "guard": true,
+      "nav_entry": 0,
+      "screenshot": "phase-4c-hub-annotation.jpg"
+    }
+  },
+  "errors": []
+}

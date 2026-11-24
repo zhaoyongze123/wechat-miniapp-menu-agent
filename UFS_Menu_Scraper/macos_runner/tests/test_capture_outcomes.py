@@ -205,15 +205,17 @@ def test_worker_reports_latest_run_and_can_fall_back_to_older_hub(tmp_path):
     with TestClient(hub_app, base_url="http://127.0.0.1", headers=AUTH) as client:
         def transport(request):
             payload = json.loads(request.read())
-            payloads.append(payload)
+            if request.url.path.endswith("/sync"):
+                payloads.append(payload)
             if mode == "old" and "run_summary" in payload:
                 return httpx.Response(400, json={"detail": "同步参数无效"})
-            result = client.post(request.url.path, json=payload,
+            result = client.request(request.method, request.url.path, json=payload,
                                  headers={"Authorization": request.headers["Authorization"]}
                                  if "Authorization" in request.headers else {})
             body = result.json()
             if mode == "old":
                 body.pop("supports_run_summary", None)
+                body.pop("supports_run_history", None)
             return httpx.Response(result.status_code, json=body)
 
         worker._http.close()
@@ -275,10 +277,16 @@ def test_device_profile_revoke_remove_and_paginated_records_keep_identity(tmp_pa
 
         batch = "/api/shared/assignments/reclaim"
         ids = [row["id"] for row in assigned]
-        assert client.post(batch, headers=headers, json={"assignment_ids": [ids[0], "f"*32]}).status_code == 409
-        assert sum(row["status"] in {"assigned", "ready"} for row in hub.status()["assignments"]) == 2
+        malformed = client.post(batch, headers=headers, json={"assignment_ids": [ids[0], "not-an-id"]})
+        assert malformed.status_code == 400
+        mixed = client.post(batch, headers=headers, json={"assignment_ids": [ids[0], "f"*32]}).json()
+        assert mixed["count"] == 1
+        assert {item["id"] for item in mixed["results"] if item["status"] == "reclaimed"} == {ids[0]}
+        assert next(item for item in mixed["results"] if item["id"] == "f"*32)["message"] == "分配记录不存在"
+        assert sum(row["status"] in {"assigned", "ready"} for row in hub.status()["assignments"]) == 1
         reclaimed = client.post(batch, headers=headers, json={"assignment_ids": ids}).json()
-        assert reclaimed["count"] == 2 and {row["id"] for row in reclaimed["tasks"]} == set(task_ids)
+        assert reclaimed["count"] == 1 and {row["id"] for row in reclaimed["tasks"]} == {assigned[1]["task_id"]}
+        assert next(item for item in reclaimed["results"] if item["id"] == ids[0])["status"] == "failed"
         revoked = client.post(route + "/revoke", headers=headers)
         assert revoked.json()["revoked_at"]
         identity = {"Authorization": "Bearer " + device["token"]}

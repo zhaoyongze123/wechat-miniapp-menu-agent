@@ -26,8 +26,9 @@ SetupLogging=yes
 Name: "zh"; MessagesFile: "compiler:Default.isl,{#LanguageFile}"
 
 [Files]
-Source: "{#BundleDir}\*"; DestDir: "{app}\releases\{#AppVersion}"; Excludes: "Launch.ps1"; Flags: recursesubdirs createallsubdirs onlyifdoesntexist
+Source: "{#BundleDir}\*"; DestDir: "{app}\releases\{#AppVersion}"; Excludes: "Launch.ps1,rollback.ps1"; Flags: recursesubdirs createallsubdirs onlyifdoesntexist
 Source: "{#BundleDir}\Launch.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BundleDir}\rollback.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\菜单采集工作台"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\Launch.ps1"" -Action Open"; WorkingDir: "{app}"

@@ -10,16 +10,16 @@ def workbench_page(tasks, *, snapshot, query, status, sort, page, size, selected
                for row in tasks if row.get("batch_id")}
     scope = tasks
     if snapshot is not None:
-        scope = [row for row in scope if row["snapshot_id"] == snapshot]
+        scope = [row for row in scope if row.get("batch_snapshot_id", row["snapshot_id"]) == snapshot]
     elif batch_id:
         scope = [row for row in scope if row.get("batch_id") == batch_id]
-    # 统计与筛选共用门店唯一状态：不合格不会再被算进待检查或已采集。
-    counts = state_counts(scope)
     selected = [{field: row.get(field) for field in SELECTED_FIELDS}
                 for row in tasks if row["id"] in selected_ids]
 
     needle = query.strip().casefold()
     rows = [row for row in scope if needle in f"{row['source_name']} {row['source_path']}".casefold()]
+    # 统计随批次和关键词变化，各状态保持可见，便于切换状态筛选。
+    counts = state_counts(rows)
     if status != "all":
         rows = [row for row in rows if store_state(row) == status]
 

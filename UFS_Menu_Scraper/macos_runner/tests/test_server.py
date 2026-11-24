@@ -147,16 +147,122 @@ def test_artifact_endpoint_rejects_traversal_outside_task_output(tmp_path: Path)
         assert "outside" not in symlink_response.text
 
 
-def test_vue_asset_route_only_serves_built_files(tmp_path: Path) -> None:
-    """Vue 试点产物只通过 /vue/ 暴露 js/css，且不允许越出构建目录。"""
+def test_react_entry_is_default_and_only_serves_manifest_assets(tmp_path: Path) -> None:
+    """根路径始终返回 React 入口，静态资源严格来自 Vite manifest。"""
+    import json
+
     app = create_app(tmp_path, desktop=FakeDesktop())
     client = TestClient(app, base_url="http://127.0.0.1")
 
-    assert client.get("/assets/task-center-vue-loader.js").status_code == 200
-    assert client.get("/vue/task-center.css").status_code == 200
-    assert client.get("/vue/task-center.js").status_code == 200
+    response = client.get("/")
+    assert response.status_code == 200
+    assert '<div id="root"></div>' in response.text
+    assert "/assets/" in response.text
+    assert "__CAPTURE_TOKEN__" not in response.text
+    assert response.headers["cache-control"] == "no-store"
 
-    # 只允许 js/css，目录内的其他文件（例如 index.html 或临时文件）不对外。
-    assert client.get("/vue/index.html").status_code == 404
-    assert client.get("/vue/not-exists.js").status_code == 404
-    assert client.get("/vue/%2e%2e/index.html").status_code == 404
+    # 迁移期临时入口不再存在：旧参数与旧版横幅都会被忽略。
+    assert client.get("/", params={"ui": "vue"}).text == response.text
+
+    manifest = json.loads(
+        (Path(__file__).resolve().parents[1] / "web/react/.vite/manifest.json").read_text(encoding="utf-8")
+    )
+    entry = next(item for item in manifest.values() if item.get("isEntry"))
+    script = entry["file"].rsplit("/", 1)[-1]
+    asset = client.get(f"/assets/{script}")
+    assert asset.status_code == 200
+    assert "javascript" in asset.headers["content-type"]
+    assert "immutable" in asset.headers["cache-control"]
+
+    version = client.get("/api/version").json()
+    assert version["frontend"] == script
+    assert client.get("/favicon.svg").status_code == 200
+
+    # 目录内的 index.html、清单外文件、旧版资源与越界路径都不能通过资源路由读取。
+    assert client.get("/assets/index.html").status_code == 404
+    assert client.get("/assets/not-exists.js").status_code == 404
+    assert client.get("/assets/materials.js").status_code == 404
+    assert client.get("/assets/%2e%2e/index.html").status_code != 200
+    assert client.get("/vue/task-center.js").status_code == 404
+
+
+def test_react_entry_reports_missing_build(tmp_path: Path, monkeypatch) -> None:
+    """未构建前端时明确返回 503，而不是回退到任何旧版页面。"""
+    from menu_capture import server
+
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    app = create_app(tmp_path / "data", desktop=FakeDesktop())
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    response = client.get("/")
+    assert response.status_code == 503
+    assert "前端" in response.text
+
+
+def test_materials_history_detail_counts_match_list(tmp_path: Path) -> None:
+    """素材任务详情必须返回与列表相同的进度口径，不能返回空 counts。"""
+    app = create_app(tmp_path)
+    store = app.state.store
+    stamp = "2026-11-23T10:00:00+08:00"
+    with store.connect() as db:
+        db.execute(
+            "INSERT INTO material_batches(id,source_kind,source_root,status,created_at,updated_at,name) "
+            "VALUES(?,?,?,?,?,?,?)",
+            ("batch-a", "folder", str(tmp_path / "src"), "released", stamp, stamp, "演示批次"),
+        )
+        db.execute(
+            "INSERT INTO material_jobs(id,batch_id,kind,status,total_stores,done_stores,failed_stores,"
+            "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            ("job-a", "batch-a", "analyze", "running", 32, 18, 1, stamp, stamp),
+        )
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    detail = client.get("/api/tasks/history/materials/job-a").json()
+    assert detail["counts"] == {"total": 32, "done": 18, "attention": 0, "failed": 1}
+    assert detail["batch_name"] == "演示批次"
+    listed = client.get("/api/tasks/history", params={"kind": "materials"}).json()["records"]
+    assert listed[0]["counts"] == detail["counts"]
+
+
+def test_remote_manual_control_is_scoped_and_rejects_stale_commands(tmp_path):
+    from base64 import b64encode
+
+    password = "isolated-test-password"
+    origin = "https://capture.test"
+    auth = {"Authorization": "Basic " + b64encode(f"operator:{password}".encode()).decode()}
+    app = create_app(tmp_path, role="worker", remote_control_host="capture.test",
+                     remote_control_password=password)
+    client = TestClient(app, base_url=origin)
+    local = TestClient(app, base_url="http://127.0.0.1")
+    runner = app.state.runner
+    runner.run_id = "run-1"
+    task = {"id": "task-a", "source_name": "测试门店"}
+    runner._set_manual_state(task, 0, 1, "waiting_human", waiting=True)
+
+    assert client.get("/remote-control").status_code == 401
+    assert client.get("/remote-control", headers=auth).status_code == 200
+    assert client.get("/api/config", headers=auth).status_code == 403
+    assert client.get("/", headers=auth).status_code == 403
+    assert TestClient(app, base_url="http://capture.test").get("/remote-control", headers=auth).status_code == 403
+
+    state = client.get("/api/manual/state", headers=auth).json()
+    context = {key: state["manual"][key] for key in ("run_id", "task_id", "wait_id")}
+    context["device_id"] = state["device_id"]
+    command = {"context": context}
+    token = client.get("/api/session", headers=auth).json()["token"]
+    assert token != local.get("/api/session").json()["token"]
+    headers = auth | {"x-capture-token": token, "Origin": origin}
+    assert client.post("/api/manual/capture", headers=auth | {"x-capture-token": token}, json=command).status_code == 403
+    assert client.post("/api/manual/capture", headers=headers, json={}).status_code == 409
+    assert client.post("/api/manual/capture", headers=headers,
+                       json={"context": context | {"device_id": "other"}}).status_code == 409
+
+    # 同一家店重新进入等待时，以新等待标识校验，旧标签页不能触发动作。
+    runner._set_manual_state(task, 0, 1, "waiting_human", waiting=True)
+    assert client.post("/api/manual/capture", headers=headers, json=command).status_code == 409
+    command["context"]["wait_id"] = runner.manual_state()["wait_id"]
+    accepted = client.post("/api/manual/capture", headers=headers, json=command)
+    assert accepted.status_code == 200 and accepted.json()["task_id"] == "task-a"
+    assert "status" not in accepted.json()
+    assert client.post("/api/manual/capture", headers=headers, json=command).status_code == 409
+    app.state.shared_worker.close()

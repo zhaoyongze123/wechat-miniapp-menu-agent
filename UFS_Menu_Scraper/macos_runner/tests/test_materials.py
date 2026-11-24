@@ -1180,7 +1180,7 @@ def test_subset_publish_keeps_unselected_stores_and_reuses_unchanged_version(tmp
                    for row in service.rework_records([batch_id]))
 
 
-def test_effective_capture_tasks_only_use_latest_snapshot(tmp_path: Path) -> None:
+def test_effective_capture_tasks_keep_unchanged_store_after_snapshot_update(tmp_path: Path) -> None:
     service, _, tasks, source, _ = _setup(tmp_path)
     _png(source / "Shop A" / "code.png")
     _png(source / "Shop B" / "code.png", color="blue")
@@ -1194,11 +1194,11 @@ def test_effective_capture_tasks_only_use_latest_snapshot(tmp_path: Path) -> Non
 
     rows = service.effective_capture_tasks()
     assert {row["source_name"] for row in rows} == {"Shop A", "Shop B"}
-    assert {row["version"] for row in rows} == {second["release"]["version"]}
+    assert {row["version"] for row in rows} == {"v1"}
+    assert {row["batch_version"] for row in rows} == {second["release"]["version"]}
     assert {row["batch_id"] for row in rows} == {batch_id}
-    # 旧快照任务留在历史里，但不进入有效清单，避免重复计数。
     old = {row["id"] for row in tasks.tasks() if Path(first["input_dir"]) in Path(row["source_path"]).parents}
-    assert old and old.isdisjoint({row["id"] for row in rows})
+    assert old == {row["id"] for row in rows if row["source_name"] == "Shop A"}
 
 
 def test_capture_round_and_new_version_clear_approval(tmp_path: Path) -> None:
@@ -1247,6 +1247,7 @@ def test_manual_action_accepts_only_first_decision_per_store() -> None:
     from menu_capture.uipath_runner import UiPathRunner
 
     runner = object.__new__(UiPathRunner)
+    runner.run_id = "run-1"
     runner._manual_cond = threading.Condition()
     runner._manual_state = {"task_id": "t1", "store_name": "Shop A", "index": 1, "total": 2,
                             "stage": "waiting_human", "waiting": True, "decision": ""}

@@ -31,11 +31,12 @@ def test_batch_workflow_stage_labels(tmp_path: Path):
 
 def test_pending_reviews_include_batch_and_approval(tmp_path: Path):
     app = create_app(tmp_path)
-    source = _make_source(tmp_path)
-    batch = app.state.materials.create_local_batch(source)
-    app.state.store.scan(source)
+    from test_shared_workbench import batch as publish_batch
+
+    # 支持的待检查队列只包含发布后的有效素材，旧原图扫描不会创建可分配任务。
+    batch = publish_batch(app, tmp_path / "review-input", ("店甲", "店乙"))
+    task_id = app.state.materials.effective_capture_tasks()[0]["id"]
     with app.state.store.connect() as db:
-        task_id = db.execute("SELECT id FROM tasks ORDER BY id").fetchone()["id"]
         db.execute(
             "UPDATE tasks SET status='needs_review',error_code='agent_runtime',message=? WHERE id=?",
             ("未找到可操作的目标窗口", task_id),
@@ -57,7 +58,11 @@ def test_pending_reviews_include_batch_and_approval(tmp_path: Path):
 
     # 未发布批次没有可执行的已发布快照，重跑轮次不应被计入。
     app.state.materials.set_approved(batch["batch_id"], False)
-    assert app.state.materials.register_capture_round([task_id]) == []
+    raw = _make_source(tmp_path)
+    app.state.store.scan(raw)
+    raw_ids = [task["id"] for task in app.state.store.tasks()
+               if raw in Path(task["source_path"]).parents]
+    assert raw_ids and app.state.materials.register_capture_round(raw_ids) == []
     assert app.state.materials.get_batch(batch["batch_id"])["workflow"]["stage"] == "not_started"
     with app.state.store.connect() as db:
         db.execute("UPDATE material_batches SET capture_rounds=1 WHERE id=?", (batch["batch_id"],))

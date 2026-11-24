@@ -43,7 +43,8 @@ def test_shared_overview_pages_without_resolving_task_paths(tmp_path, monkeypatc
         assert [task["id"] for task in search["tasks"]] == ["task-001"]
         assert search["queue"]["page"] == 1
         assert search["queue"]["selected"][0]["id"] == "task-080"
-        assert search["counts"] == page["counts"]
+        assert search["counts"]["review"] == 1
+        assert search["counts"]["pending"] == search["counts"]["rejected"] == 0
         current = client.get("/api/status?queue_page=2&queue_scope=current").json()
         assert len(current["tasks"]) == 10 and current["queue"]["total"] == 60
         assert len(client.get("/api/status").json()["tasks"]) == 125

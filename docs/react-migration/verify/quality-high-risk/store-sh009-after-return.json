@@ -1,0 +1,47 @@
+{
+  "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+  "store_id": "117a2d4b55259fcf3b42da6f",
+  "source_name": "SH009__上海市__演示门店009__31.008,121.008",
+  "source_folder": "SH009__上海市__演示门店009__31.008,121.008",
+  "analysis_status": "selected",
+  "reason": "店内仅剩一个用途未知二维码，图片正常且无冲突或漏检线索；按低可信候选推荐，待微信验证",
+  "decision": "pending",
+  "rejection": null,
+  "recommendation": true,
+  "recommendation_level": "low",
+  "wechat_validation_status": "unverified",
+  "selected": null,
+  "images": [
+    {
+      "path": "SH009__上海市__演示门店009__31.008,121.008/code.png",
+      "sha256": "4e494e998511c1142b9142d88242875595ff4e1de446e6c1f8e4a66be86b2238",
+      "detection_count": 1,
+      "candidates": [
+        {
+          "box": {
+            "x": 30.0,
+            "y": 20.0,
+            "width": 100.0,
+            "height": 100.0
+          },
+          "payload_sha256": "2544f52357c3e498e0bb373718dc228c5398d1fa591dc665959bee598ab7f83b",
+          "short_edge_px": 100,
+          "selected": true,
+          "purpose": "unknown",
+          "purpose_reason": "二维码周边没有识别到明确点餐标识，需人工确认",
+          "source": "local_detector",
+          "purpose_source": "local_ocr",
+          "quality": "ok",
+          "qr_likeness": true,
+          "qr_contained": true,
+          "qr_centered": true,
+          "sharpness_score": 0.0,
+          "quality_score": 100.0,
+          "candidate_index": 0,
+          "recommendation": true
+        }
+      ],
+      "image_index": 0
+    }
+  ]
+}

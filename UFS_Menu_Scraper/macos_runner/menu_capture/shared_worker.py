@@ -18,6 +18,7 @@ import httpx
 
 from .config import atomic_json
 from .shared import IMAGE_SUFFIXES, MAX_RESULT_SIZE, MAX_SOURCE_SIZE, REPORTED_RUN_STATUSES, safe_artifact
+from .shared_history import WorkerHistoryDelivery
 from .store import TaskStore, now
 
 
@@ -68,6 +69,9 @@ class SharedWorker:
         self._thread: threading.Thread | None = None
         self.online = False
         self._hub_reports_runs = False
+        self._hub_supports_history = False
+        self.history = WorkerHistoryDelivery(store)
+        self.history_error = ""
         self.error = ""
         with self.store.connect() as db:
             db.executescript("""
@@ -154,6 +158,7 @@ class SharedWorker:
             """))
         return {"role": "worker", "paired": bool(self.connection), "online": self.online,
                 "name": self.connection.get("name", ""), "error": self.error,
+                "history_error": self.history_error,
                 "credential_invalid": bool(self.connection.get("invalid")),
                 "pending_uploads": sum(row["status"] == "pending_upload" for row in assignments),
                 "assignments": assignments}
@@ -393,6 +398,7 @@ class SharedWorker:
             response.raise_for_status()
             sync = response.json()
             self._hub_reports_runs = sync.get("supports_run_summary") is True
+            self._hub_supports_history = sync.get("supports_run_history") is True
             active = sync["assignments"]
             name = sync.get("worker_name")
             if isinstance(name, str) and name:
@@ -411,8 +417,24 @@ class SharedWorker:
                 self._ensure_source(assigned)
             except (httpx.HTTPError, OSError, ValueError, KeyError) as exc:
                 self.error = str(exc)[:200]
-        self._wake.set()
         return active_ids
+
+    def _sync_run_history(self) -> None:
+        if not self._hub_supports_history:
+            return
+        # 轮次同步失败不影响分配下载和截图补传，待下一次轮询继续。
+        try:
+            report = self.history.pending_report()
+            if report is None:
+                return
+            response = self._http.put(self._url("/run-history"), headers=self._headers, json=report, timeout=5)
+            response.raise_for_status()
+            if response.json().get("acknowledged") != report["generation"]:
+                raise ValueError("接收端未确认轮次")
+            self.history.acknowledge(report["run"]["id"], report["generation"])
+            self.history_error = ""
+        except (httpx.HTTPError, OSError, ValueError, KeyError):
+            self.history_error = "采集轮次历史尚未同步，稍后自动重试"
 
     def _ensure_source(self, assigned: dict) -> None:
         """保证活动分配在本机有二维码文件，并把任务来源路径纠正到本分配缓存目录。"""
@@ -511,6 +533,7 @@ class SharedWorker:
             if not self.connection.get("invalid"):
                 self._upload_pending()
             self._heartbeat()
+            self._sync_run_history()
             if self.connection.pop("invalid", None):
                 atomic_json(self.credentials, self.connection)
         except (httpx.HTTPError, OSError, ValueError, KeyError) as exc:

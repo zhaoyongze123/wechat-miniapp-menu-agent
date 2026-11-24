@@ -247,7 +247,7 @@ def result_zip(assignment, status="needs_review", reason="store_closed"):
     return data.getvalue()
 
 
-def test_rework_rejects_active_store_allows_other_store_and_keeps_late_result_history(tmp_path):
+def test_rework_keeps_active_store_on_same_material_and_keeps_late_result_history(tmp_path):
     app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
     first = create_app(tmp_path / "first", role="worker").state.shared_worker
     second = create_app(tmp_path / "second", role="worker").state.shared_worker
@@ -271,7 +271,8 @@ def test_rework_rejects_active_store_allows_other_store_and_keeps_late_result_hi
         context = session(hub)
         active_rework = hub.post("/api/materials/rework/publish", headers=context,
                                   json={"store_ids": [f"{batch_id}:{stores['门店 A']}"]}).json()
-        assert active_rework["results"] == [] and "仍由采集端占用" in active_rework["errors"][0]["error"]
+        assert active_rework["results"] and active_rework["errors"] == []
+        assert owner.connection["id"] == old["worker_id"]
         # 门店 B 换版可照常进行，门店 A 的原始分配继续独占。
         app.state.materials.decide_store(batch_id, stores["门店 B"], "confirm", image_index=0, candidate_index=0)
         other_rework = hub.post("/api/materials/rework/publish", headers=context,
@@ -314,7 +315,7 @@ def test_result_archive_rejects_invalid_paths(tmp_path, filename):
         hub._unpack(archive, tmp_path / "unpack")
 
 
-def test_bulk_rework_publishes_each_original_batch_and_inherits_untouched_results(tmp_path):
+def test_bulk_rework_publishes_each_original_batch_and_preserves_untouched_results(tmp_path):
     app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
     worker = create_app(tmp_path / "computer", role="worker").state.shared_worker
     with client_for(app, admin=True) as hub:
@@ -343,8 +344,8 @@ def test_bulk_rework_publishes_each_original_batch_and_inherits_untouched_result
         records = hub.get("/api/capture/queue?batch_ids=all").json()["records"]
         expected = {entry["batch_id"] for entry in batches}
         assert {row["batch_id"] for row in records} == expected
-        inherited = {row["inherited_from"] for row in records if row["status"] == "captured"}
-        assert inherited == {row["id"] for row in original}
+        captured = {row["id"] for row in records if row["status"] == "captured"}
+        assert captured == {row["id"] for row in original}
         new_tasks = [row["id"] for row in records if row["runnable"]]
         assert len(new_tasks) == 2
         paired = pair(hub, worker, "复采", Link(hub))
@@ -391,3 +392,170 @@ def test_legacy_windows_backup_is_verified_without_changing_source(tmp_path):
     assert report["checked_qr_files"] == report["captured_screenshot_files"] == 1
     assert (destination / "output" / "门店 A" / "page-01.png").read_bytes() == screenshot.read_bytes()
     assert hashlib.sha256((data / "tasks.sqlite3").read_bytes()).hexdigest() == src_hash
+
+
+def test_run_history_keeps_device_identity_and_recovers_after_restart(tmp_path):
+    hub_app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
+    a_root = tmp_path / "computer-a"
+    a = create_app(a_root, role="worker").state.shared_worker
+    b = create_app(tmp_path / "computer-b", role="worker").state.shared_worker
+    with client_for(hub_app, admin=True) as hub:
+        a_link = Link(hub)
+        a_id = pair(hub, a, "电脑 A", a_link)
+        b_id = pair(hub, b, "电脑 B", Link(hub))
+        a.store.create_run("same-id", "automatic", [], capture_mode="auto", name="第一轮")
+        b.store.create_run("same-id", "automatic", [], capture_mode="manual", name="第二轮")
+        a_report = a.history.pending_report()
+        a.poll()
+        b.poll()
+
+        result = hub.get("/api/tasks/history", params={"kind": "capture"}).json()
+        assert {row["id"] for row in result["records"]} == {f"{a_id}:same-id", f"{b_id}:same-id"}
+        assert result["summary"]["total"] == result["summary"]["running"] == 2
+
+        a_link.available = False
+        a.store.update_run("same-id", status="completed")
+        a.store.rename_run("same-id", "离线改名")
+        a.poll()
+        assert a.history.pending_report()["run"]["status"] == "completed"
+        a.close()
+
+        a = create_app(a_root, role="worker").state.shared_worker
+        a_link.available = True
+        a_link.install(a)
+        a.poll()
+        assert a.history.pending_report() is None
+
+        old_retry = hub.put("/api/shared/worker/run-history", headers=a._headers, json=a_report)
+        assert old_retry.status_code == 200
+        assert hub.put("/api/shared/worker/run-history", json=a_report).status_code == 401
+
+        filtered = hub.get("/api/tasks/history", params={"kind": "capture", "worker_id": a_id}).json()
+        assert filtered["summary"]["total"] == filtered["summary"]["completed"] == 1
+        detail_url = f"/api/tasks/history/capture/{a_id}:same-id"
+        detail = hub.get(detail_url).json()
+        assert detail["title"] == "离线改名"
+        assert detail["worker_name"] == "电脑 A"
+        assert detail["can_rename"] is False
+        assert detail["synced_at"]
+
+        hub_app.state.shared_hub.edit_worker(a_id, "电脑 A 改名", "")
+        assert hub.get(detail_url).json()["worker_name"] == "电脑 A 改名"
+    a.close()
+    b.close()
+
+
+def test_run_history_preserves_per_store_outcomes(tmp_path):
+    hub_app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
+    worker_app = create_app(tmp_path / "worker", role="worker")
+    worker = worker_app.state.shared_worker
+    with client_for(hub_app, admin=True) as hub:
+        created = batch(hub_app, tmp_path / "raw", ("门店 A", "门店 B"))
+        ids = [row["id"] for row in hub.get("/api/capture/queue").json()["records"]]
+        worker_id = pair(hub, worker, "电脑 A", Link(hub))
+        assert assign(hub, worker_id, ids).status_code == 200
+        worker.poll()
+        worker.store.create_run("test-run", "automatic", ids, capture_mode="auto")
+        worker.store.update(ids[0], capture_run_id="test-run", attempt_outcome="review",
+                            status="needs_review", message="需要人工复核")
+        worker.store.update_run("test-run", current_index=1)
+        worker.poll()
+
+        detail = hub.get(f"/api/tasks/history/capture/{worker_id}:test-run").json()
+        assert detail["counts"]["processed"] == 1
+        assert detail["counts"]["attention"] == 1
+        assert detail["batches"][0]["id"] == created["batch_id"]
+        results = {row["task_id"]: row for row in detail["tasks"]}
+        assert results[ids[0]]["status"] == "review"
+        assert results[ids[1]]["label"] == "未处理"
+        materials = hub.get("/api/tasks/history", params={"kind": "materials"}).json()["records"]
+        assert materials and all(row["kind"] == "materials" for row in materials)
+        assert hub.get("/api/tasks/active").json()["tasks"][-1]["id"] == f"{worker_id}:test-run"
+    worker.close()
+
+
+def test_single_store_release_keeps_sibling_assignment_and_versions(tmp_path):
+    hub_app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
+    worker_app = create_app(tmp_path / "worker", role="worker")
+    worker = worker_app.state.shared_worker
+    materials = hub_app.state.materials
+    with client_for(hub_app, admin=True) as hub:
+        created = batch(hub_app, tmp_path / "raw", ("门店 A", "门店 B"))
+        batch_id = created["batch_id"]
+        by_name = {row["source_name"]: row for row in materials.effective_capture_tasks()}
+        a, b = by_name["门店 A"], by_name["门店 B"]
+        worker_id = pair(hub, worker, "电脑 A", Link(hub))
+        a_assignment, b_assignment = assign(hub, worker_id, [a["id"], b["id"]]).json()["assignments"]
+        worker.poll()
+        assert {row["id"] for row in worker.tasks()} == {a["id"], b["id"]}
+
+        returned = hub.post("/api/materials/rework/return", headers=session(hub),
+                            json={"batch_id": batch_id, "store_id": a["store_id"]})
+        assert returned.status_code == 200 and returned.json()["awaiting_publish"]
+        assert assign(hub, worker_id, [a["id"]]).status_code == 409
+        worker.poll()
+        assert [row["id"] for row in worker.tasks()] == [b["id"]]
+
+        # 同图重新确认之后仍锁定，发布只恢复 A 的资格。
+        materials.decide_store(batch_id, a["store_id"], "confirm", image_index=0, candidate_index=0)
+        assert next(row for row in materials.rework_records() if row["store_id"] == a["store_id"])["publishable"]
+        same = hub.post("/api/materials/rework/publish", headers=session(hub),
+                        json={"store_ids": [f"{batch_id}:{a['store_id']}"]}).json()
+        assert not same["errors"]
+        unchanged = {row["source_name"]: row for row in materials.effective_capture_tasks()}
+        assert unchanged["门店 A"]["id"] == a["id"] and unchanged["门店 A"]["version"] == "v1"
+        assert unchanged["门店 A"]["runnable"]
+        assert unchanged["门店 B"]["id"] == b["id"] and unchanged["门店 B"]["version"] == "v1"
+
+        # 正式发布尺寸不同的二维码只产生 A 的新版本。
+        materials.decide_store(batch_id, a["store_id"], "confirm", image_index=0,
+                               box={"x": 25, "y": 20, "width": 60, "height": 60})
+        changed = hub.post("/api/materials/rework/publish", headers=session(hub),
+                           json={"store_ids": [f"{batch_id}:{a['store_id']}"]}).json()
+        assert not changed["errors"]
+        current = {row["source_name"]: row for row in materials.effective_capture_tasks()}
+        assert current["门店 A"]["id"] != a["id"] and current["门店 A"]["version"] == "v2"
+        assert current["门店 B"]["id"] == b["id"] and current["门店 B"]["version"] == "v1"
+        reassigned = assign(hub, worker_id, [current["门店 A"]["id"]]).json()["assignments"][0]
+        assert reassigned["id"] != a_assignment["id"]
+        worker.poll()
+        assert {row["id"] for row in worker.tasks()} == {current["门店 A"]["id"], b["id"]}
+        assert hub_app.state.shared_hub.assignment(worker_id, b_assignment["id"])["status"] in {"assigned", "ready"}
+    worker.close()
+
+
+def test_material_version_digest_ignores_png_metadata_and_compression(tmp_path):
+    from PIL.PngImagePlugin import PngInfo
+    from menu_capture.store_material_versions import pixel_digest
+
+    first, second = tmp_path / "original.png", tmp_path / "reencoded.png"
+    image = Image.new("RGB", (80, 90), "red")
+    image.save(first, compress_level=0)
+    metadata = PngInfo()
+    metadata.add_text("description", "new filename and metadata")
+    image.save(second, pnginfo=metadata, compress_level=9)
+    assert first.read_bytes() != second.read_bytes()
+    assert pixel_digest(first) == pixel_digest(second)
+    image.crop((0, 0, 70, 90)).save(second)
+    assert pixel_digest(first) != pixel_digest(second)
+
+
+def test_return_rejection_uses_originating_batch_and_archives_old_decision(tmp_path):
+    app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
+    with client_for(app, admin=True) as hub:
+        created = batch(app, tmp_path / "input", ("门店 A",))
+        task = app.state.materials.effective_capture_tasks()[0]
+        app.state.store.update(task["id"], status="needs_review", reject_reason="store_closed",
+                               rejected_at="2026-11-24T12:00:00+08:00")
+        rejection = hub.get("/api/rejections").json()["records"][0]
+        assert rejection["can_return_to_materials"]
+        returned = hub.post(f"/api/rejections/tasks/{task['id']}/return-to-materials", headers=session(hub))
+        assert returned.status_code == 200, returned.text
+        assert returned.json()["batch_id"] == created["batch_id"]
+        effective = app.state.materials.effective_capture_tasks()[0]
+        assert effective["stage"] == "returned_to_materials"
+        assert not effective["runnable"]
+        assert not hub.get("/api/rejections").json()["records"]
+        with app.state.store.connect() as db:
+            previous = json.loads(db.execute("SELECT past_task FROM material_store_returns").fetchone()[0])
+        assert previous[0]["reject_reason"] == "store_closed"

@@ -1,0 +1,31 @@
+@import "tailwindcss";
+@import "@openai/apps-sdk-ui/css";
+/* 让 Tailwind 扫描官方组件内使用的 class，避免运行期样式缺失。 */
+@source "../../node_modules/@openai/apps-sdk-ui";
+
+/*
+ * 全站只消费 @openai/apps-sdk-ui 暴露的官方语义变量与官方字阶，
+ * 不定义任何自有色板、字号或组件样式类。
+ */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-surface-secondary);
+    color: var(--color-text);
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--color-ring) 25%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+}

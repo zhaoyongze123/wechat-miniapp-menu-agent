@@ -1,0 +1,33 @@
+[
+  {
+    "id": "970b61f9353de15360a4",
+    "source_name": "SH012__苏州市__演示门店012__31.011,121.011",
+    "source_path": "D:\\menu-agent\\.tmp-quality-test\\hub\\data\\materials\\published\\227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d\\SH012__苏州市__演示门店012__31.011,121.011\\二维码.png",
+    "source_hash": "bca08ae78ad8f88a5fd17b107b3a2d50b701efd3961f7fc9d7acd33499cc55b8",
+    "status": "pending",
+    "stage": "queued",
+    "message": "已重新排队；旧输出保留",
+    "output_dir": "",
+    "updated_at": "2026-11-24T01:16:50+08:00",
+    "reject_reason": "",
+    "reject_detail": "",
+    "rejected_at": "",
+    "inherited_from": "",
+    "archived_at": "",
+    "reject_evidence": "",
+    "reject_reviewed_at": "",
+    "source_key": "970b61f9353de15360a44885942831d5f0d08d5f5b5529f77b4b37b553980bea",
+    "error_code": "unknown",
+    "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+    "batch_name": "清洗 2026-11-23 23:01:01",
+    "version": "v1.0.0",
+    "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+    "reject_label": "",
+    "runnable": true,
+    "code": "unknown",
+    "group": "manual",
+    "bucket": "other",
+    "bucket_label": "其他·未分类",
+    "label": "未分类失败"
+  }
+]

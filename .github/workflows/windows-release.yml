@@ -15,25 +15,111 @@ on:
         default: '0.1.0'
         required: true
         type: string
+      previous_installer_tag:
+        description: 升级回滚验收用旧版 Release 标签
+        required: false
+        type: string
+      previous_installer_run:
+        description: 也可使用已通过 CI 的旧版安装包 Actions Run ID
+        required: false
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  react-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: UFS_Menu_Scraper/macos_runner/web-react/package-lock.json
+      - name: 校验 React 底座、单测与提交的构建产物
+        working-directory: UFS_Menu_Scraper/macos_runner/web-react
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm test
+          npm run build
+          if [ -n "$(git status --porcelain ../web/react)" ]; then
+            echo "web/react 产物与源码不一致，请本地重新构建并提交"
+            git status --short ../web/react
+            exit 1
+          fi
+      - name: 校验旧前端已清理且发布产物自包含
+        working-directory: UFS_Menu_Scraper/macos_runner
+        run: |
+          legacy=$(find web -maxdepth 1 -type f \( -name '*.js' -o -name '*.css' -o -name 'index.html' \) -print)
+          if [ -d web/vue ]; then legacy="$legacy web/vue"; fi
+          if [ -d web-ui ]; then legacy="$legacy web-ui"; fi
+          if [ -n "$legacy" ]; then
+            echo "旧前端文件仍在仓库中，请完成清理："
+            echo "$legacy"
+            exit 1
+          fi
+          if grep -Eq 'https?://|/react/assets/|__CAPTURE_TOKEN__' web/react/index.html; then
+            echo "React 入口包含外部依赖、迁移期资源前缀或旧令牌占位符"
+            exit 1
+          fi
+          test -s web/react/.vite/manifest.json
+
   windows:
+    needs: react-web
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+      - name: 下载用于旧版升级与回滚验收的安装包
+        if: github.event_name == 'workflow_dispatch' && inputs.previous_installer_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_TAG: ${{ inputs.previous_installer_tag }}
+        shell: pwsh
+        run: |
+          gh release download $env:PREVIOUS_TAG --repo $env:GITHUB_REPOSITORY --pattern 'MenuCapture-Setup-*-win-x64.exe' --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installer = Get-ChildItem $env:RUNNER_TEMP -Filter 'MenuCapture-Setup-*-win-x64.exe' -File | Select-Object -First 1
+          if (-not $installer) { throw "Release $env:PREVIOUS_TAG did not contain a Windows installer." }
+          "PREVIOUS_INSTALLER=$($installer.FullName)" >> $env:GITHUB_ENV
+          "PREVIOUS_VERSION=$($env:PREVIOUS_TAG -replace '^v', '')" >> $env:GITHUB_ENV
+      - name: 下载旧版安装包 CI 产物
+        if: github.event_name == 'workflow_dispatch' && inputs.previous_installer_tag == '' && inputs.previous_installer_run != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: menu-capture-windows-x64
+          path: ${{ runner.temp }}/previous-installer
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.previous_installer_run }}
+      - name: 核对旧版 CI 安装包
+        if: github.event_name == 'workflow_dispatch' && inputs.previous_installer_tag == '' && inputs.previous_installer_run != ''
+        shell: pwsh
+        run: |
+          $previous = @(Get-ChildItem (Join-Path $env:RUNNER_TEMP 'previous-installer') -Filter 'MenuCapture-Setup-*-win-x64.exe' -File -Recurse)
+          if ($previous.Count -ne 1 -or $previous[0].Name -notmatch '^MenuCapture-Setup-(.+)-win-x64\.exe$') {
+            throw '旧版安装包产物必须包含且只包含一个可识别的 Windows 安装包。'
+          }
+          "PREVIOUS_INSTALLER=$($previous[0].FullName)" >> $env:GITHUB_ENV
+          "PREVIOUS_VERSION=$($Matches[1])" >> $env:GITHUB_ENV
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.11.3'
-      - name: 验证双机分配和 Windows 原生执行契约
+      - name: Python 回归与 Windows 原生执行契约
         shell: pwsh
         working-directory: UFS_Menu_Scraper/macos_runner
         run: |
           uv sync --frozen --python 3.12
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          uv run --frozen pytest -q tests/test_shared_workbench.py tests/test_windows_compat.py tests/test_environment.py
+          # 服务端静态资源、共享分配、Windows 兼容、环境诊断、工作台分页与模型用量契约。
+          $suite = @(
+            'tests/test_server.py', 'tests/test_shared_workbench.py', 'tests/test_windows_compat.py',
+            'tests/test_environment.py', 'tests/test_workbench_page.py', 'tests/test_model_usage.py',
+            'tests/test_model_usage_integration.py', 'tests/test_materials.py', 'tests/test_rejections_batch.py',
+            'tests/test_review_queue.py', 'tests/test_capture_outcomes.py'
+          )
+          uv run --frozen pytest -q --basetemp (Join-Path $env:RUNNER_TEMP 'mc-py') @suite
       - name: 构建 Windows x64 安装包
         shell: pwsh
         env:
@@ -50,7 +136,15 @@ jobs:
           $version = $env:BUILD_VERSION
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
           $installer = Get-ChildItem deploy/artifacts -Filter '*.exe' -File | Select-Object -First 1
-          ./deploy/windows/smoke.ps1 -Installer $installer.FullName -Version $version
+          $smokeArgs = @{ Installer = $installer.FullName; Version = $version }
+          if ($env:PREVIOUS_INSTALLER) {
+            $smokeArgs.PreviousInstaller = $env:PREVIOUS_INSTALLER
+            $smokeArgs.PreviousVersion = $env:PREVIOUS_VERSION
+          }
+          ./deploy/windows/smoke.ps1 @smokeArgs
+          if (-not $env:PREVIOUS_INSTALLER) {
+            Write-Host 'Upgrade/rollback smoke skipped. Dispatch with previous_installer_tag or previous_installer_run to verify the previous release.'
+          }
       - name: 上传验收日志
         if: failure()
         uses: actions/upload-artifact@v4
@@ -70,12 +164,69 @@ jobs:
       - uses: actions/checkout@v4
       - name: 生成隔离环境口令
         run: echo "MENU_CAPTURE_ADMIN_PASSWORD=$(openssl rand -hex 24)" >> "$GITHUB_ENV"
-      - name: 验证共享后台容器和数据卷
+      - name: 设置共享后台发布标签
+        env:
+          INPUT_VERSION: ${{ inputs.version || '0.1.0' }}
+        run: |
+          version="$INPUT_VERSION"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version="${GITHUB_REF_NAME#v}"; fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]
+          echo "MENU_CAPTURE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "MENU_CAPTURE_IMAGE=menu-capture-hub:$version" >> "$GITHUB_ENV"
+      - name: 验证共享后台容器、前端产物和数据卷
         run: |
           docker compose -f deploy/compose.yaml up -d --build --wait
           curl --fail http://127.0.0.1:8766/healthz
+          auth="admin:$MENU_CAPTURE_ADMIN_PASSWORD"
+          curl --fail -u "$auth" http://127.0.0.1:8766/ | grep -q '<div id="root"></div>'
+          curl --fail -u "$auth" http://127.0.0.1:8766/api/version | jq -e --arg version "$MENU_CAPTURE_VERSION" '.version == $version and (.frontend | length > 0)'
+          entry=$(curl --fail -u "$auth" http://127.0.0.1:8766/ | grep -o '/assets/[^"]*\.js' | head -n1)
+          test -n "$entry" && curl --fail -u "$auth" -o /dev/null "http://127.0.0.1:8766$entry"
+          curl --fail -u "$auth" -o /dev/null http://127.0.0.1:8766/favicon.svg
           docker compose -f deploy/compose.yaml exec -T hub tesseract --list-langs | grep -w chi_sim
           docker compose -f deploy/compose.yaml exec -T hub test -s /var/lib/menu-capture/data/tasks.sqlite3
+      - name: 验证共享后台原地升级与回滚
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          BASELINE_REF: e6b7ea82079b45f1720ea6dec6411bc29ed5276b
+          MENU_CAPTURE_HOST_PORT: '18777'
+        run: |
+          git fetch --depth 1 origin "$BASELINE_REF"
+          git worktree add --detach "$RUNNER_TEMP/hub-old" "$BASELINE_REF"
+          docker build -t menu-capture-hub:upgrade-baseline -f "$RUNNER_TEMP/hub-old/deploy/Dockerfile.hub" "$RUNNER_TEMP/hub-old"
+          compose=(docker compose -p menu-capture-upgrade -f deploy/compose.yaml)
+          candidate="$MENU_CAPTURE_IMAGE"
+          base="http://127.0.0.1:$MENU_CAPTURE_HOST_PORT"
+          auth="admin:$MENU_CAPTURE_ADMIN_PASSWORD"
+          MENU_CAPTURE_IMAGE=menu-capture-hub:upgrade-baseline "${compose[@]}" up --no-build -d --wait
+          session=$(curl --silent --fail -u "$auth" "$base/api/session" | jq -er '.token')
+          code=$(curl --silent --fail -u "$auth" -X POST -H "X-Capture-Token: $session" "$base/api/shared/pairing" | jq -er '.code')
+          paired=$(curl --silent --fail -H 'Content-Type: application/json'             --data "$(jq -nc --arg code "$code" '{code:$code,name:"升级验收设备"}')" "$base/api/shared/worker/pair")
+          id=$(jq -er '.id' <<< "$paired")
+          token=$(jq -er '.token' <<< "$paired")
+          verify_worker() {
+            curl --silent --fail -u "$auth" "$base/api/shared/status" | jq -e --arg id "$id" '.workers | any(.id == $id)'
+            curl --silent --fail -H "Authorization: Bearer $token" -H 'Content-Type: application/json'               --data '{"ready_ids":[],"pending_uploads":0}' "$base/api/shared/worker/sync" | jq -e 'has("assignments")'
+          }
+          MENU_CAPTURE_IMAGE="$candidate" "${compose[@]}" up --no-build -d --wait
+          verify_worker
+          curl --silent --fail -u "$auth" "$base/api/version" | jq -e --arg version "$MENU_CAPTURE_VERSION" '.version == $version'
+          MENU_CAPTURE_IMAGE=menu-capture-hub:upgrade-baseline "${compose[@]}" up --no-build -d --wait
+          verify_worker
+          "${compose[@]}" down -v
+      - name: 归档共享后台镜像和校验值
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        run: |
+          mkdir hub-artifacts
+          archive="menu-capture-hub-$MENU_CAPTURE_VERSION-linux-amd64.tar.gz"
+          docker image save "$MENU_CAPTURE_IMAGE" | gzip -c > "hub-artifacts/$archive"
+          (cd hub-artifacts && sha256sum "$archive" > "$archive.sha256")
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: menu-capture-hub-linux-amd64
+          path: hub-artifacts/
+          if-no-files-found: error
       - name: 容器日志
         if: failure()
         run: docker compose -f deploy/compose.yaml logs
@@ -91,6 +242,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: menu-capture-windows-x64
+          path: release-assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: menu-capture-hub-linux-amd64
           path: release-assets
       - name: 创建发布草稿
         env:

@@ -1,0 +1,1490 @@
+{
+  "summary": {
+    "passed": 46,
+    "total": 46,
+    "failed": [],
+    "before": {
+      "rejections": {
+        "stores": 2,
+        "records": 2,
+        "materials": 0,
+        "capture": 2,
+        "reviewed": 0
+      },
+      "batch_summary": {
+        "total_stores": 128,
+        "total_images": 128,
+        "selected_stores": 128,
+        "review_stores": 0,
+        "confirmed_stores": 128,
+        "skipped_stores": 0,
+        "pending_stores": 0,
+        "detection_stats": {
+          "square": {
+            "scanned_stores": 0,
+            "hit_stores": 0,
+            "ms": 0.0
+          },
+          "total_ms": 0.0
+        }
+      },
+      "active_assignments": 5
+    },
+    "after": {
+      "rejections": {
+        "stores": 0,
+        "records": 0,
+        "materials": 0,
+        "capture": 0,
+        "reviewed": 0
+      },
+      "batch_summary": {
+        "total_stores": 128,
+        "total_images": 128,
+        "selected_stores": 128,
+        "review_stores": 0,
+        "confirmed_stores": 127,
+        "skipped_stores": 0,
+        "pending_stores": 1,
+        "detection_stats": {
+          "square": {
+            "scanned_stores": 0,
+            "hit_stores": 0,
+            "ms": 0.0
+          },
+          "total_ms": 0.0
+        }
+      },
+      "pending": {
+        "stores": 1,
+        "batches": 1,
+        "needs_review": 1,
+        "retryable": 1
+      },
+      "active_assignments": 5
+    }
+  },
+  "steps": [
+    {
+      "step": "export:all",
+      "params": {},
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [
+        "SH010__杭州市__演示门店010__31.009,121.009",
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "list_summary": {
+        "stores": 2,
+        "records": 2,
+        "materials": 0,
+        "capture": 2,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [
+        [
+          "SH010__杭州市__演示门店010__31.009,121.009",
+          "采集任务",
+          "清洗 2026-11-23 23:01:01",
+          "二维码.png",
+          "queued",
+          "未记录原因",
+          null,
+          "rejected",
+          null,
+          "b546932b43732bc5681b",
+          null
+        ],
+        [
+          "SH009__上海市__演示门店009__31.008,121.008",
+          "采集任务",
+          "清洗 2026-11-23 23:01:01",
+          "二维码.png",
+          "queued",
+          "未记录原因",
+          null,
+          "rejected",
+          null,
+          "7d243b8b464b6025c0d8",
+          null
+        ]
+      ],
+      "excel_names": [
+        "SH010__杭州市__演示门店010__31.009,121.009",
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "expect_rows": [
+        "SH010__杭州市__演示门店010__31.009,121.009",
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "pass": true
+    },
+    {
+      "step": "export:source-capture",
+      "params": {
+        "source": "capture"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [
+        "SH010__杭州市__演示门店010__31.009,121.009",
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "list_summary": {
+        "stores": 2,
+        "records": 2,
+        "materials": 0,
+        "capture": 2,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [
+        [
+          "SH010__杭州市__演示门店010__31.009,121.009",
+          "采集任务",
+          "清洗 2026-11-23 23:01:01",
+          "二维码.png",
+          "queued",
+          "未记录原因",
+          null,
+          "rejected",
+          null,
+          "b546932b43732bc5681b",
+          null
+        ],
+        [
+          "SH009__上海市__演示门店009__31.008,121.008",
+          "采集任务",
+          "清洗 2026-11-23 23:01:01",
+          "二维码.png",
+          "queued",
+          "未记录原因",
+          null,
+          "rejected",
+          null,
+          "7d243b8b464b6025c0d8",
+          null
+        ]
+      ],
+      "excel_names": [
+        "SH010__杭州市__演示门店010__31.009,121.009",
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "expect_rows": [
+        "SH010__杭州市__演示门店010__31.009,121.009",
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "pass": true
+    },
+    {
+      "step": "export:source-materials-empty",
+      "params": {
+        "source": "materials"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [],
+      "list_summary": {
+        "stores": 0,
+        "records": 0,
+        "materials": 0,
+        "capture": 0,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [],
+      "excel_names": [],
+      "expect_rows": [],
+      "pass": true
+    },
+    {
+      "step": "export:reason-blur-empty",
+      "params": {
+        "reason": "blur"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [],
+      "list_summary": {
+        "stores": 0,
+        "records": 0,
+        "materials": 0,
+        "capture": 0,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [],
+      "excel_names": [],
+      "expect_rows": [],
+      "pass": true
+    },
+    {
+      "step": "export:query-sh010",
+      "params": {
+        "q": "SH010"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [
+        "SH010__杭州市__演示门店010__31.009,121.009"
+      ],
+      "list_summary": {
+        "stores": 1,
+        "records": 1,
+        "materials": 0,
+        "capture": 1,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [
+        [
+          "SH010__杭州市__演示门店010__31.009,121.009",
+          "采集任务",
+          "清洗 2026-11-23 23:01:01",
+          "二维码.png",
+          "queued",
+          "未记录原因",
+          null,
+          "rejected",
+          null,
+          "b546932b43732bc5681b",
+          null
+        ]
+      ],
+      "excel_names": [
+        "SH010__杭州市__演示门店010__31.009,121.009"
+      ],
+      "expect_rows": [
+        "SH010__杭州市__演示门店010__31.009,121.009"
+      ],
+      "pass": true
+    },
+    {
+      "step": "export:query-none",
+      "params": {
+        "q": "不存在的门店"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [],
+      "list_summary": {
+        "stores": 0,
+        "records": 0,
+        "materials": 0,
+        "capture": 0,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [],
+      "excel_names": [],
+      "expect_rows": [],
+      "pass": true
+    },
+    {
+      "step": "export:batch-hit",
+      "params": {
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [
+        "SH010__杭州市__演示门店010__31.009,121.009",
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "list_summary": {
+        "stores": 2,
+        "records": 2,
+        "materials": 0,
+        "capture": 2,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [
+        [
+          "SH010__杭州市__演示门店010__31.009,121.009",
+          "采集任务",
+          "清洗 2026-11-23 23:01:01",
+          "二维码.png",
+          "queued",
+          "未记录原因",
+          null,
+          "rejected",
+          null,
+          "b546932b43732bc5681b",
+          null
+        ],
+        [
+          "SH009__上海市__演示门店009__31.008,121.008",
+          "采集任务",
+          "清洗 2026-11-23 23:01:01",
+          "二维码.png",
+          "queued",
+          "未记录原因",
+          null,
+          "rejected",
+          null,
+          "7d243b8b464b6025c0d8",
+          null
+        ]
+      ],
+      "excel_names": [
+        "SH010__杭州市__演示门店010__31.009,121.009",
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "expect_rows": [
+        "SH010__杭州市__演示门店010__31.009,121.009",
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "pass": true
+    },
+    {
+      "step": "export:batch-miss",
+      "params": {
+        "batch_id": "00000000000000000000000000000000"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [],
+      "list_summary": {
+        "stores": 0,
+        "records": 0,
+        "materials": 0,
+        "capture": 0,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [],
+      "excel_names": [],
+      "expect_rows": [],
+      "pass": true
+    },
+    {
+      "step": "export:combined-empty",
+      "params": {
+        "source": "capture",
+        "reason": "blur",
+        "q": "SH009"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [],
+      "list_summary": {
+        "stores": 0,
+        "records": 0,
+        "materials": 0,
+        "capture": 0,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [],
+      "excel_names": [],
+      "expect_rows": [],
+      "pass": true
+    },
+    {
+      "step": "export:invalid-reason",
+      "params": {
+        "reason": "demo_blur"
+      },
+      "export_status": 400,
+      "list_status": 400,
+      "list_records": null,
+      "list_summary": null,
+      "excel_headers": [],
+      "excel_rows": [],
+      "excel_names": [],
+      "expect_rows": null,
+      "pass": true
+    },
+    {
+      "step": "hub:no-auth",
+      "note": "Hub 未带管理员认证",
+      "status": 401,
+      "expect": 401,
+      "pass": true,
+      "body": {
+        "detail": "请输入共享工作台管理员账号"
+      },
+      "body_preview": {
+        "detail": "请输入共享工作台管理员账号"
+      }
+    },
+    {
+      "step": "hub:write-without-token",
+      "note": "Hub 写操作缺本机令牌",
+      "status": 403,
+      "expect": 403,
+      "pass": true,
+      "body": {
+        "detail": "本机操作令牌无效，请刷新控制台"
+      }
+    },
+    {
+      "step": "worker:read-rejections",
+      "note": "Worker 允许只读查看",
+      "status": 200,
+      "expect": 200,
+      "pass": true,
+      "body": {
+        "summary": {
+          "stores": 0,
+          "records": 0,
+          "materials": 0,
+          "capture": 0,
+          "reviewed": 0
+        },
+        "records": [],
+        "batches": []
+      }
+    },
+    {
+      "step": "worker:review-rejections",
+      "note": "Worker 不能审核",
+      "status": 409,
+      "expect": 409,
+      "pass": true,
+      "body": {
+        "detail": "请在共享工作台管理素材和审核结果"
+      }
+    },
+    {
+      "step": "worker:retry",
+      "note": "Worker 不能重试采集",
+      "status": 409,
+      "expect": 409,
+      "pass": true,
+      "body": {
+        "detail": "请在共享工作台管理素材和审核结果"
+      }
+    },
+    {
+      "step": "worker:create-batch",
+      "note": "Worker 不能建素材批次",
+      "status": 409,
+      "expect": 409,
+      "pass": true,
+      "body": {
+        "detail": "请在共享工作台管理素材和审核结果"
+      }
+    },
+    {
+      "step": "worker:undo-material-rejection",
+      "note": "Worker 不能撤销素材不合格",
+      "status": 409,
+      "expect": 409,
+      "pass": true,
+      "body": {
+        "detail": "请在共享工作台管理素材和审核结果"
+      }
+    },
+    {
+      "step": "worker:status",
+      "note": "Worker 状态角色",
+      "status": 200,
+      "expect": 200,
+      "pass": true,
+      "body": {
+        "role": "worker",
+        "paired": false,
+        "online": false,
+        "name": "",
+        "error": "",
+        "credential_invalid": false,
+        "pending_uploads": 0,
+        "assignments": []
+      },
+      "role": "worker"
+    },
+    {
+      "step": "worker:assign-endpoint",
+      "note": "Worker 无 Hub 分配接口，且写操作先被本机令牌拦截",
+      "status": 403,
+      "expect": 403,
+      "pass": true,
+      "body": {
+        "detail": "本机操作令牌无效，请刷新控制台"
+      }
+    },
+    {
+      "step": "return:before-rejections",
+      "note": "",
+      "status": 200,
+      "expect": 200,
+      "pass": true,
+      "body": {
+        "summary": {
+          "stores": 1,
+          "records": 1,
+          "materials": 0,
+          "capture": 1,
+          "reviewed": 0
+        },
+        "records": [
+          {
+            "source_type": "capture",
+            "source_label": "采集任务",
+            "record_id": "7d243b8b464b6025c0d8",
+            "store_key": "SH009__上海市__演示门店009__31.008,121.008",
+            "store_name": "SH009__上海市__演示门店009__31.008,121.008",
+            "source_folder": "SH009__上海市__演示门店009__31.008,121.008",
+            "source_item": "二维码.png",
+            "reason_code": "demo_blur",
+            "reason_label": "未记录原因",
+            "detail": "",
+            "evidence": "",
+            "marked_at": "",
+            "reviewed_at": "",
+            "status": "rejected",
+            "stage": "queued",
+            "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+            "batch_name": "清洗 2026-11-23 23:01:01",
+            "task_id": "7d243b8b464b6025c0d8",
+            "run_id": null
+          }
+        ],
+        "batches": [
+          {
+            "id": "5f41539215a9492b96d2cdc4596a6fb3",
+            "name": "清洗 2026-11-23 23:01:01"
+          }
+        ]
+      }
+    },
+    {
+      "step": "return:submit",
+      "note": "打回素材清洗",
+      "status": 200,
+      "expect": 200,
+      "pass": true,
+      "body": {
+        "ok": true,
+        "task": {
+          "id": "7d243b8b464b6025c0d8",
+          "source_name": "SH009__上海市__演示门店009__31.008,121.008",
+          "source_path": "D:\\menu-agent\\.tmp-quality-test\\hub\\data\\materials\\published\\227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d\\SH009__上海市__演示门店009__31.008,121.008\\二维码.png",
+          "source_hash": "9fb63cdce0f60f3b1cb1581af8cbd5d0d3370b79523724466b2c2856bbabe741",
+          "status": "blocked",
+          "stage": "returned_to_materials",
+          "message": "已打回素材清洗；请重新确认二维码后增量发布并重跑",
+          "output_dir": "",
+          "updated_at": "2026-11-24T01:16:49+08:00",
+          "reject_reason": "",
+          "reject_detail": "",
+          "rejected_at": "",
+          "inherited_from": "",
+          "archived_at": "",
+          "reject_evidence": "",
+          "reject_reviewed_at": "",
+          "source_key": "7d243b8b464b6025c0d82092f3725a8bd70e4daac3bd421e51f34f1f3d318591",
+          "error_code": ""
+        },
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "store_id": "117a2d4b55259fcf3b42da6f"
+      },
+      "task": {
+        "id": "7d243b8b464b6025c0d8",
+        "source_name": "SH009__上海市__演示门店009__31.008,121.008",
+        "source_path": "D:\\menu-agent\\.tmp-quality-test\\hub\\data\\materials\\published\\227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d\\SH009__上海市__演示门店009__31.008,121.008\\二维码.png",
+        "source_hash": "9fb63cdce0f60f3b1cb1581af8cbd5d0d3370b79523724466b2c2856bbabe741",
+        "status": "blocked",
+        "stage": "returned_to_materials",
+        "message": "已打回素材清洗；请重新确认二维码后增量发布并重跑",
+        "output_dir": "",
+        "updated_at": "2026-11-24T01:16:49+08:00",
+        "reject_reason": "",
+        "reject_detail": "",
+        "rejected_at": "",
+        "inherited_from": "",
+        "archived_at": "",
+        "reject_evidence": "",
+        "reject_reviewed_at": "",
+        "source_key": "7d243b8b464b6025c0d82092f3725a8bd70e4daac3bd421e51f34f1f3d318591",
+        "error_code": ""
+      },
+      "store_id": "117a2d4b55259fcf3b42da6f"
+    },
+    {
+      "step": "return:material-decision",
+      "decision": "pending",
+      "rejection": null,
+      "pass": true
+    },
+    {
+      "step": "return:assign-blocked",
+      "note": "打回后单店分配应被阻塞",
+      "status": 409,
+      "expect": 409,
+      "pass": true,
+      "body": {
+        "detail": "1 家门店暂时无法分配，本次提交未生效",
+        "conflicts": [
+          {
+            "task_id": "7d243b8b464b6025c0d8",
+            "reason": "materials"
+          }
+        ]
+      },
+      "conflicts": [
+        {
+          "task_id": "7d243b8b464b6025c0d8",
+          "reason": "materials"
+        }
+      ]
+    },
+    {
+      "step": "return:retry-blocked",
+      "note": "待重新选码时不能重试采集",
+      "status": 409,
+      "expect": 409,
+      "pass": true,
+      "body": {
+        "detail": "该门店待重新选码并发布"
+      }
+    },
+    {
+      "step": "return:history-event",
+      "events": [
+        {
+          "time": "2026-11-24T01:16:49+08:00",
+          "level": "warning",
+          "message": "已打回素材清洗：等待重新确认二维码",
+          "task_id": "7d243b8b464b6025c0d8"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "step": "return:task-still-listed",
+      "record": [
+        {
+          "id": "7d243b8b464b6025c0d8",
+          "source_name": "SH009__上海市__演示门店009__31.008,121.008",
+          "source_path": "D:\\menu-agent\\.tmp-quality-test\\hub\\data\\materials\\published\\227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d\\SH009__上海市__演示门店009__31.008,121.008\\二维码.png",
+          "source_hash": "9fb63cdce0f60f3b1cb1581af8cbd5d0d3370b79523724466b2c2856bbabe741",
+          "status": "blocked",
+          "stage": "returned_to_materials",
+          "message": "已打回素材清洗；请重新确认二维码后增量发布并重跑",
+          "output_dir": "",
+          "updated_at": "2026-11-24T01:16:49+08:00",
+          "reject_reason": "",
+          "reject_detail": "",
+          "rejected_at": "",
+          "inherited_from": "",
+          "archived_at": "",
+          "reject_evidence": "",
+          "reject_reviewed_at": "",
+          "source_key": "7d243b8b464b6025c0d82092f3725a8bd70e4daac3bd421e51f34f1f3d318591",
+          "error_code": "",
+          "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+          "batch_name": "清洗 2026-11-23 23:01:01",
+          "version": "v1.0.0",
+          "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+          "reject_label": "",
+          "runnable": false,
+          "code": "unknown",
+          "group": "manual",
+          "bucket": "material",
+          "bucket_label": "素材问题",
+          "label": "未分类失败"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "step": "return:run-history",
+      "runs": [],
+      "detail_has_sh009": false,
+      "fixture_note": "演示数据不含 runs 历史；历史保留以任务行与事件为准",
+      "skipped": true,
+      "pass": true
+    },
+    {
+      "step": "material:mark-skip",
+      "note": "临时把已打回门店标为素材不合格",
+      "status": 200,
+      "expect": 200,
+      "pass": true,
+      "body": {
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "store_id": "117a2d4b55259fcf3b42da6f",
+        "source_name": "SH009__上海市__演示门店009__31.008,121.008",
+        "source_folder": "SH009__上海市__演示门店009__31.008,121.008",
+        "analysis_status": "selected",
+        "reason": "店内仅剩一个用途未知二维码，图片正常且无冲突或漏检线索；按低可信候选推荐，待微信验证",
+        "decision": "skipped",
+        "rejection": {
+          "code": "blur",
+          "label": "图片模糊 / 无法识别",
+          "detail": "补测：临时素材不合格",
+          "marked_at": "2026-11-24T01:16:49+08:00",
+          "reviewed_at": ""
+        },
+        "recommendation": true,
+        "recommendation_level": "low",
+        "wechat_validation_status": "unverified",
+        "selected": null,
+        "images": [
+          {
+            "path": "SH009__上海市__演示门店009__31.008,121.008/code.png",
+            "sha256": "4e494e998511c1142b9142d88242875595ff4e1de446e6c1f8e4a66be86b2238",
+            "detection_count": 1,
+            "candidates": [
+              {
+                "box": {
+                  "x": 30.0,
+                  "y": 20.0,
+                  "width": 100.0,
+                  "height": 100.0
+                },
+                "payload_sha256": "2544f52357c3e498e0bb373718dc228c5398d1fa591dc665959bee598ab7f83b",
+                "short_edge_px": 100,
+                "selected": true,
+                "purpose": "unknown",
+                "purpose_reason": "二维码周边没有识别到明确点餐标识，需人工确认",
+                "source": "local_detector",
+                "purpose_source": "local_ocr",
+                "quality": "ok",
+                "qr_likeness": true,
+                "qr_contained": true,
+                "qr_centered": true,
+                "sharpness_score": 0.0,
+                "quality_score": 100.0,
+                "candidate_index": 0,
+                "recommendation": true
+              }
+            ],
+            "image_index": 0
+          }
+        ]
+      }
+    },
+    {
+      "step": "export:materials-one",
+      "params": {
+        "source": "materials"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "list_summary": {
+        "stores": 1,
+        "records": 1,
+        "materials": 1,
+        "capture": 0,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [
+        [
+          "SH009__上海市__演示门店009__31.008,121.008",
+          "素材清洗",
+          "清洗 2026-11-23 23:01:01",
+          "code.png",
+          "素材清洗",
+          "图片模糊 / 无法识别",
+          "补测：临时素材不合格",
+          "不合格",
+          "2026-11-24T01:16:49+08:00",
+          null,
+          null
+        ]
+      ],
+      "excel_names": [
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "expect_rows": [
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "pass": true
+    },
+    {
+      "step": "export:reason-blur-one",
+      "params": {
+        "reason": "blur"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "list_summary": {
+        "stores": 1,
+        "records": 1,
+        "materials": 1,
+        "capture": 0,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [
+        [
+          "SH009__上海市__演示门店009__31.008,121.008",
+          "素材清洗",
+          "清洗 2026-11-23 23:01:01",
+          "code.png",
+          "素材清洗",
+          "图片模糊 / 无法识别",
+          "补测：临时素材不合格",
+          "不合格",
+          "2026-11-24T01:16:49+08:00",
+          null,
+          null
+        ]
+      ],
+      "excel_names": [
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "expect_rows": [
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "pass": true
+    },
+    {
+      "step": "export:materials-query-hit",
+      "params": {
+        "source": "materials",
+        "q": "SH009"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "list_summary": {
+        "stores": 1,
+        "records": 1,
+        "materials": 1,
+        "capture": 0,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [
+        [
+          "SH009__上海市__演示门店009__31.008,121.008",
+          "素材清洗",
+          "清洗 2026-11-23 23:01:01",
+          "code.png",
+          "素材清洗",
+          "图片模糊 / 无法识别",
+          "补测：临时素材不合格",
+          "不合格",
+          "2026-11-24T01:16:49+08:00",
+          null,
+          null
+        ]
+      ],
+      "excel_names": [
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "expect_rows": [
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "pass": true
+    },
+    {
+      "step": "export:materials-query-miss",
+      "params": {
+        "source": "materials",
+        "q": "SH010"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [],
+      "list_summary": {
+        "stores": 0,
+        "records": 0,
+        "materials": 0,
+        "capture": 0,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [],
+      "excel_names": [],
+      "expect_rows": [],
+      "pass": true
+    },
+    {
+      "step": "export:all-two",
+      "params": {},
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [
+        "SH009__上海市__演示门店009__31.008,121.008",
+        "SH010__杭州市__演示门店010__31.009,121.009"
+      ],
+      "list_summary": {
+        "stores": 2,
+        "records": 2,
+        "materials": 1,
+        "capture": 1,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [
+        [
+          "SH009__上海市__演示门店009__31.008,121.008",
+          "素材清洗",
+          "清洗 2026-11-23 23:01:01",
+          "code.png",
+          "素材清洗",
+          "图片模糊 / 无法识别",
+          "补测：临时素材不合格",
+          "不合格",
+          "2026-11-24T01:16:49+08:00",
+          null,
+          null
+        ],
+        [
+          "SH010__杭州市__演示门店010__31.009,121.009",
+          "采集任务",
+          "清洗 2026-11-23 23:01:01",
+          "二维码.png",
+          "queued",
+          "未记录原因",
+          null,
+          "rejected",
+          null,
+          "b546932b43732bc5681b",
+          null
+        ]
+      ],
+      "excel_names": [
+        "SH009__上海市__演示门店009__31.008,121.008",
+        "SH010__杭州市__演示门店010__31.009,121.009"
+      ],
+      "expect_rows": [
+        "SH010__杭州市__演示门店010__31.009,121.009",
+        "SH009__上海市__演示门店009__31.008,121.008"
+      ],
+      "pass": true
+    },
+    {
+      "step": "material:undo",
+      "note": "撤销素材不合格回到待处理",
+      "status": 200,
+      "expect": 200,
+      "pass": true,
+      "body": {
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "store_id": "117a2d4b55259fcf3b42da6f",
+        "source_name": "SH009__上海市__演示门店009__31.008,121.008",
+        "source_folder": "SH009__上海市__演示门店009__31.008,121.008",
+        "analysis_status": "selected",
+        "reason": "店内仅剩一个用途未知二维码，图片正常且无冲突或漏检线索；按低可信候选推荐，待微信验证",
+        "decision": "pending",
+        "rejection": null,
+        "recommendation": true,
+        "recommendation_level": "low",
+        "wechat_validation_status": "unverified",
+        "selected": null,
+        "images": [
+          {
+            "path": "SH009__上海市__演示门店009__31.008,121.008/code.png",
+            "sha256": "4e494e998511c1142b9142d88242875595ff4e1de446e6c1f8e4a66be86b2238",
+            "detection_count": 1,
+            "candidates": [
+              {
+                "box": {
+                  "x": 30.0,
+                  "y": 20.0,
+                  "width": 100.0,
+                  "height": 100.0
+                },
+                "payload_sha256": "2544f52357c3e498e0bb373718dc228c5398d1fa591dc665959bee598ab7f83b",
+                "short_edge_px": 100,
+                "selected": true,
+                "purpose": "unknown",
+                "purpose_reason": "二维码周边没有识别到明确点餐标识，需人工确认",
+                "source": "local_detector",
+                "purpose_source": "local_ocr",
+                "quality": "ok",
+                "qr_likeness": true,
+                "qr_contained": true,
+                "qr_centered": true,
+                "sharpness_score": 0.0,
+                "quality_score": 100.0,
+                "candidate_index": 0,
+                "recommendation": true
+              }
+            ],
+            "image_index": 0
+          }
+        ]
+      }
+    },
+    {
+      "step": "export:materials-empty-again",
+      "params": {
+        "source": "materials"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [],
+      "list_summary": {
+        "stores": 0,
+        "records": 0,
+        "materials": 0,
+        "capture": 0,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [],
+      "excel_names": [],
+      "expect_rows": [],
+      "pass": true
+    },
+    {
+      "step": "capture:undo-before",
+      "note": "",
+      "status": 200,
+      "expect": 200,
+      "pass": true,
+      "body": {
+        "summary": {
+          "stores": 1,
+          "records": 1,
+          "materials": 0,
+          "capture": 1,
+          "reviewed": 0
+        },
+        "records": [
+          {
+            "source_type": "capture",
+            "source_label": "采集任务",
+            "record_id": "b546932b43732bc5681b",
+            "store_key": "SH010__杭州市__演示门店010__31.009,121.009",
+            "store_name": "SH010__杭州市__演示门店010__31.009,121.009",
+            "source_folder": "SH010__杭州市__演示门店010__31.009,121.009",
+            "source_item": "二维码.png",
+            "reason_code": "demo_blur",
+            "reason_label": "未记录原因",
+            "detail": "",
+            "evidence": "",
+            "marked_at": "",
+            "reviewed_at": "",
+            "status": "rejected",
+            "stage": "queued",
+            "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+            "batch_name": "清洗 2026-11-23 23:01:01",
+            "task_id": "b546932b43732bc5681b",
+            "run_id": null
+          }
+        ],
+        "batches": [
+          {
+            "id": "5f41539215a9492b96d2cdc4596a6fb3",
+            "name": "清洗 2026-11-23 23:01:01"
+          }
+        ]
+      }
+    },
+    {
+      "step": "capture:undo",
+      "note": "撤销采集不合格",
+      "status": 200,
+      "expect": 200,
+      "pass": true,
+      "body": {
+        "ok": true,
+        "task": {
+          "id": "b546932b43732bc5681b",
+          "source_name": "SH010__杭州市__演示门店010__31.009,121.009",
+          "source_path": "D:\\menu-agent\\.tmp-quality-test\\hub\\data\\materials\\published\\227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d\\SH010__杭州市__演示门店010__31.009,121.009\\二维码.png",
+          "source_hash": "3cf42a943be358e4f6b6ab2d872157b0c1fd0ac4d934cafb577bce57ff322518",
+          "status": "rejected",
+          "stage": "queued",
+          "message": "",
+          "output_dir": "",
+          "updated_at": "2026-11-24T01:16:50+08:00",
+          "reject_reason": "",
+          "reject_detail": "",
+          "rejected_at": "",
+          "inherited_from": "",
+          "archived_at": "",
+          "reject_evidence": "",
+          "reject_reviewed_at": "",
+          "source_key": "b546932b43732bc5681bbe20a986fe075c6c7be10b9afbbbc16ce0393c1bb52c",
+          "error_code": ""
+        }
+      },
+      "reject_reason": ""
+    },
+    {
+      "step": "export:capture-empty-after-undo",
+      "params": {
+        "source": "capture"
+      },
+      "export_status": 200,
+      "list_status": 200,
+      "list_records": [],
+      "list_summary": {
+        "stores": 0,
+        "records": 0,
+        "materials": 0,
+        "capture": 0,
+        "reviewed": 0
+      },
+      "excel_headers": [
+        "门店",
+        "来源",
+        "批次",
+        "来源文件",
+        "处理阶段",
+        "不合格原因",
+        "备注",
+        "任务状态",
+        "标记时间",
+        "任务编号",
+        "人工确认"
+      ],
+      "excel_rows": [],
+      "excel_names": [],
+      "expect_rows": [],
+      "pass": true
+    },
+    {
+      "step": "capture:retry-rejected-status",
+      "note": "观察：rejected 状态撤销后仍不可 /retry，需走打回素材或重新发布",
+      "status": 400,
+      "expect": 400,
+      "pass": true,
+      "body": {
+        "detail": "此任务还没有可重试或重新采集的结果"
+      },
+      "task_status": "rejected",
+      "detail": "此任务还没有可重试或重新采集的结果"
+    },
+    {
+      "step": "capture:retry",
+      "note": "重新采集（重新排队）",
+      "status": 200,
+      "expect": 200,
+      "pass": true,
+      "body": {
+        "ok": true
+      }
+    },
+    {
+      "step": "capture:retry-state",
+      "record": [
+        {
+          "id": "970b61f9353de15360a4",
+          "source_name": "SH012__苏州市__演示门店012__31.011,121.011",
+          "source_path": "D:\\menu-agent\\.tmp-quality-test\\hub\\data\\materials\\published\\227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d\\SH012__苏州市__演示门店012__31.011,121.011\\二维码.png",
+          "source_hash": "bca08ae78ad8f88a5fd17b107b3a2d50b701efd3961f7fc9d7acd33499cc55b8",
+          "status": "pending",
+          "stage": "queued",
+          "message": "已重新排队；旧输出保留",
+          "output_dir": "",
+          "updated_at": "2026-11-24T01:16:50+08:00",
+          "reject_reason": "",
+          "reject_detail": "",
+          "rejected_at": "",
+          "inherited_from": "",
+          "archived_at": "",
+          "reject_evidence": "",
+          "reject_reviewed_at": "",
+          "source_key": "970b61f9353de15360a44885942831d5f0d08d5f5b5529f77b4b37b553980bea",
+          "error_code": "unknown",
+          "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+          "batch_name": "清洗 2026-11-23 23:01:01",
+          "version": "v1.0.0",
+          "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+          "reject_label": "",
+          "runnable": true,
+          "code": "unknown",
+          "group": "manual",
+          "bucket": "other",
+          "bucket_label": "其他·未分类",
+          "label": "未分类失败"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "step": "assign:occupied-conflict",
+      "note": "占用中的门店不能重复分配",
+      "status": 409,
+      "expect": 409,
+      "pass": true,
+      "body": {
+        "detail": "1 家门店暂时无法分配，本次提交未生效",
+        "conflicts": [
+          {
+            "task_id": "1d3277c67e2df0ec1a98",
+            "reason": "assigned",
+            "worker_name": "前台采集电脑"
+          }
+        ]
+      },
+      "conflicts": [
+        {
+          "task_id": "1d3277c67e2df0ec1a98",
+          "reason": "assigned",
+          "worker_name": "前台采集电脑"
+        }
+      ]
+    },
+    {
+      "step": "assign:submit",
+      "note": "真实分配提交",
+      "status": 200,
+      "expect": 200,
+      "pass": true,
+      "body": {
+        "assignments": [
+          {
+            "id": "1cbc8d48b6160d2be01f80dc7f7d8912",
+            "task_id": "8e27a4f913e35e1e392d",
+            "worker_id": "f544de22d304d7558c39cbafbb482ed6",
+            "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+            "batch_name": "清洗 2026-11-23 23:01:01",
+            "store": "SH011__南京市__演示门店011__31.010,121.010",
+            "revision": "v1.0.0",
+            "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+            "source_hash": "fc9610c06b44650b1bb4a3d075cfbf567a2b5b7130637b3968ba283b321c359b",
+            "source_suffix": ".png",
+            "status": "assigned",
+            "created_at": "2026-11-23T17:16:50+00:00"
+          }
+        ]
+      },
+      "assignment": {
+        "id": "1cbc8d48b6160d2be01f80dc7f7d8912",
+        "task_id": "8e27a4f913e35e1e392d",
+        "worker_id": "f544de22d304d7558c39cbafbb482ed6",
+        "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+        "batch_name": "清洗 2026-11-23 23:01:01",
+        "store": "SH011__南京市__演示门店011__31.010,121.010",
+        "revision": "v1.0.0",
+        "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+        "source_hash": "fc9610c06b44650b1bb4a3d075cfbf567a2b5b7130637b3968ba283b321c359b",
+        "source_suffix": ".png",
+        "status": "assigned",
+        "created_at": "2026-11-23T17:16:50+00:00"
+      }
+    },
+    {
+      "step": "assign:visible",
+      "active": [
+        {
+          "id": "1cbc8d48b6160d2be01f80dc7f7d8912",
+          "task_id": "8e27a4f913e35e1e392d",
+          "worker_id": "f544de22d304d7558c39cbafbb482ed6",
+          "batch_id": "5f41539215a9492b96d2cdc4596a6fb3",
+          "batch_name": "清洗 2026-11-23 23:01:01",
+          "store": "SH011__南京市__演示门店011__31.010,121.010",
+          "revision": "v1.0.0",
+          "snapshot_id": "227bcc266bb99a142901370984adf2bbc123f07da41e91aa4a686e6290a8a44d",
+          "source_hash": "fc9610c06b44650b1bb4a3d075cfbf567a2b5b7130637b3968ba283b321c359b",
+          "source_suffix": ".png",
+          "status": "assigned",
+          "created_at": "2026-11-23T17:16:50+00:00",
+          "disposition": "",
+          "result_message": "",
+          "current_task_id": "8e27a4f913e35e1e392d"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "step": "assign:reclaim",
+      "note": "收回补测分配，恢复环境",
+      "status": 200,
+      "expect": 200,
+      "pass": true,
+      "body": {
+        "id": "1cbc8d48b6160d2be01f80dc7f7d8912",
+        "status": "reclaimed"
+      }
+    },
+    {
+      "step": "assign:reclaimed-state",
+      "still_active": [],
+      "pass": true
+    }
+  ]
+}

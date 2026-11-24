@@ -109,6 +109,19 @@ $bundle = Join-Path $stage 'bundle'
 $null = New-Item -ItemType Directory -Path $bundle
 
 try {
+    # 发布前置校验：React 是唯一业务前端，产物必须已由 web-react 构建并提交。
+    # 打包脚本不运行 npm build，避免发布包在构建机临时生成、与源码不一致的产物。
+    $reactEntry = Join-Path $runner 'web\react\index.html'
+    $reactManifest = Join-Path $runner 'web\react\.vite\manifest.json'
+    foreach ($required in $reactEntry, $reactManifest) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+            throw "Missing React build output: $required. Run npm run build in web-react and commit web/react."
+        }
+    }
+    if (Test-Path -LiteralPath (Join-Path $runner 'web\index.html')) {
+        throw 'Legacy frontend web/index.html still exists; remove it before packaging.'
+    }
+
     $pythonTar = Join-Path $stage 'python.tar.gz'
     Get-VerifiedFile $runtime.python.url $pythonTar $runtime.python.sha256
     Invoke-Checked 'tar.exe' @('-xzf', $pythonTar, '-C', $bundle)
@@ -167,6 +180,22 @@ try {
         Where-Object { $_.Extension -in '.mjs', '.json' } |
         Copy-Item -Destination $adapter
     Copy-Item -LiteralPath (Join-Path $runner 'ui_tars\prompts') -Destination $adapter -Recurse
+
+    # 发布清单：记录版本、源码提交、前端入口与哈希，升级/回滚后可用 /api/version 与文件哈希核对。
+    $frontendEntry = (Get-Content (Join-Path $app 'web\react\.vite\manifest.json') -Raw | ConvertFrom-Json).
+        PSObject.Properties.Value | Where-Object { $_.isEntry } | Select-Object -First 1
+    if (-not $frontendEntry) { throw 'React manifest has no entry.' }
+    $frontendAsset = $frontendEntry.file
+    $releaseManifest = [ordered]@{
+        version          = $Version
+        built_at         = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        git_commit       = (& git -C $repo rev-parse HEAD 2>$null)
+        frontend_entry   = $frontendAsset
+        frontend_sha256  = (Get-FileHash -LiteralPath (Join-Path $app "web\react\$($frontendAsset.Replace('/', '\'))") -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $utf8NoBom = [Text.UTF8Encoding]::new($false)
+    [IO.File]::WriteAllText((Join-Path $bundle 'release-manifest.json'), ($releaseManifest | ConvertTo-Json), $utf8NoBom)
+
     $npm = Join-Path $nodeArchiveRoot 'node_modules\npm\bin\npm-cli.js'
     $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1'
     Invoke-Checked (Join-Path $nodeDir 'node.exe') @($npm, 'ci', '--omit=dev', '--no-audit', '--no-fund', '--prefix', $adapter)
@@ -210,6 +239,7 @@ try {
     $setup = Join-Path $stage 'setup.iss'
     [IO.File]::WriteAllText($setup, [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'setup.iss')), $utf8Bom)
     [IO.File]::WriteAllText((Join-Path $bundle 'Launch.ps1'), [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Launch.ps1')), $utf8Bom)
+    [IO.File]::WriteAllText((Join-Path $bundle 'rollback.ps1'), [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'rollback.ps1')), $utf8Bom)
     Invoke-Checked $compiler @("/DAppVersion=$Version", "/DBundleDir=$bundle", "/DLanguageFile=$language", "/O$Output", $setup)
     $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
     Set-Content -LiteralPath "$asset.sha256" -Value "$hash  $([IO.Path]::GetFileName($asset))" -Encoding ASCII

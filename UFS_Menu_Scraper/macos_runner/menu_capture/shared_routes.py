@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
 from .shared import MAX_RESULT_SIZE, SharedConflict, SharedHub, WorkerUnauthorized, safe_artifact
+from .shared_history import HistoryReport
 from .shared_worker import SharedWorker
 
 
@@ -127,7 +128,12 @@ def register_shared_routes(app: FastAPI, role: str, hub: SharedHub | None,
         required = {"ready_ids", "pending_uploads"}
         if not required <= payload.keys() <= required | {"run_summary"}:
             raise ValueError("同步参数无效")
-        return hub.sync(worker_id, payload["ready_ids"], payload["pending_uploads"], payload.get("run_summary"))
+        with control_lock:
+            return hub.sync(worker_id, payload["ready_ids"], payload["pending_uploads"], payload.get("run_summary"))
+
+    @app.put("/api/shared/worker/run-history")
+    def run_history(request: Request, payload: HistoryReport):
+        return hub.record_run_history(computer(request), payload)
 
     @app.get("/api/shared/worker/assignments/{assignment_id}/source")
     def source(request: Request, assignment_id: str):

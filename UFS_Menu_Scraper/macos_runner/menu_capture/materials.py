@@ -31,6 +31,7 @@ from .preprocess import (
 from .image_tools import image_ocr
 from .material_jobs import JobRunner, JobStore, OPEN_STATUSES
 from .material_versions import MaterialVersions
+from .store_material_versions import StoreMaterialVersions
 from .store import TaskStore
 
 logger = logging.getLogger(__name__)
@@ -282,6 +283,7 @@ class MaterialService:
             prepare=self._prepare_job, on_finish=self._job_finished,
         )
         self.versions = MaterialVersions(self.task_store, self.published_root)
+        self.store_versions = StoreMaterialVersions(self.task_store, self.published_root)
         # 旧数据只做一次状态收敛：运行态按“是否所有门店都有决策”判定，不再无条件判死。
         self._migrate_legacy_batches()
         # 服务接收请求前只恢复一次清理事务，避免并发首请求重复处理同一暂存目录。
@@ -1604,33 +1606,48 @@ class MaterialService:
                 for batch_id, item in self._latest_versions().items()}
 
     def effective_capture_tasks(self) -> list[dict]:
-        """跨批次有效任务：每家门店只取所属原批次最新发布快照里的任务。
-
-        旧版本任务留在历史运行里，但不再进入列表、统计、全选或开跑，避免同一门店重复计数。
-        """
-        snapshot_index: dict[str, dict] = {}
-        for batch_id, item in self._latest_versions().items():
-            version, batch = item["version"], item["batch"]
-            snapshot_index[version["snapshot_id"]] = {
-                "batch_id": batch_id, "batch_name": batch["name"] or batch_id,
-                "version": version["version"], "snapshot_id": version["snapshot_id"],
-            }
-        seen: set[tuple[str, str]] = set()
+        """有门店发布记录的批次按门店选取任务，旧快照按原有方式兼容。"""
+        latest = self._latest_versions()
+        publications, blocked = self.store_versions.current({item["version"]["id"] for item in latest.values()})
+        tasks = self.task_store.tasks()
+        by_id = {task["id"]: task for task in tasks if not task["archived_at"]}
+        by_snapshot: dict[str, list[dict]] = {}
+        for task in by_id.values():
+            by_snapshot.setdefault(Path(task["source_path"]).parent.parent.name, []).append(task)
         result: list[dict] = []
-        for task in self.task_store.tasks():
-            if task.get("archived_at"):
-                continue
-            meta = snapshot_index.get(Path(task["source_path"]).parent.parent.name)
-            if meta is None:
-                continue
-            key = (meta["batch_id"], task["source_name"])
-            if key in seen:
-                continue
-            seen.add(key)
-            result.append({**task, **meta,
-                           "reject_label": REJECTION_REASONS.get(task.get("reject_reason", ""), ""),
-                           "runnable": (not waiting_for_materials(task)
-                                        and task["status"] in {"pending", "needs_review", "needs_retry", "error", "blocked"})})
+        for batch_id, item in latest.items():
+            release, batch = item["version"], item["batch"]
+            raw = publications.get(release["id"])
+            if raw is None:
+                legacy_stores = {}
+                marker = self.published_root / release["snapshot_id"] / ".materials-snapshot.json"
+                if marker.is_file():
+                    legacy_stores = {entry["source_name"]: entry["store_id"]
+                                     for entry in json.loads(marker.read_text(encoding="utf-8"))["stores"]}
+                raw = [{"task_id": task["id"], "store_id": legacy_stores.get(task["source_name"], ""), "revision": None}
+                       for task in by_snapshot.get(release["snapshot_id"], [])]
+            seen = set()
+            for mapping in raw:
+                task = by_id.get(mapping["task_id"])
+                if not task or task["source_name"] in seen:
+                    continue
+                seen.add(task["source_name"])
+                revision = mapping["revision"]
+                awaiting_publish = (batch_id, mapping["store_id"]) in blocked
+                state = {**task}
+                if awaiting_publish:
+                    state.update(status="blocked", stage="returned_to_materials", message="待重新选码并发布")
+                result.append({
+                    **state, "batch_id": batch_id, "batch_name": batch["name"] or batch_id,
+                    "version": f"v{revision}" if revision else release["version"],
+                    "material_version": revision, "batch_version": release["version"],
+                    "store_id": mapping["store_id"],
+                    "snapshot_id": Path(task["source_path"]).parent.parent.name,
+                    "batch_snapshot_id": release["snapshot_id"],
+                    "reject_label": REJECTION_REASONS.get(task.get("reject_reason", ""), ""),
+                    "runnable": (not waiting_for_materials(state)
+                                 and state["status"] in {"pending", "needs_review", "needs_retry", "error", "blocked"}),
+                })
         return sorted(result, key=lambda row: (row["batch_name"], row["source_name"]))
 
     def rework_records(self, batch_ids: list[str] | None = None) -> list[dict]:
@@ -1638,6 +1655,7 @@ class MaterialService:
         wanted = set(batch_ids) if batch_ids else None
         latest = self._latest_versions()
         manifests: dict[str, dict[str, tuple]] = {}
+        _, blocked = self.store_versions.current(set())
         with self.task_store.connect() as db:
             rows = [dict(row) for row in db.execute(
                 "SELECT * FROM material_decisions ORDER BY batch_id,source_folder,store_id")]
@@ -1665,7 +1683,7 @@ class MaterialService:
                 except ValueError:
                     current = (row["selected_source_hash"], None)
                 # 与最新快照一致的门店没有待发布内容，不进返工表。
-                if manifests[batch_id].get(row["store_id"]) == current:
+                if manifests[batch_id].get(row["store_id"]) == current and (batch_id, row["store_id"]) not in blocked:
                     continue
                 category = "unpublished"
             else:
@@ -1683,11 +1701,21 @@ class MaterialService:
         return records
 
     def return_rework_store(self, batch_id: str, store_id: str) -> dict:
-        """把选错码/不合格门店打回「待处理」，保留原批次，不新建批次或发布。"""
-        current = self.get_store(batch_id, store_id)
-        if current.get("decision") not in {"confirmed", "skipped", "pending"}:
-            raise ValueError("该门店当前没有可打回的决策")
-        self.decide_store(batch_id, store_id, "pending")
+        """先留存旧决策和采集证据，再锁定本店，重新发布才解除。"""
+        with self._lock:
+            batch = self._batch_row(batch_id)
+            if batch["status"] != "completed":
+                raise ValueError("分析未完成，不能打回门店")
+            decision = self._decision_row(batch_id, store_id)
+            task_ids = [row["id"] for row in self.effective_capture_tasks()
+                        if row["batch_id"] == batch_id and row["store_id"] == store_id]
+            with self.task_store.connect() as db:
+                self.store_versions.return_store(db, decision, task_ids)
+                db.execute("""
+                    UPDATE material_decisions SET decision='pending',selected_json='{}',selected_source_hash='',
+                        reject_reason='',reject_detail='',rejected_at='',reject_reviewed_at='',updated_at=?
+                    WHERE batch_id=? AND store_id=?
+                """, (_now(), batch_id, store_id))
         return self.get_store(batch_id, store_id)
 
     def set_approved(self, batch_id: str, approved: bool) -> dict:
@@ -1786,6 +1814,7 @@ class MaterialService:
             "store_id": store_id,
             "source_name": row["source_name"],
             "source_folder": row["source_folder"],
+            **self.store_versions.state(batch_id, store_id),
             "analysis_status": summary["analysis_status"],
             "reason": summary["reason"],
             "decision": row["decision"],
@@ -2020,6 +2049,15 @@ class MaterialService:
                 fingerprint = legacy_fingerprint
             else:
                 fingerprint = hashlib.sha256(batch_id.encode() + b"\0" + content).hexdigest()
+            if existing:
+                previous_root = self.published_root / existing[0]["snapshot_id"]
+                marker = previous_root / ".materials-snapshot.json"
+                last_stores = json.loads(marker.read_text(encoding="utf-8"))["stores"]
+                if last_stores == fingerprint_items:
+                    fingerprint = existing[0]["snapshot_id"]
+                elif any(row["snapshot_id"] == fingerprint for row in existing):
+                    # 内容回到旧图时，新发布仍有独立身份，旧采集结果不重新成为有效结果。
+                    fingerprint = hashlib.sha256(f"{fingerprint}:{existing[0]['snapshot_id']}".encode()).hexdigest()
             if version is None:
                 previous_version = next((row for row in existing if row["snapshot_id"] == fingerprint), None)
                 version = previous_version["version"] if previous_version else self.versions.suggested(batch_id)
@@ -2074,10 +2112,14 @@ class MaterialService:
                     self.configs.save(updated)
                 reuse_roots = [self.published_root / row["snapshot_id"] for row in existing]
                 task_scan = self.task_store.scan(snapshot, reuse_sources=reuse_roots)
+                store_records = self.store_versions.prepare(batch_id, snapshot, fingerprint_items,
+                                                            existing[0] if existing else None)
                 with self.task_store.connect() as db:
-                    self.versions.remember(db, batch_id, name.strip(), version, fingerprint, description, len(fingerprint_items), activate=activate)
-                    # 内容有变化（换码返工）时，此前的审核通过结论必须失效，等新结果复核。
-                    if fingerprint != (existing[0]["snapshot_id"] if existing else ""):
+                    release_id = self.versions.remember(db, batch_id, name.strip(), version, fingerprint, description,
+                                                        len(fingerprint_items), activate=activate)
+                    store_updates = self.store_versions.remember(db, batch_id, release_id, store_records,
+                                                                  {row["store_id"] for row in selected_items})
+                    if any(row["changed"] or row["unblocked"] for row in store_updates):
                         db.execute("UPDATE material_batches SET manual_stage='',approved_at='' "
                                    "WHERE id=? AND (manual_stage='approved' OR approved_at<>'')", (batch_id,))
             except Exception:
@@ -2092,6 +2134,7 @@ class MaterialService:
                 "release": next(item for item in self.versions.list(batch_id, Path(self.configs.load().input_dir).expanduser().resolve()) if item["version"] == version),
                 "input_dir": str(snapshot),
                 "task_scan": task_scan,
+                "store_updates": store_updates,
                 "already_published": already_published or task_scan.get("added", 0) == 0,
             }
 

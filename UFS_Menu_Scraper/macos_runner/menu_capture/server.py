@@ -13,6 +13,7 @@ import hmac
 import json
 import logging
 import os
+import socket
 import re
 import secrets
 import subprocess
@@ -21,7 +22,7 @@ import tempfile
 import threading
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 from urllib.parse import quote, urlsplit
@@ -35,7 +36,8 @@ from starlette.background import BackgroundTask
 from .config import ConfigStore, ROOT
 from .capture_outputs import batch_output_dir
 from .failures import describe as describe_failure
-from .capture_results import CAPTURE_RESULT_LABELS, capture_outcome, state_counts, store_state, waiting_for_materials
+from .capture_history import ACTIVE_RUN_STATUSES, capture_history_row, history_timestamp
+from .capture_results import capture_outcome, state_counts, store_state, waiting_for_materials
 from .store import TaskStore
 from .uipath_runner import UiPathRunner
 from .robot_profile import ProfileStore
@@ -67,7 +69,8 @@ def _rejection_store_code(text: str) -> str:
 
 
 def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
-               admin_password: str = "", allowed_hosts: tuple[str, ...] = ()) -> FastAPI:
+               admin_password: str = "", allowed_hosts: tuple[str, ...] = (),
+               remote_control_host: str = "", remote_control_password: str = "") -> FastAPI:
     if role not in {"standalone", "hub", "worker"} or (role == "hub" and not admin_password):
         raise ValueError("共享后台需要指定有效角色和管理员密码")
     # 无论通过脚本、python -m 或 ASGI 工厂启动，都只在本进程内禁用环境代理。
@@ -149,6 +152,14 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             connections.close()
             debug_log.close()
 
+    remote_control_host = remote_control_host.strip().lower()
+    if bool(remote_control_host) != bool(remote_control_password) or (
+        remote_control_host and (role != "worker" or len(remote_control_password) < 16
+                                 or not re.fullmatch(r"[a-z0-9.-]+\.[a-z0-9.-]+", remote_control_host))
+    ):
+        raise ValueError("远程半自动控制需要 Worker 的 HTTPS 主机名和至少 16 字符的独立密码")
+    remote_token = secrets.token_urlsafe(32) if remote_control_host else ""
+
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.runner, app.state.configs, app.state.store = runner, configs, store
     app.state.debug_log = debug_log
@@ -162,7 +173,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     app.state.shared_worker = worker
     register_shared_routes(app, role, hub, worker, control_lock)
 
-    def admin_authorized(header: str) -> bool:
+    def basic_authorized(header: str, expected_user: bytes, expected_password: str) -> bool:
         method, _, credentials = header.partition(" ")
         if method.casefold() != "basic" or len(credentials) > 4096:
             return False
@@ -170,7 +181,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             username, _, password = base64.b64decode(credentials, validate=True).partition(b":")
         except (ValueError, binascii.Error):
             return False
-        return username == b"admin" and hmac.compare_digest(password, admin_password.encode())
+        return username == expected_user and hmac.compare_digest(password, expected_password.encode())
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
@@ -179,9 +190,23 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         path = request.url.path
         worker_protocol = role == "hub" and path.startswith("/api/shared/worker/")
         hosts = {"127.0.0.1", "localhost"} | (set(allowed_hosts) if hub else set())
-        if host not in hosts:
-            return JSONResponse({"detail": "只允许本机访问"}, status_code=403)
-        if hub and not worker_protocol and path != "/healthz" and not admin_authorized(request.headers.get("authorization", "")):
+        is_remote = bool(remote_control_host and host == remote_control_host and request.url.scheme == "https")
+        request.state.remote_control = is_remote
+        if is_remote:
+            read_only = request.method in {"GET", "HEAD"} and (
+                path in {"/remote-control", "/api/session", "/api/manual/state", "/favicon.svg"} or path.startswith("/assets/")
+            )
+            command = request.method == "POST" and path in {"/api/manual/capture", "/api/manual/reject"}
+            if not (read_only or command):
+                return JSONResponse({"detail": "远程访问仅开放半自动控制"}, status_code=403)
+            if not basic_authorized(request.headers.get("authorization", ""), b"operator", remote_control_password):
+                return JSONResponse({"detail": "请输入采集端操作员账号"}, status_code=401,
+                                    headers={"WWW-Authenticate": 'Basic realm="Menu Capture Operator"'})
+        elif host not in hosts or (worker and request.url.scheme == "https"):
+            return JSONResponse({"detail": "只允许本机访问或已配置的远程控制入口"}, status_code=403)
+        if hub and not worker_protocol and path != "/healthz" and not basic_authorized(
+            request.headers.get("authorization", ""), b"admin", admin_password
+        ):
             return JSONResponse({"detail": "请输入共享工作台管理员账号"}, status_code=401,
                                 headers={"WWW-Authenticate": 'Basic realm="Menu Capture"'})
         if hub and (path in {"/api/start", "/api/scan", "/api/resume", "/api/ui-tars/trial", "/api/capture/start",
@@ -201,14 +226,18 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             supplied = request.headers.get("x-capture-token", "")
             origin = request.headers.get("origin")
             try:
-                origin_ok = not origin or (urlsplit(origin).netloc.lower() == authority
-                                           and urlsplit(origin).scheme in ({"http", "https"} if hub else {"http"}))
+                schemes = {"https"} if is_remote else ({"http", "https"} if hub else {"http"})
+                origin_ok = (not origin and not is_remote) or (bool(origin) and urlsplit(origin).netloc.lower() == authority
+                                                               and urlsplit(origin).scheme in schemes)
             except ValueError:
                 origin_ok = False
-            if not hmac.compare_digest(supplied.encode(), token.encode()) or not origin_ok:
+            expected_token = remote_token if is_remote else token
+            if not hmac.compare_digest(supplied.encode(), expected_token.encode()) or not origin_ok:
                 return JSONResponse({"detail": "本机操作令牌无效，请刷新控制台"}, status_code=403)
         response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
+        # 内容哈希资源由路由给出 immutable 缓存，其余响应一律 no-store。
+        if not (request.url.path.startswith("/assets/") and response.status_code == 200):
+            response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; connect-src 'self'"
@@ -317,27 +346,102 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         }
 
 
+    # React 是唯一业务前端：入口 HTML 与构建资源都来自 web/react/。
+    # 资源只按 Vite manifest 白名单返回，避免把构建目录里的其他文件暴露出去。
+    react_root = ROOT / "web" / "react"
+
+    def react_bundle() -> tuple[str, dict[str, Path], str]:
+        """读取一次 manifest，返回入口 HTML、允许对外提供的资源清单与入口文件名。"""
+        try:
+            manifest = json.loads((react_root / ".vite" / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise RuntimeError("前端控制台尚未构建，请先运行 web-react 的 npm run build") from error
+        entries = [item for item in manifest.values()
+                   if isinstance(item, dict) and item.get("isEntry")] if isinstance(manifest, dict) else []
+        if len(entries) != 1 or not isinstance(entries[0].get("file"), str):
+            raise RuntimeError("前端构建清单缺少唯一入口文件")
+        entry = entries[0]
+        assets: dict[str, Path] = {}
+        names = [entry["file"], *[item for item in entry.get("css", []) if isinstance(item, str)]]
+        for name in names:
+            relative = PurePosixPath(name)
+            # 只接受 assets/<文件名>，拒绝绝对路径、..、嵌套目录与隐藏文件。
+            if (relative.is_absolute() or len(relative.parts) != 2 or relative.parts[0] != "assets"
+                    or relative.parts[1].startswith(".")):
+                raise RuntimeError("前端构建清单包含非法资源路径")
+            target = react_root.joinpath(*relative.parts)
+            if not target.is_file():
+                raise RuntimeError(f"前端构建产物缺失: {name}")
+            assets[relative.parts[1]] = target
+        try:
+            html = (react_root / "index.html").read_text(encoding="utf-8")
+        except OSError as error:
+            raise RuntimeError("前端入口 HTML 缺失") from error
+        return html, assets, entry["file"]
+
     @app.get("/", response_class=HTMLResponse)
     def index():
-        html = (ROOT / "web/index.html").read_text(encoding="utf-8")
-        return html.replace("__CAPTURE_TOKEN__", token)
+        try:
+            html, _, _ = react_bundle()
+        except RuntimeError as error:
+            return HTMLResponse(str(error), status_code=503)
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+    @app.get("/remote-control", response_class=HTMLResponse)
+    def remote_control_page():
+        if worker is None:
+            raise HTTPException(404, "半自动控制仅在 Windows 采集端可用")
+        return index()
 
     @app.get("/assets/{name}")
-    def material_assets(name: str):
-        if name not in {"materials.js", "materials.css", "workspace.css", "model-usage.js", "model-usage.css",
-                        "annotation.js", "annotation.css", "task-center.js", "task-center.css",
-                        "shared-workbench.js", "task-center-vue-loader.js"}:
+    def react_assets(name: str):
+        """前端静态资源：按 manifest 白名单返回内容哈希文件，长期缓存。"""
+        try:
+            _, assets, _ = react_bundle()
+        except RuntimeError as error:
+            raise HTTPException(503, str(error)) from error
+        target = assets.get(name)
+        media_types = {
+            ".js": "text/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".svg": "image/svg+xml",
+            ".woff2": "font/woff2",
+            ".png": "image/png",
+        }
+        media_type = media_types.get(target.suffix.lower()) if target else None
+        if target is None or media_type is None:
             raise HTTPException(404, "资源不存在")
-        return FileResponse(ROOT / "web" / name, headers={"Cache-Control": "no-cache"})
+        return FileResponse(target, media_type=media_type,
+                            headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
-    @app.get("/vue/{name}")
-    def vue_assets(name: str):
-        """Vue 试点构建产物：固定文件名、同源加载，不依赖 CDN 或开发服务器。"""
-        base = (ROOT / "web" / "vue").resolve()
-        target = (base / name).resolve()
-        if target.suffix not in {".js", ".css"} or not target.is_relative_to(base) or not target.is_file():
+    @app.get("/favicon.svg")
+    def favicon():
+        target = react_root / "favicon.svg"
+        if not target.is_file():
             raise HTTPException(404, "资源不存在")
-        return FileResponse(target, headers={"Cache-Control": "no-cache"})
+        return FileResponse(target, media_type="image/svg+xml",
+                            headers={"Cache-Control": "public, max-age=86400"})
+
+    @app.get("/api/version")
+    def version_info():
+        # 发布版本由安装启动器或镜像环境的 MENU_CAPTURE_VERSION 提供；
+        # 入口哈希文件名即前端构建 ID，便于升级/回滚后核对实际运行产物。
+        frontend = ""
+        try:
+            _, _, entry = react_bundle()
+            frontend = PurePosixPath(entry).name
+        except RuntimeError:
+            frontend = ""
+        version = os.environ.get("MENU_CAPTURE_VERSION", "")
+        # 老守护进程升级时仍在内存中执行旧启动脚本，可能没有传入版本环境变量。
+        # 从本次运行目录的发布清单补齐，绝不根据其他版本目录推断。
+        if worker:
+            try:
+                release = json.loads((ROOT.parent / "release-manifest.json").read_text(encoding="utf-8"))
+                version = str(release.get("version") or version)
+            except (OSError, ValueError, AttributeError):
+                pass
+        return {"version": version, "frontend": frontend}
 
     @app.get("/api/model-usage")
     def model_usage_report(date_from: str | None = None, date_to: str | None = None,
@@ -401,9 +505,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return {"cancelled": False, "path": str(path)}
 
     @app.get("/api/session")
-    def local_session():
-        # 服务恢复后同源页面换取新令牌；与首页一样由浏览器同源策略保护。
-        return {"token": token}
+    def local_session(request: Request):
+        # 远程控制与本机控制台使用不同权限范围的令牌。
+        return {"token": remote_token if request.state.remote_control else token}
 
     @app.post("/api/config")
     def configure(payload: dict):
@@ -448,7 +552,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                queue_scope: Literal["all", "current"] = "all",
                queue_batch: Annotated[str, Query(max_length=128)] = "",
                queue_q: Annotated[str, Query(max_length=300)] = "",
-               queue_filter: Literal["all", "pending", "running", "captured", "rejected", "review"] = "all",
+               queue_filter: Literal["all", "pending", "running", "captured", "rejected", "review", "returned"] = "all",
                queue_sort: Literal["source", "recent", "status"] = "source",
                selected: Annotated[str, Query(max_length=9000)] = "",
                include_events: bool = True):
@@ -807,57 +911,20 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 "created_at": run["created_at"],
                 "updated_at": run["updated_at"],
             })
+        if hub:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+            for row in hub.history_records(shortcut_since=cutoff.isoformat(timespec="seconds")):
+                if row["status"] not in ACTIVE_RUN_STATUSES and history_timestamp(row["updated_at"]) < cutoff.timestamp():
+                    continue
+                items.append({
+                    "source": "capture", "id": row["id"], "title": row["title"],
+                    "kind": row["mode"], "status": row["status"],
+                    "progress": {"done": row["counts"]["processed"], "total": row["counts"]["total"]},
+                    "extra": {"worker_id": row["worker_id"], "worker_name": row["worker_name"],
+                              "synced_at": row["synced_at"]},
+                    "created_at": row["created_at"], "updated_at": row["updated_at"],
+                })
         return {"tasks": items}
-
-    def capture_run_title(run: dict, total: int, batch_name: str) -> str:
-        """任务名以显式保存值为准；旧占位名按可信模式和数量生成，避免历史记录都叫 automatic。"""
-        saved = (run.get("name") or "").strip()
-        if saved and saved != "automatic":
-            return saved
-        if batch_name:
-            return batch_name
-        label = {"auto": "全自动采集", "manual": "半自动采集"}.get(run.get("capture_mode") or "", "批量采集")
-        return f"{label} · {total} 家" if total else label
-
-    def capture_history_row(run: dict, recorded: list[dict], task_index: dict) -> dict:
-        """旧轮次保留门店明细和批次信息，轮次结果仅采用当时留存的记录。"""
-        batch_id = run.get("material_batch_id") or ""
-        index = {row["task_id"]: row for row in recorded}
-        outcomes = Counter(row["outcome"] for row in recorded)
-        batches = {}
-        entries = []
-        ids = run.get("task_ids") or []
-        for task_id in ids:
-            result = index.get(task_id, {})
-            task = task_index.get(task_id, {})
-            source_batch = result.get("batch_id") or task.get("batch_id") or batch_id
-            name = result.get("batch_name") or task.get("batch_name") or source_batch
-            version = result.get("version") or task.get("version") or ""
-            if source_batch:
-                batch = batches.setdefault(source_batch, {"id": source_batch, "name": name, "versions": [], "stores": 0})
-                batch["stores"] += 1
-                if version and version not in batch["versions"]:
-                    batch["versions"].append(version)
-            outcome = result.get("outcome", "")
-            label = CAPTURE_RESULT_LABELS.get(outcome, "未记录结果" if not result else "未处理")
-            if result and not outcome and task_id == run.get("current_task_id") and run["status"] == "running":
-                label = "正在处理"
-            entries.append({"task_id": task_id, "store_name": result.get("store_name") or task.get("source_name", ""),
-                            "batch_name": name, "version": version, "status": outcome, "label": label,
-                            "message": result.get("message", ""), "reject_reason": result.get("reject_reason", "")})
-        batch_list = list(batches.values())
-        batch_name = batch_list[0]["name"] if len(batch_list) == 1 else ""
-        title = capture_run_title(run, len(ids), batch_name)
-        return {"kind": "capture", "id": run["id"], "title": title, "mode": run.get("mode", ""),
-                "name": (run.get("name") or ""),
-                "batch_id": batch_list[0]["id"] if len(batch_list) == 1 else "",
-                "batch_name": batch_name, "batches": batch_list,
-                "status": run.get("status", ""), "created_at": run.get("created_at", ""),
-                "updated_at": run.get("updated_at", ""), "message": run.get("message", ""),
-                "counts": {"total": len(ids), "done": outcomes["captured"], "attention": outcomes["review"],
-                           "rejected": outcomes["rejected"], "recorded": sum(outcomes[key] for key in CAPTURE_RESULT_LABELS),
-                           "unknown": len(ids)-len(recorded), "failed": 0},
-                "tasks": entries}
 
     def capture_history_task_index() -> dict:
         # 在采集端按分配记录补充旧轮次来源；在共享后台按当前发布快照提取批次。
@@ -875,20 +942,23 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return tasks
 
     @app.get("/api/tasks/history")
-    def task_history(kind: str = "all", status: str = "", q: str = "", page: int = 1, page_size: int = 20):
+    def task_history(kind: str = "all", status: str = "", q: str = "", page: int = 1,
+                     page_size: int = 20, worker_id: str = ""):
         """任务中心历史页：采集运行与素材分析任务统一成同一结构，按时间倒序分页。"""
         page = max(1, int(page))
         page_size = min(100, max(5, int(page_size)))
         rows: list[dict] = []
         if kind in ("all", "capture"):
-            runs = store.run_history(500)
+            runs = store.run_history(500) if not worker_id else []
             results = store.capture_run_results([run["id"] for run in runs])
-            task_index = capture_history_task_index()
+            task_index = capture_history_task_index() if runs else {}
             for run in runs:
                 item = capture_history_row(run, results.get(run["id"], []), task_index)
                 item.pop("tasks")
                 rows.append(item)
-        if kind in ("all", "materials"):
+            if hub:
+                rows.extend(hub.history_records(worker_id=worker_id))
+        if kind in ("all", "materials") and not worker_id:
             for job in materials.jobs.history(500):
                 rows.append({
                     "kind": "materials",
@@ -908,7 +978,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                         "failed": int(job.get("failed_stores") or 0),
                     },
                 })
-        active = {"queued", "running", "pause_requested", "paused", "interrupted", "blocked", "resuming", "terminating"}
+        active = ACTIVE_RUN_STATUSES
         aborted = {"terminated", "stopped"}
         errors = {"failed", "cancelled"}
         if status:
@@ -917,9 +987,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         normalized = q.strip().casefold()
         if normalized:
             rows = [row for row in rows
-                    if normalized in (" ".join([row["title"], row["batch_name"], row["id"],
+                    if normalized in (" ".join([row["title"], row["batch_name"], row["id"], row.get("worker_name", ""),
                                            *(batch["name"] for batch in row.get("batches", []))])).casefold()]
-        rows.sort(key=lambda row: row["created_at"], reverse=True)
+        rows.sort(key=lambda row: (history_timestamp(row["created_at"]), row["id"]), reverse=True)
         total = len(rows)
         page_count = max(1, (total + page_size - 1) // page_size)
         page = min(page, page_count)
@@ -942,6 +1012,12 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     def task_history_detail(kind: str, item_id: str):
         """历史任务详情：采集运行返回逐店状态，素材分析返回阶段事件。"""
         if kind == "capture":
+            if hub and ":" in item_id:
+                worker_id, run_id = item_id.split(":", 1)
+                record = hub.history_detail(worker_id, run_id)
+                if record is not None:
+                    return record
+                raise HTTPException(404, "采集电脑的轮次尚未同步或不存在")
             run = store.get_run(item_id)
             if run is None:
                 raise HTTPException(404, "运行记录不存在")
@@ -949,11 +1025,19 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return capture_history_row(run, results, capture_history_task_index())
         if kind == "materials":
             job = materials.job_detail(item_id, events=True)
+            # 与列表行保持同一口径：进度来自 job 行本身，不能返回空 counts 让前端显示 0/0。
             return {"kind": "materials", "id": item_id, "title": _batch_name(job["batch_id"]),
+                    "batch_id": job["batch_id"], "batch_name": _batch_name(job["batch_id"]),
                     "mode": job.get("kind", ""), "status": job.get("status", ""),
                     "created_at": job.get("created_at", ""), "updated_at": job.get("updated_at", ""),
                     "message": job.get("message", "") or job.get("error", ""),
-                    "counts": job.get("counts", {}), "events": job.get("events", [])}
+                    "counts": {
+                        "total": int(job.get("total_stores") or 0),
+                        "done": int(job.get("done_stores") or 0),
+                        "attention": 0,
+                        "failed": int(job.get("failed_stores") or 0),
+                    },
+                    "events": job.get("events", [])}
         raise HTTPException(404, "任务类型不存在")
 
     @app.patch("/api/tasks/history/capture/{run_id}")
@@ -1069,8 +1153,6 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         with control_lock:
             fields = payload or {}
             materials.versions.validate(fields.get("name"), fields.get("version"), fields.get("description", ""))
-            if hub:
-                hub.protect_publish(batch_id, None)
             run = store.latest_run()
             can_activate = not runner.running and not (run and run["status"] in {"paused", "blocked", "interrupted"})
             result = materials.publish_snapshot(
@@ -1079,6 +1161,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             )
             if can_activate:
                 runner.invalidate_readiness()
+            if hub:
+                hub.reconcile_assignments()
             return result
 
     @app.get("/api/materials/rework")
@@ -1108,7 +1192,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             raise ValueError("打回参数无效")
         with control_lock:
             idle()
-            return materials.return_rework_store(str(payload["batch_id"]), str(payload["store_id"]))
+            result = materials.return_rework_store(str(payload["batch_id"]), str(payload["store_id"]))
+            if hub:
+                hub.reconcile_assignments()
+            return result
 
     @app.post("/api/materials/rework/publish")
     def publish_material_rework(payload: dict):
@@ -1134,15 +1221,16 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             idle()
             for batch_id, ids in groups.items():
                 try:
-                    if hub:
-                        hub.protect_publish(batch_id, ids)
                     result = materials.publish_snapshot(batch_id, description, store_ids=ids, activate=False)
+                    if hub:
+                        hub.reconcile_assignments()
                     results.append({
                         "batch_id": batch_id, "batch_name": names.get(batch_id, ""),
                         "snapshot_id": result["snapshot_id"],
                         "version": result["release"]["version"],
                         "already_published": result["already_published"],
                         "task_scan": result["task_scan"],
+                        "store_updates": result["store_updates"],
                     })
                 except Exception as exc:
                     errors.append({"batch_id": batch_id, "batch_name": names.get(batch_id, ""),
@@ -1341,34 +1429,60 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 logger.exception("记录采集轮次失败")
             return {**result, "status": status()}
 
-    def _manual_action(kind: str, reason: str = "", detail: str = "") -> dict:
+    def manual_device() -> tuple[str, str]:
+        local_name = socket.gethostname()
+        connection = worker.connection if worker else {}
+        return connection.get("id") or local_name, connection.get("name") or local_name
+
+    def _manual_action(request: Request, kind: str, payload: dict) -> dict:
+        expected = payload.get("context")
+        if request.state.remote_control or expected is not None:
+            keys = {"device_id", "run_id", "task_id", "wait_id"}
+            if (not isinstance(expected, dict) or set(expected) != keys
+                    or any(not isinstance(expected[key], str) or not expected[key] for key in keys)
+                    or expected["device_id"] != manual_device()[0]):
+                raise HTTPException(409, "采集端或门店上下文已失效，请重读当前状态")
         try:
-            result = runner.manual_action(kind, reason, detail)
+            result = runner.manual_action(kind, str(payload.get("reason") or ""),
+                                          str(payload.get("detail") or ""), expected=expected)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
+        if request.state.remote_control:
+            return result | {"manual": runner.manual_state()}
         return result | {"manual": runner.manual_state(), "status": status()}
 
     @app.get("/api/manual/state")
     def manual_state():
-        return {"manual": runner.manual_state()}
+        device_id, device_name = manual_device()
+        run = store.latest_run()
+        return {"device_id": device_id, "device_name": device_name, "manual": runner.manual_state(),
+                "run_name": run.get("name") or "半自动采集" if run else "",
+                "run_status": run["status"] if run else "",
+                "remote_url": f"https://{remote_control_host}/remote-control" if remote_control_host else ""}
 
     @app.post("/api/manual/capture")
-    def manual_capture():
+    def manual_capture(request: Request, payload: dict | None = None):
+        payload = payload or {}
+        if set(payload) - {"context"}:
+            raise ValueError("截图参数无效")
         with control_lock:
-            return _manual_action("capture")
+            return _manual_action(request, "capture", payload)
 
     @app.post("/api/manual/reject")
-    def manual_reject(payload: dict | None = None):
+    def manual_reject(request: Request, payload: dict | None = None):
         payload = payload or {}
-        if set(payload) - {"reason", "detail"}:
+        if set(payload) - {"reason", "detail", "context"}:
             raise ValueError("不合格参数无效")
         with control_lock:
-            return _manual_action("reject", str(payload.get("reason") or ""), str(payload.get("detail") or ""))
+            return _manual_action(request, "reject", payload)
 
     @app.post("/api/manual/skip")
-    def manual_skip():
+    def manual_skip(request: Request, payload: dict | None = None):
+        payload = payload or {}
+        if set(payload) - {"context"}:
+            raise ValueError("跳过参数无效")
         with control_lock:
-            return _manual_action("skip")
+            return _manual_action(request, "skip", payload)
 
     @app.post("/api/manual/reason")
     def manual_reason(payload: dict):
@@ -1508,12 +1622,14 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return debug_log.clear()
 
     @app.get("/api/rejections")
-    def list_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all"):
-        return rejections.list(source, reason, q, batch_id)
+    def list_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all",
+                        reviewed: str = "all"):
+        return rejections.list(source, reason, q, batch_id, reviewed)
 
     @app.get("/api/rejections/export.xlsx")
-    def export_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all"):
-        content = rejections.export_xlsx(source, reason, q, batch_id)
+    def export_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all",
+                          reviewed: str = "all"):
+        content = rejections.export_xlsx(source, reason, q, batch_id, reviewed)
         filename = "不合格门店清单.xlsx"
         return Response(
             content,
@@ -1535,6 +1651,15 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 reviewed=payload["reviewed"],
             )
 
+    @app.post("/api/rejections/undo-batch")
+    def undo_rejections_batch(payload: dict):
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict) or set(payload) != {"items"}:
+            raise ValueError("批量撤销参数无效")
+        with control_lock:
+            idle()
+            return rejections.undo_many(items, protect_task=hub.protect_task if hub else None)
+
     @app.post("/api/tasks/{task_id}/reject")
     def reject_task(task_id: str, payload: dict):
         if set(payload) - {"reason", "detail"} or "reason" not in payload:
@@ -1555,12 +1680,13 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
 
     @app.post("/api/rejections/tasks/{task_id}/return-to-materials")
     def return_rejection_to_materials(task_id: str):
-        """把采集不合格打回素材清洗；不新建批次或发布。"""
+        """打回当前门店，保留此前执行与迟到结果供回查。"""
         with control_lock:
             idle()
+            result = rejections.return_to_materials(task_id)
             if hub:
-                hub.protect_task(task_id)
-            return rejections.return_to_materials(task_id)
+                hub.reconcile_assignments()
+            return result
 
     @app.get("/api/rejections/tasks/{task_id}/evidence")
     def rejection_evidence(task_id: str):
@@ -1885,7 +2011,11 @@ def main():
     try:
         with instance_lock(home / "data/runner.lock"):
             os.umask(0o077)
-            app = create_app(home, role=role, admin_password=password, allowed_hosts=allowed_hosts)
+            app = create_app(
+                home, role=role, admin_password=password, allowed_hosts=allowed_hosts,
+                remote_control_host=os.environ.get("MENU_CAPTURE_REMOTE_CONTROL_HOST", ""),
+                remote_control_password=os.environ.get("MENU_CAPTURE_REMOTE_CONTROL_PASSWORD", ""),
+            )
             app.state.debug_log.install_service_logging()
             uvicorn.run(app, host=host, port=port, access_log=False, log_config=None)
     except InstanceLockedError:

@@ -239,7 +239,7 @@ class UsageLedger:
             page = min(page, max(1, pages))
             summary = dict(db.execute(f"SELECT {self._aggregate_sql()} FROM model_calls WHERE {clause}", params).fetchone())
             calls = [dict(r) for r in db.execute(
-                f"SELECT * FROM model_calls WHERE {clause} ORDER BY started_at DESC,call_id DESC LIMIT ? OFFSET ?",
+                f"SELECT * FROM model_calls WHERE {clause} ORDER BY started_at DESC,rowid DESC LIMIT ? OFFSET ?",
                 [*params, page_size, (page-1)*page_size])]
             if group_by == "day":
                 select = "local_day AS key, local_day AS label"
