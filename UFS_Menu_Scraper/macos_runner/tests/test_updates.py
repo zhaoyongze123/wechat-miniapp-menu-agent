@@ -10,6 +10,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
+from urllib.request import Request
 
 import pytest
 
@@ -486,7 +488,13 @@ class FakeOpener:
         start = 0
         if headers.get("Range") and not self.ignore_range:
             start = int(headers["Range"].split("=", 1)[1].strip("-"))
-        yield self.status or (206 if start else 200), {}, io.BytesIO(self.body[start:])
+        if start:
+            yield 206, {
+                "Content-Range": f"bytes {start}-{len(self.body) - 1}/{len(self.body)}",
+                "Content-Length": str(len(self.body) - start),
+            }, io.BytesIO(self.body[start:])
+        else:
+            yield self.status or 200, {"Content-Length": str(len(self.body))}, io.BytesIO(self.body)
 
 
 class SlowResponse:
@@ -718,4 +726,96 @@ def test_interrupted_download_is_reported_after_restart(tmp_path):
     assert state["status"] == "interrupted"
     assert state["active"] is False
     assert state["resumable"] is True
+
+
+class WrongRangeOpener:
+    """首次续传返回与断点不一致的范围，只有完整重下才返回正确内容。"""
+
+    def __init__(self, body: bytes):
+        self.body = body
+        self.calls: list[dict] = []
+
+    @contextmanager
+    def __call__(self, url, headers, timeout):
+        self.calls.append(dict(headers))
+        if headers.get("Range"):
+            yield 206, {"Content-Range": "bytes 5-9/1000", "Content-Length": "5"}, io.BytesIO(b"wrong")
+        else:
+            yield 200, {"Content-Length": str(len(self.body))}, io.BytesIO(self.body)
+
+
+def test_resume_restarts_when_content_range_is_invalid(tmp_path):
+    body = b"range-check" * 100
+    opener = WrongRangeOpener(body)
+    service = prepared_service(tmp_path, body, opener)
+    part = service.download_dir / "0.3.0" / (ASSET_NAME + ".part")
+    part.parent.mkdir(parents=True, exist_ok=True)
+    part.write_bytes(body[:10])
+
+    service.start_download()
+    state = wait_download(service)
+
+    assert state["status"] == "completed"
+    assert len(opener.calls) == 2
+    assert "Range" not in opener.calls[1]
+    assert Path(state["path"]).read_bytes() == body
+
+
+def test_resume_sends_if_range_from_previous_etag(tmp_path):
+    body = b"etag-body" * 200
+    opener = FakeOpener(body)
+    service = prepared_service(tmp_path, body, opener)
+    part = service.download_dir / "0.3.0" / (ASSET_NAME + ".part")
+    part.parent.mkdir(parents=True, exist_ok=True)
+    part.write_bytes(body[:50])
+    service._download_state.update({
+        "version": "0.3.0",
+        "asset_name": ASSET_NAME,
+        "sha256": hashlib.sha256(body).hexdigest(),
+        "etag": '"v1"',
+    })
+
+    service.start_download()
+    state = wait_download(service)
+
+    assert state["status"] == "completed"
+    assert opener.headers[0]["If-Range"] == '"v1"'
+    assert Path(state["path"]).read_bytes() == body
+
+
+def test_ignored_range_rechecks_disk_for_full_size(tmp_path, monkeypatch):
+    body = b"z" * 100
+    opener = FakeOpener(body, ignore_range=True)
+    service = prepared_service(tmp_path, body, opener)
+    part = service.download_dir / "0.3.0" / (ASSET_NAME + ".part")
+    part.parent.mkdir(parents=True, exist_ok=True)
+    part.write_bytes(body[:10])
+    calls: list[int] = []
+
+    def fake_usage(path):
+        calls.append(1)
+        # 第一次续传预检通过；忽略 Range 后需要完整文件大小，第二次返回不足。
+        return SimpleNamespace(free=10 ** 12) if len(calls) == 1 else SimpleNamespace(free=0)
+
+    monkeypatch.setattr("menu_capture.updates.shutil.disk_usage", fake_usage)
+    service.start_download()
+    state = wait_download(service)
+
+    assert state["status"] == "failed"
+    assert "磁盘剩余空间不足" in state["error"]
+
+
+def test_redirect_handler_rejects_untrusted_hosts():
+    from menu_capture.updates import _TrustedRedirectHandler
+
+    handler = _TrustedRedirectHandler()
+    request = Request("https://github.com/zhaoyongze123/example/releases/download/v1/a.exe")
+    with pytest.raises(HTTPError):
+        handler.redirect_request(request, None, 302, "Found", {}, "https://evil.example/a.exe")
+    with pytest.raises(HTTPError):
+        handler.redirect_request(request, None, 302, "Found", {}, "http://objects.githubusercontent.com/a.exe")
+    allowed = handler.redirect_request(
+        request, None, 302, "Found", {}, "https://release-assets.githubusercontent.com/a.exe?signature=1"
+    )
+    assert allowed is not None and allowed.full_url.startswith("https://release-assets.githubusercontent.com/")
 

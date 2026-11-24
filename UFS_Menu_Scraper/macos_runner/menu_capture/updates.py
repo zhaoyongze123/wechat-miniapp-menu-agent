@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 DEFAULT_REPOSITORY = "zhaoyongze123/wechat-miniapp-menu-agent"
 CHANNELS = {"stable", "preview"}
@@ -47,6 +47,7 @@ DOWNLOAD_PROGRESS_PERSIST_BYTES = 4 * 1024 * 1024
 MANIFEST_ASSET = "update-manifest.json"
 _VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$", re.IGNORECASE)
 # 发布资产与本机架构统一归一化后再比较，避免 x64/amd64/x86_64 三种写法造成误判。
 _ARCH_ALIASES = {
     "x64": "x64",
@@ -164,6 +165,39 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(DOWNLOAD_CHUNK_BYTES), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _header_value(headers: dict[str, str], name: str) -> str:
+    """响应头大小写不固定，统一按小写取值。"""
+    for key, value in headers.items():
+        if str(key).lower() == name:
+            return str(value)
+    return ""
+
+
+def _int_header(headers: dict[str, str], name: str) -> int | None:
+    try:
+        return int(_header_value(headers, name))
+    except (TypeError, ValueError):
+        return None
+
+
+def _valid_content_range(headers: dict[str, str], offset: int, size: int) -> bool:
+    """校验续传范围必须从本地断点开始、到清单末尾结束，且长度与清单一致。"""
+    match = _CONTENT_RANGE_RE.fullmatch(_header_value(headers, "content-range").strip())
+    if not match:
+        return False
+    start, end, total = int(match.group(1)), int(match.group(2)), match.group(3)
+    if start != offset or end < start:
+        return False
+    if total != "*" and (int(total) != size or end != size - 1):
+        return False
+    length = _int_header(headers, "content-length")
+    return length is None or length == size - offset
+
+
+class _ResumeMismatch(Exception):
+    """本地断点与服务器返回范围不一致；调用方应丢弃断点并重下一次完整文件。"""
 
 
 def _normalize_arch(value: Any) -> str:
@@ -538,6 +572,13 @@ class UpdateService:
             if asset is None:
                 raise ValueError("发布清单中没有与本机平台和架构匹配的资产")
             version = str(latest.get("version") or "")
+            previous = dict(self._download_state)
+            # 同一版本、同一资产续传时保留 ETag/Last-Modified，用于 If-Range 防止拼接已变化的资源。
+            same_asset = (
+                previous.get("version") == version
+                and previous.get("asset_name") == str(asset.get("name") or "")
+                and previous.get("sha256") == str(asset.get("sha256") or "")
+            )
             self._downloading = True
             self._download_cancel = threading.Event()
             self._download_persisted = 0
@@ -548,6 +589,10 @@ class UpdateService:
                 "version": version,
                 "asset_kind": str(asset.get("kind") or ""),
                 "asset_name": str(asset.get("name") or ""),
+                # 记录资产身份，安装前与后续版本绑定判断都以它为准，不能只看 completed。
+                "sha256": str(asset.get("sha256") or ""),
+                "etag": str(previous.get("etag") or "") if same_asset else "",
+                "last_modified": str(previous.get("last_modified") or "") if same_asset else "",
                 "total": int(asset.get("size") or 0),
                 "started_at": _utc_now(),
             }
@@ -594,47 +639,77 @@ class UpdateService:
             free = shutil.disk_usage(final.parent).free
             if free < size - offset + DOWNLOAD_FREE_SPACE_MARGIN:
                 raise ValueError(f"磁盘剩余空间不足：需要 {size - offset} 字节，可用 {free} 字节")
-            if cancel.is_set():
-                self._finish_download("cancelled", error="下载已取消，已保留断点")
-                return
-            self._report_progress(offset, persist=True)
-            hasher = hashlib.sha256()
-            if offset:
-                with part.open("rb") as handle:
-                    for chunk in iter(lambda: handle.read(DOWNLOAD_CHUNK_BYTES), b""):
-                        hasher.update(chunk)
-            headers = {"Accept": "application/octet-stream", "User-Agent": "menu-capture-updater"}
-            if offset:
-                headers["Range"] = f"bytes={offset}-"
             written = offset
-            with self._opener(str(asset.get("url") or ""), headers, DOWNLOAD_TIMEOUT_SECONDS) as opened:
-                status, _, response = opened
-                if status == 416:
-                    raise ValueError("服务器拒绝续传，请重新开始下载")
-                if status not in {200, 206}:
-                    raise ValueError(f"下载失败（HTTP {status}）")
-                append = status == 206 and offset > 0
-                if offset and not append:
-                    # 服务器忽略 Range：必须从零重写，否则新旧内容拼接会得到损坏文件。
+            # 断点与服务器范围不一致时，最多重下一次完整文件，避免把错误范围拼接进产物。
+            for attempt in (1, 2):
+                if cancel.is_set():
+                    self._finish_download("cancelled", error="下载已取消，已保留断点")
+                    return
+                self._report_progress(offset, persist=True)
+                hasher = hashlib.sha256()
+                if offset:
+                    with part.open("rb") as handle:
+                        for chunk in iter(lambda: handle.read(DOWNLOAD_CHUNK_BYTES), b""):
+                            hasher.update(chunk)
+                headers = {"Accept": "application/octet-stream", "User-Agent": "menu-capture-updater"}
+                if offset:
+                    headers["Range"] = f"bytes={offset}-"
+                    etag = str(self._download_state.get("etag") or "")
+                    # If-Range 让服务器在资源已变化时返回完整文件而不是错误区段。
+                    if etag:
+                        headers["If-Range"] = etag
+                try:
+                    with self._opener(str(asset.get("url") or ""), headers, DOWNLOAD_TIMEOUT_SECONDS) as opened:
+                        status, response_headers, response = opened
+                        if status == 416:
+                            raise _ResumeMismatch("服务器拒绝了当前断点范围")
+                        if status == 206:
+                            if offset <= 0 or not _valid_content_range(response_headers, offset, size):
+                                raise _ResumeMismatch("服务器返回的续传范围与本地断点或清单大小不一致")
+                            append = True
+                        elif status == 200:
+                            append = False
+                        else:
+                            raise ValueError(f"下载失败（HTTP {status}）")
+                        if not append:
+                            length = _int_header(response_headers, "content-length")
+                            if length is not None and length != size:
+                                raise ValueError("下载响应大小与发布清单不一致，已中止")
+                            if offset:
+                                # 服务器忽略 Range 或资源已变化：从零重写，并重新确认完整文件的磁盘余量。
+                                offset = 0
+                                written = 0
+                                hasher = hashlib.sha256()
+                                part.unlink(missing_ok=True)
+                                self._report_progress(0, persist=True)
+                                free = shutil.disk_usage(final.parent).free
+                                if free < size + DOWNLOAD_FREE_SPACE_MARGIN:
+                                    raise ValueError(f"磁盘剩余空间不足：需要 {size} 字节，可用 {free} 字节")
+                        self._set_download_meta(response_headers)
+                        with part.open("ab" if append else "wb") as handle:
+                            while True:
+                                chunk = response.read(DOWNLOAD_CHUNK_BYTES)
+                                if not chunk:
+                                    break
+                                if cancel.is_set():
+                                    self._finish_download("cancelled", error="下载已取消，已保留断点")
+                                    return
+                                written += len(chunk)
+                                # 不能只信 Content-Length：响应体超过清单大小时立即中止。
+                                if written > size:
+                                    raise ValueError("下载内容超过发布清单声明的大小，已中止")
+                                hasher.update(chunk)
+                                handle.write(chunk)
+                                self._report_progress(written)
+                except _ResumeMismatch as exc:
+                    if attempt >= 2:
+                        raise ValueError(f"{exc}，请重新开始下载") from exc
+                    part.unlink(missing_ok=True)
                     offset = 0
                     written = 0
-                    hasher = hashlib.sha256()
                     self._report_progress(0, persist=True)
-                with part.open("ab" if append else "wb") as handle:
-                    while True:
-                        chunk = response.read(DOWNLOAD_CHUNK_BYTES)
-                        if not chunk:
-                            break
-                        if cancel.is_set():
-                            self._finish_download("cancelled", error="下载已取消，已保留断点")
-                            return
-                        written += len(chunk)
-                        # 不能只信 Content-Length：响应体超过清单大小时立即中止。
-                        if written > size:
-                            raise ValueError("下载内容超过发布清单声明的大小，已中止")
-                        hasher.update(chunk)
-                        handle.write(chunk)
-                        self._report_progress(written)
+                    continue
+                break
             if written != size:
                 raise ValueError(f"下载未完成：{written}/{size} 字节，可重试续传")
             self._set_download_status("verifying")
@@ -650,6 +725,20 @@ class UpdateService:
             with self._lock:
                 self._downloading = False
                 self._download_cancel = None
+
+    def _set_download_meta(self, headers: dict[str, str]) -> None:
+        etag = _header_value(headers, "etag")
+        modified = _header_value(headers, "last-modified")
+        if not etag and not modified:
+            return
+        with self._lock:
+            state = dict(self._download_state)
+            if etag:
+                state["etag"] = etag
+            if modified:
+                state["last_modified"] = modified
+            self._download_state = state
+            self._write_download_state()
 
     def _part_path(self, version: str, name: str) -> Path:
         return self.download_dir / str(version) / (str(name) + ".part")
@@ -933,6 +1022,9 @@ def _empty_download_state() -> dict:
         "version": "",
         "asset_kind": "",
         "asset_name": "",
+        "sha256": "",
+        "etag": "",
+        "last_modified": "",
         "downloaded": 0,
         "total": 0,
         "started_at": "",
@@ -942,12 +1034,27 @@ def _empty_download_state() -> dict:
     }
 
 
+class _TrustedRedirectHandler(HTTPRedirectHandler):
+    """只允许重定向到受信任域名，避免清单或资产下载被引导到任意主机。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urlsplit(str(newurl or ""))
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or host not in ALLOWED_ASSET_HOSTS | {"api.github.com"}:
+            raise HTTPError(newurl, code, "下载重定向到未授权域名", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# 进程级复用；所有发布发现与资产请求统一经过受信任重定向策略。
+_TRUSTED_OPENER = build_opener(_TrustedRedirectHandler())
+
+
 @contextmanager
 def _http_open(url: str, headers: dict[str, str], timeout: float):
     """流式打开受信任资产地址以支持 Range 续传；416 交由调用方判定是否需要重下。"""
     request = Request(url, headers=headers)
     try:
-        response = urlopen(request, timeout=timeout)  # noqa: S310 - 地址已在清单校验阶段限定
+        response = _TRUSTED_OPENER.open(request, timeout=timeout)  # noqa: S310 - 地址已在清单校验阶段限定
     except HTTPError as exc:
         if exc.code == 416:
             yield 416, dict(exc.headers.items()) if exc.headers else {}, exc
@@ -990,7 +1097,7 @@ def _iso(timestamp: Any) -> str:
 def _http_request(url: str, headers: dict[str, str], timeout: float) -> tuple[int, dict[str, str], bytes]:
     request = Request(url, headers=headers)
     try:
-        with urlopen(request, timeout=timeout) as response:  # noqa: S310 - 固定受信任仓库与 GitHub 资产域名
+        with _TRUSTED_OPENER.open(request, timeout=timeout) as response:  # noqa: S310 - 固定受信任仓库
             return response.status, dict(response.headers.items()), response.read(4 * 1024 * 1024)
     except Exception as exc:
         status = getattr(exc, "code", None)

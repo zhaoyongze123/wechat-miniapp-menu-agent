@@ -37,6 +37,9 @@ function downloadState(overrides: Partial<UpdateDownloadState> = {}): UpdateDown
     version: '',
     asset_kind: '',
     asset_name: '',
+    sha256: '',
+    etag: '',
+    last_modified: '',
     downloaded: 0,
     total: 0,
     started_at: '',
@@ -195,6 +198,24 @@ describe('UpdatesPanel', () => {
 
     expect(screen.getByText(/已下载 MenuCapture-0.3.0.exe 并通过 SHA-256 校验/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /下载/ })).not.toBeInTheDocument()
+  })
+
+  it('已下载旧版本不会阻止下载新版本', () => {
+    mocks.status.data = status({
+      download: downloadState({
+        status: 'completed',
+        version: '0.2.9',
+        asset_kind: 'windows_installer',
+        asset_name: 'MenuCapture-0.2.9.exe',
+        downloaded: 1024,
+        total: 1024,
+        path: 'D:\\menu-agent\\runtime\\data\\updates\\0.2.9\\MenuCapture-0.2.9.exe',
+      }),
+    })
+    renderPanel()
+
+    expect(screen.getByText(/已下载 0\.2\.9；当前最新为 0\.3\.0/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '下载更新包' })).toBeInTheDocument()
   })
 
   it('版本清点显示保护状态与清理候选，但不提供删除按钮', () => {
