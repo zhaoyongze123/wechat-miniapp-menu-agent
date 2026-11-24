@@ -1072,6 +1072,8 @@ def test_fast_window_capture_rejects_stale_rect_and_wrong_size(tmp_path):
 def test_screenshot_reuses_confirmed_rect_for_same_window(tmp_path):
     runner = object.__new__(UiPathRunner)
     runner._fast_capture_enabled = True
+    runner.profile_path = tmp_path / "uipath.profile.json"
+    runner.profile_path.write_text('{"wechat_selector":"wechat"}', encoding="utf-8")
     runner.transport = FileRobotTransport(tmp_path / "ipc")
     runner.transport._window_origin = (10, 20)
     runner.transport._window_bounds = (240, 800)

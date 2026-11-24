@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -25,9 +26,10 @@ def test_instance_lock_excludes_another_service_and_keeps_file(tmp_path):
         "    sys.exit(23)\n"
     )
     command = [sys.executable, "-c", code, str(path)]
+    app_root = Path(__file__).resolve().parents[1]
     with instance_lock(path):
-        assert subprocess.run(command, timeout=5).returncode == 23
-    assert subprocess.run(command, timeout=5).returncode == 0
+        assert subprocess.run(command, cwd=app_root, timeout=5).returncode == 23
+    assert subprocess.run(command, cwd=app_root, timeout=5).returncode == 0
     assert path.read_bytes() == b"owner"
 
 
