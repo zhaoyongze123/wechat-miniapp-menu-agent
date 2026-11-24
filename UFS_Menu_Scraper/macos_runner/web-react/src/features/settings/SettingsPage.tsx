@@ -30,6 +30,7 @@ import {
 import { settingsKeys, useConfig, useDebugSummary } from './hooks'
 import { SharedWorkbenchCard } from './SharedWorkbenchCard'
 import { ModelUsageDialog } from '../model-usage/ModelUsageDialog'
+import { NotificationPreferencesPanel } from '../notifications/NotificationPreferencesPanel'
 import type { DirectoryKind, ModelProvider, ModelTestResult, ThinkingMode } from './types'
 
 /**
@@ -156,6 +157,7 @@ export function SettingsPage() {
     <section className="space-y-6" aria-labelledby="settings-heading">
       <PageHeader title="设置" headingId="settings-heading" />
 
+      <NotificationPreferencesPanel />
       <SharedWorkbenchCard />
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">

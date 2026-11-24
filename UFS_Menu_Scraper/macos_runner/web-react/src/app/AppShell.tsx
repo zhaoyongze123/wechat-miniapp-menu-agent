@@ -16,6 +16,7 @@ import {
 import { ROLE_LABEL, useRole } from './RoleProvider'
 import type { AppRole } from '../api/types'
 import { fetchActiveTasks } from '../features/task-center/api'
+import { NotificationRuntime } from '../features/notifications/NotificationRuntime'
 
 interface NavItem {
   key: string
@@ -49,6 +50,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex h-full overflow-hidden bg-surface text-default">
+      <NotificationRuntime />
       <aside className="hidden w-64 shrink-0 flex-col overflow-hidden bg-surface-secondary md:flex">
         <div className="flex items-center gap-2.5 px-4 py-4">
           <span

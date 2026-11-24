@@ -7,6 +7,8 @@ import './styles/index.css'
 import { App } from './app/App'
 import { RemoteControlPage } from './features/manual-control/RemoteControlPage'
 import { queryClient } from './api/query'
+import { ToastProvider } from './components/ToastProvider'
+import { NotificationRuntime } from './features/notifications/NotificationRuntime'
 
 const container = document.getElementById('root')
 if (!container) throw new Error('缺少 React 挂载节点')
@@ -22,7 +24,12 @@ createRoot(container).render(
   <StrictMode>
     <AppsSDKUIProvider linkComponent="a">
       <QueryClientProvider client={queryClient}>
-        {window.location.pathname === '/remote-control' ? <RemoteControlPage /> : (
+        {window.location.pathname === '/remote-control' ? (
+          <ToastProvider>
+            <RemoteControlPage />
+            <NotificationRuntime />
+          </ToastProvider>
+        ) : (
           <HashRouter>
             <App />
           </HashRouter>
