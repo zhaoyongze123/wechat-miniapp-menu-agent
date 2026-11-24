@@ -62,6 +62,44 @@ export interface UpdateCapabilities {
   install: boolean
   rollback: boolean
   inventory: boolean
+  cleanup: boolean
+}
+
+/** 存储治理预览：服务端只读扫描，删除必须再次提交确认标记。 */
+export interface UpdateCleanupItem {
+  version?: string
+  name?: string
+  size_bytes: number
+  path?: string
+}
+
+export interface UpdateCleanupScope {
+  supported: boolean
+  reason: string
+  kept?: string[]
+  items: UpdateCleanupItem[]
+  reclaimable_bytes: number
+}
+
+export interface UpdateStoragePreview {
+  generated_at: string
+  blocked: boolean
+  blocked_reason: string
+  confirm: string
+  scopes: {
+    releases: UpdateCleanupScope
+    downloads: UpdateCleanupScope
+    logs: UpdateCleanupScope
+  }
+  reclaimable_bytes: number
+}
+
+export interface UpdateCleanupResult {
+  scopes: string[]
+  deleted: Array<UpdateCleanupItem & { scope: string }>
+  failures: Array<{ scope: string; version?: string; name?: string; error: string }>
+  freed_bytes: number
+  preview: UpdateStoragePreview
 }
 
 export type UpdateDownloadStatus =

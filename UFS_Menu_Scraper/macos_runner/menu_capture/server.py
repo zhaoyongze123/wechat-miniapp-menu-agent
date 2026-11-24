@@ -147,6 +147,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         )
     # 上次进程可能在安装中途退出；启动时先收尾遗留事务，避免界面永久停在 installing。
     install.recover()
+    # 安装/回滚期间禁止清理历史版本，避免删掉正在使用或待回滚的目标目录。
+    updates.cleanup_guard = lambda: (
+        (True, "安装或回滚进行中，请完成后再清理") if install.active() else (False, "")
+    )
     # 采集与人工标注的启动入口与安装共用同一闸门，闭合「检查空闲 → 写任务」之间的竞态窗口。
     runner.update_gate = install.gate
     runner.update_blocked = install.active
@@ -522,6 +526,19 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     @app.post("/api/updates/download/cancel")
     def updates_download_cancel():
         return updates.cancel_download()
+
+    @app.get("/api/updates/cleanup")
+    def updates_cleanup_preview():
+        # 只读预览：不删除任何文件，供界面展示可释放空间与保护原因。
+        return updates.storage_preview()
+
+    @app.post("/api/updates/cleanup")
+    def updates_cleanup(payload: dict):
+        # 破坏性操作必须提交 confirm；安装/下载进行中由服务端闸门拒绝。
+        try:
+            return updates.cleanup(payload)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
 
     @app.get("/api/updates/install")
     def updates_install_status():

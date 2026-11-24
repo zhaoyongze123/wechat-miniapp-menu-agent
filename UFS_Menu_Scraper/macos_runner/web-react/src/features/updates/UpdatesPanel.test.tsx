@@ -1,7 +1,12 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '../../components/ToastProvider'
-import type { UpdateDownloadState, UpdateInstallState, UpdateStatus } from './types'
+import type {
+  UpdateDownloadState,
+  UpdateInstallState,
+  UpdateStatus,
+  UpdateStoragePreview,
+} from './types'
 
 const mocks = vi.hoisted(() => ({
   status: { isPending: false, isError: false, data: undefined as UpdateStatus | undefined, error: null, refetch: vi.fn() },
@@ -11,12 +16,19 @@ const mocks = vi.hoisted(() => ({
     data: undefined as UpdateInstallState | undefined,
   },
   history: { isError: false, data: [], error: null, refetch: vi.fn() },
+  cleanup: {
+    isError: false,
+    error: null as Error | null,
+    data: undefined as UpdateStoragePreview | undefined,
+    refetch: vi.fn(),
+  },
   actions: {
     check: { mutate: vi.fn(), isPending: false },
     savePreferences: { mutate: vi.fn(), isPending: false },
     download: { mutate: vi.fn(), isPending: false },
     cancelDownload: { mutate: vi.fn(), isPending: false },
     install: { mutate: vi.fn(), isPending: false },
+    cleanup: { mutate: vi.fn(), isPending: false },
   },
 }))
 
@@ -24,6 +36,7 @@ vi.mock('./hooks', () => ({
   useUpdateStatus: () => mocks.status,
   useUpdateInstall: () => mocks.install,
   useUpdateHistory: () => mocks.history,
+  useUpdateCleanup: () => mocks.cleanup,
   useUpdateActions: () => mocks.actions,
 }))
 
@@ -92,7 +105,7 @@ function status(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
     error: '',
     checking: false,
     download: downloadState(),
-    capabilities: { check: true, download: true, install: false, rollback: false, inventory: true },
+    capabilities: { check: true, download: true, install: false, rollback: false, inventory: true, cleanup: true },
     inventory: {
       supported: true,
       install_root: 'D:\\menu-agent',
@@ -130,6 +143,27 @@ function installState(overrides: Partial<UpdateInstallState> = {}): UpdateInstal
   }
 }
 
+function storagePreview(overrides: Partial<UpdateStoragePreview> = {}): UpdateStoragePreview {
+  return {
+    generated_at: '2026-11-24T09:00:00Z',
+    blocked: false,
+    blocked_reason: '',
+    confirm: 'cleanup',
+    scopes: {
+      releases: {
+        supported: true,
+        reason: '',
+        items: [{ version: '0.1.9', size_bytes: 1024, path: 'D:\\menu-agent\\releases\\0.1.9' }],
+        reclaimable_bytes: 1024,
+      },
+      downloads: { supported: true, reason: '', kept: ['0.3.0'], items: [], reclaimable_bytes: 0 },
+      logs: { supported: true, reason: '只清理超过 7 天的 CLI 转录', items: [], reclaimable_bytes: 0 },
+    },
+    reclaimable_bytes: 1024,
+    ...overrides,
+  }
+}
+
 beforeEach(() => {
   mocks.status.data = status()
   mocks.status.isPending = false
@@ -139,6 +173,9 @@ beforeEach(() => {
   mocks.install.error = null
   mocks.history.data = []
   mocks.history.isError = false
+  mocks.cleanup.data = storagePreview()
+  mocks.cleanup.isError = false
+  mocks.cleanup.error = null
   vi.clearAllMocks()
 })
 
@@ -247,7 +284,7 @@ describe('UpdatesPanel', () => {
 
   it('下载完成且安装能力可用时，确认后才提交真实安装请求', () => {
     mocks.status.data = status({
-      capabilities: { check: true, download: true, install: true, rollback: true, inventory: true },
+      capabilities: { check: true, download: true, install: true, rollback: true, inventory: true, cleanup: true },
       download: downloadState({
         status: 'completed',
         version: '0.3.0',
@@ -291,7 +328,7 @@ describe('UpdatesPanel', () => {
 
   it('安装进行中展示真实阶段并禁用重复提交', () => {
     mocks.status.data = status({
-      capabilities: { check: true, download: true, install: true, rollback: true, inventory: true },
+      capabilities: { check: true, download: true, install: true, rollback: true, inventory: true, cleanup: true },
       download: downloadState({
         status: 'completed',
         version: '0.3.0',
@@ -325,6 +362,29 @@ describe('UpdatesPanel', () => {
     expect(screen.getAllByText('受保护')).toHaveLength(3)
     expect(screen.getByText(/可清理候选 1 个：0.1.9/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /删除/ })).not.toBeInTheDocument()
+  })
+
+  it('存储治理先预览，确认后才提交清理范围', () => {
+    renderPanel()
+
+    expect(screen.getByText('存储治理')).toBeInTheDocument()
+    expect(screen.getByText(/可释放约/)).toBeInTheDocument()
+    expect(screen.getByText('保留待安装：0.3.0')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '清理可清理项' }))
+    expect(mocks.actions.cleanup.mutate).not.toHaveBeenCalled()
+    expect(screen.getByText(/不会删除运行中\/当前\/最近两个版本/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '确认清理' }))
+    expect(mocks.actions.cleanup.mutate).toHaveBeenCalledWith(['releases'], expect.anything())
+  })
+
+  it('安装进行中时存储清理被服务端状态阻止', () => {
+    mocks.cleanup.data = storagePreview({ blocked: true, blocked_reason: '安装或回滚进行中，请完成后再清理' })
+    renderPanel()
+
+    expect(screen.getByText('安装或回滚进行中，请完成后再清理')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '清理可清理项' })).toBeDisabled()
   })
 
   it('非 Windows 或缺少版本目录时如实说明不支持', () => {
