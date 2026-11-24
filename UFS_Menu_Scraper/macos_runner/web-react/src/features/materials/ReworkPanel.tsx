@@ -116,7 +116,15 @@ export function ReworkPanel() {
       onSuccess: (result) => {
         setLastResult(result)
         setConfirm(null)
-        setSelected([])
+        const successfulBatches = new Set(result.results.map((item) => item.batch_id))
+        const failedBatches = new Set(result.errors.map((item) => item.batch_id))
+        // 仅清除已成功发布的门店；失败批次及当前不可发布的选中项保留，便于核对和重试。
+        const completedKeys = new Set(
+          publishable
+            .filter((record) => successfulBatches.has(record.batch_id) && !failedBatches.has(record.batch_id))
+            .map((record) => storeKey(record.batch_id, record.store_id)),
+        )
+        setSelected((current) => current.filter((key) => !completedKeys.has(key)))
         const published = result.results.reduce((sum, item) => sum + (item.task_scan.added || 0), 0)
         toast.push(
           result.errors.length

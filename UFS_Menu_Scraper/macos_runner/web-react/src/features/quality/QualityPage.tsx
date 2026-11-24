@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
@@ -41,6 +41,7 @@ import {
   useReviewActions,
 } from './hooks'
 import { PendingReviewDrawer } from './PendingReviewDrawer'
+import { adjacentVisibleKey, useContinuityPreference, nextVisibleKey } from '../continuity/useContinuityPreference'
 import { RejectionDetailDrawer } from './RejectionDetailDrawer'
 import type { PendingReviewRecord, RejectionRecord, ReviewBucket } from './types'
 
@@ -71,6 +72,8 @@ export function QualityPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
   const [drawerKey, setDrawerKey] = useState<string | null>(null)
+  const [drawerSnapshot, setDrawerSnapshot] = useState<RejectionRecord | null>(null)
+  const rejectionOrderRef = useRef<string[]>([])
   const [exporting, setExporting] = useState(false)
   const [selectedRejections, setSelectedRejections] = useState<Set<string>>(new Set())
   const [undoBatchOpen, setUndoBatchOpen] = useState(false)
@@ -84,6 +87,7 @@ export function QualityPage() {
   const [reviewPage, setReviewPage] = useState(1)
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set())
   const [reviewDrawerId, setReviewDrawerId] = useState<string | null>(null)
+  const [continuousReview, setContinuousReview] = useContinuityPreference('quality.continuous-review')
 
   // 弹窗
   const [assignTasks, setAssignTasks] = useState<HubSelectedTask[] | null>(null)
@@ -142,6 +146,8 @@ export function QualityPage() {
 
   const rejectionRecords = rejectionsQuery.data?.records ?? []
   const visibleRejections = rejectionRecords
+  const visibleRejectionsRef = useRef(visibleRejections)
+  visibleRejectionsRef.current = visibleRejections
 
   const rejectionPageCount = Math.max(1, Math.ceil(visibleRejections.length / pageSize))
   const currentPage = Math.min(page, rejectionPageCount)
@@ -156,10 +162,31 @@ export function QualityPage() {
   const drawerIndex = drawerKey
     ? visibleRejections.findIndex((record) => rejectionKey(record) === drawerKey)
     : -1
-  const drawerRecord = drawerIndex >= 0 ? visibleRejections[drawerIndex] ?? null : null
+  const drawerRecord = drawerIndex >= 0
+    ? visibleRejections[drawerIndex] ?? null
+    : drawerSnapshot && rejectionKey(drawerSnapshot) === drawerKey ? drawerSnapshot : null
+  const adjacentRejectionKey = (direction: -1 | 1) => {
+    if (!drawerKey) return null
+    if (drawerIndex >= 0) {
+      const candidate = visibleRejections[drawerIndex + direction]
+      return candidate ? rejectionKey(candidate) : null
+    }
+    return adjacentVisibleKey(rejectionOrderRef.current, drawerKey, visibleRejections, rejectionKey, direction)
+  }
   const drawerWorkflowLabel = drawerRecord
     ? workflowByBatch.get(drawerRecord.batch_id)?.label
     : undefined
+
+  const openRejection = (record: RejectionRecord) => {
+    rejectionOrderRef.current = visibleRejectionsRef.current.map(rejectionKey)
+    setDrawerSnapshot(record)
+    setDrawerKey(rejectionKey(record))
+  }
+
+  const closeRejection = () => {
+    setDrawerKey(null)
+    setDrawerSnapshot(null)
+  }
 
   const reviewAll = useMemo(
     () => (reviewsQuery.data?.records ?? []).filter((record) => !record.reject_reason),
@@ -222,6 +249,7 @@ export function QualityPage() {
 
   const toggleReviewed = (record: RejectionRecord) => {
     const reviewed = !record.reviewed_at
+    const reviewOrder = visibleRejectionsRef.current.map(rejectionKey)
     const payload =
       record.source_type === 'materials'
         ? {
@@ -232,7 +260,34 @@ export function QualityPage() {
           }
         : { source_type: 'capture' as const, reviewed, task_id: record.task_id }
     rejectionActions.reviewed.mutate(payload, {
-      onSuccess: () => toast.push(reviewed ? '已标记人工确认' : '已取消人工确认', 'success'),
+      onSuccess: async (result) => {
+        setDrawerSnapshot((current) => {
+          if (!current || rejectionKey(current) !== rejectionKey(record)) return current
+          return { ...current, reviewed_at: result.reviewed_at }
+        })
+        toast.push(reviewed ? '已标记人工确认' : '已取消人工确认', 'success')
+        if (!reviewed || !continuousReview) return
+        const refreshed = await rejectionsQuery.refetch()
+        if (refreshed.isError || !refreshed.data) {
+          toast.push('已保存人工确认，但刷新列表失败；请手动继续处理', 'info')
+          return
+        }
+        const currentRecords = refreshed.data.records
+        const nextKey = nextVisibleKey(reviewOrder, rejectionKey(record), currentRecords, rejectionKey)
+        if (nextKey) {
+          const nextIndex = currentRecords.findIndex((item) => rejectionKey(item) === nextKey)
+          if (nextIndex >= 0) setPage(Math.floor(nextIndex / pageSize) + 1)
+          const nextRecord = currentRecords.find((item) => rejectionKey(item) === nextKey)
+          if (nextRecord) {
+            rejectionOrderRef.current = currentRecords.map(rejectionKey)
+            setDrawerSnapshot(nextRecord)
+            setDrawerKey(nextKey)
+          }
+        } else {
+          closeRejection()
+          toast.push('已处理完当前筛选范围内的后续记录', 'success')
+        }
+      },
       onError: (error) => toast.push(errorMessage(error), 'danger'),
     })
   }
@@ -242,7 +297,7 @@ export function QualityPage() {
       toast.push(record.source_type === 'capture'
         ? '已撤销不合格标记，采集任务状态保持原记录'
         : '已撤销不合格，素材门店已恢复为待处理', 'success')
-      setDrawerKey(null)
+      closeRejection()
     }
     const onError = (error: Error) => toast.push(errorMessage(error), 'danger')
     if (record.source_type === 'materials') {
@@ -304,7 +359,7 @@ export function QualityPage() {
       onSuccess: () => {
         setReturnRecord(null)
         setDialogError('')
-        setDrawerKey(null)
+        closeRejection()
         toast.push('已打回素材清洗，可在素材清洗重新确认二维码', 'success')
       },
       onError: (error) => setDialogError(errorMessage(error)),
@@ -314,7 +369,7 @@ export function QualityPage() {
   const retryCapture = (record: RejectionRecord) => {
     rejectionActions.retry.mutate(record.task_id, {
       onSuccess: () => {
-        setDrawerKey(null)
+        closeRejection()
         toast.push('已重新入队，正在打开采集工作台', 'success')
         navigate(`/workbench?selected=${encodeURIComponent(record.task_id)}`)
       },
@@ -506,7 +561,7 @@ export function QualityPage() {
             color="secondary"
             variant="outline"
             size="sm"
-            onClick={() => setDrawerKey(rejectionKey(record))}
+            onClick={() => openRejection(record)}
           >
             详情
           </Button>
@@ -717,7 +772,17 @@ export function QualityPage() {
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-subtle bg-surface-secondary px-3 py-2">
-              <span className="text-xs text-secondary">本页已选 {selectedPageRecords.length} 条可撤销记录；翻页后需在当前页重新选择。</span>
+              <div className="flex flex-wrap items-center gap-4">
+                <span className="text-xs text-secondary">本页已选 {selectedPageRecords.length} 条可撤销记录；翻页后需在当前页重新选择。</span>
+                <label className="flex items-center gap-2 text-xs text-secondary">
+                  <input
+                    type="checkbox"
+                    checked={continuousReview}
+                    onChange={(event) => setContinuousReview(event.target.checked)}
+                  />
+                  确认不合格后自动进入下一条
+                </label>
+              </div>
               <Button
                 color="danger"
                 variant="outline"
@@ -756,7 +821,7 @@ export function QualityPage() {
                   rowKey={rejectionKey}
                   caption="不合格门店清单"
                   loading={rejectionsQuery.isLoading && !rejectionsQuery.data}
-                  onRowActivate={(record) => setDrawerKey(rejectionKey(record))}
+                  onRowActivate={openRejection}
                   emptyState={
                     <StatePanel
                       variant="empty"
@@ -935,18 +1000,28 @@ export function QualityPage() {
         {...(drawerWorkflowLabel ? { workflowLabel: drawerWorkflowLabel } : {})}
         running={running}
         busy={actionBusy}
-        hasPrev={drawerIndex > 0}
-        hasNext={drawerIndex >= 0 && drawerIndex < visibleRejections.length - 1}
+        hasPrev={Boolean(adjacentRejectionKey(-1))}
+        hasNext={Boolean(adjacentRejectionKey(1))}
         onOpenChange={(open) => {
-          if (!open) setDrawerKey(null)
+          if (!open) closeRejection()
         }}
         onPrev={() => {
-          const previous = visibleRejections[drawerIndex - 1]
-          if (previous) setDrawerKey(rejectionKey(previous))
+          const targetKey = adjacentRejectionKey(-1)
+          const targetIndex = visibleRejections.findIndex((item) => rejectionKey(item) === targetKey)
+          const previous = targetIndex >= 0 ? visibleRejections[targetIndex] : null
+          if (previous) {
+            setPage(Math.floor(targetIndex / pageSize) + 1)
+            openRejection(previous)
+          }
         }}
         onNext={() => {
-          const next = visibleRejections[drawerIndex + 1]
-          if (next) setDrawerKey(rejectionKey(next))
+          const targetKey = adjacentRejectionKey(1)
+          const targetIndex = visibleRejections.findIndex((item) => rejectionKey(item) === targetKey)
+          const next = targetIndex >= 0 ? visibleRejections[targetIndex] : null
+          if (next) {
+            setPage(Math.floor(targetIndex / pageSize) + 1)
+            openRejection(next)
+          }
         }}
         onToggleReviewed={toggleReviewed}
         onUndo={undoRejection}
@@ -966,12 +1041,20 @@ export function QualityPage() {
           if (!open) setReviewDrawerId(null)
         }}
         onPrev={() => {
-          const previous = filteredReviews[reviewDrawerIndex - 1]
-          if (previous) setReviewDrawerId(previous.task_id)
+          const targetIndex = reviewDrawerIndex - 1
+          const previous = filteredReviews[targetIndex]
+          if (previous) {
+            setReviewPage(Math.floor(targetIndex / PAGE_SIZE) + 1)
+            setReviewDrawerId(previous.task_id)
+          }
         }}
         onNext={() => {
-          const next = filteredReviews[reviewDrawerIndex + 1]
-          if (next) setReviewDrawerId(next.task_id)
+          const targetIndex = reviewDrawerIndex + 1
+          const next = filteredReviews[targetIndex]
+          if (next) {
+            setReviewPage(Math.floor(targetIndex / PAGE_SIZE) + 1)
+            setReviewDrawerId(next.task_id)
+          }
         }}
         onRerun={(record) => openAssign([record])}
       />

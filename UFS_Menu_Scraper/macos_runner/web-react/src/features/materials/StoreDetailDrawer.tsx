@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type MutableRefObject } from 'react'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
@@ -36,6 +36,9 @@ interface StoreDetailDrawerProps {
   onOpenChange: (open: boolean) => void
   onNavigate: (delta: -1 | 1) => void
   positionLabel: string
+  hasPrev: boolean
+  hasNext: boolean
+  onDecisionSaved: (storeId: string) => void
 }
 
 export function StoreDetailDrawer({
@@ -46,53 +49,160 @@ export function StoreDetailDrawer({
   onOpenChange,
   onNavigate,
   positionLabel,
+  hasPrev,
+  hasNext,
+  onDecisionSaved,
 }: StoreDetailDrawerProps) {
+  const [hasDraft, setHasDraft] = useState(false)
+  const [guardOpen, setGuardOpen] = useState(false)
+  const pendingAction = useRef<(() => void) | null>(null)
+  const saveBeforeLeave = useRef(false)
+  const saveSelection = useRef<(() => void) | null>(null)
   const query = useStore(batchId, store?.store_id ?? '')
   const title = store ? formatStore(store.source_name).name : '门店详情'
   const decision = decisionMeta(store?.decision)
 
+  useEffect(() => {
+    if (!hasDraft) return
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warnBeforeUnload)
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload)
+  }, [hasDraft])
+
+  const performOrGuard = (action: () => void) => {
+    if (!hasDraft) {
+      action()
+      return
+    }
+    pendingAction.current = action
+    setGuardOpen(true)
+  }
+
+  const handleSaved = (storeId: string) => {
+    setHasDraft(false)
+    if (saveBeforeLeave.current) {
+      saveBeforeLeave.current = false
+      setGuardOpen(false)
+      const action = pendingAction.current
+      pendingAction.current = null
+      action?.()
+      return
+    }
+    onDecisionSaved(storeId)
+  }
+
+  const cancelGuard = () => {
+    saveBeforeLeave.current = false
+    pendingAction.current = null
+    setGuardOpen(false)
+  }
+
   return (
-    <AppDrawer
-      open={open}
-      onOpenChange={onOpenChange}
-      title={title}
-      description={store ? `${store.source_folder || store.source_name} · ${positionLabel}` : '选择门店查看详情'}
-      headerActions={<StatusBadge tone={decision.tone}>{decision.label}</StatusBadge>}
-      footer={
-        <div className="flex items-center justify-between">
-          <Button color="secondary" variant="outline" size="sm" onClick={() => onNavigate(-1)}>
-            上一条
-          </Button>
-          <Button color="secondary" variant="outline" size="sm" onClick={() => onNavigate(1)}>
-            下一条
-          </Button>
-        </div>
-      }
-    >
-      {!store ? (
-        <StatePanel variant="empty" title="请选择门店" description="从左侧门店列表选择一家门店查看选码详情。" />
-      ) : query.isLoading ? (
-        <StatePanel variant="loading" title="正在读取门店素材…" />
-      ) : query.isError ? (
-        <StatePanel
-          variant="error"
-          title="门店素材读取失败"
-          description={errorMessage(query.error)}
-          action={
-            <Button color="secondary" variant="outline" size="sm" onClick={() => void query.refetch()}>
-              重试
+    <>
+      <AppDrawer
+        open={open}
+        onOpenChange={(next) => {
+          if (!next) performOrGuard(() => onOpenChange(false))
+          else onOpenChange(true)
+        }}
+        title={title}
+        description={store ? `${store.source_folder || store.source_name} · ${positionLabel}` : '选择门店查看详情'}
+        headerActions={<StatusBadge tone={decision.tone}>{decision.label}</StatusBadge>}
+        footer={
+          <div className="flex items-center justify-between">
+            <Button
+              color="secondary"
+              variant="outline"
+              size="sm"
+              disabled={!hasPrev}
+              onClick={() => performOrGuard(() => onNavigate(-1))}
+            >
+              上一条
             </Button>
-          }
-        />
-      ) : query.data ? (
-        <StoreDetailBody
-          key={query.data.store_id}
-          batchId={batchId}
-          batchStatus={batchStatus}
-          detail={query.data}
-        />
-      ) : null}
-    </AppDrawer>
+            <Button
+              color="secondary"
+              variant="outline"
+              size="sm"
+              disabled={!hasNext}
+              onClick={() => performOrGuard(() => onNavigate(1))}
+            >
+              下一条
+            </Button>
+          </div>
+        }
+      >
+        {!store ? (
+          <StatePanel variant="empty" title="请选择门店" description="从左侧门店列表选择一家门店查看选码详情。" />
+        ) : query.isLoading ? (
+          <StatePanel variant="loading" title="正在读取门店素材…" />
+        ) : query.isError ? (
+          <StatePanel
+            variant="error"
+            title="门店素材读取失败"
+            description={errorMessage(query.error)}
+            action={
+              <Button color="secondary" variant="outline" size="sm" onClick={() => void query.refetch()}>
+                重试
+              </Button>
+            }
+          />
+        ) : query.data ? (
+          <StoreDetailBody
+            key={query.data.store_id}
+            batchId={batchId}
+            batchStatus={batchStatus}
+            detail={query.data}
+            onDirtyChange={setHasDraft}
+            onDecisionSaved={handleSaved}
+            saveActionRef={saveSelection}
+          />
+        ) : null}
+      </AppDrawer>
+      <AppDialog
+        open={guardOpen}
+        title="修改尚未保存"
+        description="离开当前门店会丢弃尚未保存的选码、补图或不合格说明。"
+        onOpenChange={(next) => { if (!next) cancelGuard() }}
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button color="secondary" variant="outline" size="sm" onClick={cancelGuard}>
+              继续编辑
+            </Button>
+            <Button
+              color="secondary"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setHasDraft(false)
+                setGuardOpen(false)
+                const action = pendingAction.current
+                pendingAction.current = null
+                action?.()
+              }}
+            >
+              放弃修改并离开
+            </Button>
+            {saveSelection.current ? (
+              <Button
+                color="primary"
+                size="sm"
+                onClick={() => {
+                  saveBeforeLeave.current = true
+                  saveSelection.current?.()
+                }}
+              >
+                确认选码并离开
+              </Button>
+            ) : null}
+          </div>
+        }
+      >
+        <p className="text-sm text-secondary">确认选码会提交到共享后台；只有服务端保存成功后才会继续离开。</p>
+      </AppDialog>
+    </>
   )
 }
 
@@ -100,9 +210,12 @@ interface StoreDetailBodyProps {
   batchId: string
   batchStatus: string
   detail: MaterialStoreDetail
+  onDirtyChange: (dirty: boolean) => void
+  onDecisionSaved: (storeId: string) => void
+  saveActionRef: MutableRefObject<(() => void) | null>
 }
 
-function StoreDetailBody({ batchId, batchStatus, detail }: StoreDetailBodyProps) {
+function StoreDetailBody({ batchId, batchStatus, detail, onDirtyChange, onDecisionSaved, saveActionRef }: StoreDetailBodyProps) {
   const toast = useToast()
   const { decide, reanalyze, supplement } = useStoreActions(batchId, detail.store_id)
   const decision = normalizeDecision(detail.decision)
@@ -126,6 +239,7 @@ function StoreDetailBody({ batchId, batchStatus, detail }: StoreDetailBodyProps)
   const [rejectDetail, setRejectDetail] = useState('')
   const [rejectError, setRejectError] = useState('')
   const [files, setFiles] = useState<File[]>([])
+  const [decisionSavedLocally, setDecisionSavedLocally] = useState(false)
   const [uploadMode, setUploadMode] = useState<UploadMode>('append')
   const [uploadBusy, setUploadBusy] = useState(false)
   const [uploadProgress, setUploadProgress] = useState('')
@@ -158,7 +272,12 @@ function StoreDetailBody({ batchId, batchStatus, detail }: StoreDetailBodyProps)
       decide.mutate(
         { decision: 'confirm', image_index: imageIndex, box: manualBox },
         {
-          onSuccess: () => toast.push('已按人工框选确认二维码', 'success'),
+          onSuccess: () => {
+            toast.push('已按人工框选确认二维码', 'success')
+            setDecisionSavedLocally(true)
+            onDirtyChange(false)
+            onDecisionSaved(detail.store_id)
+          },
           onError: (cause) => toast.push(errorMessage(cause), 'danger'),
         },
       )
@@ -168,11 +287,32 @@ function StoreDetailBody({ batchId, batchStatus, detail }: StoreDetailBodyProps)
     decide.mutate(
       { decision: 'confirm', image_index: imageIndex, candidate_index: candidateIndex },
       {
-        onSuccess: () => toast.push('已确认所选二维码', 'success'),
+        onSuccess: () => {
+          toast.push('已确认所选二维码', 'success')
+          setDecisionSavedLocally(true)
+          onDirtyChange(false)
+          onDecisionSaved(detail.store_id)
+        },
         onError: (cause) => toast.push(errorMessage(cause), 'danger'),
       },
     )
   }
+
+  const canSaveSelection = canEdit && decision === 'pending' && !rejectOpen && files.length === 0 &&
+    !rejectDetail.trim() && (manualMode ? manualBox !== null : candidateIndex !== null)
+  saveActionRef.current = canSaveSelection
+    ? confirmSelection
+    : null
+  const draftDirty = !decisionSavedLocally && decision === 'pending' && (
+    manualBox !== null ||
+    (candidateIndex !== null && (
+      candidateIndex !== detail.selected?.candidate_index || imageIndex !== detail.selected?.image_index
+    )) ||
+    files.length > 0 ||
+    rejectDetail.trim().length > 0 ||
+    (rejectOpen && rejectReason !== 'blur')
+  )
+  useEffect(() => onDirtyChange(draftDirty), [draftDirty, onDirtyChange])
 
   const resetDecision = () => {
     decide.mutate(
@@ -205,6 +345,9 @@ function StoreDetailBody({ batchId, batchStatus, detail }: StoreDetailBodyProps)
           setRejectError('')
           setRejectDetail('')
           toast.push('已标记为不合格', 'success')
+          setDecisionSavedLocally(true)
+          onDirtyChange(false)
+          onDecisionSaved(detail.store_id)
         },
         onError: (cause) => setRejectError(errorMessage(cause)),
       },

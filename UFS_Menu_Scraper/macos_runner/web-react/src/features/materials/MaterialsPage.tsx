@@ -14,6 +14,7 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
+import { adjacentVisibleKey, useContinuityPreference, nextVisibleKey } from '../continuity/useContinuityPreference'
 import { formatStore, formatTime } from '../hub/format'
 import { AnalysisDialog } from './AnalysisDialog'
 import { BatchManagementDialog } from './BatchManagementDialog'
@@ -59,6 +60,7 @@ export function MaterialsPage() {
   const [managementOpen, setManagementOpen] = useState(false)
   const [confirmKind, setConfirmKind] = useState<ConfirmKind | null>(null)
   const [confirmError, setConfirmError] = useState('')
+  const [continuousReview, setContinuousReview] = useContinuityPreference('materials.continuous-review')
 
   const batchesQuery = useBatches()
   const optionsQuery = useBatchOptions()
@@ -110,6 +112,13 @@ export function MaterialsPage() {
       return `${store.source_name} ${store.source_folder}`.toLowerCase().includes(needle)
     })
   }, [filter, search, stores])
+  const visibleStoreIds = filtered.map((store) => store.store_id)
+  const visibleStoreIdsRef = useRef(visibleStoreIds)
+  visibleStoreIdsRef.current = visibleStoreIds
+  const detailOrderRef = useRef(visibleStoreIds)
+  useEffect(() => {
+    if (detailStoreId) detailOrderRef.current = visibleStoreIdsRef.current
+  }, [detailStoreId])
 
   useEffect(() => {
     setPage(1)
@@ -119,7 +128,15 @@ export function MaterialsPage() {
   const currentPage = Math.min(page, pageCount)
   const pageRows = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize)
   const detailIndex = detailStoreId ? filtered.findIndex((store) => store.store_id === detailStoreId) : -1
-  const detailStore = detailIndex >= 0 ? filtered[detailIndex] : null
+  // 操作后若门店因筛选条件而离开列表，仍在详情中展示其已保存结果。
+  const detailStore = detailStoreId ? stores.find((store) => store.store_id === detailStoreId) ?? null : null
+  const adjacentStoreId = (direction: -1 | 1) => {
+    if (!detailStoreId) return null
+    if (detailIndex >= 0) return filtered[detailIndex + direction]?.store_id ?? null
+    return adjacentVisibleKey(detailOrderRef.current, detailStoreId, filtered, (store) => store.store_id, direction)
+  }
+  const hasPreviousStore = Boolean(adjacentStoreId(-1))
+  const hasNextStore = Boolean(adjacentStoreId(1))
 
   const job = batch?.job ?? null
   const selectedOption = (optionsQuery.data ?? []).find((option) => option.batch_id === batchId)
@@ -519,6 +536,15 @@ export function MaterialsPage() {
                   <SegmentedControl.Option value="skipped">不合格（{counts.skipped}）</SegmentedControl.Option>
                 </SegmentedControl>
 
+                <label className="flex items-center gap-2 text-xs text-secondary">
+                  <input
+                    type="checkbox"
+                    checked={continuousReview}
+                    onChange={(event) => setContinuousReview(event.target.checked)}
+                  />
+                  提交本店决策后自动进入下一家
+                </label>
+
                 <AppDataTable
                   caption="素材门店列表"
                   columns={columns}
@@ -586,15 +612,42 @@ export function MaterialsPage() {
         batchId={batchId}
         batchStatus={status}
         store={detailStore ?? null}
-        positionLabel={`第 ${detailIndex + 1} / ${filtered.length} 家`}
+        positionLabel={detailIndex >= 0 ? `第 ${detailIndex + 1} / ${filtered.length} 家` : '已不在当前筛选范围'}
+        hasPrev={hasPreviousStore}
+        hasNext={hasNextStore}
+        onDecisionSaved={async (storeId) => {
+          if (!continuousReview) return
+          const refreshed = await batchQuery.refetch()
+          if (refreshed.isError || !refreshed.data) {
+            toast.push('已保存当前门店，但刷新列表失败；请手动继续处理', 'info')
+            return
+          }
+          const needle = search.trim().toLowerCase()
+          const currentScope = refreshed.data.stores.filter((item) => {
+            if (filter !== 'all' && normalizeDecision(item.decision) !== filter) return false
+            return !needle || `${item.source_name} ${item.source_folder}`.toLowerCase().includes(needle)
+          })
+          const nextId = nextVisibleKey(detailOrderRef.current, storeId, currentScope, (item) => item.store_id)
+          if (!nextId) {
+            setDetailStoreId(null)
+            toast.push('已处理完当前筛选范围内的后续门店', 'success')
+            return
+          }
+          const nextIndex = currentScope.findIndex((store) => store.store_id === nextId)
+          if (nextIndex >= 0) {
+            setPage(Math.floor(nextIndex / pageSize) + 1)
+            setDetailStoreId(nextId)
+          }
+        }}
         onOpenChange={(next) => {
           if (!next) setDetailStoreId(null)
         }}
         onNavigate={(delta) => {
-          const nextIndex = detailIndex + delta
-          if (nextIndex < 0 || nextIndex >= filtered.length) return
-          const nextStore = filtered[nextIndex]
-          if (nextStore) setDetailStoreId(nextStore.store_id)
+          const nextId = adjacentStoreId(delta)
+          if (!nextId) return
+          const nextIndex = filtered.findIndex((store) => store.store_id === nextId)
+          if (nextIndex >= 0) setPage(Math.floor(nextIndex / pageSize) + 1)
+          setDetailStoreId(nextId)
         }}
       />
 
