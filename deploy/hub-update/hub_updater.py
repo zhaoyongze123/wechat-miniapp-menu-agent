@@ -50,9 +50,9 @@ MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 DISK_MARGIN_BYTES = 512 * 1024 * 1024
 DOWNLOAD_TIMEOUT_SECONDS = 1800
 DOCKER_TIMEOUT_SECONDS = 900
-SCHEMA_PROBE = r'''import json, pathlib, sqlite3
+SCHEMA_PROBE = r'''import json, pathlib, sqlite3, sys
 def q(value): return '"' + value.replace('"', '""') + '"'
-root = pathlib.Path('/hub-data')
+root = pathlib.Path(sys.argv[1])
 data = root / 'data'
 path = data / 'tasks.sqlite3'
 if data.is_symlink() or path.is_symlink(): raise RuntimeError('Hub 数据库路径不能是符号链接')
@@ -60,8 +60,9 @@ if not path.exists(): print(json.dumps({'exists': False, 'tables': [], 'objects'
 else:
     db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5)
     db.execute('PRAGMA query_only=ON')
+    db.execute('BEGIN')
     tables = []
-    for name, sql in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
+    for name, sql in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name"):
         indexes = []
         for row in db.execute('PRAGMA index_list(' + q(name) + ')'):
             index_name = row[1]
@@ -483,12 +484,15 @@ class HubUpdater:
         """只读记录 Hub 唯一 SQLite 状态库的架构，用于判断旧镜像能否读新库。"""
         if not self.config.data_volume or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", self.config.data_volume):
             raise UpdateError("未配置 Hub 数据卷，无法建立数据库回滚基线")
+        code, _ = self.run(["docker", "volume", "inspect", self.config.data_volume], 30)
+        if code != 0:
+            raise UpdateError("Hub 数据卷不存在，已拒绝架构检查")
         image = self._schema_probe_image()
-        mount = f"type=volume,source={self.config.data_volume},target=/hub-data,readonly"
+        mount = f"type=volume,source={self.config.data_volume},target=/hub-data,volume-nocopy,readonly"
         code, output = self.run([
-            "docker", "run", "--rm", "--network", "none", "--read-only", "--cap-drop=ALL",
+            "docker", "run", "--rm", "--pull=never", "--network", "none", "--read-only", "--cap-drop=ALL",
             "--security-opt=no-new-privileges", "--mount", mount,
-            "--entrypoint", "python", image, "-c", SCHEMA_PROBE,
+            "--entrypoint", "python", image, "-c", SCHEMA_PROBE, "/hub-data",
         ], 30)
         if code != 0:
             raise UpdateError("无法通过只读容器读取 Hub 数据库架构，已拒绝回滚判定")
@@ -678,10 +682,6 @@ class HubUpdater:
                 raise UpdateError("目标版本必须高于当前运行版本，禁止降级")
             if not self._disk_ok(request):
                 raise UpdateError("磁盘余量不足，已拒绝开始更新")
-            if self.config.data_volume:
-                code, _ = self.run(["docker", "volume", "inspect", self.config.data_volume], 30)
-                if code != 0:
-                    raise UpdateError(f"数据卷 {self.config.data_volume} 不存在，已拒绝更新以避免创建空卷")
             schema_before = self._schema_snapshot()
             self._write("downloading", f"正在准备 {version} 镜像归档", target_version=version,
                         previous_version=previous, schema_before=schema_before,

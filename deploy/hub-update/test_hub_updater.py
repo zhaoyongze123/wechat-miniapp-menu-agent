@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -66,11 +68,13 @@ class FakeDocker:
             return 0, "[]"
         if command == ["docker", "run"]:
             assert args[args.index("--network") + 1] == "none"
+            assert "--pull=never" in args
             assert "--read-only" in args
             assert "--cap-drop=ALL" in args
             assert "--security-opt=no-new-privileges" in args
             assert args[args.index("--mount") + 1].endswith(",readonly")
             assert args[args.index("--entrypoint") + 1] == "python"
+            assert args[-1] == "/hub-data"
             return 0, json.dumps(schema_probe_payload(self.volume_path))
         if command == ["docker", "load"]:
             if self.fail_load:
@@ -354,6 +358,22 @@ def test_schema_guard_blocks_new_unique_index_on_existing_table(tmp_path: Path) 
 
     assert not compatible
     assert "唯一索引" in reason
+
+
+def test_schema_probe_reads_real_temporary_sqlite_schema(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    before = database.read_bytes()
+    completed = subprocess.run(
+        [sys.executable, "-c", hub_updater.SCHEMA_PROBE, str(database.parent.parent)],
+        check=True, capture_output=True, text=True, timeout=5,
+    )
+    payload = json.loads(completed.stdout)
+    assert payload["exists"]
+    assert {table["name"] for table in payload["tables"]} == {"tasks", "events"}
+    assert {(row[0], row[1]) for row in payload["objects"]} == {
+        ("trigger", "tasks_noop"), ("view", "task_status"),
+    }
+    assert database.read_bytes() == before
 
 
 def test_schema_guard_blocks_new_constraint_on_existing_table(tmp_path: Path) -> None:
