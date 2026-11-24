@@ -88,12 +88,13 @@ export function RejectionDetailDrawer({
                     继续处理
                   </Button>
                 ) : null}
-                {canReturnToMaterials(record) ? (
+                {record.source_type === 'capture' && record.task_id ? (
                   <Button
                     color="secondary"
                     variant="outline"
                     size="sm"
-                    disabled={running || busy}
+                    disabled={running || busy || !canReturnToMaterials(record)}
+                    title={record.return_to_materials_disabled_reason || undefined}
                     onClick={() => onReturn(record)}
                   >
                     打回素材清洗
@@ -162,6 +163,15 @@ export function RejectionDetailDrawer({
                 variant="soft"
                 title="采集运行中"
                 description="运行结束后才能撤销不合格、打回或重新采集。"
+              />
+            ) : null}
+
+            {record.source_type === 'capture' && record.task_id && !canReturnToMaterials(record) ? (
+              <Alert
+                color="warning"
+                variant="soft"
+                title="无法打回素材清洗"
+                description={record.return_to_materials_disabled_reason || '未能验证该任务与原素材门店的关联。'}
               />
             ) : null}
 

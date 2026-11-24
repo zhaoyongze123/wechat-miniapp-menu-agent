@@ -63,5 +63,5 @@ export function canContinueMaterials(record: RejectionRecord): boolean {
 }
 
 export function canReturnToMaterials(record: RejectionRecord): boolean {
-  return record.source_type === 'capture' && Boolean(record.task_id)
+  return record.source_type === 'capture' && Boolean(record.task_id) && record.can_return_to_materials !== false
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
+import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
 import { Input } from '@openai/apps-sdk-ui/components/Input'
@@ -71,6 +72,9 @@ export function QualityPage() {
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
   const [drawerKey, setDrawerKey] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
+  const [selectedRejections, setSelectedRejections] = useState<Set<string>>(new Set())
+  const [undoBatchOpen, setUndoBatchOpen] = useState(false)
+  const [undoBatchResult, setUndoBatchResult] = useState<{ succeeded: number; failures: string[] } | null>(null)
 
   // 待检查清单
   const [reviewBatchIds, setReviewBatchIds] = useState<string[]>([])
@@ -88,7 +92,7 @@ export function QualityPage() {
   const [unapproveOpen, setUnapproveOpen] = useState(false)
   const [dialogError, setDialogError] = useState('')
 
-  const rejectionsQuery = useRejections({ batchId, source, reason, q: query }, view === 'rejections')
+  const rejectionsQuery = useRejections({ batchId, source, reason, q: query, reviewed: reviewState }, view === 'rejections')
   const reviewsQuery = usePendingReviews(reviewBatchIds, reviewQuery, view === 'review')
   const runningQuery = useHubRunning()
   const batchOptionsQuery = useBatchOptions()
@@ -101,6 +105,7 @@ export function QualityPage() {
     rejectionActions.reviewed.isPending ||
     rejectionActions.undoCapture.isPending ||
     rejectionActions.undoMaterials.isPending ||
+    rejectionActions.undoBatch.isPending ||
     rejectionActions.returnToMaterials.isPending ||
     rejectionActions.retry.isPending
 
@@ -117,7 +122,13 @@ export function QualityPage() {
 
   useEffect(() => {
     setPage(1)
+    setSelectedRejections(new Set())
+    setUndoBatchResult(null)
   }, [batchId, source, reason, reviewState, query, pageSize])
+
+  useEffect(() => {
+    setSelectedRejections(new Set())
+  }, [page, pageSize])
 
   const reviewBatchKey = reviewBatchIds.join(',')
   useEffect(() => {
@@ -130,16 +141,18 @@ export function QualityPage() {
   )
 
   const rejectionRecords = rejectionsQuery.data?.records ?? []
-  const visibleRejections = useMemo(() => {
-    if (reviewState === 'all') return rejectionRecords
-    return rejectionRecords.filter((record) =>
-      reviewState === 'reviewed' ? Boolean(record.reviewed_at) : !record.reviewed_at,
-    )
-  }, [rejectionRecords, reviewState])
+  const visibleRejections = rejectionRecords
 
   const rejectionPageCount = Math.max(1, Math.ceil(visibleRejections.length / pageSize))
   const currentPage = Math.min(page, rejectionPageCount)
   const pageRejections = visibleRejections.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+  const eligiblePageRejections = pageRejections.filter((record) =>
+    record.source_type === 'capture' ? Boolean(record.task_id) : Boolean(record.batch_id && record.store_id),
+  )
+  const eligiblePageKeys = eligiblePageRejections.map(rejectionKey)
+  const allRejectionPageSelected = eligiblePageKeys.length > 0 && eligiblePageKeys.every((key) => selectedRejections.has(key))
+  const someRejectionPageSelected = eligiblePageKeys.some((key) => selectedRejections.has(key))
+  const selectedPageRecords = eligiblePageRejections.filter((record) => selectedRejections.has(rejectionKey(record)))
   const drawerIndex = drawerKey
     ? visibleRejections.findIndex((record) => rejectionKey(record) === drawerKey)
     : -1
@@ -226,7 +239,9 @@ export function QualityPage() {
 
   const undoRejection = (record: RejectionRecord) => {
     const onSuccess = () => {
-      toast.push('已撤销不合格，门店回到待检查', 'success')
+      toast.push(record.source_type === 'capture'
+        ? '已撤销不合格标记，采集任务状态保持原记录'
+        : '已撤销不合格，素材门店已恢复为待处理', 'success')
       setDrawerKey(null)
     }
     const onError = (error: Error) => toast.push(errorMessage(error), 'danger')
@@ -238,6 +253,49 @@ export function QualityPage() {
     } else {
       rejectionActions.undoCapture.mutate(record.task_id, { onSuccess, onError })
     }
+  }
+
+  const toggleRejection = (record: RejectionRecord) => {
+    const key = rejectionKey(record)
+    setSelectedRejections((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const toggleRejectionPage = () => {
+    setSelectedRejections((current) => {
+      const next = new Set(current)
+      if (allRejectionPageSelected) eligiblePageKeys.forEach((key) => next.delete(key))
+      else eligiblePageKeys.forEach((key) => next.add(key))
+      return next
+    })
+  }
+
+  const confirmUndoBatch = () => {
+    const items = selectedPageRecords.map((record) => record.source_type === 'capture'
+      ? { source_type: 'capture' as const, task_id: record.task_id }
+      : { source_type: 'materials' as const, batch_id: record.batch_id, store_id: record.store_id ?? '' })
+    if (!items.length) return
+    rejectionActions.undoBatch.mutate(items, {
+      onSuccess: (response) => {
+        const failed = response.results.filter((result) => !result.ok)
+        const failures = failed.map((result) => {
+          const id = result.source_type === 'capture' ? result.task_id : result.store_id
+          return `${result.store_name || id}: ${result.error || '撤销失败'}`
+        })
+        const failedKeys = failed.map((result) => result.source_type === 'capture'
+          ? `capture:${result.task_id}::`
+          : `materials::${result.batch_id}:${result.store_id}`)
+        setSelectedRejections(new Set(failedKeys))
+        setUndoBatchResult({ succeeded: response.results.length - failed.length, failures })
+        setUndoBatchOpen(false)
+        toast.push(`批量撤销完成：成功 ${response.results.length - failed.length} 条，失败 ${failed.length} 条`, failed.length ? 'danger' : 'success')
+      },
+      onError: (error) => toast.push(errorMessage(error), 'danger'),
+    })
   }
 
   const confirmReturn = () => {
@@ -273,7 +331,7 @@ export function QualityPage() {
   const exportExcel = async () => {
     setExporting(true)
     try {
-      await downloadRejections({ batchId, source, reason, q: query })
+      await downloadRejections({ batchId, source, reason, q: query, reviewed: reviewState })
       toast.push('已导出当前筛选的不合格门店', 'success')
     } catch (error) {
       toast.push(errorMessage(error), 'danger')
@@ -352,6 +410,31 @@ export function QualityPage() {
   const reviewSummary = reviewsQuery.data?.summary
 
   const rejectionColumns: DataColumn<RejectionRecord>[] = [
+    {
+      id: 'select',
+      header: (
+        <Checkbox
+          label="全选本页可撤销项"
+          checked={allRejectionPageSelected ? true : someRejectionPageSelected ? 'indeterminate' : false}
+          disabled={running || eligiblePageKeys.length === 0}
+          onCheckedChange={toggleRejectionPage}
+        />
+      ),
+      className: 'w-36',
+      cell: (record) => {
+        const eligible = record.source_type === 'capture' ? Boolean(record.task_id) : Boolean(record.batch_id && record.store_id)
+        return (
+          <div onClick={(event) => event.stopPropagation()}>
+            <Checkbox
+              label="选择"
+              checked={selectedRejections.has(rejectionKey(record))}
+              disabled={running || actionBusy || !eligible}
+              onCheckedChange={() => toggleRejection(record)}
+            />
+          </div>
+        )
+      },
+    },
     {
       id: 'store',
       header: '门店',
@@ -568,7 +651,6 @@ export function QualityPage() {
         <>
           <section className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="不合格统计">
             <Metric label="不合格门店" value={summary?.stores ?? 0} />
-            <Metric label="不合格记录" value={summary?.records ?? 0} />
             <Metric label="素材 / 采集" value={`${summary?.materials ?? 0} / ${summary?.capture ?? 0}`} />
             <Metric label="已人工确认" value={summary?.reviewed ?? 0} />
           </section>
@@ -633,6 +715,27 @@ export function QualityPage() {
                 />
               </div>
             </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-subtle bg-surface-secondary px-3 py-2">
+              <span className="text-xs text-secondary">本页已选 {selectedPageRecords.length} 条可撤销记录；翻页后需在当前页重新选择。</span>
+              <Button
+                color="danger"
+                variant="outline"
+                size="sm"
+                disabled={running || actionBusy || selectedPageRecords.length === 0}
+                onClick={() => setUndoBatchOpen(true)}
+              >
+                撤销所选不合格（{selectedPageRecords.length}）
+              </Button>
+            </div>
+            {undoBatchResult ? (
+              <Alert
+                color={undoBatchResult.failures.length ? 'warning' : 'success'}
+                variant="soft"
+                title={`批量撤销结果：成功 ${undoBatchResult.succeeded} 条，失败 ${undoBatchResult.failures.length} 条`}
+                {...(undoBatchResult.failures.length ? { description: undoBatchResult.failures.join('；') } : {})}
+              />
+            ) : null}
 
             {rejectionsQuery.isError ? (
               <StatePanel
@@ -871,6 +974,24 @@ export function QualityPage() {
           if (next) setReviewDrawerId(next.task_id)
         }}
         onRerun={(record) => openAssign([record])}
+      />
+
+      <ConfirmActionDialog
+        open={undoBatchOpen}
+        title={`批量撤销 ${selectedPageRecords.length} 条不合格记录`}
+        description={
+          <div className="space-y-2">
+            <p>将逐条按原有撤销规则处理。采集任务只移除不合格标记并保留当前任务状态；素材门店恢复为待处理。历史采集结果不会删除。</p>
+            <ul className="max-h-40 list-disc space-y-1 overflow-y-auto pl-5">
+              {selectedPageRecords.map((record) => <li key={rejectionKey(record)}>{formatStore(record.store_name).name} · {sourceLabelOf(record)}</li>)}
+            </ul>
+          </div>
+        }
+        confirmLabel="确认批量撤销"
+        tone="danger"
+        busy={rejectionActions.undoBatch.isPending}
+        onConfirm={confirmUndoBatch}
+        onOpenChange={(open) => setUndoBatchOpen(open)}
       />
 
       <ConfirmActionDialog

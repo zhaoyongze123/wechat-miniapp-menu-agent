@@ -17,6 +17,7 @@ function rejectionSearch(query: RejectionQuery): URLSearchParams {
     source: query.source,
     reason: query.reason,
     q: query.q.trim(),
+    reviewed: query.reviewed,
   })
 }
 
@@ -24,7 +25,7 @@ export function fetchRejections(query: RejectionQuery, signal?: AbortSignal): Pr
   return apiFetch<RejectionsResponse>(`${BASE}?${rejectionSearch(query).toString()}`, { signal })
 }
 
-/** 导出当前服务端筛选结果；人工确认筛选只影响列表展示，与后端导出范围一致。 */
+/** 导出当前服务端筛选结果，含人工确认状态筛选。 */
 export async function downloadRejections(query: RejectionQuery): Promise<void> {
   const response = await fetch(`${BASE}/export.xlsx?${rejectionSearch(query).toString()}`, { cache: 'no-store' })
   if (!response.ok) {
@@ -69,6 +70,13 @@ export function undoMaterialRejection(batchId: string, storeId: string): Promise
     `${BASE}/materials/${encodeURIComponent(batchId)}/${encodeURIComponent(storeId)}/undo`,
     { method: 'POST', json: {} },
   )
+}
+
+export function undoRejectionsBatch(items: import('./types').RejectionUndoItem[]) {
+  return apiFetch<import('./types').RejectionUndoResponse>(`${BASE}/undo-batch`, {
+    method: 'POST',
+    json: { items },
+  })
 }
 
 /** 打回素材清洗：清除不合格、素材决策回待处理、采集任务置为已阻塞。 */

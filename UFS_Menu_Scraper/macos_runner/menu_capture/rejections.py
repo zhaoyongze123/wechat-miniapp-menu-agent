@@ -1,24 +1,23 @@
-"""从不合格决策与采集任务汇总统一的不合格清单，并导出 Excel。
+"""从不合格决策与采集任务汇总统一的不合格清单，并处理对应审核动作。
 
-边界：只做只读汇总、筛选与导出，不新增审核状态；事实仍分别保存在
-material_decisions 与 tasks.reject_* 字段中。
+边界：不新增审核状态；事实仍分别保存在 material_decisions 与 tasks.reject_* 字段中。
 """
 from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
 
+from fastapi import HTTPException
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font, PatternFill
-
 from .materials import REJECTION_REASONS, MaterialService
 from .store import TaskStore, now
 from .capture_results import capture_outcome
 
 
 class RejectionService:
-    """只提供统一视图和导出，不创建另一套工单或审核状态。"""
+    """提供不合格统一视图、导出和已有业务规则对应的审核处置。"""
 
     def __init__(self, tasks: TaskStore, materials: MaterialService, *, current_only: bool = False):
         self.tasks = tasks
@@ -28,11 +27,28 @@ class RejectionService:
     def _all(self) -> list[dict]:
         rows = self.materials.rejections()
         current = {task["id"] for task in self.materials.effective_capture_tasks()} if self.current_only else None
+        batch_cache: dict[str, dict | None] = {}
         for task in self.tasks.rejections():
             if (current is not None and task["id"] not in current) or capture_outcome(task) != "rejected":
                 continue
             code = task.get("reject_reason", "")
             source_path = Path(task["source_path"])
+            batch_id = task.get("material_batch_id", "") or ""
+            can_return, return_disabled_reason = False, "该任务未关联素材批次，无法打回素材清洗"
+            if batch_id:
+                if batch_id not in batch_cache:
+                    try:
+                        batch_cache[batch_id] = self.materials.get_batch(batch_id)
+                    except ValueError:
+                        batch_cache[batch_id] = None
+                batch = batch_cache[batch_id]
+                if batch is None:
+                    return_disabled_reason = "原素材批次已不存在，无法打回素材清洗"
+                else:
+                    matches = [item for item in (batch.get("stores") or [])
+                               if item.get("source_name") == task.get("source_name")]
+                    can_return = len(matches) == 1
+                    return_disabled_reason = "" if can_return else "原批次中无法唯一匹配该门店，无法安全打回"
             rows.append({
                 "source_type": "capture",
                 "source_label": "采集任务",
@@ -49,10 +65,12 @@ class RejectionService:
                 "reviewed_at": task.get("reject_reviewed_at", ""),
                 "status": task["status"],
                 "stage": task["stage"],
-                "batch_id": task.get("material_batch_id", "") or "",
+                "batch_id": batch_id,
                 "batch_name": task.get("material_batch_name", "") or "",
                 "task_id": task["id"],
                 "run_id": task.get("run_id", ""),
+                "can_return_to_materials": can_return,
+                "return_to_materials_disabled_reason": return_disabled_reason,
             })
         return self._merge_by_store(rows)
 
@@ -88,11 +106,14 @@ class RejectionService:
             "reviewed": sum(bool(row.get("reviewed_at")) for row in rows),
         }
 
-    def list(self, source: str = "all", reason: str = "all", query: str = "", batch_id: str = "all") -> dict:
+    def list(self, source: str = "all", reason: str = "all", query: str = "", batch_id: str = "all",
+             reviewed: str = "all") -> dict:
         if source not in {"all", "materials", "capture"}:
             raise ValueError("不合格来源筛选无效")
         if reason != "all" and reason not in REJECTION_REASONS:
             raise ValueError("不合格原因筛选无效")
+        if reviewed not in {"all", "reviewed", "pending"}:
+            raise ValueError("人工确认状态筛选无效")
         if not isinstance(batch_id, str) or len(batch_id) > 200:
             raise ValueError("不合格批次筛选无效")
         all_rows = self._all()
@@ -111,6 +132,7 @@ class RejectionService:
             row for row in all_rows
             if (source == "all" or row["source_type"] == source)
             and (reason == "all" or row["reason_code"] == reason)
+            and (reviewed == "all" or (reviewed == "reviewed") == bool(row.get("reviewed_at")))
             and (batch_id == "all" or (batch_id == "__unbound__" and not row.get("batch_id"))
                  or (batch_id not in {"all", "__unbound__"} and row.get("batch_id") == batch_id))
             and (not normalized_query or normalized_query in " ".join(str(row.get(key, "")) for key in (
@@ -181,6 +203,72 @@ class RejectionService:
             return {"ok": True, "reviewed_at": (store.get("rejection") or {}).get("reviewed_at", "")}
         raise ValueError("不合格来源无效")
 
+    def material_return_target(self, task: dict) -> tuple[str, dict | None, str]:
+        """只在当前任务唯一映射到原批次门店时开放打回入口。"""
+        binding = self.tasks.task_material_binding(task["id"])
+        batch_id = binding.get("batch_id", "")
+        if not batch_id:
+            return "", None, "该任务未关联素材批次，无法打回素材清洗"
+        try:
+            batch = self.materials.get_batch(batch_id)
+        except ValueError:
+            return "", None, "原素材批次已不存在，无法打回素材清洗"
+        matches = [item for item in (batch.get("stores") or [])
+                   if item.get("source_name") == task.get("source_name")]
+        if len(matches) != 1:
+            return batch_id, None, "原批次中无法唯一匹配该门店，无法安全打回"
+        return batch_id, matches[0], ""
+
+    def undo_many(self, items: list[dict], protect_task=None) -> dict:
+        """逐项执行与单条入口一致的撤销规则，返回每项真实结果而不吞掉失败。"""
+        if not isinstance(items, list) or not 1 <= len(items) <= 100:
+            raise ValueError("请选择 1 到 100 条不合格记录")
+        results, seen = [], set()
+        for item in items:
+            if not isinstance(item, dict) or item.get("source_type") not in {"capture", "materials"}:
+                raise ValueError("批量撤销参数无效")
+            source_type = item["source_type"]
+            if source_type == "capture":
+                if set(item) != {"source_type", "task_id"} or not isinstance(item["task_id"], str) or not item["task_id"].strip():
+                    raise ValueError("采集任务撤销参数无效")
+                key = (source_type, item["task_id"].strip())
+            else:
+                if (set(item) != {"source_type", "batch_id", "store_id"}
+                        or any(not isinstance(item[field], str) or not item[field].strip()
+                               for field in ("batch_id", "store_id"))):
+                    raise ValueError("素材门店撤销参数无效")
+                key = (source_type, item["batch_id"].strip(), item["store_id"].strip())
+            if key in seen:
+                raise ValueError("批量撤销列表不能包含重复记录")
+            seen.add(key)
+
+        for item in items:
+            source_type = item["source_type"]
+            identity = ({"source_type": source_type, "task_id": item["task_id"].strip()}
+                        if source_type == "capture" else
+                        {"source_type": source_type, "batch_id": item["batch_id"].strip(),
+                         "store_id": item["store_id"].strip()})
+            try:
+                if source_type == "capture":
+                    task_id = identity["task_id"]
+                    task = self.tasks.get(task_id)
+                    if protect_task:
+                        protect_task(task_id)
+                    task = self.undo_task(task_id)
+                    store_name = task.get("source_name", "")
+                else:
+                    batch_id, store_id = identity["batch_id"], identity["store_id"]
+                    store = self.materials.get_store(batch_id, store_id)
+                    if store.get("decision") != "skipped":
+                        raise ValueError("该门店当前没有不合格标记")
+                    self.materials.decide_store(batch_id, store_id, "pending")
+                    store_name = store.get("source_name", "")
+                results.append({**identity, "ok": True, "store_name": store_name})
+            except (ValueError, HTTPException) as exc:
+                reason = getattr(exc, "detail", None) or str(exc)
+                results.append({**identity, "ok": False, "store_name": "", "error": str(reason)})
+        return {"ok": all(result["ok"] for result in results), "results": results}
+
     def return_to_materials(self, task_id: str) -> dict:
         """把采集任务打回素材清洗：清不合格 + 决策回 pending + 任务置 blocked。
 
@@ -191,21 +279,10 @@ class RejectionService:
         task = self.tasks.get(task_id)
         if not task.get("reject_reason") and task.get("status") != "pending":
             raise ValueError("只有不合格或待处理任务可以打回素材清洗")
-        binding = self.tasks.task_material_binding(task_id)
-        batch_id = binding.get("batch_id", "")
-        if not batch_id:
-            raise ValueError("该任务未关联素材批次，无法打回素材清洗")
-        batch = self.materials.get_batch(batch_id)
-        stores = batch.get("stores") or []
-        store = next((item for item in stores if item.get("source_name") == task["source_name"]), None)
+        batch_id, store, reason = self.material_return_target(task)
         if store is None:
-            # 兜底：发布快照中的父目录名与素材目录名一致，可按目录后缀匹配。
-            folder = Path(task["source_path"]).parent.name
-            store = next((item for item in stores
-                          if str(item.get("source_folder") or "").endswith(folder)), None)
-        if store is None:
-            raise ValueError("未在素材批次中找到对应门店，无法打回素材清洗")
-        self.materials.decide_store(batch_id, store["store_id"], "pending")
+            raise ValueError(reason)
+        self.materials.return_rework_store(batch_id, store["store_id"])
         self.tasks.update(
             task_id, status="blocked", stage="returned_to_materials",
             message="已打回素材清洗；请重新确认二维码后增量发布并重跑",
@@ -224,8 +301,9 @@ class RejectionService:
         if reason == "other" and not detail.strip():
             raise ValueError("请选择其他时请填写具体原因")
 
-    def export_xlsx(self, source: str = "all", reason: str = "all", query: str = "", batch_id: str = "all") -> bytes:
-        records = self.list(source, reason, query, batch_id)["records"]
+    def export_xlsx(self, source: str = "all", reason: str = "all", query: str = "", batch_id: str = "all",
+                    reviewed: str = "all") -> bytes:
+        records = self.list(source, reason, query, batch_id, reviewed)["records"]
         workbook = Workbook(write_only=True)
         sheet = workbook.create_sheet("不合格门店")
         sheet.freeze_panes = "A2"

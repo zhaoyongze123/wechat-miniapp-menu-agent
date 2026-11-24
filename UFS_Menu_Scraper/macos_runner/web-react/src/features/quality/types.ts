@@ -25,6 +25,8 @@ export interface RejectionRecord {
   batch_name: string
   task_id: string
   run_id: string
+  can_return_to_materials?: boolean
+  return_to_materials_disabled_reason?: string
   /** 仅素材清洗来源携带，用于跳回门店修复。 */
   store_id?: string
 }
@@ -53,6 +55,22 @@ export interface RejectionQuery {
   source: RejectionSource
   reason: string
   q: string
+  reviewed: ReviewState
+}
+
+export type RejectionUndoItem =
+  | { source_type: 'capture'; task_id: string }
+  | { source_type: 'materials'; batch_id: string; store_id: string }
+
+export type RejectionUndoResult = RejectionUndoItem & {
+  ok: boolean
+  store_name: string
+  error?: string
+}
+
+export interface RejectionUndoResponse {
+  ok: boolean
+  results: RejectionUndoResult[]
 }
 
 /** 人工复核只切换确认标记，不改变任务状态与不合格原因。 */

@@ -1612,12 +1612,14 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return debug_log.clear()
 
     @app.get("/api/rejections")
-    def list_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all"):
-        return rejections.list(source, reason, q, batch_id)
+    def list_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all",
+                        reviewed: str = "all"):
+        return rejections.list(source, reason, q, batch_id, reviewed)
 
     @app.get("/api/rejections/export.xlsx")
-    def export_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all"):
-        content = rejections.export_xlsx(source, reason, q, batch_id)
+    def export_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all",
+                          reviewed: str = "all"):
+        content = rejections.export_xlsx(source, reason, q, batch_id, reviewed)
         filename = "不合格门店清单.xlsx"
         return Response(
             content,
@@ -1638,6 +1640,15 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 batch_id=str(payload.get("batch_id") or ""), store_id=str(payload.get("store_id") or ""),
                 reviewed=payload["reviewed"],
             )
+
+    @app.post("/api/rejections/undo-batch")
+    def undo_rejections_batch(payload: dict):
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict) or set(payload) != {"items"}:
+            raise ValueError("批量撤销参数无效")
+        with control_lock:
+            idle()
+            return rejections.undo_many(items, protect_task=hub.protect_task if hub else None)
 
     @app.post("/api/tasks/{task_id}/reject")
     def reject_task(task_id: str, payload: dict):

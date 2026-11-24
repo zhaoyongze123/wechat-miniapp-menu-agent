@@ -13,12 +13,13 @@ import {
   unapproveBatches,
   undoCaptureRejection,
   undoMaterialRejection,
+  undoRejectionsBatch,
 } from './api'
 import type { RejectionQuery } from './types'
 
 export const qualityKeys = {
   rejections: (query: RejectionQuery) =>
-    ['quality', 'rejections', query.batchId, query.source, query.reason, query.q] as const,
+    ['quality', 'rejections', query.batchId, query.source, query.reason, query.q, query.reviewed] as const,
   reviews: (batchIds: string[], q: string) => ['quality', 'reviews', batchIds.join(','), q] as const,
   running: () => ['quality', 'hub-running'] as const,
 }
@@ -69,6 +70,7 @@ export function useRejectionActions() {
         undoMaterialRejection(payload.batchId, payload.storeId),
       onSuccess: refresh,
     }),
+    undoBatch: useMutation({ mutationFn: undoRejectionsBatch, onSuccess: refresh }),
     returnToMaterials: useMutation({ mutationFn: returnRejectionToMaterials, onSuccess: refresh }),
     retry: useMutation({ mutationFn: retryCaptureTask, onSuccess: refresh }),
   }
