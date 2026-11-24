@@ -29,6 +29,7 @@
 - 全部开发任务完成后，同一交付最多手动运行一次完整集成 CI。失败后读取日志、本地修复和验证，任何再次触发或重跑均须用户明确授权。详见 [发布与云端构建](docs/governance/engineering-standards.md#发布与云端构建)。
 - 涉及前端时按影响执行类型检查和相关测试。提交前生成并核对受改动影响的 `web/react` 静态资源。
 - 前端新增或修改表格、筛选、分页、批量操作、设置布局、表单、弹窗/抽屉、图片预览与反馈时，先查 [docs/design-system](docs/design-system/README.md) 与 `src/components` 现有契约，优先复用，不重复造同类组件。
+- 提交前运行 `npm run lint:design`；确需原生控件或业务专用颜色时，按“文件、规则、原因”登记到 `docs/design-system/acceptance-matrix.md` 与门禁白名单，禁止整目录放行。
 - Storybook 仅用于开发与回归：`npm run storybook` / `npm run build-storybook`，不进入生产安装包或 Hub 镜像。
 - Python 改动按 `pyproject.toml` 对受影响路径执行 Ruff 检查。
 
