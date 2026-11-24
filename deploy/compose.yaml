@@ -14,6 +14,12 @@ services:
     environment:
       MENU_CAPTURE_ADMIN_PASSWORD: "${MENU_CAPTURE_ADMIN_PASSWORD:?请在 deploy/.env 中填写管理员口令}"
       MENU_CAPTURE_ALLOWED_HOSTS: "${MENU_CAPTURE_ALLOWED_HOSTS:-}"
+      # 宿主机更新执行器地址与令牌：未配置时设置页只展示原因，不提供安装入口。
+      HUB_UPDATE_URL: "${HUB_UPDATE_URL:-}"
+      HUB_UPDATE_TOKEN: "${HUB_UPDATE_TOKEN:-}"
+    extra_hosts:
+      # 执行器跑在宿主机，容器通过 host-gateway 访问；仍需执行器令牌与来源网段校验。
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:${MENU_CAPTURE_HOST_PORT:-8766}:8765"
     volumes:
