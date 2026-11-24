@@ -69,7 +69,11 @@ class SharedWorker:
         self._thread: threading.Thread | None = None
         self.online = False
         self._hub_reports_runs = False
+        self._hub_reports_software = False
         self._hub_supports_history = False
+        # Hub 分发的版本元数据由更新服务消费；Hub 未启用时保持 None。
+        self.hub_update_target: dict | None = None
+        self.software_provider = None
         self.history = WorkerHistoryDelivery(store)
         self.history_error = ""
         self.error = ""
@@ -386,19 +390,35 @@ class SharedWorker:
             pending = db.execute("SELECT COUNT(*) FROM worker_assignments WHERE status='pending_upload'").fetchone()[0]
         active = None
         summary = self._run_summary() if self._hub_reports_runs else None
+        software = None
+        if self._hub_reports_software and self.software_provider is not None:
+            try:
+                candidate = self.software_provider()
+                software = candidate if isinstance(candidate, dict) else None
+            except Exception:  # noqa: BLE001 - 状态上报失败不能影响任务同步
+                software = None
         for start in range(0, max(len(ready), 1), 1000):
             payload = {"ready_ids": ready[start:start + 1000], "pending_uploads": pending}
             if start == 0 and summary is not None:
                 payload["run_summary"] = summary
+            if start == 0 and software is not None:
+                payload["software"] = software
             response = self._http.post(self._url("/sync"), headers=self._headers, json=payload)
-            # Hub 回滚后可能拒绝新字段。改用旧格式，确保任务下载与补传继续。
+            # Hub 回滚后可能拒绝新字段。逐步退回旧格式，确保任务下载与补传继续。
+            if response.status_code == 400 and "software" in payload:
+                del payload["software"]
+                self._hub_reports_software = False
+                response = self._http.post(self._url("/sync"), headers=self._headers, json=payload)
             if response.status_code == 400 and "run_summary" in payload:
                 del payload["run_summary"]
                 response = self._http.post(self._url("/sync"), headers=self._headers, json=payload)
             response.raise_for_status()
             sync = response.json()
             self._hub_reports_runs = sync.get("supports_run_summary") is True
+            self._hub_reports_software = sync.get("supports_software_status") is True
             self._hub_supports_history = sync.get("supports_run_history") is True
+            target = sync.get("update_target")
+            self.hub_update_target = target if isinstance(target, dict) else None
             active = sync["assignments"]
             name = sync.get("worker_name")
             if isinstance(name, str) and name:

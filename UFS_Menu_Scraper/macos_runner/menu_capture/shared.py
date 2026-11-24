@@ -73,6 +73,8 @@ class SharedHub:
     def __init__(self, store: TaskStore, materials: MaterialService):
         self.store = store
         self.materials = materials
+        # 由服务端注入：返回 Hub 已校验且未过期的版本元数据，供 Worker 复用。
+        self.update_metadata = None
         self.root = store.path.parent / "shared-results"
         self.root.mkdir(parents=True, exist_ok=True)
         # 上次进程中止的上传尚未进入结果事务，可以由客户端重新提交完整包。
@@ -96,6 +98,14 @@ class SharedHub:
                     worker_id TEXT PRIMARY KEY REFERENCES shared_workers(id),
                     status TEXT NOT NULL, mode TEXT NOT NULL,
                     processed INTEGER NOT NULL, total INTEGER NOT NULL, reported_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS shared_worker_software (
+                    worker_id TEXT PRIMARY KEY REFERENCES shared_workers(id),
+                    current_version TEXT NOT NULL DEFAULT '', platform TEXT NOT NULL DEFAULT '',
+                    latest_version TEXT NOT NULL DEFAULT '', update_available INTEGER NOT NULL DEFAULT 0,
+                    channel TEXT NOT NULL DEFAULT '', checked_at TEXT NOT NULL DEFAULT '',
+                    download_status TEXT NOT NULL DEFAULT '', install_status TEXT NOT NULL DEFAULT '',
+                    reported_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS shared_run_history (
                     worker_id TEXT NOT NULL REFERENCES shared_workers(id), run_id TEXT NOT NULL,
@@ -132,10 +142,24 @@ class SharedHub:
                 ORDER BY w.name,w.id
             """)]
             runs = {row["worker_id"]: dict(row) for row in db.execute("SELECT * FROM shared_worker_runs")}
+            software = {row["worker_id"]: dict(row) for row in db.execute("SELECT * FROM shared_worker_software")}
             history_times = dict(db.execute("SELECT worker_id,MAX(synced_at) FROM shared_run_history GROUP BY worker_id"))
             for worker in workers:
                 worker["last_run"] = runs.get(worker["id"])
                 worker["history_synced_at"] = history_times.get(worker["id"], "")
+                row = software.get(worker["id"])
+                # 未上报过的设备明确为 null，不用空对象冒充“已是最新”。
+                worker["software"] = ({
+                    "current_version": row["current_version"],
+                    "platform": row["platform"],
+                    "latest_version": row["latest_version"],
+                    "update_available": bool(row["update_available"]),
+                    "channel": row["channel"],
+                    "checked_at": row["checked_at"],
+                    "download_status": row["download_status"],
+                    "install_status": row["install_status"],
+                    "reported_at": row["reported_at"],
+                } if row else None)
             assignments = [dict(row) for row in db.execute("""
                 SELECT a.*, COALESCE(r.disposition, '') AS disposition, COALESCE(r.message, '') AS result_message
                 FROM shared_assignments a LEFT JOIN shared_results r ON a.id=r.assignment_id
@@ -153,7 +177,41 @@ class SharedHub:
             for row in assignments:
                 if row["status"] in ACTIVE:
                     row["current_task_id"] = current.get((row["batch_id"], row["store"]), row["task_id"])
-        return {"role": "hub", "workers": workers, "assignments": assignments}
+        target = self._update_target()
+        reported = [worker["software"] for worker in workers if worker.get("software")]
+        versions: dict[str, int] = {}
+        for row in reported:
+            key = row["current_version"] or "unknown"
+            versions[key] = versions.get(key, 0) + 1
+        update_summary = {
+            "reported": len(reported),
+            "unreported": len([w for w in workers if not w.get("archived_at") and not w.get("software")]),
+            "update_available": sum(1 for row in reported if row["update_available"]),
+            "target_version": str(((target or {}).get("latest") or {}).get("version") or ""),
+            "versions": versions,
+        }
+        return {
+            "role": "hub",
+            "workers": workers,
+            "assignments": assignments,
+            "update_summary": update_summary,
+            # 面板只展示目标版本摘要；完整资产元数据只在 Worker 同步响应中分发。
+            "update_target": ({
+                "version": str((target.get("latest") or {}).get("version") or ""),
+                "channel": str(target.get("channel") or ""),
+                "checked_at": float(target.get("checked_at") or 0),
+            } if target else None),
+        }
+
+    def _update_target(self) -> dict | None:
+        """调用服务端注入的版本元数据提供者；未注入或异常时按不可用处理。"""
+        if self.update_metadata is None:
+            return None
+        try:
+            target = self.update_metadata()
+        except Exception:  # noqa: BLE001 - 更新状态异常不能拖垮设备列表
+            return None
+        return target if isinstance(target, dict) else None
 
     def pairing_code(self) -> dict:
         code = secrets.token_urlsafe(9)
@@ -450,8 +508,29 @@ class SharedHub:
             db.execute("BEGIN IMMEDIATE")
             self._reconcile_assignments(db, current)
 
+    @staticmethod
+    def _software_row(software: dict | None) -> dict | None:
+        """校验采集端上报的软件状态；字段只允许白名单，避免夹带路径或业务数据。"""
+        if software is None:
+            return None
+        fields = ("current_version", "platform", "latest_version", "channel", "checked_at",
+                  "download_status", "install_status")
+        if not isinstance(software, dict) or set(software) != set(fields) | {"update_available"}:
+            raise ValueError("采集端软件状态无效")
+        if type(software["update_available"]) is not bool:
+            raise ValueError("采集端软件状态无效")
+        row = {}
+        for key in fields:
+            value = software[key]
+            if (not isinstance(value, str) or len(value) > 64
+                    or any(ord(char) < 32 for char in value)):
+                raise ValueError("采集端软件状态无效")
+            row[key] = value
+        row["update_available"] = 1 if software["update_available"] else 0
+        return row
+
     def sync(self, worker_id: str, ready_ids: list[str], pending_uploads: int,
-             run_summary: dict | None = None) -> dict:
+             run_summary: dict | None = None, software: dict | None = None) -> dict:
         if (not isinstance(ready_ids, list) or len(ready_ids) > 1000
                 or any(not isinstance(value, str) or len(value) != 32 for value in ready_ids)
                 or type(pending_uploads) is not int or not 0 <= pending_uploads <= 10000):
@@ -463,6 +542,7 @@ class SharedHub:
                     or any(type(run_summary[key]) is not int for key in ("processed", "total"))
                     or not 0 <= run_summary["processed"] <= run_summary["total"] <= 10000):
                 raise ValueError("采集端轮次摘要无效")
+        software_row = self._software_row(software)
         stamp = utc_stamp()
         current = self._store_index(self.materials.effective_capture_tasks())
         batch_snapshots = self.materials.latest_snapshot_map()
@@ -481,6 +561,20 @@ class SharedHub:
                         processed=excluded.processed,total=excluded.total,reported_at=excluded.reported_at
                 """, (worker_id, run_summary["status"], run_summary["mode"], run_summary["processed"],
                       run_summary["total"], stamp))
+            if software_row is not None:
+                db.execute("""
+                    INSERT INTO shared_worker_software(worker_id,current_version,platform,latest_version,
+                        update_available,channel,checked_at,download_status,install_status,reported_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(worker_id) DO UPDATE SET current_version=excluded.current_version,
+                        platform=excluded.platform,latest_version=excluded.latest_version,
+                        update_available=excluded.update_available,channel=excluded.channel,
+                        checked_at=excluded.checked_at,download_status=excluded.download_status,
+                        install_status=excluded.install_status,reported_at=excluded.reported_at
+                """, (worker_id, software_row["current_version"], software_row["platform"],
+                      software_row["latest_version"], software_row["update_available"],
+                      software_row["channel"], software_row["checked_at"],
+                      software_row["download_status"], software_row["install_status"], stamp))
             self._reconcile_assignments(db, current, worker_id)
             db.executemany("UPDATE shared_assignments SET status='ready' WHERE id=? AND worker_id=? AND status='assigned'",
                            ((assignment_id, worker_id) for assignment_id in ready_ids))
@@ -500,6 +594,9 @@ class SharedHub:
                 "batches": [{"batch_id": batch_id, "snapshot_id": snapshot_id}
                             for batch_id, snapshot_id in batch_snapshots.items()],
                 "states": states, "supports_run_summary": True, "supports_run_history": True,
+                "supports_software_status": True,
+                # Hub 已校验且未过期时分发完整元数据；Worker 会再次校验后才采纳。
+                "update_target": self._update_target(),
                 "worker_name": worker["name"]}
 
     def record_run_history(self, worker_id: str, report: HistoryReport) -> dict:
