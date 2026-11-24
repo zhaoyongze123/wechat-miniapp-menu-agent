@@ -23,10 +23,7 @@ class RunnerExecutor:
         runner.run_directory = Path(run_directory)
         runner.output_directory = self.work_dir
         runner.transport = runner.make_transport(Path(run_directory), Path(output_root))
-        runner._cli_process = None
-        runner._cli_metadata_path = runner._cli_log_path = runner._cli_args_path = None
-        runner._cli_info = None
-        runner._cli_reader_thread = None
+        runner.cli.reset()
         runner._trace_attempt = None
         runner._trace_step = None
         runner._trace_click = {}
@@ -91,6 +88,5 @@ class RunnerExecutor:
         runner.transport = None
         runner.run_directory = None
         runner.output_directory = None
-        runner._cli_process = None
-        runner._cli_info = None
+        runner.cli.reset()
         runner.current_task = None

@@ -359,8 +359,8 @@ def test_cli_launch_passes_private_run_directory_and_reaps_own_process(tmp_path:
     assert captured["kwargs"]["cwd"] == str(project_dir)
     assert captured["kwargs"]["env"]["UIPATH_CLI_DISABLE_VERSION_SYNC"] == "true"
     if sys.platform != "win32":
-        assert Path(runner._cli_log_path).stat().st_mode & 0o777 == 0o600
-    metadata = json.loads(runner._cli_metadata_path.read_text(encoding="utf-8"))
+        assert Path(runner.cli.log_path).stat().st_mode & 0o777 == 0o600
+    metadata = json.loads(runner.cli.metadata_path.read_text(encoding="utf-8"))
     assert metadata["pid"] == process.pid and metadata["exit_code"] == 0
     assert process.wait_calls
 
@@ -392,7 +392,7 @@ def test_cli_exit_before_handshake_marks_task_without_waiting_startup_timeout(tm
     assert time.monotonic() - started_at < 2
     assert store.get(selected["id"])["status"] == "needs_review"
     assert "exit code 37" in store.get(selected["id"])["message"]
-    metadata = json.loads(runner._cli_metadata_path.read_text(encoding="utf-8"))
+    metadata = json.loads(runner.cli.metadata_path.read_text(encoding="utf-8"))
     assert metadata["exit_code"] == 37
     assert process.wait_calls
 
@@ -400,7 +400,7 @@ def test_cli_handshake_keeps_one_command_id_when_actor_reply_is_delayed(tmp_path
     runner, _, _, _, _, _ = _setup(tmp_path)
     ipc = tmp_path / "delayed-ipc"
     runner.transport = FileRobotTransport(ipc, ipc, poll_interval=.01)
-    runner._cli_process = FakeCliProcess()
+    runner.cli.process = FakeCliProcess()
     seen = []
 
     def delayed_actor():
@@ -1101,18 +1101,19 @@ def test_build_cache_skips_rebuild_only_when_sources_unchanged(tmp_path):
     (project / ".local" / "install").mkdir(parents=True)
     (project / "Main.xaml").write_text("<Activity/>", encoding="utf-8")
     (project / "project.json").write_text("{}", encoding="utf-8")
-    runner = object.__new__(UiPathRunner)
-    runner.project_dir = project
-    runner._build_fingerprint = runner._project_build_fingerprint()
-    runner._build_cache_path = tmp_path / "out" / ".uipath-build" / "state.json"
+    from menu_capture.desktop.cli_process import RobotCliProcess
 
-    assert runner._build_cache_matches() is False
-    runner._record_build_cache()
-    assert runner._build_cache_matches() is True
+    cli = RobotCliProcess(project)
+    cli.source_fingerprint = cli.build_fingerprint()
+    cli.build_cache_path = tmp_path / "out" / ".uipath-build" / "state.json"
+
+    assert cli.build_cache_matches() is False
+    cli.record_build_cache()
+    assert cli.build_cache_matches() is True
 
     (project / "Main.xaml").write_text("<Activity x:Class='Main'/>", encoding="utf-8")
-    runner._build_fingerprint = runner._project_build_fingerprint()
-    assert runner._build_cache_matches() is False
+    cli.source_fingerprint = cli.build_fingerprint()
+    assert cli.build_cache_matches() is False
 
 def _evidence_case(root: Path, name: str, *, outcome: str, capture: str, age_seconds: float) -> Path:
     case = root.parent / ".uipath-runs" / "run-1" / "gui-agent" / name

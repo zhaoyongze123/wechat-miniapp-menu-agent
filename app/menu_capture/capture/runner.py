@@ -59,6 +59,7 @@ from menu_capture.vision.chat_image_locator import (ChatImageNotFound, locate_ch
                                  match_preview_source)
 from menu_capture.agent.ui_tars_trial import GUI_PLUS_MODEL, TrialModel, TrialProtocolError, run_navigation, trial_model_from_env
 from menu_capture.desktop.robot_profile import RobotProfile
+from menu_capture.desktop.cli_process import RobotCliProcess
 from menu_capture.capture.outputs import (
     archive_unqualified, retire_store_dir, store_output_dir, unqualified_store_dir,
 )
@@ -281,17 +282,7 @@ class UiPathRunner:
         self.output_directory: Path | None = None
         self.transport: FileRobotTransport | Any | None = None
         self._deadline = 0.0
-        self._cli_process: Any | None = None
-        self._cli_metadata_path: Path | None = None
-        self._cli_log_path: Path | None = None
-        self._cli_args_path: Path | None = None
-        self._cli_info: dict | None = None
-        self._cli_reader_thread: threading.Thread | None = None
-        # 项目源文件未变时复用上次构建产物，跳过 UiPath 的再次校验与编译。
-        self._skip_build_requested = False
-        self._build_fingerprint: str | None = None
-        self._build_cache_path: Path | None = None
-        self._launch_params: tuple | None = None
+        self.cli = RobotCliProcess(self.project_dir)
         self._debug_frame_refs: dict[str, str] = {}
         self._last_ocr_meta: dict = {}
         self._last_target_resolution: dict | None = None
@@ -671,10 +662,7 @@ class UiPathRunner:
             # trial 模式的截图落在 run_directory/ui-tars-trial 下，直接放行运行目录。
             transport_output = run_directory if ui_tars_trial else _staging_root(settings.output_dir)
             self.transport = self.make_transport(run_directory, Path(transport_output).expanduser().resolve())
-            self._cli_process = None
-            self._cli_metadata_path = self._cli_log_path = self._cli_args_path = None
-            self._cli_info = None
-            self._cli_reader_thread = None
+            self.cli.reset()
             self.run_id = resume_run["id"] if resume_run else uuid.uuid4().hex
             if sys.platform != "win32" and profile.get("launch_mode", "manual") == "cli":
                 self._launch_cli(run_directory, settings, profile, task_count=len(task_ids))
@@ -739,7 +727,7 @@ class UiPathRunner:
                 "running": True,
                 "mode": profile["mode"],
                 "launch_mode": launch_mode,
-                "cli_pid": self._cli_info.get("pid") if self._cli_info else None,
+                "cli_pid": self.cli.info.get("pid") if self.cli.info else None,
                 "task_id": task["id"],
                 "in_RunDirectory": str(run_directory),
                 "entry_file": str(run_directory / "entry.json"),
@@ -901,157 +889,13 @@ class UiPathRunner:
 
     def _launch_cli(self, run_directory: Path, settings, profile: dict, *, task_count: int | None = None,
                     timeout_seconds: float | None = None, allow_skip_build: bool = True) -> None:
-        """只启动当前这轮自己的 Main.xaml 进程，并把 CLI 工件留在私有 run 目录。"""
-        entry = cli_entry()
-        if not entry:
-            raise ValueError("未找到 UiPath CLI（uip）；请确认已安装并位于 PATH")
-        args_path = run_directory / "args.json"
-        log_path = self.debug_log.cli_log_path(self.run_id or run_directory.name) if self.debug_log else run_directory / "cli.log"
-        metadata_path = run_directory / "cli-process.json"
-        _atomic_write_json(args_path, {"in_RunDirectory": str(run_directory)})
+        self.cli.project_dir = self.project_dir
+        self.cli.process_factory = self.process_factory
+        self.cli.debug_log = self.debug_log
+        self.cli.cli_entry = cli_entry
+        self.cli.launch(run_directory, settings, profile, task_count=task_count, timeout_seconds=timeout_seconds,
+                        allow_skip_build=allow_skip_build, run_id=self.run_id)
 
-        environment = os.environ.copy()
-        dotnet_root = Path("/Users/mac/.dotnet")
-        if sys.platform != "win32" and dotnet_root.is_dir():
-            environment["DOTNET_ROOT"] = str(dotnet_root)
-            environment["PATH"] = str(dotnet_root) + os.pathsep + environment.get("PATH", "")
-        else:
-            dotnet_path = shutil.which("dotnet", path=environment.get("PATH"))
-            if dotnet_path:
-                environment.setdefault("DOTNET_ROOT", str(Path(dotnet_path).resolve().parent))
-        environment["UIPATH_CLI_DISABLE_VERSION_SYNC"] = "true"
-
-        startup_timeout = 300
-        max_tasks = task_count if task_count is not None else len(profile.get("selected_task_ids", []))
-        # 人工标注按人工节奏进行，不能用自动采集的单店上限计算 CLI 生命周期。
-        cli_timeout = (int(timeout_seconds) if timeout_seconds else
-                       settings.capture.max_task_seconds * max_tasks + startup_timeout + 60)
-        command = [
-            *entry, "rpa", "run",
-            "--project-dir", str(self.project_dir),
-            "--file-path", "Main.xaml",
-            "--input-arguments-file", str(args_path),
-            "--timeout", str(cli_timeout),
-            "--output", "json",
-        ]
-        self._build_fingerprint = self._project_build_fingerprint()
-        self._build_cache_path = Path(settings.output_dir).expanduser().resolve() / ".uipath-build" / "state.json"
-        self._skip_build_requested = allow_skip_build and self._build_cache_matches()
-        if self._skip_build_requested:
-            # 源文件与上次成功构建一致，直接复用 .local/install 产物。
-            command.append("--skip-build")
-        self._launch_params = (run_directory, settings, profile, task_count, timeout_seconds)
-        log_stream = None
-        try:
-            if self.debug_log:
-                process = self.process_factory(
-                    command, cwd=str(self.project_dir), env=environment,
-                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    shell=False, close_fds=True,
-                )
-            else:
-                fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                log_stream = os.fdopen(fd, "ab")
-                process = self.process_factory(
-                    command, cwd=str(self.project_dir), env=environment,
-                    stdin=subprocess.DEVNULL, stdout=log_stream, stderr=subprocess.STDOUT,
-                    shell=False, close_fds=True,
-                )
-        except Exception as exc:
-            if log_stream:
-                log_stream.close()
-            _atomic_write_json(metadata_path, {
-                "pid": None, "exit_code": None, "status": "start_failed",
-                "error_type": type(exc).__name__, "log": str(log_path),
-            })
-            raise ValueError(f"UiPath CLI 启动失败（{type(exc).__name__}）") from None
-        finally:
-            if log_stream:
-                log_stream.close()
-
-        self._cli_process = process
-        self._cli_args_path, self._cli_log_path, self._cli_metadata_path = args_path, log_path, metadata_path
-        self._cli_info = {"pid": int(process.pid), "exit_code": None, "status": "running"}
-        if self.debug_log and getattr(process, "stdout", None) is not None:
-            self._cli_reader_thread = threading.Thread(
-                target=self._drain_cli_output, args=(process.stdout, str(self.run_id or run_directory.name)),
-                name="uipath-cli-log-reader", daemon=True,
-            )
-            self._cli_reader_thread.start()
-        self._write_cli_metadata()
-
-    def _drain_cli_output(self, stream, run_key: str) -> None:
-        try:
-            while True:
-                chunk = stream.read(8192)
-                if not chunk:
-                    break
-                self.debug_log.add_cli_output(run_key, chunk)
-        except (OSError, ValueError):
-            self.debug_log.emit("uipath_cli_output_read_error", run_id=run_key)
-        finally:
-            try:
-                stream.close()
-            except OSError:
-                pass
-
-    def _write_cli_metadata(self) -> None:
-        if self._cli_metadata_path is None or self._cli_info is None:
-            return
-        value = dict(self._cli_info)
-        value.update({
-            "args_file": str(self._cli_args_path),
-            "log_file": str(self._cli_log_path),
-            "project_dir": str(self.project_dir),
-        })
-        _atomic_write_json(self._cli_metadata_path, value)
-
-    def _project_build_fingerprint(self) -> str:
-        """源文件内容指纹：Main.xaml 等任一改动都必须重新构建。"""
-        digest = hashlib.sha256()
-        sources = sorted(self.project_dir.glob("*.xaml")) + [self.project_dir / "project.json"]
-        for path in sources:
-            if not path.is_file():
-                continue
-            digest.update(path.name.encode("utf-8"))
-            digest.update(b"\0")
-            try:
-                digest.update(path.read_bytes())
-            except OSError:
-                return ""
-            digest.update(b"\0")
-        return digest.hexdigest()
-
-    def _build_cache_matches(self) -> bool:
-        if not self._build_fingerprint or self._build_cache_path is None:
-            return False
-        if not (self.project_dir / ".local" / "install").is_dir():
-            return False
-        try:
-            cached = json.loads(self._build_cache_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return False
-        return isinstance(cached, dict) and cached.get("fingerprint") == self._build_fingerprint
-
-    def _record_build_cache(self) -> None:
-        """握手成功后确认产物可用，供下一轮复用。"""
-        if not self._build_fingerprint or self._build_cache_path is None:
-            return
-        try:
-            _atomic_write_json(self._build_cache_path, {
-                "fingerprint": self._build_fingerprint,
-                "recorded_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            })
-        except OSError:
-            return
-
-    def _invalidate_build_cache(self) -> None:
-        if self._build_cache_path is None:
-            return
-        try:
-            self._build_cache_path.unlink(missing_ok=True)
-        except OSError:
-            return
 
     def _await_cli_startup(self) -> None:
         if sys.platform == "win32":
@@ -1061,45 +905,27 @@ class UiPathRunner:
             self._handshake_cli()
         except (RobotCommandError, RobotTimeout) as exc:
             # 复用构建产物失败说明产物已过期或被清理；本轮立刻完整构建重来一次。
-            if not self._skip_build_requested or not self._launch_params:
+            if not self.cli.skip_build_requested or not self.cli.launch_params:
                 raise
-            self._invalidate_build_cache()
-            self._terminate_cli()
-            run_directory, settings, profile, task_count, timeout_seconds = self._launch_params
+            self.cli.invalidate_build_cache()
+            self.cli.terminate()
+            run_directory, settings, profile, task_count, timeout_seconds = self.cli.launch_params
             self._launch_cli(run_directory, settings, profile, task_count=task_count,
                              timeout_seconds=timeout_seconds, allow_skip_build=False)
             self._handshake_cli()
-        self._record_build_cache()
+        self.cli.record_build_cache()
 
-    def _terminate_cli(self) -> None:
-        process = self._cli_process
-        if process is None:
-            return
-        try:
-            process.terminate()
-            process.wait(timeout=5)
-        except (OSError, subprocess.SubprocessError):
-            try:
-                process.kill()
-            except (OSError, subprocess.SubprocessError):
-                return
-        finally:
-            reader = self._cli_reader_thread
-            if reader is not None:
-                reader.join(timeout=1)
-            self._cli_reader_thread = None
-            self._cli_process = None
 
     def _handshake_cli(self) -> None:
-        process = self._cli_process
+        process = self.cli.process
         if process is None:
             self._send({"action": "noop"}, timeout=300)
             return
         self._guard()
         code = process.poll()
         if code is not None:
-            self._cli_info.update(exit_code=int(code), status="exited_before_handshake")
-            self._write_cli_metadata()
+            self.cli.info.update(exit_code=int(code), status="exited_before_handshake")
+            self.cli.write_metadata()
             raise RobotCommandError(f"UiPath CLI 在 Main IPC 握手前退出（exit code {code}）")
         # 握手只发送一个ID，等待期间由transport监测进程和取消。
         # 反复用新ID重发noop会与上一条迟到的回复竞争，造成偶发的协议ID不匹配。
@@ -1194,8 +1020,8 @@ class UiPathRunner:
             if self._deadline:
                 command_timeout = max(.01, min(command_timeout, self._deadline - time.monotonic()))
             kwargs = {"timeout": command_timeout}
-            if self._cli_process is not None and isinstance(self.transport, FileRobotTransport):
-                kwargs["process"] = self._cli_process
+            if self.cli.process is not None and isinstance(self.transport, FileRobotTransport):
+                kwargs["process"] = self.cli.process
             command = dict(command)
             command_id = command.setdefault("id", str(uuid.uuid4()))
             safe_parameters = {}
@@ -2244,33 +2070,7 @@ class UiPathRunner:
         self._close_to_file_assistant(profile, output_dir, settle_seconds)
 
     def _reap_cli(self) -> None:
-        """有界回收本控制器创建的 CLI PID；不查找或终止 Studio/其他进程。"""
-        process = self._cli_process
-        if process is None:
-            return
-        status = "exited"
-        try:
-            try:
-                code = process.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                status = "terminated"
-                process.terminate()
-                try:
-                    code = process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    status = "killed"
-                    process.kill()
-                    code = process.wait(timeout=5)
-            self._cli_info.update(exit_code=int(code) if code is not None else process.poll(), status=status)
-        except Exception as exc:
-            self._cli_info.update(exit_code=process.poll(), status=f"reap_error:{type(exc).__name__}")
-        finally:
-            reader = self._cli_reader_thread
-            if reader is not None:
-                reader.join(timeout=2)
-            if self.debug_log and self.run_id:
-                self.debug_log.finish_cli_output(self.run_id)
-            self._write_cli_metadata()
+        self.cli.reap()
 
     def _run_task(self, task: dict, settings, profile: dict, output_dir: Path, model: TrialModel) -> None:
         # 证据留在本次私有运行目录；发布事务只接收连续编号的菜单页。
