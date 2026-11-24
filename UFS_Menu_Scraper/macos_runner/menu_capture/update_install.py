@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sqlite3
@@ -237,14 +238,21 @@ def _verify_authenticode(path: Path) -> dict:
         "$signer = if ($s.SignerCertificate) { $s.SignerCertificate.Subject } else { '' }; "
         "[pscustomobject]@{ status = $s.Status.ToString(); signer = $signer } | ConvertTo-Json -Compress"
     )
+    # 用 UTF-16LE 编码的命令行参数，规避引号、中文路径和代码页差异带来的解析问题。
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     code, output = _run_command(
-        [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script], 30,
+        [str(powershell), "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], 30,
     )
-    if code != 0:
-        return {"status": "unknown", "detail": output.strip()[:300]}
-    try:
-        payload = json.loads(output.strip().splitlines()[-1])
-    except (IndexError, ValueError):
+    payload = None
+    for line in reversed(output.strip().splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                payload = None
+            break
+    if code != 0 or not isinstance(payload, dict):
         return {"status": "unknown", "detail": output.strip()[:300]}
     label = str(payload.get("status") or "").lower()
     mapping = {"valid": "valid", "notsigned": "unsigned"}
@@ -260,7 +268,8 @@ def _check_publisher(result: dict) -> dict:
         if os.environ.get("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE") != "1":
             raise ValueError("安装包未通过可信发布证明校验（无有效代码签名）")
         return result
-    raise ValueError(f"安装包数字签名无效（{status or '未知'}）")
+    detail = str(result.get("detail") or "").strip()
+    raise ValueError(f"安装包数字签名无效（{status or '未知'}）{('：' + detail) if detail else ''}")
 
 
 def _schema_fingerprint(data_dir: Path) -> list:
