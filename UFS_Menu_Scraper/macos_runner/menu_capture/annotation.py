@@ -648,6 +648,17 @@ class AnnotationSession:
                 "session_id": None, "steps": [], "started_at": None, "finished_at": None}
 
     def start(self, task_ids: list[str]) -> dict:
+        # 与安装任务共享同一把锁：安装开始时不会再有新的标注会话挤进空闲窗口。
+        gate = getattr(self, "update_gate", None)
+        blocker = getattr(self, "update_blocked", None)
+        if gate is None:
+            return self._start_session(task_ids)
+        with gate:
+            if blocker is not None and blocker():
+                raise AnnotationError("更新安装进行中，已暂停人工标注")
+            return self._start_session(task_ids)
+
+    def _start_session(self, task_ids: list[str]) -> dict:
         # 上一轮“完成本店”的后台推进可能仍在收尾，先等它结束再复用执行器。
         self._advance_cancel.set()
         self._wait_advance()

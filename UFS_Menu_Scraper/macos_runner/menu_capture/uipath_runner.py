@@ -915,6 +915,26 @@ class UiPathRunner:
     def start(self, resume_run: dict | None = None, *, ui_tars_trial: bool = False,
               trial_task_id: str | None = None, trial_task_ids: list[str] | None = None,
               cross_batch: bool = False, capture_mode: str = "", run_name: str = "") -> dict:
+        # 所有采集入口的唯一闸门：与安装任务共享同一把锁，
+        # 保证「安装空闲校验 + 写任务」与「采集启动」不会交叉，窗口内不会出现刚启动采集就被替换版本。
+        gate = getattr(self, "update_gate", None)
+        blocker = getattr(self, "update_blocked", None)
+        if gate is None:
+            return self._start_run(resume_run, ui_tars_trial=ui_tars_trial,
+                                   trial_task_id=trial_task_id, trial_task_ids=trial_task_ids,
+                                   cross_batch=cross_batch, capture_mode=capture_mode,
+                                   run_name=run_name)
+        with gate:
+            if blocker is not None and blocker():
+                raise ValueError("更新安装进行中，已暂停新的采集操作")
+            return self._start_run(resume_run, ui_tars_trial=ui_tars_trial,
+                                   trial_task_id=trial_task_id, trial_task_ids=trial_task_ids,
+                                   cross_batch=cross_batch, capture_mode=capture_mode,
+                                   run_name=run_name)
+
+    def _start_run(self, resume_run: dict | None = None, *, ui_tars_trial: bool = False,
+                   trial_task_id: str | None = None, trial_task_ids: list[str] | None = None,
+                   cross_batch: bool = False, capture_mode: str = "", run_name: str = "") -> dict:
         with self.lock:
             if self.running:
                 raise ValueError("UiPath 单任务控制器已在运行")
