@@ -61,10 +61,16 @@ function Find-TestWorker {
 }
 
 function Assert-WorkerHealthy {
-    param([int]$PreviousProcessId = 0)
+    param([int]$PreviousProcessId = 0, [string]$ExpectedVersion)
     $url = "http://127.0.0.1:$Port/healthz"
+    $expectedExe = if ($ExpectedVersion) { Join-Path $install "releases\$ExpectedVersion\python\python.exe" } else { '' }
     for ($i = 0; $i -lt 60; $i++) {
-        $process = Find-TestWorker | Where-Object ProcessId -NE $PreviousProcessId
+        $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess)
+        $process = Find-TestWorker | Where-Object {
+            $_.ProcessId -ne $PreviousProcessId -and $_.ProcessId -in $listeners -and
+            (-not $expectedExe -or $_.ExecutablePath.Equals($expectedExe, [StringComparison]::OrdinalIgnoreCase))
+        } | Select-Object -First 1
         if ($process) {
             try {
                 $health = Invoke-RestMethod $url -UseBasicParsing -TimeoutSec 2
@@ -73,7 +79,7 @@ function Assert-WorkerHealthy {
         }
         Start-Sleep -Seconds 1
     }
-    throw "Installed worker did not become healthy on port $Port."
+    throw "Installed worker $ExpectedVersion did not become healthy on port $Port."
 }
 
 function Start-TestSupervisor {
@@ -82,10 +88,16 @@ function Start-TestSupervisor {
 }
 
 function Stop-TestSupervisor {
+    # 先让测试守护进程正常停止其子进程。超时后也只清理本次临时安装目录的进程。
     $target = $launcher
+    Set-Content -LiteralPath (Join-Path $homePath 'stop-supervisor') -Value 'smoke cleanup'
+    for ($attempt = 0; $attempt -lt 8 -and (Find-TestWorker); $attempt++) {
+        Start-Sleep -Seconds 1
+    }
     Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
         Where-Object { $_.CommandLine -and $_.CommandLine.Contains($target) -and $_.CommandLine.Contains('Supervise') } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Find-TestWorker | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
 function Assert-Version {
@@ -106,10 +118,11 @@ function Assert-WorkerRelease {
 }
 
 function Assert-ApiVersion {
-    param([string]$Expected, [string]$Label)
+    param([string]$Expected, [string]$Label, [switch]$AllowLegacy)
     if (-not $Expected) { return }
     $manifest = Join-Path $install "releases\$Expected\release-manifest.json"
     if (-not (Test-Path -LiteralPath $manifest)) {
+        if (-not $AllowLegacy) { throw "$Label missing candidate release manifest." }
         # 首次 React 升级前的生产版没有版本 API 和清单，按 Worker 健康状态及可执行文件路径验收。
         $health = Invoke-RestMethod "http://127.0.0.1:$Port/healthz" -UseBasicParsing -TimeoutSec 5
         if (-not $health.ok -or $health.role -ne 'worker') { throw "$Label previous Worker health check failed." }
@@ -179,27 +192,24 @@ try {
     }
 
     Start-TestSupervisor
-    $first = Assert-WorkerHealthy
+    $first = Assert-WorkerHealthy -ExpectedVersion $firstVersion
     Assert-WorkerRelease $firstVersion
     Assert-ReleaseManifest $firstVersion
-    Assert-ApiVersion $firstVersion 'Install #1'
+    Assert-ApiVersion $firstVersion 'Install #1' -AllowLegacy:([bool]$PreviousInstaller)
     Stop-Process -Id $first.ProcessId -Force
-    $second = Assert-WorkerHealthy -PreviousProcessId $first.ProcessId
+    $second = Assert-WorkerHealthy -PreviousProcessId $first.ProcessId -ExpectedVersion $firstVersion
     Write-Host "Supervisor restarted worker $($first.ProcessId) as $($second.ProcessId)."
 
     if ($PreviousInstaller) {
-        # 升级会先运行旧版卸载器；先停掉测试守护进程，避免它和卸载流程抢同一把互斥量。
-        Stop-TestSupervisor
-        Start-Sleep -Seconds 2
+        # 模拟正常原地升级，旧版守护进程保持运行，读取新版本登记并切换。
         Install-TestWorker -Index 2 -Path $Installer
         Assert-Version $Version 'Upgrade'
-        Start-TestSupervisor
-        $third = Assert-WorkerHealthy
+        $third = Assert-WorkerHealthy -PreviousProcessId $second.ProcessId -ExpectedVersion $Version
         Assert-WorkerRelease $Version
         Assert-ReleaseManifest $Version
         Assert-ApiVersion $Version 'Upgrade'
         Stop-Process -Id $third.ProcessId -Force
-        $fourth = Assert-WorkerHealthy -PreviousProcessId $third.ProcessId
+        $fourth = Assert-WorkerHealthy -PreviousProcessId $third.ProcessId -ExpectedVersion $Version
         Write-Host "Upgrade restarted worker $($third.ProcessId) as $($fourth.ProcessId)."
 
         # 回滚验收：版本登记切回安装前版本，守护进程应在空闲时重启旧实例。
@@ -207,17 +217,16 @@ try {
         if (-not (Test-Path -LiteralPath $rollback)) { throw 'Installed rollback.ps1 is missing.' }
         & $rollback -Version $PreviousVersion -TimeoutSeconds 120
         if ($LASTEXITCODE -ne 0) { throw "Rollback to $PreviousVersion failed." }
-        $fifth = Assert-WorkerHealthy
+        $fifth = Assert-WorkerHealthy -PreviousProcessId $fourth.ProcessId -ExpectedVersion $PreviousVersion
         Assert-Version $PreviousVersion 'Rollback'
         Assert-WorkerRelease $PreviousVersion
         Assert-ReleaseManifest $PreviousVersion
-        Assert-ApiVersion $PreviousVersion 'Rollback'
+        Assert-ApiVersion $PreviousVersion 'Rollback' -AllowLegacy
         Write-Host "Rollback switched worker $($fourth.ProcessId) to $($fifth.ProcessId) on version $PreviousVersion."
     } else {
         Install-TestWorker -Index 2
         Assert-Version $Version 'Install #2'
-        Start-TestSupervisor
-        $null = Assert-WorkerHealthy
+        $null = Assert-WorkerHealthy -ExpectedVersion $Version
         Assert-WorkerRelease $Version
         Assert-ApiVersion $Version 'Install #2'
     }

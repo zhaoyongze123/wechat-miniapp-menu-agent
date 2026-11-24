@@ -59,7 +59,9 @@ while ((Get-Date) -lt $deadline) {
         $python = Join-Path $release 'python\python.exe'
         $worker = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
             Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($python, [StringComparison]::OrdinalIgnoreCase) }
-        if ($health.ok -and $health.role -eq 'worker' -and $worker) {
+        $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess)
+        if ($health.ok -and $health.role -eq 'worker' -and ($worker | Where-Object ProcessId -In $listeners)) {
             Write-RollbackLog "回滚完成，运行版本 $Version。"
             Write-Host "已回滚到 $Version，目标版本采集服务已通过健康检查。"
             exit 0

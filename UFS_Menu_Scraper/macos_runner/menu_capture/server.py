@@ -432,7 +432,16 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             frontend = PurePosixPath(entry).name
         except RuntimeError:
             frontend = ""
-        return {"version": os.environ.get("MENU_CAPTURE_VERSION", ""), "frontend": frontend}
+        version = os.environ.get("MENU_CAPTURE_VERSION", "")
+        # 老守护进程升级时仍在内存中执行旧启动脚本，可能没有传入版本环境变量。
+        # 从本次运行目录的发布清单补齐，绝不根据其他版本目录推断。
+        if worker:
+            try:
+                release = json.loads((ROOT.parent / "release-manifest.json").read_text(encoding="utf-8"))
+                version = str(release.get("version") or version)
+            except (OSError, ValueError, AttributeError):
+                pass
+        return {"version": version, "frontend": frontend}
 
     @app.get("/api/model-usage")
     def model_usage_report(date_from: str | None = None, date_to: str | None = None,
