@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fetchAssignmentRecords, fetchResultFiles } from './api'
@@ -101,5 +101,30 @@ describe('HubStoreDetailDrawer', () => {
     renderDrawer({ status: 'pending', store_state: 'pending' })
 
     expect(await screen.findByText('当前任务暂无匹配的分配记录')).toBeInTheDocument()
+  })
+
+  it('支持在当前筛选结果内上一家/下一家', () => {
+    vi.mocked(fetchAssignmentRecords).mockResolvedValue({ records: [], total: 0, page: 1, pages: 1 })
+    const onPrev = vi.fn()
+    const onNext = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <HubStoreDetailDrawer
+          task={task}
+          onClose={() => undefined}
+          onPrev={onPrev}
+          onNext={onNext}
+          hasPrev
+          hasNext
+          position="2 / 5"
+        />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByText('2 / 5')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '上一家' }))
+    fireEvent.click(screen.getByRole('button', { name: '下一家' }))
+    expect(onPrev).toHaveBeenCalledTimes(1)
+    expect(onNext).toHaveBeenCalledTimes(1)
   })
 })

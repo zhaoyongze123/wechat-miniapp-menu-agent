@@ -7,6 +7,7 @@ import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDrawer } from '../../components/AppDrawer'
 import { AppDataTable } from '../../components/AppDataTable'
+import { CellText } from '../../components/CellText'
 import { AppPagination } from '../../components/AppPagination'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -231,9 +232,9 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
               <summary className="cursor-pointer text-secondary">任务范围与同步信息</summary>
               <dl className="mt-3 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs">
                 <dt className="text-tertiary">任务 ID</dt>
-                <dd className="break-all font-mono">{detail.id}</dd>
+                <dd><CellText copyable copyLabel="任务 ID" mono>{detail.id}</CellText></dd>
                 {detail.local_run_id ? (
-                  <><dt className="text-tertiary">采集端轮次 ID</dt><dd className="break-all font-mono">{detail.local_run_id}</dd></>
+                  <><dt className="text-tertiary">采集端轮次 ID</dt><dd><CellText copyable copyLabel="采集端轮次 ID" mono>{detail.local_run_id}</CellText></dd></>
                 ) : null}
                 {detail.batches?.length ? (
                   <><dt className="text-tertiary">批次</dt><dd>{detail.batches.map((batch) => `${batch.name}${batch.versions.length ? ` · ${batch.versions.join('/')}` : ''}`).join('、')}</dd></>
@@ -327,7 +328,7 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                         {row.source_name && row.store_name && row.source_name !== row.store_name ? (
                           <details className="mt-1 text-xs text-secondary">
                             <summary className="cursor-pointer">查看原始来源</summary>
-                            <p className="mt-1 break-all">{row.source_name}</p>
+                            <p className="mt-1"><CellText copyable copyLabel="原始来源">{row.source_name}</CellText></p>
                           </details>
                         ) : null}
                       </div>

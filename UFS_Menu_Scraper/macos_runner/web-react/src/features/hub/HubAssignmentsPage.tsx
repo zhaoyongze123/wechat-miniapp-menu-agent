@@ -115,6 +115,7 @@ export function HubAssignmentsPage() {
   const allPageSelected = reclaimableRecords.length > 0 && pageSelected.length === reclaimableRecords.length
   const somePageSelected = pageSelected.length > 0 && !allPageSelected
   const detailRecord = records.find((record) => record.id === detailId) ?? null
+  const detailIndex = detailRecord ? records.findIndex((record) => record.id === detailRecord.id) : -1
   const hasFilters = Boolean(workerId || phase || q.trim())
 
   // 翻页或状态变化后，只保留当前页仍可回收的选择；部分失败项保留以便用户核对。
@@ -494,6 +495,21 @@ export function HubAssignmentsPage() {
           setConfirmError('')
           setConfirm({ ids: [record.id], label: formatStore(record.store).name || record.store })
         }}
+        {...(detailIndex >= 0
+          ? {
+              onPrev: () => {
+                const previous = records[detailIndex - 1]
+                if (previous) setDetailId(previous.id)
+              },
+              onNext: () => {
+                const next = records[detailIndex + 1]
+                if (next) setDetailId(next.id)
+              },
+              hasPrev: detailIndex > 0,
+              hasNext: detailIndex < records.length - 1,
+              position: `${detailIndex + 1} / ${records.length}`,
+            }
+          : {})}
       />
 
       <ConfirmActionDialog
