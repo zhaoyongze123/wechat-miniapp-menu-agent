@@ -238,7 +238,7 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
                   <><dt className="text-tertiary">批次</dt><dd>{detail.batches.map((batch) => `${batch.name}${batch.versions.length ? ` · ${batch.versions.join('/')}` : ''}`).join('、')}</dd></>
                 ) : null}
                 {detail.history_status ? (
-                  <><dt className="text-tertiary">同步状态</dt><dd>{detail.history_status === 'synced' ? '已同步' : '部分结果已上报'}</dd></>
+                  <><dt className="text-tertiary">同步状态</dt><dd>{detail.history_status === 'synced' ? '轮次记录已同步' : '部分轮次记录已上报'}</dd></>
                 ) : null}
               </dl>
             </details>

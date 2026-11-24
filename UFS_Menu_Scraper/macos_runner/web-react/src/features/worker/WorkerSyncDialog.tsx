@@ -35,6 +35,9 @@ export function WorkerSyncDialog({ open, onOpenChange, connection }: WorkerSyncD
       <div className="space-y-5">
         <div className="space-y-2">
           <p className="text-sm text-secondary">{summaryOf(connection)}</p>
+          {connection?.history_error ? (
+            <Alert color="warning" variant="soft" title="轮次历史同步" description={connection.history_error} />
+          ) : null}
           {connection?.error ? (
             <Alert color="danger" variant="soft" title="最近一次同步错误" description={connection.error} />
           ) : null}

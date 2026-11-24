@@ -1,11 +1,13 @@
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
+import { AppDialog } from '../../components/AppDialog'
 import { PageHeader } from '../../components/PageHeader'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
-import { errorMessage } from '../../api/client'
+import { apiFetch, errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
 import { formatTime } from '../hub/format'
 import { connectConnections, fetchConnections, openEnvironmentSettings, runEnvironmentTest } from './api'
@@ -23,6 +25,13 @@ export function DiagnosticsPage() {
   const toast = useToast()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [copyFallback, setCopyFallback] = useState('')
+  const version = useQuery({
+    queryKey: ['service-version'],
+    queryFn: ({ signal }) => apiFetch<{ version: string; frontend: string }>('/api/version', { signal }),
+    enabled: role.role === 'worker',
+    staleTime: 60_000,
+  })
   const query = useQuery({
     queryKey: CONNECTIONS_KEY,
     queryFn: ({ signal }) => fetchConnections(signal),
@@ -140,6 +149,25 @@ export function DiagnosticsPage() {
   const diagnostics = snapshot.diagnostics
   const events = [...(diagnostics?.events ?? [])].reverse()
   const checks = diagnostics?.checks ?? []
+  const connection = role.status?.role === 'worker' ? role.status : undefined
+  const copyDiagnostics = async () => {
+    // 复制固定字段，不包含服务器地址、文件路径、原始调试事件或凭据。
+    const message = [
+      'Windows 采集端',
+      `发布版本 ${version.data?.version || '未知'}`,
+      `前端构建 ${version.data?.frontend || '未知'}`,
+      `设备 ${connection?.name || '尚未配对'}`,
+      `共享连接 ${connection?.online ? '在线' : '未连接'}`,
+      `最近检查 ${snapshot.checked_at ? formatTime(snapshot.checked_at) : '尚无记录'}`,
+      ...modules.map((module) => `${module.name} · ${checkStatusMeta(module.status).label}`),
+    ].join('\n')
+    try {
+      await navigator.clipboard.writeText(message)
+      toast.push('诊断摘要已复制', 'success')
+    } catch {
+      setCopyFallback(message)
+    }
+  }
 
   return (
     <section className="space-y-6" aria-labelledby="diagnostics-heading">
@@ -147,15 +175,29 @@ export function DiagnosticsPage() {
         title="环境与连接"
         headingId="diagnostics-heading"
         actions={
-          <div className="flex flex-col items-end gap-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button color="secondary" variant="outline" size="sm" onClick={() => void copyDiagnostics()}>
+              复制诊断摘要
+            </Button>
             <Button color="primary" size="sm" disabled={busy} onClick={() => connectMutation.mutate()}>
               {connectMutation.isPending ? '检测中…' : snapshot.busy ? '继续等待本轮检测' : snapshot.checked_at ? '重新检测' : '检查连接'}
             </Button>
-            <span className="text-2xs text-tertiary">手动检测微信、引擎与模型，不会自动轮询</span>
           </div>
         }
       />
 
+      {version.data?.version ? (
+        <p className="text-xs text-secondary">版本 {version.data.version} · 前端 {version.data.frontend}</p>
+      ) : null}
+      <AppDialog open={Boolean(copyFallback)} onOpenChange={(open) => { if (!open) setCopyFallback('') }} title="诊断摘要">
+        <textarea
+          aria-label="可手动复制的诊断摘要"
+          className="min-h-52 w-full rounded-md border border-subtle p-3 text-sm"
+          value={copyFallback}
+          readOnly
+          onFocus={(event) => event.currentTarget.select()}
+        />
+      </AppDialog>
       <section className="rounded-xl border border-subtle p-4" aria-label="总体状态">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
