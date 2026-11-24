@@ -29,6 +29,7 @@ import {
 } from './format'
 import { settingsKeys, useConfig, useDebugSummary } from './hooks'
 import { SharedWorkbenchCard } from './SharedWorkbenchCard'
+import { ModelUsageDialog } from '../model-usage/ModelUsageDialog'
 import type { DirectoryKind, ModelProvider, ModelTestResult, ThinkingMode } from './types'
 
 /**
@@ -45,6 +46,7 @@ export function SettingsPage() {
   const [error, setError] = useState('')
   const [testResult, setTestResult] = useState<ModelTestResult | null>(null)
   const [clearOpen, setClearOpen] = useState(false)
+  const [usageOpen, setUsageOpen] = useState(false)
 
   useEffect(() => {
     if (configQuery.data) setForm(formFromConfig(configQuery.data))
@@ -446,36 +448,38 @@ export function SettingsPage() {
                 description={`${testResult.message}${testResult.checked_at ? ` · ${formatTime(testResult.checked_at)}` : ''}`}
               />
             ) : null}
-            {/* 模型用量在 Phase 4C 迁移完成前保留旧版入口，旧页面从设置页打开用量弹窗。 */}
-            <a
-              href="/#settings"
-              className="mt-2 block rounded-md border border-subtle px-3 py-1.5 text-center text-sm text-default hover:bg-secondary-ghost-hover"
+            <Button
+              color="secondary"
+              variant="outline"
+              size="sm"
+              className="mt-2 w-full"
+              onClick={() => setUsageOpen(true)}
             >
-              查看模型用量（旧版）
-            </a>
+              查看模型用量
+            </Button>
           </section>
 
-          <section className="rounded-xl border border-subtle p-4" aria-labelledby="advanced-tools-heading">
-            <h2 id="advanced-tools-heading" className="heading-xs">
-              高级工具
-            </h2>
-            <div className="mt-3 space-y-2">
-              <a
-                href="/#annotation"
-                className="block rounded-md border border-subtle px-3 py-1.5 text-center text-sm text-default hover:bg-secondary-ghost-hover"
-              >
-                人工标注（旧版）
-              </a>
-              {!isHub ? (
+          {!isHub ? (
+            <section className="rounded-xl border border-subtle p-4" aria-labelledby="advanced-tools-heading">
+              <h2 id="advanced-tools-heading" className="heading-xs">
+                高级工具
+              </h2>
+              <div className="mt-3 space-y-2">
+                <Link
+                  to="/annotation"
+                  className="block rounded-md border border-subtle px-3 py-1.5 text-center text-sm text-default hover:bg-secondary-ghost-hover"
+                >
+                  人工标注
+                </Link>
                 <Link
                   to="/diagnostics"
                   className="block rounded-md border border-subtle px-3 py-1.5 text-center text-sm text-default hover:bg-secondary-ghost-hover"
                 >
                   环境诊断
                 </Link>
-              ) : null}
-            </div>
-          </section>
+              </div>
+            </section>
+          ) : null}
 
           {!isHub ? (
             <section className="rounded-xl border border-subtle p-4" aria-labelledby="capture-boundary-heading">
@@ -507,6 +511,8 @@ export function SettingsPage() {
         }}
         onConfirm={() => clearMutation.mutate()}
       />
+
+      <ModelUsageDialog open={usageOpen} onOpenChange={setUsageOpen} />
     </section>
   )
 }

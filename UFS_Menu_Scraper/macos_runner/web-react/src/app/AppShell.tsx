@@ -7,6 +7,7 @@ import {
   CheckCircle,
   ChevronRight,
   Clipboard,
+  Cursor,
   Desktop,
   Home,
   Images,
@@ -35,6 +36,7 @@ interface NavItem {
  */
 const NAV_ITEMS: NavItem[] = [
   { key: 'workbench', label: '采集工作台', roles: ['hub', 'worker'], icon: Home, migratedFor: ['hub', 'worker'], legacyHash: 'overview' },
+  { key: 'annotation', label: '人工标注', roles: ['worker'], icon: Cursor, migrated: true },
   { key: 'devices', label: '采集电脑', roles: ['hub'], icon: Desktop, migrated: true },
   { key: 'assignments', label: '分配记录', roles: ['hub'], icon: Clipboard, migrated: true },
   { key: 'materials', label: '素材清洗', roles: ['hub'], icon: Images, migrated: true },
