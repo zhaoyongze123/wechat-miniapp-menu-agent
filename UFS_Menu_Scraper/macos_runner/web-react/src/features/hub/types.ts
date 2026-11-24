@@ -169,6 +169,7 @@ export interface AssignResponse {
 export interface ReclaimResponse {
   count: number
   tasks: { id: string; source_name?: string; batch_name?: string; version?: string }[]
+  results: { id: string; task_id?: string; store?: string; status: 'reclaimed' | 'failed'; message: string }[]
 }
 
 export interface ResultFilesResponse {

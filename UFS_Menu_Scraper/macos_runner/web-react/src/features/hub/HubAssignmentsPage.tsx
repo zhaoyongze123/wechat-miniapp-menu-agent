@@ -117,14 +117,17 @@ export function HubAssignmentsPage() {
   const detailRecord = records.find((record) => record.id === detailId) ?? null
   const hasFilters = Boolean(workerId || phase || q.trim())
 
-  // 翻页或状态变化后，只保留当前页仍可回收的选择，避免批量操作作用到看不见的记录。
+  // 翻页或状态变化后，只保留当前页仍可回收的选择；部分失败项保留以便用户核对。
   useEffect(() => {
     setSelected((current) => {
       const allowed = new Set(reclaimableRecords.map((record) => record.id))
+      for (const item of reclaimResult?.results ?? []) {
+        if (item.status === 'failed') allowed.add(item.id)
+      }
       const next = current.filter((id) => allowed.has(id))
       return next.length === current.length ? current : next
     })
-  }, [reclaimableRecords])
+  }, [reclaimableRecords, reclaimResult])
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['hub-assignments'] })
@@ -138,16 +141,21 @@ export function HubAssignmentsPage() {
       setConfirm(null)
       setConfirmError('')
       setDetailId(null)
-      setSelected([])
+      const successfulIds = new Set(result.results.filter((item) => item.status === 'reclaimed').map((item) => item.id))
+      setSelected((current) => current.filter((id) => !successfulIds.has(id)))
       setReclaimResult(result)
-      toast.push(`已回收 ${result.count} 条分配`, 'success')
+      const hasFailures = result.results.some((item) => item.status === 'failed')
+      toast.push(
+        hasFailures ? `已回收 ${result.count} 条，${result.results.length - result.count} 条未回收` : `已回收 ${result.count} 条分配`,
+        hasFailures ? 'danger' : 'success',
+      )
       invalidate()
     },
     onError: (cause) => setConfirmError(errorMessage(cause)),
   })
 
   const toggle = (record: AssignmentRecord) => {
-    if (!isReclaimable(record)) return
+    if (!isReclaimable(record) && !selectedSet.has(record.id)) return
     setSelected((current) =>
       current.includes(record.id) ? current.filter((id) => id !== record.id) : [...current, record.id],
     )
@@ -197,7 +205,7 @@ export function HubAssignmentsPage() {
         <span className="inline-flex" onClick={(event) => event.stopPropagation()}>
           <Checkbox
             checked={selectedSet.has(record.id)}
-            disabled={!isReclaimable(record)}
+            disabled={!isReclaimable(record) && !selectedSet.has(record.id)}
             label={<span className="sr-only">选择分配 {formatStore(record.store).name}</span>}
             onCheckedChange={() => toggle(record)}
           />
@@ -309,13 +317,32 @@ export function HubAssignmentsPage() {
 
       {reclaimResult ? (
         <Alert
-          color="success"
+          color={reclaimResult.results.some((item) => item.status === 'failed') ? 'warning' : 'success'}
           variant="soft"
-          title={`已回收 ${reclaimResult.count} 条分配`}
+          title={
+            reclaimResult.results.some((item) => item.status === 'failed')
+              ? `已回收 ${reclaimResult.count} 条，${reclaimResult.results.length - reclaimResult.count} 条未回收`
+              : `已回收 ${reclaimResult.count} 条分配`
+          }
           description={
-            reclaimResult.tasks.length
-              ? `其中 ${reclaimResult.tasks.length} 家门店当前可立即重新分配。`
-              : '这些门店当前不可分配，请先在素材清洗中处理版本或选码问题。'
+            <div>
+              <p>
+                {reclaimResult.tasks.length
+                  ? `${reclaimResult.tasks.length} 家门店当前符合重新分配条件。`
+                  : reclaimResult.count
+                    ? '已回收记录中没有当前可重新分配的门店，请先在素材清洗中处理版本或选码问题。'
+                    : '没有记录完成回收。'}
+              </p>
+              {reclaimResult.results.some((item) => item.status === 'failed') ? (
+                <ul className="mt-2 max-h-36 space-y-1 overflow-auto text-sm" aria-label="未回收项目及原因">
+                  {reclaimResult.results.filter((item) => item.status === 'failed').map((item) => (
+                    <li key={item.id} className="break-all" title={item.id}>
+                      {item.store ? `${formatStore(item.store).name || item.store}：` : `${item.id}：`}{item.message}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
           }
           actions={
             <div className="flex items-center gap-2">

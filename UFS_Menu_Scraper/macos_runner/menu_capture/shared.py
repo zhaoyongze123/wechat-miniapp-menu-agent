@@ -271,22 +271,44 @@ class SharedHub:
                 or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{32}", value) for value in assignment_ids)):
             raise ValueError("请选择 1 至 300 条待回收分配")
         ids = list(dict.fromkeys(assignment_ids))
+        # 在写事务前解析可重新分配门店，避免提交回收后因读取素材资格失败而让调用方误以为整批失败。
         effective = self.materials.effective_capture_tasks()
+        results = []
+        reclaimed_rows = []
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             placeholders = ",".join("?" for _ in ids)
-            rows = db.execute(
-                f"SELECT batch_id,store FROM shared_assignments WHERE status IN ('assigned','ready') AND id IN ({placeholders})",
-                ids).fetchall()
-            if len(rows) != len(ids):
-                raise SharedConflict("部分任务已同步或已回收，请刷新后重新选择")
-            db.execute(f"UPDATE shared_assignments SET status='reclaimed' WHERE id IN ({placeholders})", ids)
-        stores = {(row["batch_id"], row["store"]) for row in rows}
+            rows = {row["id"]: row for row in db.execute(
+                "SELECT a.id,a.task_id,a.batch_id,a.store,a.status,COALESCE(r.disposition,'') AS disposition "
+                "FROM shared_assignments a LEFT JOIN shared_results r ON r.assignment_id=a.id "
+                f"WHERE a.id IN ({placeholders})", ids)}
+            for assignment_id in ids:
+                row = rows.get(assignment_id)
+                if row is None:
+                    results.append({"id": assignment_id, "status": "failed", "message": "分配记录不存在"})
+                elif row["status"] not in ACTIVE:
+                    message = "已完成并确认，不可回收" if row["status"] == "completed" else "分配状态已变化，不可回收"
+                    results.append({"id": assignment_id, "task_id": row["task_id"], "store": row["store"],
+                                    "status": "failed", "message": message})
+                elif row["disposition"] == "history":
+                    results.append({"id": assignment_id, "task_id": row["task_id"], "store": row["store"],
+                                    "status": "failed", "message": "已有结果已转为历史，不可回收"})
+                else:
+                    reclaimed_rows.append(row)
+                    results.append({"id": assignment_id, "task_id": row["task_id"], "store": row["store"],
+                                    "status": "reclaimed", "message": "已回收"})
+            reclaim_ids = [row["id"] for row in reclaimed_rows]
+            if reclaim_ids:
+                reclaim_placeholders = ",".join("?" for _ in reclaim_ids)
+                db.execute(
+                    f"UPDATE shared_assignments SET status='reclaimed' WHERE status IN ('assigned','ready') AND id IN ({reclaim_placeholders})",
+                    reclaim_ids)
+        stores = {(row["batch_id"], row["store"]) for row in reclaimed_rows}
         tasks = [{key: task.get(key) for key in ("id", "source_name", "batch_name", "version")}
                  for task in effective
                  if (task["batch_id"], task["source_name"]) in stores and task["runnable"]
                  and not waiting_for_materials(task)]
-        return {"count": len(ids), "tasks": tasks}
+        return {"count": len(reclaimed_rows), "tasks": tasks, "results": results}
 
     def authenticate(self, token: str) -> str:
         if not token or len(token) > 100:
