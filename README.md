@@ -193,7 +193,11 @@ npm run build
 | [问题与回归台账](docs/menu-capture-regression.md) | 采集问题及复测记录。 |
 | [React 迁移报告](docs/react-migration/final-migration-report.md) | 迁移阶段的技术架构、测试和已知限制。 |
 | [生产交付报告](docs/react-migration/production-delivery-report.md) | 生产验收结论、测试证据、上线与回滚方案。 |
+| [工程规范](docs/engineering-standards.md) | 分层职责、测试矩阵、静态检查与 CI 门禁。 |
+| [变更记录](CHANGELOG.md) | 各版本范围与升级回滚要点。 |
+| [贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md) | 开发流程、提交规范与凭据处理要求。 |
 | [仓库协作规范](AGENTS.md) | 开发协作及交接要求。 |
+| [历史文档归档](docs/archive/README.md) | 已归档阶段需求与实施记录。 |
 | [Issues](../../issues) · [Releases](../../releases) | 需求、缺陷、发布记录与安装产物。 |
 
 ## 安全与运行边界
