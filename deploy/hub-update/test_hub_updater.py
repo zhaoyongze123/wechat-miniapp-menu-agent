@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import sqlite3
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -49,9 +53,11 @@ def archive_request(tmp_path: Path, version: str = "0.2.4", content: bytes = b"i
 
 
 class FakeDocker:
-    def __init__(self, current: str = "menu-capture-hub:0.2.3", loaded: str = "menu-capture-hub:0.2.4") -> None:
+    def __init__(self, current: str = "menu-capture-hub:0.2.3", loaded: str = "menu-capture-hub:0.2.4",
+                 volume_path: Path | None = None) -> None:
         self.current = current
         self.loaded = loaded
+        self.volume_path = volume_path
         self.fail_switch = False
         self.switched: list[str] = []
         self.fail_load = False
@@ -60,6 +66,16 @@ class FakeDocker:
         command = args[:2]
         if command == ["docker", "volume"]:
             return 0, "[]"
+        if command == ["docker", "run"]:
+            assert args[args.index("--network") + 1] == "none"
+            assert "--pull=never" in args
+            assert "--read-only" in args
+            assert "--cap-drop=ALL" in args
+            assert "--security-opt=no-new-privileges" in args
+            assert args[args.index("--mount") + 1].endswith(",readonly")
+            assert args[args.index("--entrypoint") + 1] == "python"
+            assert args[-1] == "/hub-data"
+            return 0, json.dumps(schema_probe_payload(self.volume_path))
         if command == ["docker", "load"]:
             if self.fail_load:
                 return 1, "invalid archive"
@@ -83,8 +99,60 @@ class FakeDocker:
 
 
 def make_updater(tmp_path: Path, docker: FakeDocker, *, healthy: Callable[[str], dict]) -> HubUpdater:
+    volume_path = tmp_path / "volume"
+    volume_path.mkdir(parents=True, exist_ok=True)
+    docker.volume_path = volume_path
     return HubUpdater(make_config(tmp_path), run=docker.run, run_env=docker.run_env,
                       health=healthy, sleep=lambda _seconds: None)
+
+
+def create_hub_db(tmp_path: Path) -> Path:
+    path = tmp_path / "volume" / "data" / "tasks.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending')")
+        db.execute("CREATE TABLE events (task_id TEXT REFERENCES tasks(id))")
+        db.execute("CREATE VIEW task_status AS SELECT id, status FROM tasks")
+        db.execute("CREATE TRIGGER tasks_noop AFTER INSERT ON tasks BEGIN SELECT 1; END")
+    return path
+
+
+def schema_probe_payload(volume_path: Path | None) -> dict:
+    if volume_path is None:
+        return {"exists": False, "tables": [], "objects": []}
+    path = volume_path / "data" / "tasks.sqlite3"
+    if not path.exists():
+        return {"exists": False, "tables": [], "objects": []}
+
+    def quote(identifier: str) -> str:
+        return '"' + identifier.replace('"', '""') + '"'
+
+    with sqlite3.connect(path) as db:
+        tables = []
+        for name, sql in db.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ):
+            indexes = []
+            for row in db.execute(f"PRAGMA index_list({quote(name)})"):
+                index_name = row[1]
+                index_sql = db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (index_name,),
+                ).fetchone()[0]
+                columns = [item[2] for item in db.execute(f"PRAGMA index_info({quote(index_name)})")]
+                indexes.append({
+                    "name": index_name, "unique": int(row[2]), "origin": row[3], "partial": int(row[4]),
+                    "columns": columns, "sql": index_sql or "",
+                })
+            tables.append({
+                "name": name, "sql": sql or "",
+                "columns": [list(row) for row in db.execute(f"PRAGMA table_xinfo({quote(name)})")],
+                "indexes": indexes,
+                "foreign_keys": [list(row) for row in db.execute(f"PRAGMA foreign_key_list({quote(name)})")],
+            })
+        objects = [list(row) for row in db.execute(
+            "SELECT type,name,sql FROM sqlite_master WHERE type IN ('view','trigger') ORDER BY type,name"
+        )]
+    return {"exists": True, "tables": tables, "objects": objects}
 
 
 def test_apply_switches_and_records_previous(tmp_path: Path) -> None:
@@ -154,6 +222,7 @@ def test_rollback_uses_previous_version(tmp_path: Path) -> None:
     updater.journal_path.parent.mkdir(parents=True, exist_ok=True)
     hub_updater._write_json(updater.journal_path, {
         "status": "completed", "target_version": "0.2.4", "previous_version": "0.2.3", "pid": 0,
+        "schema_before": updater._schema_snapshot(),
     })
 
     status = updater.rollback({"version": "0.2.3", "confirm": "0.2.3"})
@@ -175,6 +244,7 @@ def test_rollback_health_failure_restores_running_version(tmp_path: Path) -> Non
     updater.journal_path.parent.mkdir(parents=True, exist_ok=True)
     hub_updater._write_json(updater.journal_path, {
         "status": "completed", "target_version": "0.2.4", "previous_version": "0.2.3", "pid": 0,
+        "schema_before": updater._schema_snapshot(),
     })
 
     with pytest.raises(UpdateError, match="恢复运行 0.2.4"):
@@ -190,6 +260,161 @@ def test_rollback_rejects_unrecorded_version(tmp_path: Path) -> None:
 
     with pytest.raises(UpdateError, match="没有可回滚"):
         updater.rollback({"version": "0.2.0", "confirm": "0.2.0"})
+
+
+def test_apply_auto_rollback_allows_additive_schema_migration(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    docker = FakeDocker()
+    migrated = False
+
+    def healthy(version: str) -> dict:
+        nonlocal migrated
+        if version == "0.2.4":
+            if not migrated:
+                with sqlite3.connect(database) as db:
+                    db.execute("ALTER TABLE tasks ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+                    db.execute("CREATE TABLE material_batches (id TEXT PRIMARY KEY)")
+                migrated = True
+            return {"ok": False, "version": "", "detail": "candidate health failed"}
+        return {"ok": True, "version": version}
+
+    updater = make_updater(tmp_path, docker, healthy=healthy)
+
+    status = updater.apply(archive_request(tmp_path))
+
+    assert status["status"] == "rolled_back"
+    assert docker.switched == ["menu-capture-hub:0.2.4", "menu-capture-hub:0.2.3"]
+
+
+def test_apply_auto_rollback_stops_after_destructive_schema_change(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    docker = FakeDocker()
+    migrated = False
+
+    def healthy(version: str) -> dict:
+        nonlocal migrated
+        if version == "0.2.4":
+            if not migrated:
+                with sqlite3.connect(database) as db:
+                    db.execute("DROP TABLE tasks")
+                migrated = True
+            return {"ok": False, "version": "", "detail": "candidate health failed"}
+        return {"ok": True, "version": version}
+
+    updater = make_updater(tmp_path, docker, healthy=healthy)
+
+    with pytest.raises(UpdateError, match="已停止自动回退"):
+        updater.apply(archive_request(tmp_path))
+
+    assert docker.switched == ["menu-capture-hub:0.2.4"]
+    assert updater.journal()["status"] == "needs_manual_recovery"
+
+
+def test_explicit_rollback_allows_additive_schema_migration(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    docker = FakeDocker(current="menu-capture-hub:0.2.4")
+    updater = make_updater(tmp_path, docker, healthy=lambda version: {"ok": True, "version": version})
+    schema_before = updater._schema_snapshot()
+    with sqlite3.connect(database) as db:
+        db.execute("ALTER TABLE tasks ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+    hub_updater._write_json(updater.journal_path, {
+        "status": "completed", "target_version": "0.2.4", "previous_version": "0.2.3", "pid": 0,
+        "schema_before": schema_before,
+    })
+
+    status = updater.rollback({"version": "0.2.3", "confirm": "0.2.3"})
+
+    assert status["status"] == "rolled_back"
+    assert docker.switched == ["menu-capture-hub:0.2.3"]
+
+
+def test_explicit_rollback_blocks_incompatible_schema_change(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    docker = FakeDocker(current="menu-capture-hub:0.2.4")
+    updater = make_updater(tmp_path, docker, healthy=lambda version: {"ok": True, "version": version})
+    schema_before = updater._schema_snapshot()
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TABLE tasks")
+    hub_updater._write_json(updater.journal_path, {
+        "status": "completed", "target_version": "0.2.4", "previous_version": "0.2.3", "pid": 0,
+        "schema_before": schema_before,
+    })
+
+    with pytest.raises(UpdateError, match="已停止自动回退"):
+        updater.rollback({"version": "0.2.3", "confirm": "0.2.3"})
+
+    assert docker.switched == []
+    assert updater.journal()["status"] == "needs_manual_recovery"
+
+
+def test_schema_guard_blocks_new_unique_index_on_existing_table(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    updater = make_updater(tmp_path, FakeDocker(), healthy=lambda version: {"ok": True, "version": version})
+    before = updater._schema_snapshot()
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE UNIQUE INDEX tasks_status_unique ON tasks(status)")
+
+    compatible, reason = updater._schema_compatibility(before, updater._schema_snapshot())
+
+    assert not compatible
+    assert "唯一索引" in reason
+
+
+def test_schema_probe_reads_real_temporary_sqlite_schema(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    before = database.read_bytes()
+    completed = subprocess.run(
+        [sys.executable, "-c", hub_updater.SCHEMA_PROBE, str(database.parent.parent)],
+        check=True, capture_output=True, text=True, timeout=5,
+    )
+    payload = json.loads(completed.stdout)
+    assert payload["exists"]
+    assert {table["name"] for table in payload["tables"]} == {"tasks", "events"}
+    assert {(row[0], row[1]) for row in payload["objects"]} == {
+        ("trigger", "tasks_noop"), ("view", "task_status"),
+    }
+    assert database.read_bytes() == before
+
+
+def test_schema_guard_blocks_new_constraint_on_existing_table(tmp_path: Path) -> None:
+    create_hub_db(tmp_path)
+    updater = make_updater(tmp_path, FakeDocker(), healthy=lambda version: {"ok": True, "version": version})
+    before = updater._schema_snapshot()
+    after = json.loads(json.dumps(before))
+    after["tables"]["tasks"]["constraints"].append("CHECK (status <> 'invalid')")
+
+    compatible, reason = updater._schema_compatibility(before, after)
+
+    assert not compatible
+    assert "约束发生变化" in reason
+
+
+def test_schema_guard_blocks_new_foreign_key_on_existing_table(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    updater = make_updater(tmp_path, FakeDocker(), healthy=lambda version: {"ok": True, "version": version})
+    before = updater._schema_snapshot()
+    with sqlite3.connect(database) as db:
+        db.executescript("""
+            CREATE TABLE statuses (code TEXT PRIMARY KEY);
+            CREATE TABLE events_new (task_id TEXT REFERENCES tasks(id), status TEXT REFERENCES statuses(code));
+            INSERT INTO events_new SELECT task_id, NULL FROM events;
+            DROP TABLE events;
+            ALTER TABLE events_new RENAME TO events;
+        """)
+
+    compatible, reason = updater._schema_compatibility(before, updater._schema_snapshot())
+
+    assert not compatible
+    assert "外键发生变化" in reason
+
+
+def test_schema_sql_normalization_preserves_quoted_whitespace() -> None:
+    before = "CREATE TABLE t (value TEXT DEFAULT 'two  spaces')"
+    same = "CREATE  TABLE t (value TEXT DEFAULT 'two  spaces')"
+    changed = "CREATE TABLE t (value TEXT DEFAULT 'two spaces')"
+
+    assert hub_updater._table_definitions(before)[0] == hub_updater._table_definitions(same)[0]
+    assert hub_updater._table_definitions(before)[0] != hub_updater._table_definitions(changed)[0]
 
 
 def test_active_transaction_blocks_second_apply(tmp_path: Path) -> None:
