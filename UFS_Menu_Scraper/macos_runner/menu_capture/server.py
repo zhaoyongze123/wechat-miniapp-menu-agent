@@ -50,6 +50,7 @@ from .debug_log import DebugLog
 from .model_usage import UsageLedger
 from .updates import UpdateService
 from .update_install import InstallController
+from .hub_update import HubInstallProxy
 from .annotation import AnnotationSession, RunnerExecutor
 from .instance_lock import InstanceLockedError, instance_lock
 from .shared import SharedConflict, SharedHub, WorkerUnauthorized
@@ -116,23 +117,34 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                                     rejector=rejections.mark_annotation_task,
                                     usage_ledger=model_usage)
     # 自动安装只在 Windows 采集端且运维显式启用后可用；执行器在独立进程中完成安装与回滚。
-    install = InstallController(
-        download_dir=updates.download_dir,
-        install_root=updates.install_root(),
-        data_dir=updates.data_dir,
-        role=role,
-        platform=updates.platform,
-        arch=updates.local_arch,
-        port=int(os.environ.get("MENU_CAPTURE_PORT", "8765")),
-        latest_provider=lambda: (updates.status_no_check().get("latest") or {}),
-        artifact_provider=updates.download_status,
-        current_version=updates.current_version,
-        idle_check=lambda: (
-            (True, "") if not (runner.running or annotations.active)
-            else (False, "采集或人工标注正在执行，请先结束或暂停后再安装")
-        ),
-        supported=updates.install_supported(),
-    )
+    # Hub 则由宿主机上的镜像更新执行器完成，容器只负责授权、转发与状态代理。
+    if role == "hub":
+        install = HubInstallProxy(
+            base_url=str(os.environ.get("HUB_UPDATE_URL") or ""),
+            token=str(os.environ.get("HUB_UPDATE_TOKEN") or ""),
+            latest_provider=lambda: (updates.status_no_check().get("latest") or {}),
+        )
+        updates.install_capability = lambda: install.supported
+        # 手动回滚接口尚未开放；失败时由执行器自动回滚。
+        updates.rollback_capability = lambda: False
+    else:
+        install = InstallController(
+            download_dir=updates.download_dir,
+            install_root=updates.install_root(),
+            data_dir=updates.data_dir,
+            role=role,
+            platform=updates.platform,
+            arch=updates.local_arch,
+            port=int(os.environ.get("MENU_CAPTURE_PORT", "8765")),
+            latest_provider=lambda: (updates.status_no_check().get("latest") or {}),
+            artifact_provider=updates.download_status,
+            current_version=updates.current_version,
+            idle_check=lambda: (
+                (True, "") if not (runner.running or annotations.active)
+                else (False, "采集或人工标注正在执行，请先结束或暂停后再安装")
+            ),
+            supported=updates.install_supported(),
+        )
     # 上次进程可能在安装中途退出；启动时先收尾遗留事务，避免界面永久停在 installing。
     install.recover()
     # 采集与人工标注的启动入口与安装共用同一闸门，闭合「检查空闲 → 写任务」之间的竞态窗口。

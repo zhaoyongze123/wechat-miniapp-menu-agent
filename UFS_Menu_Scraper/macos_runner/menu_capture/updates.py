@@ -352,6 +352,9 @@ class UpdateService:
         self._download_thread: threading.Thread | None = None
         self._download_persisted = 0
         self._download_state = self._load_download_state()
+        # 由服务端按角色注入真实安装能力：Windows 为本地执行器，Hub 为宿主机代理。
+        self.install_capability: Callable[[], bool] | None = None
+        self.rollback_capability: Callable[[], bool] | None = None
 
     # ---------- 对外状态 ----------
 
@@ -415,10 +418,10 @@ class UpdateService:
             "capabilities": {
                 "check": True,
                 # 本阶段提供受控下载（临时文件 + 断点续传 + SHA-256 校验）；
-                # 安装执行器需 Windows 采集端并显式启用，未验收前不默认暴露。
+                # 安装执行器需按角色接入：Windows 本地执行器或 Hub 宿主机代理。
                 "download": True,
-                "install": self.install_supported(),
-                "rollback": self.install_supported(),
+                "install": self._install_capable(),
+                "rollback": self._rollback_capable(),
                 "inventory": self._inventory_supported(),
             },
             "inventory": self.inventory(),
@@ -508,6 +511,22 @@ class UpdateService:
             and self._install_root() is not None
             and os.environ.get("MENU_CAPTURE_ALLOW_SELF_UPDATE") == "1"
         )
+
+    def _install_capable(self) -> bool:
+        if self.install_capability is not None:
+            try:
+                return bool(self.install_capability())
+            except Exception:  # noqa: BLE001 - 能力探测失败按不可用处理，不能阻断状态接口
+                return False
+        return self.install_supported()
+
+    def _rollback_capable(self) -> bool:
+        if self.rollback_capability is not None:
+            try:
+                return bool(self.rollback_capability())
+            except Exception:  # noqa: BLE001 - 同上
+                return False
+        return self.install_supported()
 
     def inventory(self) -> dict:
         install_root = self._install_root()
