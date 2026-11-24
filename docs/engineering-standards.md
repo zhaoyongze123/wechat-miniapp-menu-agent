@@ -26,11 +26,11 @@
 
 | 改动类型 | 最低验证 |
 | --- | --- |
-| 纯文档 / 配置 | 无（CI 路径无关时不触发构建） |
+| 纯文档 / 配置 | 无（云端不自动构建，合并前按需本地检查） |
 | 服务端路由、共享同步 | 对应 `tests/test_server.py`、`test_shared_workbench.py` 等契约测试 |
 | 采集执行、窗口契约 | `test_windows_compat.py`、`test_environment.py` 与相关回归 |
 | 前端 | `typecheck` + `vitest` + `build`，并确认 `web/react` 产物一致 |
-| 安装器 / Hub / 升级回滚 | `smoke.ps1` 或 CI 的升级-回滚链路，附日志 |
+| 安装器 / Hub / 升级回滚 | `smoke.ps1` 或手动发布工作流的升级-回滚链路，附日志 |
 
 - 优先跑相关测试，避免无依据的全量重复执行。
 - 区分“代码实现”“测试通过”“真实业务验收”，汇报时分别说明。
@@ -44,16 +44,17 @@
 - 前端：`tsc -b --noEmit`（`npm run typecheck`）与 Vitest 作为门禁；ESLint 暂不引入，原因见 [治理报告](governance/repository-audit-2026-11.md)，如需引入须先固化基线并只拦截新增问题。
 - 编码统一 UTF-8（无 BOM），换行 LF，规则见 `.editorconfig`。
 
-## CI 门禁
+## 发布与云端构建
 
-`.github/workflows/windows-release.yml` 包含：
+当前处于快速开发阶段，采用 **Manual Release + Local Validation**：
 
-- `react-web`：类型检查、单测、构建，校验 `web/react` 与源码一致，确认旧前端已清理。
-- `windows`：Python 契约测试、安装包构建、安装与进程恢复 smoke。
-- `hub`：容器启动、版本与前端资源校验、数据卷、升级回滚链路。
-- `python-lint`：Ruff 门禁。
-
-标签触发的 Release 草稿仅用于人工审阅，发布需维护者确认。
+- PR、普通提交、标签推送都不自动触发云端构建；合并前由开发者或 Coding Agent 按改动风险执行本地检查。
+- 正式发布仅通过手动运行 `.github/workflows/windows-release.yml`（`workflow_dispatch`）。
+- 一次手动运行完成构建与验收：`react-web`（类型检查、单测、构建一致性）、`python-lint`、`windows`（契约测试、安装包、安装与重启恢复）、`hub`（容器、版本、数据卷、升级回滚）。
+- 验收通过后，`draft` 作业把**本次运行同一份产物**上传到 `v<version>` Release 草稿；不重新构建。
+- 正式发布流程：本地验证 → 手动触发构建 → 部署并验证同一产物 → 人工发布 Release 草稿。
+- 标签推送不再触发构建；已发布版本拒绝覆盖，需要新版本号。
+- 将来恢复自动 CI 时，应先评估构建成本、缓存与分支保护要求，不直接恢复全量打包。
 
 ## 文档规范
 

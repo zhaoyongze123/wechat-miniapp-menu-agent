@@ -44,7 +44,7 @@ python deploy/migrate_legacy.py --backup-home 'D:\backup\runner' --legacy-home '
 
 在演练后台核对门店、批次、不合格原因和截图，再决定切换日期。正式切换先确认没有正在采集的门店或未完成的输出发布事务，停旧入口写入，做最终备份和导入，最后把内网地址切到新后台。首次正式写入前做健康检查并打开样本截图。旧计划任务、目录和备份保留供回退。
 
-开发者可在独立 Windows 构建机执行 `deploy/windows/build.ps1`。安装、自动启动和崩溃恢复由 `deploy/windows/smoke.ps1` 在隔离构建机验收。GitHub workflow 收集构建产物，并在版本标签触发时准备待审阅的 Release 草稿。
+开发者可在独立 Windows 构建机执行 `deploy/windows/build.ps1`。安装、自动启动和崩溃恢复由 `deploy/windows/smoke.ps1` 在隔离构建机验收。GitHub workflow 仅手动触发，一次运行完成构建与验收，并把同一份产物上传为待审阅的 Release 草稿；PR、提交和标签推送不会自动构建。
 
 
 ## Windows 半自动远程控制
