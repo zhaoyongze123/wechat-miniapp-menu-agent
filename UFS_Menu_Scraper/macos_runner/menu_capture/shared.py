@@ -102,6 +102,7 @@ class SharedHub:
                     generation INTEGER NOT NULL, status TEXT NOT NULL, summary TEXT NOT NULL,
                     tasks TEXT NOT NULL, synced_at TEXT NOT NULL, PRIMARY KEY(worker_id, run_id)
                 );
+                CREATE INDEX IF NOT EXISTS shared_run_status ON shared_run_history(status,synced_at);
                 CREATE TABLE IF NOT EXISTS shared_pairing (
                     code_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL
                 );
@@ -527,16 +528,17 @@ class SharedHub:
             "worker_last_seen": row["worker_last_seen"], "synced_at": row["synced_at"], "can_rename": False,
         }
 
-    def history_records(self, worker_id: str = "", *, active_only: bool = False) -> list[dict]:
+    def history_records(self, worker_id: str = "", *, shortcut_since: str = "") -> list[dict]:
         query = """
             SELECT h.worker_id,h.run_id,h.synced_at,h.summary,w.name AS worker_name,w.last_seen AS worker_last_seen
             FROM shared_run_history h JOIN shared_workers w ON h.worker_id=w.id
             WHERE (?='' OR h.worker_id=?)
         """
         args = [worker_id, worker_id]
-        if active_only:
-            query += " AND h.status IN (" + ",".join("?" for _ in ACTIVE_RUN_STATUSES) + ")"
-            args.extend(sorted(ACTIVE_RUN_STATUSES))
+        if shortcut_since:
+            placeholders = ",".join("?" for _ in ACTIVE_RUN_STATUSES)
+            query += f" AND (h.status IN ({placeholders}) OR h.synced_at >= ?)"
+            args.extend([*sorted(ACTIVE_RUN_STATUSES), shortcut_since])
         with self.store.connect() as db:
             return [self._synced_history_row(row) for row in db.execute(query, args)]
 

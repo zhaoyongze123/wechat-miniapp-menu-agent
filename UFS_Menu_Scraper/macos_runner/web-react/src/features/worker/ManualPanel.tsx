@@ -26,6 +26,7 @@ export function ManualPanel({ manual, busy, error, onCapture, onReject, onSkip, 
   const [reason, setReason] = useState(manual.reason || 'blur')
   const [detail, setDetail] = useState('')
   const [rejectOpen, setRejectOpen] = useState(false)
+  const [shortcutEnabled, setShortcutEnabled] = useState(() => window.localStorage.getItem('menu-capture.manual-shortcuts') !== 'off')
 
   useEffect(() => {
     setDetail('')
@@ -35,7 +36,7 @@ export function ManualPanel({ manual, busy, error, onCapture, onReject, onSkip, 
 
   useEffect(() => {
     const ownerDocument = panel.current?.ownerDocument
-    if (!manual.waiting || !ownerDocument) return
+    if (!shortcutEnabled || !manual.waiting || !ownerDocument) return
     const handler = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
       if (event.repeat || event.altKey || event.ctrlKey || event.metaKey
@@ -51,7 +52,7 @@ export function ManualPanel({ manual, busy, error, onCapture, onReject, onSkip, 
     }
     ownerDocument.addEventListener('keydown', handler)
     return () => ownerDocument.removeEventListener('keydown', handler)
-  }, [manual.waiting, busy, onCapture, rejectOpen, compact])
+  }, [manual.waiting, busy, onCapture, rejectOpen, compact, shortcutEnabled])
 
   const store = formatStore(manual.store_name)
   const needDetail = reason === 'other'
@@ -84,10 +85,10 @@ export function ManualPanel({ manual, busy, error, onCapture, onReject, onSkip, 
           {!compact ? <a className="text-sm underline" href="/remote-control" target="menu-capture-manual-control">打开置顶控制窗</a> : null}
           <div className="flex flex-wrap gap-2">
             <Button color="primary" size="sm" disabled={busy} onClick={onCapture}>
-              开始截图 <kbd className="ml-1 opacity-70">F8</kbd>
+              开始截图 {shortcutEnabled ? <kbd className="ml-1 opacity-70">F8</kbd> : null}
             </Button>
             <Button color="danger" variant="outline" size="sm" disabled={busy} onClick={() => setRejectOpen((open) => !open)}>
-              标记不合格 <kbd className="ml-1 opacity-70">F9</kbd>
+              标记不合格 {shortcutEnabled ? <kbd className="ml-1 opacity-70">F9</kbd> : null}
             </Button>
             {onSkip ? (
               <Button color="secondary" variant="ghost" size="sm" disabled={busy} onClick={onSkip}>
@@ -95,6 +96,17 @@ export function ManualPanel({ manual, busy, error, onCapture, onReject, onSkip, 
               </Button>
             ) : null}
           </div>
+          <details className="text-xs text-secondary">
+            <summary className="cursor-pointer">浏览器快捷键</summary>
+            <label className="mt-2 inline-flex items-center gap-2">
+              <input type="checkbox" checked={shortcutEnabled} onChange={(event) => {
+                const enabled = event.currentTarget.checked
+                setShortcutEnabled(enabled)
+                window.localStorage.setItem('menu-capture.manual-shortcuts', enabled ? 'on' : 'off')
+              }} />
+              F8 截图、F9 打开不合格表单
+            </label>
+          </details>
           {rejectOpen ? (
             <div className="space-y-2 rounded-lg border border-subtle bg-surface p-3">
               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">

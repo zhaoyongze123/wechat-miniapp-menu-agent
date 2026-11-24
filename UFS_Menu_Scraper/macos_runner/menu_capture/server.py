@@ -912,8 +912,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 "updated_at": run["updated_at"],
             })
         if hub:
-            for row in hub.history_records(active_only=True):
-                if row["status"] not in ACTIVE_RUN_STATUSES:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+            for row in hub.history_records(shortcut_since=cutoff.isoformat(timespec="seconds")):
+                if row["status"] not in ACTIVE_RUN_STATUSES and history_timestamp(row["updated_at"]) < cutoff.timestamp():
                     continue
                 items.append({
                     "source": "capture", "id": row["id"], "title": row["title"],
