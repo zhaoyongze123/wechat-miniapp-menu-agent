@@ -3,15 +3,30 @@
 param(
     [Parameter(Mandatory)][string]$Installer,
     [string]$Version,
-    [string]$UpgradeInstaller,
-    [string]$UpgradeVersion,
+    [string]$PreviousInstaller,
+    [string]$PreviousVersion,
     [string]$DataSeed,
     [int]$Port = 8765
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $Installer = (Resolve-Path $Installer).Path
-if ($UpgradeInstaller) { $UpgradeInstaller = (Resolve-Path $UpgradeInstaller).Path }
+if ($PreviousInstaller) {
+    $PreviousInstaller = (Resolve-Path $PreviousInstaller).Path
+    if (-not $PreviousVersion -or -not $Version -or $PreviousVersion -eq $Version) {
+        throw 'Upgrade validation requires distinct previous and candidate version numbers.'
+    }
+    if ($Port -ne 8765) { throw 'Pre-React installers require port 8765. Use a disposable Windows runner.' }
+}
+$firstInstaller = if ($PreviousInstaller) { $PreviousInstaller } else { $Installer }
+$firstVersion = if ($PreviousInstaller) { $PreviousVersion } else { $Version }
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$existingStartup = Join-Path ([Environment]::GetFolderPath('Startup')) '菜单采集后台.lnk'
+if ((Get-ScheduledTask -TaskName "MenuCapture Worker - $sid" -ErrorAction SilentlyContinue) -or
+    (Test-Path -LiteralPath $existingStartup) -or
+    (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)) {
+    throw '已有采集服务或登录启动项。请在独立 Windows 账号或临时运行环境执行安装验收。'
+}
 # 安装器同样受 260 字符路径上限约束；测试目录用短前缀，避免 releases\...\node_modules 深层文件装不进去。
 $tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
 $testRoot = Join-Path $tempRoot ('mcs-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
@@ -154,9 +169,8 @@ function Install-TestWorker {
 }
 
 try {
-    Install-TestWorker -Index 1
-    Assert-Version $Version 'Install #1'
-    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    Install-TestWorker -Index 1 -Path $firstInstaller
+    Assert-Version $firstVersion 'Install #1'
     $task = Get-ScheduledTask -TaskName "MenuCapture Worker - $sid" -ErrorAction SilentlyContinue
     $fallback = Join-Path ([Environment]::GetFolderPath('Startup')) '菜单采集后台.lnk'
     if (-not $task -and -not (Test-Path -LiteralPath $fallback)) { throw 'Login startup entry is missing.' }
@@ -166,24 +180,24 @@ try {
 
     Start-TestSupervisor
     $first = Assert-WorkerHealthy
-    Assert-WorkerRelease $Version
-    Assert-ReleaseManifest $Version
-    Assert-ApiVersion $Version 'Install #1'
+    Assert-WorkerRelease $firstVersion
+    Assert-ReleaseManifest $firstVersion
+    Assert-ApiVersion $firstVersion 'Install #1'
     Stop-Process -Id $first.ProcessId -Force
     $second = Assert-WorkerHealthy -PreviousProcessId $first.ProcessId
     Write-Host "Supervisor restarted worker $($first.ProcessId) as $($second.ProcessId)."
 
-    if ($UpgradeInstaller) {
+    if ($PreviousInstaller) {
         # 升级会先运行旧版卸载器；先停掉测试守护进程，避免它和卸载流程抢同一把互斥量。
         Stop-TestSupervisor
         Start-Sleep -Seconds 2
-        Install-TestWorker -Index 2 -Path $UpgradeInstaller
-        Assert-Version $UpgradeVersion 'Upgrade'
+        Install-TestWorker -Index 2 -Path $Installer
+        Assert-Version $Version 'Upgrade'
         Start-TestSupervisor
         $third = Assert-WorkerHealthy
-        Assert-WorkerRelease $UpgradeVersion
-        Assert-ReleaseManifest $UpgradeVersion
-        Assert-ApiVersion $UpgradeVersion 'Upgrade'
+        Assert-WorkerRelease $Version
+        Assert-ReleaseManifest $Version
+        Assert-ApiVersion $Version 'Upgrade'
         Stop-Process -Id $third.ProcessId -Force
         $fourth = Assert-WorkerHealthy -PreviousProcessId $third.ProcessId
         Write-Host "Upgrade restarted worker $($third.ProcessId) as $($fourth.ProcessId)."
@@ -191,13 +205,14 @@ try {
         # 回滚验收：版本登记切回安装前版本，守护进程应在空闲时重启旧实例。
         $rollback = Join-Path $install 'rollback.ps1'
         if (-not (Test-Path -LiteralPath $rollback)) { throw 'Installed rollback.ps1 is missing.' }
-        & $rollback -Version $Version -TimeoutSeconds 120
-        if ($LASTEXITCODE -ne 0) { throw "Rollback to $Version failed." }
+        & $rollback -Version $PreviousVersion -TimeoutSeconds 120
+        if ($LASTEXITCODE -ne 0) { throw "Rollback to $PreviousVersion failed." }
         $fifth = Assert-WorkerHealthy
-        Assert-WorkerRelease $Version
-        Assert-ReleaseManifest $Version
-        Assert-ApiVersion $Version 'Rollback'
-        Write-Host "Rollback switched worker $($fourth.ProcessId) to $($fifth.ProcessId) on version $Version."
+        Assert-Version $PreviousVersion 'Rollback'
+        Assert-WorkerRelease $PreviousVersion
+        Assert-ReleaseManifest $PreviousVersion
+        Assert-ApiVersion $PreviousVersion 'Rollback'
+        Write-Host "Rollback switched worker $($fourth.ProcessId) to $($fifth.ProcessId) on version $PreviousVersion."
     } else {
         Install-TestWorker -Index 2
         Assert-Version $Version 'Install #2'
@@ -213,7 +228,11 @@ try {
         $hash = (Get-FileHash -LiteralPath $entry.Key -Algorithm SHA256).Hash
         if ($hash -ne $entry.Value) { throw "Upgrade changed $($entry.Key)." }
     }
-    Write-Host "Install, upgrade, restart recovery and data preservation passed."
+    if ($PreviousInstaller) {
+        Write-Host 'Previous release install, candidate upgrade, restart recovery, rollback and data preservation passed.'
+    } else {
+        Write-Host 'Candidate install, reinstall, restart recovery and data preservation passed.'
+    }
 } catch {
     # 失败时把安装日志和运行日志复制到独立目录，便于 CI 产物或人工排查。
     $keep = Join-Path $tempRoot ('menu-capture-smoke-logs-' + (Get-Date -Format 'yyyyMMddHHmmss'))

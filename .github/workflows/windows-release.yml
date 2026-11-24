@@ -16,12 +16,17 @@ on:
         required: true
         type: string
       previous_installer_tag:
-        description: 首次升级与回滚验收所用的旧版 GitHub Release 标签，例如 v0.1.1
+        description: 升级回滚验收用旧版 Release 标签
+        required: false
+        type: string
+      previous_installer_run:
+        description: 也可使用已通过 CI 的旧版安装包 Actions Run ID
         required: false
         type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   react-web:
@@ -80,6 +85,24 @@ jobs:
           if (-not $installer) { throw "Release $env:PREVIOUS_TAG did not contain a Windows installer." }
           "PREVIOUS_INSTALLER=$($installer.FullName)" >> $env:GITHUB_ENV
           "PREVIOUS_VERSION=$($env:PREVIOUS_TAG -replace '^v', '')" >> $env:GITHUB_ENV
+      - name: 下载旧版安装包 CI 产物
+        if: github.event_name == 'workflow_dispatch' && inputs.previous_installer_tag == '' && inputs.previous_installer_run != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: menu-capture-windows-x64
+          path: ${{ runner.temp }}/previous-installer
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.previous_installer_run }}
+      - name: 核对旧版 CI 安装包
+        if: github.event_name == 'workflow_dispatch' && inputs.previous_installer_tag == '' && inputs.previous_installer_run != ''
+        shell: pwsh
+        run: |
+          $previous = @(Get-ChildItem (Join-Path $env:RUNNER_TEMP 'previous-installer') -Filter 'MenuCapture-Setup-*-win-x64.exe' -File -Recurse)
+          if ($previous.Count -ne 1 -or $previous[0].Name -notmatch '^MenuCapture-Setup-(.+)-win-x64\.exe$') {
+            throw '旧版安装包产物必须包含且只包含一个可识别的 Windows 安装包。'
+          }
+          "PREVIOUS_INSTALLER=$($previous[0].FullName)" >> $env:GITHUB_ENV
+          "PREVIOUS_VERSION=$($Matches[1])" >> $env:GITHUB_ENV
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.11.3'
@@ -109,12 +132,12 @@ jobs:
           $installer = Get-ChildItem deploy/artifacts -Filter '*.exe' -File | Select-Object -First 1
           $smokeArgs = @{ Installer = $installer.FullName; Version = $version }
           if ($env:PREVIOUS_INSTALLER) {
-            $smokeArgs.UpgradeInstaller = $env:PREVIOUS_INSTALLER
-            $smokeArgs.UpgradeVersion = $env:PREVIOUS_VERSION
+            $smokeArgs.PreviousInstaller = $env:PREVIOUS_INSTALLER
+            $smokeArgs.PreviousVersion = $env:PREVIOUS_VERSION
           }
           ./deploy/windows/smoke.ps1 @smokeArgs
           if (-not $env:PREVIOUS_INSTALLER) {
-            Write-Host 'Upgrade/rollback smoke skipped. Dispatch with previous_installer_tag to verify the previous release.'
+            Write-Host 'Upgrade/rollback smoke skipped. Dispatch with previous_installer_tag or previous_installer_run to verify the previous release.'
           }
       - name: 上传验收日志
         if: failure()

@@ -13,6 +13,8 @@ $homePath = if ($env:MENU_CAPTURE_HOME) { $env:MENU_CAPTURE_HOME } else { Join-P
 $logPath = Join-Path $homePath 'logs'
 $null = New-Item -ItemType Directory -Path $logPath -Force
 $rollbackLog = Join-Path $logPath 'rollback.log'
+$port = if ($env:MENU_CAPTURE_PORT) { [int]$env:MENU_CAPTURE_PORT } else { 8765 }
+$workbench = "http://127.0.0.1:$port"
 
 function Write-RollbackLog {
     param([string]$Message)
@@ -33,7 +35,13 @@ foreach ($path in $required) {
 $manifestPath = Join-Path $release 'release-manifest.json'
 if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $entry = Join-Path $release ("app\web\react\" + $manifest.frontend_entry.Replace('/', '\'))
+    if ((Get-FileHash -LiteralPath $entry -Algorithm SHA256).Hash.ToLowerInvariant() -ne $manifest.frontend_sha256) {
+        throw "回滚目标 $Version 的 React 入口哈希不匹配。"
+    }
     Write-Host "目标版本 $Version，源码提交 $($manifest.git_commit)，前端入口 $($manifest.frontend_entry)。"
+} elseif (-not (Test-Path -LiteralPath (Join-Path $release 'app\web\index.html'))) {
+    throw "回滚目标 $Version 缺少旧版控制台入口。"
 }
 
 Write-RollbackLog "请求回滚到 $Version。"
@@ -47,7 +55,7 @@ $pendingNotified = $false
 while ((Get-Date) -lt $deadline) {
     try {
         # 迁移前版本没有 /api/version 或 React manifest，通过进程路径确认具体回滚版本。
-        $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/healthz' -TimeoutSec 2 -UseBasicParsing
+        $health = Invoke-RestMethod -Uri "$workbench/healthz" -TimeoutSec 2 -UseBasicParsing
         $python = Join-Path $release 'python\python.exe'
         $worker = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
             Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($python, [StringComparison]::OrdinalIgnoreCase) }
@@ -56,7 +64,7 @@ while ((Get-Date) -lt $deadline) {
             Write-Host "已回滚到 $Version，目标版本采集服务已通过健康检查。"
             exit 0
         }
-        $status = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/status' -TimeoutSec 2 -UseBasicParsing
+        $status = Invoke-RestMethod -Uri "$workbench/api/status" -TimeoutSec 2 -UseBasicParsing
         if (-not $pendingNotified -and $status.running) {
             Write-Host '当前有采集任务在执行，守护进程会在任务结束后切换，请稍候。'
             $pendingNotified = $true

@@ -18,7 +18,7 @@ A 机运行共享后台。A、B 都安装 Windows 采集端，用各自已登录
 
 ## 升级与回滚
 
-首次升级到 React 的验证需要前一版生产安装包。将其作为已发布 GitHub Release 附件后，手动运行 Windows workflow 并填写 `previous_installer_tag`。验收会安装旧版、升级 React、再回滚到旧版。没有提供该标签时，CI 只验收当前版本的安装、重装、守护进程恢复和本地数据保留，并明确标记升级/回滚尚未执行。
+首次升级到 React 的验证需要旧版安装包。在 GitHub Actions 手动运行 Windows workflow 时，可通过 `previous_installer_tag` 选择旧 Release，或通过 `previous_installer_run` 选择已通过的旧 CI 产物。验收依次安装旧版、升级 React、再回滚到旧版。验收生产现用安装包时，应使用其原始安装文件和 SHA-256。旧包在没有生产采集服务和启动项的独立 Windows 环境执行，避免安装器覆盖同一账号的启动项。
 
 前后端随发布版本一起打包：React 构建产物在 `web/react/`，运行时不依赖 Node、npm 或外部 CDN。安装包与镜像都会写入版本信息，可用 `GET /api/version` 核对实际运行的后端版本与前端入口哈希。
 
@@ -45,3 +45,15 @@ python deploy/migrate_legacy.py --backup-home 'D:\backup\runner' --legacy-home '
 在演练后台核对门店、批次、不合格原因和截图，再决定切换日期。正式切换先确认没有正在采集的门店或未完成的输出发布事务，停旧入口写入，做最终备份和导入，最后把内网地址切到新后台。首次正式写入前做健康检查并打开样本截图。旧计划任务、目录和备份保留供回退。
 
 开发者可在独立 Windows 构建机执行 `deploy/windows/build.ps1`。安装、自动启动和崩溃恢复由 `deploy/windows/smoke.ps1` 在隔离构建机验收。GitHub workflow 收集构建产物，并在版本标签触发时准备待审阅的 Release 草稿。
+
+
+## Windows 半自动远程控制
+
+远程控制为可选功能，Worker 仍监听本机回环地址。正式开启前，在独立 Windows 验收机上配置可信内网 HTTPS 反向代理，保留请求 Host 并传递可信的 HTTPS 协议信息。Tailscale 环境可使用仅对 tailnet 开放的 [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve)。
+
+在运行 Worker 的用户或服务环境设置：
+
+- `MENU_CAPTURE_REMOTE_CONTROL_HOST` 为代理的 HTTPS 主机名，填写域名。
+- `MENU_CAPTURE_REMOTE_CONTROL_PASSWORD` 为密码管理器生成的独立操作员密码，至少 16 字符。使用 `operator` 账号登入。
+
+操作员在自己的浏览器访问该域名下的 `/remote-control`。此入口只提供当前半自动状态、开始截图和确认不合格。两种动作都校验设备、轮次、门店和本次等待标识。轮询中断期间保留最近状态并停止远程操作。浏览器支持时可在用户点击后打开 [文档画中画](https://developer.chrome.com/docs/web-platform/document-picture-in-picture)，其可用性应在操作员的实际浏览器验证。
