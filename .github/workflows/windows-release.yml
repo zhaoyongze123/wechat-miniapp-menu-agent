@@ -266,17 +266,16 @@ jobs:
       - name: 验收 Hub 宿主机更新执行器（隔离 Compose）
         if: github.event_name == 'workflow_dispatch'
         env:
-          BASELINE_REF: e6b7ea82079b45f1720ea6dec6411bc29ed5276b
           MENU_CAPTURE_HOST_PORT: '18788'
         run: |
           set -euo pipefail
+          # 与 Windows 验收一致：基线用同一份源码构建、只改版本号，
+          # 这样验证的是镜像加载/切换/回滚链路本身，而不是跨版本数据库结构兼容性。
           base_version=0.2.2
           project=menu-capture-updater
           compose=(docker compose -p "$project" -f deploy/compose.yaml)
-          git fetch --depth 1 origin "$BASELINE_REF"
-          git worktree add --detach "$RUNNER_TEMP/hub-upd-old" "$BASELINE_REF"
           docker build --build-arg VERSION=$base_version -t "menu-capture-hub:$base_version" \
-            -f "$RUNNER_TEMP/hub-upd-old/deploy/Dockerfile.hub" "$RUNNER_TEMP/hub-upd-old"
+            -f deploy/Dockerfile.hub .
 
           state="$RUNNER_TEMP/hub-updater"
           mkdir -p "$state/archives"
@@ -296,10 +295,10 @@ jobs:
           export HUB_UPDATE_STATE_DIR="$state" HUB_UPDATE_ARCHIVE_DIR="$state/archives"
           export HUB_UPDATE_HEALTH_URL="http://127.0.0.1:$MENU_CAPTURE_HOST_PORT"
           export HUB_UPDATE_HEALTH_USER=admin HUB_UPDATE_HEALTH_PASSWORD="$MENU_CAPTURE_ADMIN_PASSWORD"
-          export HUB_UPDATE_BIND=127.0.0.1 HUB_UPDATE_PORT=18767
+          export HUB_UPDATE_BIND=127.0.0.1 HUB_UPDATE_PORT=18767 HUB_UPDATE_HEALTH_TIMEOUT=120
           python3 deploy/hub-update/hub_updater.py > "$state/updater.log" 2>&1 &
           pid=$!
-          trap 'kill $pid 2>/dev/null || true' EXIT
+          trap 'status=$?; if [ $status -ne 0 ]; then echo "=== updater.log ==="; cat "$state/updater.log" || true; echo "=== journal ==="; cat "$state/hub-update.json" || true; echo "=== audit ==="; cat "$state/hub-update-audit.jsonl" || true; docker ps -a --format "{{.Names}} {{.Image}} {{.Status}}" || true; "${compose[@]}" logs --no-color --tail 60 || true; fi; kill $pid 2>/dev/null || true' EXIT
           auth="Authorization: Bearer $HUB_UPDATE_TOKEN"
           for _ in $(seq 1 30); do
             curl -fsS -H "$auth" http://127.0.0.1:18767/status > /dev/null && break
