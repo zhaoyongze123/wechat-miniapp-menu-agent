@@ -1111,8 +1111,6 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         with control_lock:
             fields = payload or {}
             materials.versions.validate(fields.get("name"), fields.get("version"), fields.get("description", ""))
-            if hub:
-                hub.protect_publish(batch_id, None)
             run = store.latest_run()
             can_activate = not runner.running and not (run and run["status"] in {"paused", "blocked", "interrupted"})
             result = materials.publish_snapshot(
@@ -1121,6 +1119,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             )
             if can_activate:
                 runner.invalidate_readiness()
+            if hub:
+                hub.reconcile_assignments()
             return result
 
     @app.get("/api/materials/rework")
@@ -1150,7 +1150,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             raise ValueError("打回参数无效")
         with control_lock:
             idle()
-            return materials.return_rework_store(str(payload["batch_id"]), str(payload["store_id"]))
+            result = materials.return_rework_store(str(payload["batch_id"]), str(payload["store_id"]))
+            if hub:
+                hub.reconcile_assignments()
+            return result
 
     @app.post("/api/materials/rework/publish")
     def publish_material_rework(payload: dict):
@@ -1176,15 +1179,16 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             idle()
             for batch_id, ids in groups.items():
                 try:
-                    if hub:
-                        hub.protect_publish(batch_id, ids)
                     result = materials.publish_snapshot(batch_id, description, store_ids=ids, activate=False)
+                    if hub:
+                        hub.reconcile_assignments()
                     results.append({
                         "batch_id": batch_id, "batch_name": names.get(batch_id, ""),
                         "snapshot_id": result["snapshot_id"],
                         "version": result["release"]["version"],
                         "already_published": result["already_published"],
                         "task_scan": result["task_scan"],
+                        "store_updates": result["store_updates"],
                     })
                 except Exception as exc:
                     errors.append({"batch_id": batch_id, "batch_name": names.get(batch_id, ""),

@@ -311,7 +311,8 @@ class SharedHub:
         if (not isinstance(task_ids, list) or not 1 <= len(task_ids) <= 300
                 or any(not isinstance(value, str) or not value for value in task_ids)):
             raise ValueError("请选择 1 至 300 家已发布门店")
-        tasks = {task["id"]: task for task in self.materials.effective_capture_tasks()}
+        effective = self.materials.effective_capture_tasks()
+        tasks = {task["id"]: task for task in effective}
         selected = []
         conflicts = []
         for task_id in dict.fromkeys(task_ids):
@@ -333,6 +334,7 @@ class SharedHub:
             db.execute("BEGIN IMMEDIATE")
             if self._worker(db, worker_id)["revoked_at"]:
                 raise SharedConflict("采集电脑已解除配对，请选择有效设备")
+            self._reconcile_assignments(db, self._store_index(effective))
             # 在同一个写事务核对占用，整次提交全部通过后才生成分配记录。
             for task, _ in selected:
                 owner = db.execute("""
@@ -344,10 +346,16 @@ class SharedHub:
             if conflicts:
                 raise SharedConflict(f"{len(conflicts)} 家门店暂时无法分配，本次提交未生效", conflicts=conflicts)
             for task, suffix in selected:
+                # 旧采集端只能为同批次缓存一个兼容快照标记。分配标记与物理二维码路径独立，
+                # 存续分配使用同一标记，新旧素材有效性仍由当前门店任务身份校验。
+                ongoing = db.execute("""
+                    SELECT snapshot_id FROM shared_assignments WHERE worker_id=? AND batch_id=?
+                        AND status IN ('assigned','ready') ORDER BY rowid LIMIT 1
+                """, (worker_id, task["batch_id"])).fetchone()
                 record = {
                     "id": secrets.token_hex(16), "task_id": task["id"], "worker_id": worker_id,
                     "batch_id": task["batch_id"], "batch_name": task["batch_name"], "store": task["source_name"],
-                    "revision": task["version"], "snapshot_id": task["snapshot_id"],
+                    "revision": task["version"], "snapshot_id": ongoing[0] if ongoing else task["batch_snapshot_id"],
                     "source_hash": task["source_hash"], "source_suffix": suffix, "status": "assigned",
                     "created_at": stamp,
                 }
@@ -381,20 +389,41 @@ class SharedHub:
         if conflicts:
             raise SharedConflict(f"{'、'.join(conflicts[:4])} 仍由采集端占用，请等待同步或先收回")
 
-    def protect_publish(self, batch_id: str, store_ids: list[str] | None) -> None:
-        with self.store.connect() as db:
-            names = {row["source_name"] for row in db.execute(
-                "SELECT store_id,source_name FROM material_decisions WHERE batch_id=? AND decision='confirmed'",
-                (batch_id,),
-            ) if store_ids is None or row["store_id"] in store_ids}
-        self.require_unassigned(batch_id, names)
-
     def protect_task(self, task_id: str) -> None:
         task = self.store.get(task_id)
         snapshot = Path(task["source_path"]).parent.parent
         binding = self.store.material_binding(str(snapshot))
         if binding:
             self.require_unassigned(binding["batch_id"], {task["source_name"]})
+
+    @staticmethod
+    def _store_index(tasks: list[dict]) -> dict:
+        return {(task["batch_id"], task["source_name"]): task for task in tasks}
+
+    @staticmethod
+    def _valid_current(assigned, task: dict | None) -> bool:
+        if task is None or waiting_for_materials(task):
+            return False
+        if task["material_version"] is not None:
+            return assigned["task_id"] == task["id"]
+        return assigned["source_hash"] == task["source_hash"]
+
+    def _reconcile_assignments(self, db, current: dict, worker_id: str = "") -> None:
+        active = db.execute("""
+            SELECT * FROM shared_assignments WHERE status IN ('assigned','ready') AND (?='' OR worker_id=?)
+        """, (worker_id, worker_id)).fetchall()
+        expired = []
+        for row in active:
+            task = current.get((row["batch_id"], row["store"]))
+            if not self._valid_current(row, task) or store_state(task) in {"captured", "rejected", "returned"}:
+                expired.append((row["id"],))
+        db.executemany("UPDATE shared_assignments SET status='reclaimed' WHERE id=?", expired)
+
+    def reconcile_assignments(self) -> None:
+        current = self._store_index(self.materials.effective_capture_tasks())
+        with self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._reconcile_assignments(db, current)
 
     def sync(self, worker_id: str, ready_ids: list[str], pending_uploads: int,
              run_summary: dict | None = None) -> dict:
@@ -410,7 +439,8 @@ class SharedHub:
                     or not 0 <= run_summary["processed"] <= run_summary["total"] <= 10000):
                 raise ValueError("采集端轮次摘要无效")
         stamp = utc_stamp()
-        current = self.materials.latest_snapshot_map()
+        current = self._store_index(self.materials.effective_capture_tasks())
+        batch_snapshots = self.materials.latest_snapshot_map()
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             worker = self._worker(db, worker_id)
@@ -426,44 +456,24 @@ class SharedHub:
                         processed=excluded.processed,total=excluded.total,reported_at=excluded.reported_at
                 """, (worker_id, run_summary["status"], run_summary["mode"], run_summary["processed"],
                       run_summary["total"], stamp))
-            # 批次发布新快照后，旧快照的分配不可能再产出有效结果；
-            # 统一回收，避免采集端继续处理同一门店的历史版本。
-            stale = [row["id"] for row in db.execute(
-                "SELECT id,batch_id,snapshot_id FROM shared_assignments "
-                "WHERE worker_id=? AND status IN ('assigned','ready')", (worker_id,))
-                if current.get(row["batch_id"]) != row["snapshot_id"]]
-            if stale:
-                db.executemany("UPDATE shared_assignments SET status='reclaimed' WHERE id=?",
-                               ((assignment_id,) for assignment_id in stale))
+            self._reconcile_assignments(db, current, worker_id)
             db.executemany("UPDATE shared_assignments SET status='ready' WHERE id=? AND worker_id=? AND status='assigned'",
                            ((assignment_id, worker_id) for assignment_id in ready_ids))
-            # 状态以共享端为准：把当前快照任务的权威状态一并下发，采集端只做展示和开跑判断。
-            state_rows = db.execute("""
-                SELECT a.id AS assignment_id,a.status AS assignment_state,a.task_id,a.batch_id,a.snapshot_id,
-                       t.status,t.stage,t.reject_reason
-                FROM shared_assignments a JOIN tasks t ON t.id=a.task_id
-                WHERE a.worker_id=? AND a.status IN ('assigned','ready','completed')
-            """, (worker_id,)).fetchall()
-            # 任务已被判定为已采集/不合格/待重新选码后，活动分配不再需要继续采集，直接回收。
-            resolved = [row["assignment_id"] for row in state_rows
-                        if row["assignment_state"] in ACTIVE
-                        and current.get(row["batch_id"]) == row["snapshot_id"]
-                        and store_state(dict(row)) in {"captured", "rejected", "returned"}]
-            if resolved:
-                db.executemany("UPDATE shared_assignments SET status='reclaimed' WHERE id=?",
-                               ((assignment_id,) for assignment_id in resolved))
-            rows = [dict(row) for row in db.execute(
-                "SELECT * FROM shared_assignments WHERE worker_id=? AND status IN ('assigned','ready') "
-                "ORDER BY rowid", (worker_id,))]
+            assignments = [dict(row) for row in db.execute("""
+                SELECT * FROM shared_assignments WHERE worker_id=? AND status IN ('assigned','ready','completed')
+                ORDER BY rowid
+            """, (worker_id,))]
+        rows = [row for row in assignments if row["status"] in ACTIVE]
+        for row in rows:
+            batch_snapshots[row["batch_id"]] = row["snapshot_id"]
         states = {}
-        for row in state_rows:
-            if current.get(row["batch_id"]) != row["snapshot_id"]:
-                continue
-            states[row["task_id"]] = {"state": store_state(dict(row)),
-                                      "reject_reason": row["reject_reason"] or ""}
+        for row in assignments:
+            task = current.get((row["batch_id"], row["store"]))
+            if self._valid_current(row, task):
+                states[row["task_id"]] = {"state": store_state(task), "reject_reason": task["reject_reason"] or ""}
         return {"assignments": rows,
                 "batches": [{"batch_id": batch_id, "snapshot_id": snapshot_id}
-                            for batch_id, snapshot_id in current.items()],
+                            for batch_id, snapshot_id in batch_snapshots.items()],
                 "states": states, "supports_run_summary": True, "supports_run_history": True,
                 "worker_name": worker["name"]}
 
@@ -527,8 +537,8 @@ class SharedHub:
 
     def source(self, worker_id: str, assignment_id: str) -> Path:
         assigned = self.assignment(worker_id, assignment_id)
-        if assigned["status"] not in ACTIVE:
-            raise SharedConflict("门店分配已结束")
+        if assigned["status"] not in ACTIVE or self._matching_current(assigned) is None:
+            raise SharedConflict("门店分配已结束或素材已变更")
         task = self.store.get(assigned["task_id"])
         if task["source_hash"] != assigned["source_hash"]:
             raise SharedConflict("二维码版本已变更")
@@ -623,7 +633,7 @@ class SharedHub:
     def _matching_current(self, assigned: dict) -> dict | None:
         return next((task for task in self.materials.effective_capture_tasks()
                      if task["batch_id"] == assigned["batch_id"] and task["source_name"] == assigned["store"]
-                     and task["source_hash"] == assigned["source_hash"]), None)
+                     and self._valid_current(assigned, task)), None)
 
     @staticmethod
     def _apply(db, assigned: dict, current: dict, manifest: dict, destination: Path, message: str) -> None:

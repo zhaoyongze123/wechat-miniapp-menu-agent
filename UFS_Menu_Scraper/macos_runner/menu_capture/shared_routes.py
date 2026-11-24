@@ -128,7 +128,8 @@ def register_shared_routes(app: FastAPI, role: str, hub: SharedHub | None,
         required = {"ready_ids", "pending_uploads"}
         if not required <= payload.keys() <= required | {"run_summary"}:
             raise ValueError("同步参数无效")
-        return hub.sync(worker_id, payload["ready_ids"], payload["pending_uploads"], payload.get("run_summary"))
+        with control_lock:
+            return hub.sync(worker_id, payload["ready_ids"], payload["pending_uploads"], payload.get("run_summary"))
 
     @app.put("/api/shared/worker/run-history")
     def run_history(request: Request, payload: HistoryReport):
