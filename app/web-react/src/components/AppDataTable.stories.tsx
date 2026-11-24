@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { useState } from 'react'
 import { expect, fn, userEvent, within } from 'storybook/test'
 import { AppDataTable, type DataColumn } from './AppDataTable'
 import { CellText } from './CellText'
@@ -147,5 +148,48 @@ export const KeyboardRowActivation: Story = {
     row.focus()
     await userEvent.keyboard('{Enter}')
     await expect(rowActivate).toHaveBeenCalledTimes(1)
+  },
+}
+
+/** 行内展开：主行保留列表语义，详情在下一行跨列展示。 */
+function ExpandableTable() {
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const detailColumns: DataColumn<StoreRow>[] = [
+    ...columns.filter((column) => column.id !== 'actions'),
+    {
+      id: 'toggle',
+      header: '详情',
+      width: '5rem',
+      cell: (row) => (
+        <button
+          type="button"
+          className="text-sm underline underline-offset-2"
+          aria-expanded={expanded === row.id}
+          onClick={() => setExpanded(expanded === row.id ? null : row.id)}
+        >
+          {expanded === row.id ? '收起' : '展开'}
+        </button>
+      ),
+    },
+  ]
+  return (
+    <AppDataTable
+      caption="可展开明细的门店列表"
+      columns={detailColumns}
+      rows={rows}
+      rowKey={(row) => row.id}
+      subRow={(row) => (expanded === row.id ? <p className="text-sm text-default">失败说明：{row.message}</p> : null)}
+    />
+  )
+}
+
+export const ExpandableRow: Story = {
+  render: () => <ExpandableTable />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getAllByRole('button', { name: '展开' })[0]!)
+    await expect(canvas.getByText(/失败说明：/)).toBeVisible()
+    await userEvent.click(canvas.getByRole('button', { name: '收起' }))
+    await expect(canvas.queryByText(/失败说明：/)).toBeNull()
   },
 }

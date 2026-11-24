@@ -51,6 +51,7 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run typecheck
+          npm run lint:design
           npm test
           npm run build
           if [ -n "$(git status --porcelain ../web/react)" ]; then
