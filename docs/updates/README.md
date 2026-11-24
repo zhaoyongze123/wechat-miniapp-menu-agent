@@ -10,7 +10,10 @@
 - 版本按语义版本比较（含预发布），不按字符串或发布时间；禁止自动降级。
 - 手动检查通过 `POST /api/updates/check`；状态通过 `GET /api/updates/status`；偏好 `PUT /api/updates/preferences`；审计 `GET /api/updates/history`。
 - 网络请求不持有状态锁；自动检查在后台线程执行，状态查询只读取缓存快照，慢网络不会阻塞设置页。
+- 同一时刻只允许一个检查任务；手动检查遇到在途任务时复用其结果，不重复请求 GitHub。
+- 渠道切换会使在途请求失效：请求返回后先比对渠道代号，旧渠道的成功/失败结果一律丢弃，不覆盖新渠道缓存。
 - 缓存是否过期按 `checked_at` 与 1 小时有效期计算；检查失败保留上次成功信息，但信息随年龄正确标记为过期。
+- 状态接口返回本机 `platform` 与归一化后的 `arch`；只有发布资产的实际架构与本机一致时才标记 `update_available`。
 
 ## Release 资产契约
 
@@ -52,7 +55,7 @@
 - 清单 `version` 必须与 Release 标签一致；清单渠道必须与版本本身一致（正式版 `stable`、预发布版 `preview`）。
 - `stable` 渠道只接收正式版；`preview` 渠道同时接收正式版与预发布版，因此预览用户仍能升级到更新的正式版。
 - 资产 `kind` 只能是 `windows_installer` / `hub_image`，不可重复；名称必须存在于同一 Release。
-- 资产平台/架构必须与类型一致：`windows_installer` 为 `windows/x64`，`hub_image` 为 `linux/amd64`；当前平台没有匹配资产时不提供更新。
+- 资产平台/架构必须与类型一致：`windows_installer` 为 `windows/x64`，`hub_image` 为 `linux/amd64`；架构写法按 `x64/amd64/x86_64`、`arm64/aarch64` 归一化后再与本机真实 CPU 架构比较，当前平台没有匹配资产时不提供更新。
 - 大小与 Release 资产一致；SHA-256 为 64 位十六进制；若 Release 提供 `digest: sha256:...` 必须一致。
 - 资产 URL 只允许 HTTPS 的 `github.com` / `objects.githubusercontent.com` / `release-assets.githubusercontent.com`，且路径必须包含 `/releases/download/<tag>/`。
 - 缺少清单或校验失败时仍展示该 Release，但标记不可更新并说明原因，不静默回退到旧版本。
@@ -61,10 +64,14 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 
 ## 本地版本清点（Windows）
 
+- 三类目录严格分离，不允许互相反推：
+  - `data_root`：可写数据目录（配置、缓存、审计），Windows 通常由 `MENU_CAPTURE_HOME` 指定；
+  - `app_root`：当前运行的程序目录，只读取其中的 `release-manifest.json`；
+  - `install_root`：多版本安装根（含 `releases/`），仅由显式参数或 `app_root` 的安装布局推导。
 - 安装布局：`<install>/releases/<version>/app/...`，`<install>/current-version` 指定启动版本。
 - 默认保护：运行版本、`current-version` 指定版本、最近两个兼容版本；保护规则优先于数量上限。
 - 只做只读清点与清理候选预览；不删除目录、不修改 `current-version`。符号链接/重解析点跳过。
-- 非 Windows 或缺少 `releases` 目录时明确显示“不支持”，不伪造可释放空间。
+- 非 Windows 或缺少 `releases` 目录时明确显示“不支持”，不伪造可释放空间。数据目录下即使存在 `releases` 也不会被当作安装根。
 - Hub 容器不使用 Docker Socket；镜像清点与切换必须由宿主机受限执行器完成，不属于当前阶段。
 
 ## 当前阶段与后续
@@ -73,6 +80,8 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 
 - 固定仓库正式 Release 发现、stable/preview 过滤、语义版本比较、禁用降级。
 - `update-manifest.json` 校验、资产完整性信息展示、1 小时缓存、失败退避与持久化状态。
+- 单飞检查与在途结果失效控制；本机 CPU 架构与资产架构匹配校验。
+- `data_root` / `app_root` / `install_root` 分离，Windows 版本清点不受数据目录影响。
 - 设置中心“软件更新”：当前/最新版本、检查时间、渠道、自动检查、发布说明、资产 SHA-256、版本清点与更新记录。
 - 检查与偏好变更写入 `data/update-history.jsonl`。
 
