@@ -2,9 +2,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   cancelUpdateDownload,
   checkUpdates,
+  fetchUpdateCleanup,
   fetchUpdateHistory,
   fetchUpdateInstall,
   fetchUpdateStatus,
+  runUpdateCleanup,
   saveUpdatePreferences,
   startUpdateDownload,
   startUpdateInstall,
@@ -14,6 +16,7 @@ export const updateKeys = {
   status: ['updates', 'status'] as const,
   install: ['updates', 'install'] as const,
   history: ['updates', 'history'] as const,
+  cleanup: ['updates', 'cleanup'] as const,
 }
 
 /** 服务端按小时缓存；下载进行中才加密轮询，其余情况不为每台机器引入高频请求。 */
@@ -39,6 +42,16 @@ export function useUpdateInstall(enabled = true) {
   })
 }
 
+/** 存储治理预览只读扫描；不自动删除，只有用户确认后才提交清理。 */
+export function useUpdateCleanup(enabled = true) {
+  return useQuery({
+    queryKey: updateKeys.cleanup,
+    queryFn: ({ signal }) => fetchUpdateCleanup(signal),
+    enabled,
+    staleTime: 30_000,
+  })
+}
+
 export function useUpdateHistory(enabled = true) {
   return useQuery({
     queryKey: updateKeys.history,
@@ -59,5 +72,6 @@ export function useUpdateActions() {
     download: useMutation({ mutationFn: startUpdateDownload, onSuccess: refresh }),
     cancelDownload: useMutation({ mutationFn: cancelUpdateDownload, onSuccess: refresh }),
     install: useMutation({ mutationFn: startUpdateInstall, onSuccess: refresh }),
+    cleanup: useMutation({ mutationFn: runUpdateCleanup, onSuccess: refresh }),
   }
 }

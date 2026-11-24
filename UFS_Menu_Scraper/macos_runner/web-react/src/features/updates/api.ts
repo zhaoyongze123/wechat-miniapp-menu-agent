@@ -1,10 +1,12 @@
 import { apiFetch } from '../../api/client'
 import type {
+  UpdateCleanupResult,
   UpdateDownloadState,
   UpdateHistoryRow,
   UpdateInstallState,
   UpdatePreferences,
   UpdateStatus,
+  UpdateStoragePreview,
 } from './types'
 
 export function fetchUpdateStatus(signal?: AbortSignal): Promise<UpdateStatus> {
@@ -40,5 +42,17 @@ export function startUpdateInstall(version: string): Promise<UpdateInstallState>
   return apiFetch<UpdateInstallState>('/api/updates/install', {
     method: 'POST',
     json: { version, confirm: version },
+  })
+}
+
+export function fetchUpdateCleanup(signal?: AbortSignal): Promise<UpdateStoragePreview> {
+  return apiFetch<UpdateStoragePreview>('/api/updates/cleanup', { signal })
+}
+
+/** 删除是破坏性操作：confirm 由服务端固定校验，安装/下载进行中会被拒绝。 */
+export function runUpdateCleanup(scopes: string[]): Promise<UpdateCleanupResult> {
+  return apiFetch<UpdateCleanupResult>('/api/updates/cleanup', {
+    method: 'POST',
+    json: { confirm: 'cleanup', scopes },
   })
 }

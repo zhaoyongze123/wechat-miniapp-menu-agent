@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.request import urlopen
 
-from .updates import Version, _SHA256_RE, _file_sha256, _normalize_arch
+from .updates import Version, _SHA256_RE, _file_sha256, _is_reparse, _normalize_arch
 
 INSTALL_TIMEOUT_SECONDS = 900
 HEALTH_TIMEOUT_SECONDS = 240
@@ -34,7 +34,6 @@ ASSET_KIND = {"windows": "windows_installer"}
 JOB_SCHEMA = 1
 # 兼容没有 pid 的旧任务：超过该时限仍未推进，视为执行器已异常退出。
 STALE_JOB_GRACE_SECONDS = 120
-_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
 def build_job(
@@ -63,17 +62,6 @@ def build_job(
         "port": int(port),
         "created_at": _utc_now(),
     }
-
-
-def _is_reparse(path: Path) -> bool:
-    """判定符号链接/目录联接。Windows 上 is_symlink() 只能识别部分重解析点。"""
-    try:
-        if path.is_symlink():
-            return True
-        info = path.lstat()
-    except OSError:
-        return False
-    return bool(getattr(info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT)
 
 
 def _safe_join(base: Path, *parts: str) -> Path:

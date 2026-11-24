@@ -43,6 +43,11 @@ DOWNLOAD_TIMEOUT_SECONDS = 30.0
 DOWNLOAD_FREE_SPACE_MARGIN = 64 * 1024 * 1024
 # 进度持久化节流：每 4 MiB 落盘一次，避免每块都写小文件。
 DOWNLOAD_PROGRESS_PERSIST_BYTES = 4 * 1024 * 1024
+# 存储治理：只清理超过保留期的 CLI 转录；调试分段与截图证据由日志服务按配额管理。
+LOG_CLEANUP_MAX_AGE_SECONDS = 7 * 24 * 3600
+# 清理是破坏性操作，必须由调用方提交固定确认标记，避免误触。
+CLEANUP_CONFIRM = "cleanup"
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 # GitHub Release 上附带的更新清单；与安装目录内的运行时 release-manifest.json 区分。
 MANIFEST_ASSET = "update-manifest.json"
 _VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
@@ -355,6 +360,8 @@ class UpdateService:
         # 由服务端按角色注入真实安装能力：Windows 为本地执行器，Hub 为宿主机代理。
         self.install_capability: Callable[[], bool] | None = None
         self.rollback_capability: Callable[[], bool] | None = None
+        # 安装/回滚期间必须禁止清理历史版本，否则可能删掉正在使用的回滚目标。
+        self.cleanup_guard: Callable[[], tuple[bool, str]] | None = None
 
     # ---------- 对外状态 ----------
 
@@ -423,6 +430,8 @@ class UpdateService:
                 "install": self._install_capable(),
                 "rollback": self._rollback_capable(),
                 "inventory": self._inventory_supported(),
+                # 清理始终先预览；安装/回滚期间由 cleanup_guard 阻止实际删除。
+                "cleanup": True,
             },
             "inventory": self.inventory(),
         }
@@ -577,9 +586,239 @@ class UpdateService:
             "running_version": running,
             "releases": releases,
             "cleanup_candidates": [row for row in releases if not row["protected"]],
-            "cleanup_supported": False,
-            "cleanup_reason": "自动清理执行器尚未启用；当前仅提供安全清点与保护规则预览",
+            # 清点保持只读；真正删除必须调用 cleanup() 并提交确认标记，且以重算结果为准。
+            "cleanup_supported": True,
+            "cleanup_reason": "清理需显式确认；保护运行中、当前与最近两个可回滚版本",
         }
+
+    # ---------- 存储治理（只读预览 + 显式确认删除） ----------
+
+    def storage_preview(self) -> dict:
+        """预览各存储范围的可清理项；不删除任何文件。"""
+        scopes = {
+            "releases": self._preview_releases(),
+            "downloads": self._preview_downloads(),
+            "logs": self._preview_logs(),
+        }
+        blocked, reason = self._cleanup_block()
+        return {
+            "generated_at": _utc_now(),
+            "blocked": blocked,
+            "blocked_reason": reason,
+            "confirm": CLEANUP_CONFIRM,
+            "scopes": scopes,
+            "reclaimable_bytes": sum(int(scope.get("reclaimable_bytes") or 0) for scope in scopes.values()),
+        }
+
+    def _cleanup_block(self) -> tuple[bool, str]:
+        if self._downloading:
+            return True, "下载进行中，请等待完成或取消后再清理"
+        if self.cleanup_guard is not None:
+            try:
+                return self.cleanup_guard()
+            except Exception:  # noqa: BLE001 - 闸门异常按阻止处理，不能冒险删除
+                return True, "无法确认安装状态，暂不允许清理"
+        return False, ""
+
+    def _preview_releases(self) -> dict:
+        install_root = self._install_root()
+        if install_root is None:
+            return {
+                "supported": False,
+                "reason": "仅 Windows 采集端支持历史版本清理",
+                "items": [],
+                "reclaimable_bytes": 0,
+            }
+        inventory = self.inventory()
+        items = [
+            {
+                "version": row["version"],
+                "size_bytes": row["size_bytes"],
+                "path": str(install_root / "releases" / row["version"]),
+            }
+            for row in inventory["cleanup_candidates"]
+        ]
+        return {
+            "supported": True,
+            "reason": "",
+            "items": items,
+            "reclaimable_bytes": sum(item["size_bytes"] for item in items),
+        }
+
+    def _pending_download_version(self) -> str:
+        """当前下载状态指向且产物仍在的版本必须保留，安装执行器还要用它。"""
+        state = dict(self._download_state)
+        version = str(state.get("version") or "")
+        name = str(state.get("asset_name") or "")
+        if state.get("status") != "completed" or not version or not name:
+            return ""
+        if Path(name).name != name:
+            return ""
+        try:
+            target = self.download_dir / version / name
+            return version if target.is_file() and not _is_reparse(target) else ""
+        except OSError:
+            return ""
+
+    def _preview_downloads(self) -> dict:
+        if not self.download_dir.is_dir():
+            return {"supported": True, "reason": "", "kept": [], "items": [], "reclaimable_bytes": 0}
+        keep = self._pending_download_version()
+        items: list[dict] = []
+        for directory in sorted(self.download_dir.iterdir()):
+            # 只处理下载目录的直接子目录；链接与其他文件一律跳过，不按名字猜测内容。
+            if not directory.is_dir() or _is_reparse(directory):
+                continue
+            version = directory.name
+            try:
+                Version.parse(version)
+            except ValueError:
+                continue
+            if version == keep:
+                continue
+            items.append({"version": version, "size_bytes": _tree_size(directory), "path": str(directory)})
+        return {
+            "supported": True,
+            "reason": "",
+            "kept": [keep] if keep else [],
+            "items": items,
+            "reclaimable_bytes": sum(item["size_bytes"] for item in items),
+        }
+
+    def _preview_logs(self) -> dict:
+        cli_dir = self.data_dir / "debug-logs" / "cli"
+        if not cli_dir.is_dir():
+            return {
+                "supported": True,
+                "reason": "调试日志目录尚未生成",
+                "items": [],
+                "reclaimable_bytes": 0,
+            }
+        cutoff = self._clock() - LOG_CLEANUP_MAX_AGE_SECONDS
+        items: list[dict] = []
+        for path in sorted(cli_dir.glob("*.log")):
+            try:
+                if not path.is_file() or _is_reparse(path):
+                    continue
+                stat = path.stat()
+            except OSError:
+                continue
+            if stat.st_mtime >= cutoff:
+                continue
+            items.append({"name": path.name, "size_bytes": stat.st_size, "path": str(path)})
+        return {
+            "supported": True,
+            "reason": "只清理超过 7 天的 CLI 转录；调试分段与截图证据由日志服务按配额管理，避免破坏证据引用",
+            "items": items,
+            "reclaimable_bytes": sum(item["size_bytes"] for item in items),
+        }
+
+    def cleanup(self, payload: dict) -> dict:
+        """删除预览中的可清理项。任何一项校验失败只记录失败，不扩大删除范围。"""
+        if not isinstance(payload, dict) or set(payload) - {"confirm", "scopes"}:
+            raise ValueError("清理参数无效")
+        if str(payload.get("confirm") or "") != CLEANUP_CONFIRM:
+            raise ValueError("清理必须提交确认标记")
+        scopes = payload.get("scopes") or ["releases", "downloads", "logs"]
+        if not isinstance(scopes, list) or not scopes or set(scopes) - {"releases", "downloads", "logs"}:
+            raise ValueError("清理范围无效")
+        with self._lock:
+            blocked, reason = self._cleanup_block()
+            if blocked:
+                raise ValueError(reason)
+            deleted: list[dict] = []
+            failures: list[dict] = []
+            for scope in scopes:
+                if scope == "releases":
+                    self._cleanup_releases(deleted, failures)
+                elif scope == "downloads":
+                    self._cleanup_downloads(deleted, failures)
+                else:
+                    self._cleanup_logs(deleted, failures)
+            freed = sum(int(row.get("size_bytes") or 0) for row in deleted)
+            summary = f"已清理 {len(deleted)} 项，释放 {freed} 字节" if deleted else "没有可清理项"
+            if failures:
+                summary += f"，{len(failures)} 项失败"
+            self._append_history(
+                "cleanup", "failed" if failures else "ok", f"{summary}（范围：{', '.join(scopes)}）", ""
+            )
+            return {
+                "scopes": scopes,
+                "deleted": deleted,
+                "failures": failures,
+                "freed_bytes": freed,
+                "preview": self.storage_preview(),
+            }
+
+    def _cleanup_releases(self, deleted: list[dict], failures: list[dict]) -> None:
+        install_root = self._install_root()
+        if install_root is None:
+            return
+        for item in self._preview_releases()["items"]:
+            version = str(item["version"])
+            try:
+                size = self._remove_release(install_root, version)
+            except (OSError, ValueError) as exc:
+                failures.append({"scope": "releases", "version": version, "error": str(exc)})
+                continue
+            deleted.append({"scope": "releases", "version": version, "size_bytes": size})
+
+    @staticmethod
+    def _remove_release(install_root: Path, version: str) -> int:
+        """删除 releases 下的单个版本目录；逐级拒绝链接并确认仍是 releases 的直接子目录。"""
+        install_root = Path(install_root)
+        try:
+            Version.parse(version)
+        except ValueError:
+            raise ValueError("版本号无效") from None
+        if not version or Path(version).name != version:
+            raise ValueError("版本目录非法")
+        if not install_root.is_dir() or _is_reparse(install_root):
+            raise ValueError("安装根不可信")
+        releases_dir = install_root / "releases"
+        if not releases_dir.is_dir() or _is_reparse(releases_dir):
+            raise ValueError("版本目录不可信")
+        target = releases_dir / version
+        if not target.exists() or target.is_symlink() or _is_reparse(target) or not target.is_dir():
+            raise ValueError("版本目录不存在或不是普通目录")
+        resolved_root = releases_dir.resolve(strict=True)
+        resolved = target.resolve(strict=True)
+        if resolved.parent != resolved_root:
+            raise ValueError("版本目录越界")
+        size = _tree_size(target)
+        shutil.rmtree(target)
+        return size
+
+    def _cleanup_downloads(self, deleted: list[dict], failures: list[dict]) -> None:
+        for item in self._preview_downloads()["items"]:
+            version = str(item["version"])
+            directory = Path(item["path"])
+            try:
+                if not directory.is_dir() or directory.is_symlink() or _is_reparse(directory):
+                    raise ValueError("下载目录不可信")
+                root = self.download_dir.resolve(strict=True)
+                if directory.resolve(strict=True).parent != root:
+                    raise ValueError("下载目录越界")
+                size = _tree_size(directory)
+                shutil.rmtree(directory)
+            except (OSError, ValueError) as exc:
+                failures.append({"scope": "downloads", "version": version, "error": str(exc)})
+                continue
+            deleted.append({"scope": "downloads", "version": version, "size_bytes": size})
+
+    def _cleanup_logs(self, deleted: list[dict], failures: list[dict]) -> None:
+        for item in self._preview_logs()["items"]:
+            name = str(item["name"])
+            path = Path(item["path"])
+            try:
+                if not path.is_file() or _is_reparse(path):
+                    raise ValueError("日志文件不可信")
+                size = path.stat().st_size
+                path.unlink()
+            except (OSError, ValueError) as exc:
+                failures.append({"scope": "logs", "name": name, "error": str(exc)})
+                continue
+            deleted.append({"scope": "logs", "name": name, "size_bytes": size})
 
     # ---------- 受控下载（只下载，不安装） ----------
 
@@ -1099,6 +1338,17 @@ def _http_open(url: str, headers: dict[str, str], timeout: float):
         raise
     with response:
         yield response.status, dict(response.headers.items()), response
+
+
+def _is_reparse(path: Path) -> bool:
+    """判定符号链接/目录联接。Windows 上 is_symlink() 只能识别部分重解析点。"""
+    try:
+        if path.is_symlink():
+            return True
+        info = path.lstat()
+    except OSError:
+        return False
+    return bool(getattr(info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT)
 
 
 def _tree_size(directory: Path) -> int:

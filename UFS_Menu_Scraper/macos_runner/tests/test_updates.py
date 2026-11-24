@@ -294,7 +294,8 @@ def test_inventory_protects_current_and_recent_two(tmp_path, monkeypatch):
     protected = {row["version"] for row in inventory["releases"] if row["protected"]}
     assert protected == {"0.2.0", "0.1.9", "0.1.8"}
     assert [row["version"] for row in inventory["cleanup_candidates"]] == ["0.1.7"]
-    assert inventory["cleanup_supported"] is False
+    # 清点本身只读；删除入口由 cleanup() 提供并要求显式确认。
+    assert inventory["cleanup_supported"] is True
     assert service.data_dir == tmp_path / "runtime" / "data"
 
 
@@ -839,3 +840,119 @@ def test_install_supported_requires_windows_worker_and_opt_in(tmp_path, monkeypa
     hub = UpdateService(tmp_path / "hub", role="hub", app_root=app, machine="AMD64")
     assert hub.install_supported() is False
 
+
+
+def _win_install(tmp_path: Path, monkeypatch, versions: list[str]) -> tuple[Path, Path]:
+    """构造 Windows 安装布局：<install>/releases/<version>/app + 发布清单。"""
+    install = tmp_path / "install"
+    current_app = install / "releases" / versions[0] / "app"
+    current_app.mkdir(parents=True)
+    for version in versions:
+        (install / "releases" / version / "app").mkdir(parents=True, exist_ok=True)
+        (install / "releases" / version / "release-manifest.json").write_text(
+            json.dumps({"version": version, "built_at": "2026-01-01", "git_commit": "c" * 40}),
+            encoding="utf-8",
+        )
+    (install / "current-version").write_text(versions[0], encoding="utf-8")
+    monkeypatch.setenv("MENU_CAPTURE_VERSION", versions[0])
+    monkeypatch.setattr("menu_capture.updates.sys.platform", "win32")
+    return install, current_app
+
+
+def test_cleanup_previews_then_deletes_only_unprotected_releases(tmp_path, monkeypatch):
+    # 保护规则优先于数量：运行中/当前 + 最近两个版本，共 3 个。
+    install, current_app = _win_install(tmp_path, monkeypatch, ["0.3.0", "0.2.0", "0.1.9", "0.1.0"])
+    (install / "releases" / "0.1.0" / "app" / "blob.bin").write_bytes(b"x" * 128)
+    service = UpdateService(tmp_path / "runtime", role="worker", app_root=current_app, machine="AMD64")
+
+    preview = service.storage_preview()
+    release_scope = preview["scopes"]["releases"]
+    assert [item["version"] for item in release_scope["items"]] == ["0.1.0"]
+    assert release_scope["reclaimable_bytes"] >= 128
+    # 预览绝不删除文件。
+    assert (install / "releases" / "0.1.0").is_dir()
+
+    with pytest.raises(ValueError):
+        service.cleanup({})
+    with pytest.raises(ValueError):
+        service.cleanup({"confirm": "cleanup", "scopes": ["unknown"]})
+
+    result = service.cleanup({"confirm": "cleanup", "scopes": ["releases"]})
+    assert [row["version"] for row in result["deleted"]] == ["0.1.0"]
+    assert result["freed_bytes"] >= 128
+    assert not (install / "releases" / "0.1.0").exists()
+    assert (install / "releases" / "0.2.0").is_dir()
+    assert (install / "releases" / "0.3.0").is_dir()
+    # current-version 指向的版本绝不能被改动。
+    assert (install / "current-version").read_text(encoding="utf-8") == "0.3.0"
+    assert any(row["action"] == "cleanup" for row in service.history())
+
+
+def test_cleanup_blocked_while_install_active(tmp_path, monkeypatch):
+    install, current_app = _win_install(tmp_path, monkeypatch, ["0.3.0", "0.2.0", "0.1.9", "0.1.0"])
+    service = UpdateService(tmp_path / "runtime", role="worker", app_root=current_app, machine="AMD64")
+    service.cleanup_guard = lambda: (True, "安装进行中")
+
+    assert service.storage_preview()["blocked"] is True
+    with pytest.raises(ValueError, match="安装进行中"):
+        service.cleanup({"confirm": "cleanup"})
+    assert (install / "releases" / "0.1.0").is_dir()
+
+
+def test_cleanup_downloads_keeps_pending_install_artifact(tmp_path):
+    service = UpdateService(tmp_path, role="worker", platform="windows", machine="AMD64")
+    for version in ["0.2.0", "0.3.0"]:
+        directory = service.download_dir / version
+        directory.mkdir(parents=True)
+        (directory / f"MenuCapture-{version}.exe").write_bytes(b"x" * 32)
+    service._download_state = {
+        "status": "completed", "version": "0.3.0", "asset_name": "MenuCapture-0.3.0.exe",
+    }
+
+    preview = service.storage_preview()
+    assert [item["version"] for item in preview["scopes"]["downloads"]["items"]] == ["0.2.0"]
+    assert preview["scopes"]["downloads"]["kept"] == ["0.3.0"]
+
+    result = service.cleanup({"confirm": "cleanup", "scopes": ["downloads"]})
+    assert [row["version"] for row in result["deleted"]] == ["0.2.0"]
+    assert not (service.download_dir / "0.2.0").exists()
+    assert (service.download_dir / "0.3.0" / "MenuCapture-0.3.0.exe").is_file()
+
+
+def test_cleanup_logs_only_prunes_old_cli_transcripts(tmp_path):
+    service = UpdateService(tmp_path, role="worker", platform="windows", machine="AMD64")
+    cli_dir = service.data_dir / "debug-logs" / "cli"
+    cli_dir.mkdir(parents=True)
+    old = cli_dir / "old.log"
+    recent = cli_dir / "recent.log"
+    old.write_text("old", encoding="utf-8")
+    recent.write_text("recent", encoding="utf-8")
+    stale = time.time() - 8 * 24 * 3600
+    os.utime(old, (stale, stale))
+
+    preview = service.storage_preview()
+    assert [item["name"] for item in preview["scopes"]["logs"]["items"]] == ["old.log"]
+
+    result = service.cleanup({"confirm": "cleanup", "scopes": ["logs"]})
+    assert [row["name"] for row in result["deleted"]] == ["old.log"]
+    assert not old.exists()
+    assert recent.exists()
+
+
+def test_cleanup_refuses_symlinked_release_directory(tmp_path):
+    if not hasattr(os, "symlink"):
+        pytest.skip("当前平台不支持符号链接")
+    install = tmp_path / "install"
+    releases = install / "releases"
+    releases.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    try:
+        os.symlink(outside, releases / "0.1.0")
+    except OSError:
+        pytest.skip("当前环境不允许创建符号链接")
+
+    with pytest.raises(ValueError):
+        UpdateService._remove_release(install, "0.1.0")
+    assert (outside / "keep.txt").is_file()

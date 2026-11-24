@@ -1,6 +1,6 @@
 # 软件更新与版本生命周期（Issue #32）
 
-本目录记录应用内更新的发布契约、安全边界与当前实施阶段。更新发现、清单校验、偏好、审计、受控下载已实现；Windows 安装、切换与回滚执行器已通过隔离环境验收，前端按服务端能力显示安装入口（默认未启用自动安装，见下节）。Hub 镜像更新执行器已实现并通过隔离 Compose 验收（含真实 v0.2.2 跨版本回滚）；多设备集中更新与历史版本清理仍在实施中。
+本目录记录应用内更新的发布契约、安全边界与当前实施阶段。更新发现、清单校验、偏好、审计、受控下载已实现；Windows 安装、切换与回滚执行器已通过隔离环境验收，前端按服务端能力显示安装入口（默认未启用自动安装，见下节）。Hub 镜像更新执行器已实现并通过隔离 Compose 验收（含真实 v0.2.2 跨版本回滚）；历史版本/下载缓存/日志清理与 Hub 镜像保留策略已实现（先预览、确认后删除），多设备集中更新仍在实施中。
 
 ## 发布源与发现
 
@@ -112,9 +112,37 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
   - `install_root`：多版本安装根（含 `releases/`），仅由显式参数或 `app_root` 的安装布局推导。
 - 安装布局：`<install>/releases/<version>/app/...`，`<install>/current-version` 指定启动版本。
 - 默认保护：运行版本、`current-version` 指定版本、最近两个兼容版本；保护规则优先于数量上限。
-- 只做只读清点与清理候选预览；不删除目录、不修改 `current-version`。符号链接/重解析点跳过。
+- 清点本身只读：`GET /api/updates/status` 与 `GET /api/updates/cleanup` 不删除目录、不修改
+  `current-version`；符号链接/重解析点跳过。
 - 非 Windows 或缺少 `releases` 目录时明确显示“不支持”，不伪造可释放空间。数据目录下即使存在 `releases` 也不会被当作安装根。
-- Hub 容器不使用 Docker Socket；镜像清点与切换必须由宿主机受限执行器完成，不属于当前阶段。
+
+## 存储治理（先预览，确认后删除）
+
+- `GET /api/updates/cleanup` 返回三类范围的只读预览：`releases`（Windows 历史版本）、
+  `downloads`（下载缓存）、`logs`（超过 7 天的 CLI 转录）；预检安装/下载状态，阻止期间返回
+  `blocked` 与原因。
+- `POST /api/updates/cleanup` 必须提交 `{"confirm": "cleanup", "scopes": [...]}`；服务端在删除前
+  重新计算候选，只删除仍属于候选的项，任何一项校验失败只记录到 `failures`，不扩大删除范围。
+- 删除边界：
+  - 历史版本：只删除 `releases/<version>` 直接子目录，逐级拒绝符号链接/重解析点，确认解析后仍
+    位于 `releases` 内；绝不修改 `current-version`，不删除运行中/当前/最近两个版本。
+  - 下载缓存：只删除 `data/updates/<version>` 直接子目录；保留当前下载状态指向且产物仍在的版本，
+    安装执行器仍需使用该包。
+  - 日志：只删除超过 7 天的 `debug-logs/cli/*.log`；调试分段与截图证据由日志服务按固定配额管理，
+    避免删除后破坏证据引用。
+- 安装或回滚进行中、或下载任务运行时，服务端拒绝清理；清理结果写入 `data/update-history.jsonl`。
+- 设置中心“存储治理”展示各范围的可释放空间、保留项与阻止原因，只有用户确认后才提交删除。
+
+## Hub 镜像与归档保留（宿主机脚本）
+
+- `deploy/hub-update/hub_retention.py` 只处理 `<HUB_UPDATE_IMAGE_REPO>:<semver>` 标签与
+  `HUB_UPDATE_ARCHIVE_DIR` 下的 `hub-image-<version>.tar.gz`，默认 **dry-run 只预览**。
+- 保留规则：最近 `--keep` 个版本（默认 3）、当前容器镜像、执行器 journal 中的目标/上一版本，
+  以及任何容器（含已停止）仍在引用的镜像。
+- 实际删除必须同时提供 `--apply --confirm prune`；`docker rmi` 不使用 `-f`，镜像仍被占用时如实
+  记录失败；绝不删除数据卷、容器或 compose 栈。
+- 每次实际删除追加到 `HUB_UPDATE_STATE_DIR/hub-retention-audit.jsonl`。
+- 示例：`python3 hub_retention.py --keep 3` 预览；确认后 `python3 hub_retention.py --keep 3 --apply --confirm prune`。
 
 ## 当前阶段与后续
 
@@ -128,16 +156,19 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 受控下载：资产匹配、磁盘预检、断点续传、进度展示、取消、SHA-256 校验与下载审计。
 - Windows 安装执行器：安装前重校验、路径与签名校验、空闲闸门、独立进程静默安装（显式 `/DIR`）、目标版本文件/清单/前端哈希与角色核对、事务异常恢复、迁移感知回滚；需显式启用。
 - Windows OTA 验收脚本 `deploy/windows/ota-smoke.ps1`：通过 `POST /api/updates/install` 触发真实安装，覆盖任务文件、独立执行器、版本切换与 `rollback.ps1` 回退；CI 在提供上一版本安装包时自动执行。
-- 检查、偏好变更与下载结果写入 `data/update-history.jsonl`。
+- 存储治理：`GET/POST /api/updates/cleanup` 提供只读预览与确认后删除；保护当前/运行中/最近两个
+  版本与待安装下载包，安装/下载期间拒绝清理；设置中心提供存储治理面板。
+- Hub 镜像/归档保留脚本 `deploy/hub-update/hub_retention.py`：默认 dry-run，确认后按版本保留策略
+  删除旧标签与归档，不触碰数据卷与容器。
+- 检查、偏好变更、下载结果与清理操作写入 `data/update-history.jsonl`。
 
 尚未实现（不得在 UI 中伪造）：
 
-- Windows 真实环境升级/回滚验收与前端安装入口；当前安装能力只在显式配置后通过 API 提供。
+- Windows 真实环境（隔离机）升级/回滚验收；前端安装入口只在服务端能力显式启用后显示。
 - 发布流水线尚未配置代码签名证书，正式包当前为未签名；执行器已强制校验签名状态，未签名需显式放行。
 - Hub 集中检查并向 Worker 分发版本元数据；当前 Hub 与 Worker 各自检查并缓存（设备量少时可接受，后续再收敛）。
-- Hub 镜像保留策略与自动清理。
+- Hub 保留策略尚未接入定时任务或管理界面，当前由运维在宿主机手动执行。
 - 多设备集中更新与分批推广。
-- 自动清理执行器与 dry-run 删除。
 
 ## 运维建议
 

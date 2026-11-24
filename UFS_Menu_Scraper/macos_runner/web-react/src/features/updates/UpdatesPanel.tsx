@@ -12,7 +12,7 @@ import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { formatTime } from '../hub/format'
 import { formatBytes } from '../settings/format'
-import { useUpdateActions, useUpdateHistory, useUpdateInstall, useUpdateStatus } from './hooks'
+import { useUpdateActions, useUpdateCleanup, useUpdateHistory, useUpdateInstall, useUpdateStatus } from './hooks'
 import type { UpdateHistoryRow } from './types'
 
 const PLATFORM_LABEL: Record<string, string> = {
@@ -26,6 +26,7 @@ const ACTION_LABEL: Record<string, string> = {
   preferences: '保存偏好',
   download: '下载更新包',
   install: '安装更新',
+  cleanup: '清理存储',
 }
 
 const INSTALL_STATUS_LABEL: Record<string, string> = {
@@ -50,8 +51,10 @@ export function UpdatesPanel() {
   const statusQuery = useUpdateStatus()
   const installQuery = useUpdateInstall()
   const historyQuery = useUpdateHistory()
+  const cleanupQuery = useUpdateCleanup(statusQuery.data?.capabilities.cleanup ?? false)
   const actions = useUpdateActions()
   const [confirmInstall, setConfirmInstall] = useState(false)
+  const [confirmCleanup, setConfirmCleanup] = useState(false)
 
   if (statusQuery.isPending) {
     return <StatePanel variant="loading" title="正在读取更新状态…" />
@@ -98,6 +101,17 @@ export function UpdatesPanel() {
     && !download.active && !installActive
   // 安装状态读取失败时只提示刷新，不把网络失败当成安装失败。
   const installReadError = installQuery.isError ? errorMessage(installQuery.error) : ''
+  const storage = cleanupQuery.data
+  const cleanupBusy = actions.cleanup.isPending
+  const storageScopes = storage
+    ? [
+        { key: 'releases', label: '历史程序版本', scope: storage.scopes.releases },
+        { key: 'downloads', label: '下载缓存', scope: storage.scopes.downloads },
+        { key: 'logs', label: 'CLI 日志（超过 7 天）', scope: storage.scopes.logs },
+      ]
+    : []
+  const cleanupItemCount = storageScopes.reduce((total, row) => total + row.scope.items.length, 0)
+  const canCleanup = storage != null && !storage.blocked && cleanupItemCount > 0 && !cleanupBusy
 
   const savePreferences = (partial: { auto_check?: boolean; channel?: 'stable' | 'preview' }) => {
     actions.savePreferences.mutate(partial, {
@@ -128,6 +142,23 @@ export function UpdatesPanel() {
   const cancelDownload = () => {
     actions.cancelDownload.mutate(undefined, {
       onSuccess: () => toast.push('已请求取消下载，已下载部分会保留', 'info'),
+      onError: (error) => toast.push(errorMessage(error), 'danger'),
+    })
+  }
+
+  const startCleanup = () => {
+    if (!storage) return
+    const scopes = storageScopes.filter((row) => row.scope.items.length > 0).map((row) => row.key)
+    actions.cleanup.mutate(scopes, {
+      onSuccess: (result) => {
+        setConfirmCleanup(false)
+        toast.push(
+          result.failures.length
+            ? `已清理 ${result.deleted.length} 项，${result.failures.length} 项失败`
+            : `已清理 ${result.deleted.length} 项，释放 ${formatBytes(result.freed_bytes)}`,
+          result.failures.length ? 'danger' : 'success',
+        )
+      },
       onError: (error) => toast.push(errorMessage(error), 'danger'),
     })
   }
@@ -360,7 +391,7 @@ export function UpdatesPanel() {
       <SettingSection
         id="updates-inventory"
         title="版本管理"
-        description="只读清点本机程序版本；保护运行中、当前与最近两个可回滚版本，不执行删除。"
+        description="只读清点本机程序版本，保护运行中、当前与最近两个可回滚版本；清理在“存储治理”中确认后执行。"
       >
         {status.inventory.supported ? (
           <>
@@ -400,6 +431,71 @@ export function UpdatesPanel() {
         )}
       </SettingSection>
 
+      <SettingSection
+        id="updates-storage"
+        title="存储治理"
+        description="先只读预览可清理项，确认后才删除；保护运行中/当前/最近两个版本、待安装包与业务数据。"
+      >
+        {cleanupQuery.isError ? (
+          <p className="text-xs text-danger">存储预览读取失败：{errorMessage(cleanupQuery.error)}</p>
+        ) : !storage ? (
+          <p className="text-xs text-secondary">正在统计可清理项…</p>
+        ) : (
+          <>
+            <Alert
+              color="warning"
+              variant="soft"
+              title={`可释放约 ${formatBytes(storage.reclaimable_bytes)}`}
+              description={
+                storage.blocked
+                  ? storage.blocked_reason
+                  : '只删除超出保留策略的版本、下载缓存与旧 CLI 转录，不会删除数据目录、数据库或采集结果。'
+              }
+            />
+            <ul className="divide-y divide-subtle rounded-lg border border-subtle">
+              {storageScopes.map((row) => (
+                <li key={row.key} className="flex flex-wrap items-start justify-between gap-2 px-3 py-2 text-sm">
+                  <span className="min-w-0">
+                    <span className="block text-default">{row.label}</span>
+                    <span className="text-2xs text-tertiary">
+                      {row.scope.supported
+                        ? row.scope.items.length
+                          ? `${row.scope.items.length} 项 · ${formatBytes(row.scope.reclaimable_bytes)}`
+                          : '没有可清理项'
+                        : row.scope.reason}
+                    </span>
+                    {row.scope.kept?.length ? (
+                      <span className="block text-2xs text-tertiary">保留待安装：{row.scope.kept.join('、')}</span>
+                    ) : null}
+                    {row.scope.supported && row.scope.reason ? (
+                      <span className="block text-2xs text-tertiary">{row.scope.reason}</span>
+                    ) : null}
+                  </span>
+                  {row.scope.items.length ? (
+                    <span className="text-xs text-secondary">
+                      {row.scope.items
+                        .slice(0, 3)
+                        .map((item) => item.version ?? item.name ?? '')
+                        .filter(Boolean)
+                        .join('、')}
+                      {row.scope.items.length > 3 ? ' 等' : ''}
+                    </span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button color="secondary" variant="outline" size="sm" onClick={() => void cleanupQuery.refetch()}>
+                重新统计
+              </Button>
+              <Button color="primary" size="sm" disabled={!canCleanup} onClick={() => setConfirmCleanup(true)}>
+                {cleanupBusy ? '清理中…' : '清理可清理项'}
+              </Button>
+            </div>
+          </>
+        )}
+      </SettingSection>
+
       <SettingSection id="updates-history" title="更新记录" description="检查与偏好变更会持久化记录；不包含业务采集结果。">
         {historyQuery.isError ? (
           <p className="text-xs text-danger">{errorMessage(historyQuery.error)}</p>
@@ -435,6 +531,26 @@ export function UpdatesPanel() {
         busy={actions.install.isPending}
         onConfirm={startInstall}
         onOpenChange={setConfirmInstall}
+      />
+
+      <ConfirmActionDialog
+        open={confirmCleanup}
+        title="清理历史版本与缓存"
+        description={
+          <div className="space-y-2">
+            <p>
+              将删除超出保留策略的历史版本、旧下载缓存与超过 7 天的 CLI 转录，预计释放{' '}
+              {formatBytes(storage?.reclaimable_bytes ?? 0)}。
+            </p>
+            <p>不会删除运行中/当前/最近两个版本、待安装的下载包、数据目录、数据库或采集结果。</p>
+            <p>安装或回滚进行中时服务端会拒绝清理。</p>
+          </div>
+        }
+        confirmLabel="确认清理"
+        tone="danger"
+        busy={cleanupBusy}
+        onConfirm={startCleanup}
+        onOpenChange={setConfirmCleanup}
       />
     </div>
   )
