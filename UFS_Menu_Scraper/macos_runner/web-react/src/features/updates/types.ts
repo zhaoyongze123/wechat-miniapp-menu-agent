@@ -8,6 +8,8 @@ export interface UpdateAsset {
   size: number
   sha256: string
   url: string
+  platform: string
+  arch: string
 }
 
 export interface UpdateRelease {

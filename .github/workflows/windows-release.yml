@@ -297,9 +297,11 @@ jobs:
               "rollback": "supported",
               "assets": [
                   {"kind": "windows_installer", "name": exe_name, "size": int(exe_size),
-                   "sha256": exe_sha, "url": f"{base}/{exe_name}"},
+                   "sha256": exe_sha, "url": f"{base}/{exe_name}",
+                   "platform": "windows", "arch": "x64"},
                   {"kind": "hub_image", "name": hub_name, "size": int(hub_size),
-                   "sha256": hub_sha, "url": f"{base}/{hub_name}"},
+                   "sha256": hub_sha, "url": f"{base}/{hub_name}",
+                   "platform": "linux", "arch": "amd64"},
               ],
           }
           with open("release-assets/update-manifest.json", "w", encoding="utf-8") as handle:

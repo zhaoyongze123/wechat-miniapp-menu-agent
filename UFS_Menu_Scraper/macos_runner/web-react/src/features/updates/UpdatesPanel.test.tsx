@@ -51,7 +51,7 @@ function status(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
       min_supported_version: '0.2.0',
       rollback: 'supported',
       assets: [
-        { kind: 'windows_installer', name: 'MenuCapture-0.3.0.exe', size: 1024, sha256: 'a'.repeat(64), url: 'https://github.com/x/releases/download/v0.3.0/a.exe' },
+        { kind: 'windows_installer', name: 'MenuCapture-0.3.0.exe', size: 1024, sha256: 'a'.repeat(64), url: 'https://github.com/x/releases/download/v0.3.0/a.exe', platform: 'windows', arch: 'x64' },
       ],
     },
     update_available: true,
