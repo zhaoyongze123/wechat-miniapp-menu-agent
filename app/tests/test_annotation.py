@@ -8,14 +8,10 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from menu_capture.annotation.session import (
-    AnnotationError,
-    AnnotationSession,
-    archive_samples,
-    image_effect,
-    map_box_to_window,
-    suggest_target,
-)
+from menu_capture.annotation.evidence import archive_samples
+from menu_capture.annotation.geometry import image_effect, map_box_to_window, suggest_target
+from menu_capture.annotation.schema import AnnotationError
+from menu_capture.annotation.session import AnnotationSession
 from menu_capture.core.config import ConfigStore, Settings
 from menu_capture.agent.model import Region
 from menu_capture.quality.rejections import RejectionService

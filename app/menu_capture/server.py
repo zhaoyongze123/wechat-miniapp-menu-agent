@@ -40,7 +40,8 @@ from menu_capture.agent.model_usage import UsageLedger
 from menu_capture.updates.service import UpdateService
 from menu_capture.updates.install import InstallController
 from menu_capture.updates.hub_proxy import HubInstallProxy
-from menu_capture.annotation.session import AnnotationSession, RunnerExecutor
+from menu_capture.annotation.executor import RunnerExecutor
+from menu_capture.annotation.session import AnnotationSession
 from menu_capture.core.instance_lock import InstanceLockedError, instance_lock
 from menu_capture.shared.hub import SharedConflict, SharedHub, WorkerUnauthorized
 from .api.shared_routes import register_shared_routes

@@ -47,7 +47,7 @@ from menu_capture.agent.model_usage import usage_context
 from menu_capture.vision.chat_anchor import find_store_name_matches
 from menu_capture.vision.chat_layout import ChatImageUnreadable, find_sent_text_bubbles
 from menu_capture.core.failures import classify as classify_failure
-from menu_capture.desktop.window_contract import is_windows_miniapp_app, is_windows_wechat_app, select_wechat_selector, window_selector, windows_app_name, windows_selectors_overlap
+from menu_capture.desktop.window_contract import is_windows_miniapp_app, is_windows_wechat_app, production_window_geometry, select_wechat_selector, window_selector, windows_app_name, windows_selectors_overlap
 from menu_capture.vision.close_icon_locator import refine_close_icon, locate_close_icon, refine_back_arrow
 from menu_capture.vision.checkbox_locator import refine_consent_checkbox
 from menu_capture.agent.scene_agent import SceneDecision
@@ -233,15 +233,6 @@ def _runtime_root(output_root: str | Path) -> Path:
 def _staging_root(output_root: str | Path) -> Path:
     """批次统一的暂存根；每家店在下面按 task/attempt 各建一层。"""
     return _runtime_root(output_root) / ".uipath-staging"
-
-
-def production_window_geometry(screen) -> dict:
-    """批量采集统一使用的小程序窗口几何（贴屏幕左侧、全高）。
-
-    人工标注也套用同一尺寸，保证样本截图与正式执行时的版面一致。
-    """
-    return {"width": 240, "height": max(300, int(screen.height) - 100),
-            "x": int(screen.x), "y": int(screen.y) + 35}
 
 
 class UiPathRunner:

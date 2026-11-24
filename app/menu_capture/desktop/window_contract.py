@@ -109,3 +109,12 @@ def validate_target_window(command: dict, reply: dict) -> None:
         normalize = windows_app_name if key == "app" and sys.platform == "win32" else _name
         if pattern and not fnmatch.fnmatchcase(normalize(observed[key]), normalize(pattern)):
             raise ValueError(f"UiPath 实际窗口 {key} 与请求不一致：{observed[key][:120]}")
+
+
+def production_window_geometry(screen) -> dict:
+    """批量采集统一使用的小程序窗口几何（贴屏幕左侧、全高）。
+
+    人工标注也套用同一尺寸，保证样本截图与正式执行时的版面一致。
+    """
+    return {"width": 240, "height": max(300, int(screen.height) - 100),
+            "x": int(screen.x), "y": int(screen.y) + 35}
