@@ -28,31 +28,30 @@ flowchart LR
 
 | 目录/文件 | 作用 |
 | --- | --- |
-| `UFS_Menu_Scraper/macos_runner/` | 主工程：Python 后端、Web 控制台、GUI Agent 适配、测试与本地配置。 |
-| `UFS_Menu_Capture_CrossPlatform/` | UiPath 工程（`Main.xaml` 等），执行窗口发现、截图、点击、滚动等桌面动作。 |
-| `docs/` | 长期开发规范、回归台账与本导航。 |
-| `文档/` | PRD、会议纪要、历史说明等背景资料（非运行依赖）。 |
-| `素材/` | 规则样本、评测集、训练素材、原图等输入数据。 |
-| `outputs/` | 历次专项排查/验收的过程脚本与结论，不是产品代码。 |
-| `历史归档/` | 旧 UiPath 工程与原有流程，仅作参考，不参与当前运行。 |
-| `spec.md` / `tasks.md` | 单次专项（“只截 1-3 页”）的问题证据与执行清单，属于过程记录。 |
-| `AGENTS.md` | 仓库协作规则（含每轮工作日志要求）。 |
+| `UFS_Menu_Scraper/macos_runner/` | 主工程：Python 后端、React 控制台源码与构建产物、GUI Agent 适配、测试与本地配置。 |
+| `UFS_Menu_Capture_CrossPlatform/` | UiPath 工程（`Main.xaml` 等），仅在“通过 UiPath CLI 启动”方式下使用，不进入 Windows 安装包。 |
+| `deploy/` | Windows 安装器、Hub 容器与发布验收脚本。 |
+| `docs/` | 工程规范、项目导航、回归台账、产品需求、发布报告与历史归档。 |
+| `输出/` | 采集默认输出目录（运行数据，不入库）。 |
+| `.github/workflows/` | CI：前端校验、Python 回归、安装包构建、Hub 镜像与 Ruff 门禁。 |
+| `AGENTS.md` | 仓库协作规则（精简版，细节见 `docs/engineering-standards.md`）。 |
 
 ## 3. macos_runner 目录
 
 ```text
 macos_runner/
 ├── menu_capture/        # Python 后端与采集执行
-├── web/                 # 控制台前端（无构建步骤，服务直接读取）
+├── web-react/           # React 控制台源码（Vite + TypeScript）
+├── web/react/           # 构建产物，随代码提交并由 CI 校验一致
 ├── tests/               # pytest 回归
 ├── ui_tars/             # GUI Agent SDK 适配（Node.js）
 ├── qr_detector/         # 本地二维码检测（Node.js）
 ├── scripts/             # 运维/数据修复脚本
-├── data/                # 任务库、素材库、调试日志（运行期数据）
-├── output/              # 默认输出目录（可被配置覆盖）
-├── 启动菜单采集.command  # macOS 启动入口
+├── data/                # 任务库、素材库、调试日志（运行期数据，不入库）
+├── output/              # 历史输出目录（运行期数据，不入库）
+├── 启动菜单采集.command  # macOS 启动入口（调试用）
 ├── 启动菜单采集.ps1      # Windows 启动入口
-├── config.local.json    # 本机配置（不含密钥）
+├── config.local.json    # 本机配置（不入库）
 └── secrets.local.json   # 密钥（不入库）
 ```
 
@@ -154,7 +153,9 @@ macos_runner/
 
 ## 7. 测试
 
-- 全量回归：在 `macos_runner` 下执行 `.venv/bin/python -m pytest -q`
+- 全量回归：在 `macos_runner` 下执行 `uv run --frozen pytest -q`。
+- 前端：在 `web-react` 下执行 `npm run typecheck && npm test && npm run build`。
+- 静态检查：在 `macos_runner` 下执行 `uvx ruff check .`（门禁规则见 `pyproject.toml`）。
 - 重点覆盖：批次管理、素材 API、任务身份、UiPath 窗口契约、失败码、待检查/不合格清单、自动流水线续跑。
 - 测试不访问真实桌面、模型和网络；涉及实机链路的改动需另做单店实跑验证。
 
@@ -162,18 +163,22 @@ macos_runner/
 
 | 任务 | 入口 |
 | --- | --- |
-| 启动控制台（macOS） | `cd UFS_Menu_Scraper/macos_runner && .venv/bin/python -m menu_capture.server` |
 | 启动控制台（Windows） | `cd UFS_Menu_Scraper/macos_runner; .\启动菜单采集.ps1` |
-| 跑测试 | `.venv/bin/python -m pytest -q` |
-| 无人值守批量采集 | `.venv/bin/python -m menu_capture.auto_pipeline --batches <batch_id> [...]` |
+| 启动控制台（macOS 调试） | `cd UFS_Menu_Scraper/macos_runner && .venv/bin/python -m menu_capture.server` |
+| 跑测试 | `uv run --frozen pytest -q` |
+| 无人值守批量采集 | `uv run --frozen python -m menu_capture.auto_pipeline --batches <batch_id> [...]` |
 | 查看任务/运行状态 | `GET /api/status`、`GET /api/tasks/active` |
 | 不合格清单 | `GET /api/rejections`、`GET /api/rejections/export.xlsx` |
 | 待检查清单 | `GET /api/reviews/pending` |
+| 构建发布产物 | `./deploy/windows/build.ps1 -Version <版本>` |
 
 ## 9. 相关文档
 
 - [README](../README.md)：项目概览与快速开始
+- [工程规范](engineering-standards.md)：分层、测试、静态检查与 CI 门禁
 - [长期开发与优化规范](gui-agent-development.md)：Agent 决策权、工具边界与验收口径
 - [菜单采集问题与回归台账](menu-capture-regression.md)：按链路记录的问题与复测证据
 - [GUI Agent 联调说明](../UFS_Menu_Scraper/macos_runner/ui_tars/README.md)：模型配置、坐标协议与隔离试验
-- [微信小程序菜单导航 Agent PRD](../文档/微信小程序菜单导航%20Agent%20PRD.md)：早期范围与设计记录
+- [微信小程序菜单导航 Agent PRD](product/微信小程序菜单导航%20Agent%20PRD.md)：早期范围与设计记录
+- [历史文档归档](archive/README.md)：已归档的阶段需求与实施记录
+- [变更记录](../CHANGELOG.md)、[贡献指南](../CONTRIBUTING.md)、[安全策略](../SECURITY.md)
