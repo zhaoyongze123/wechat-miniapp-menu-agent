@@ -99,12 +99,25 @@ def _meets_min_supported(latest: dict, current: str) -> bool:
         return False
 
 
-def _update_available(latest: dict | None, current: str) -> bool:
+def _update_available(latest: dict | None, current: str, platform: str) -> bool:
     if not latest or not latest.get("eligible") or not current:
         return False
     if not is_newer(str(latest.get("version") or ""), current):
         return False
+    if not _has_asset_for_platform(latest, platform):
+        return False
     return _meets_min_supported(latest, current)
+
+
+def _has_asset_for_platform(latest: dict, platform: str) -> bool:
+    kind = {"windows": "windows_installer", "linux": "hub_image"}.get(platform)
+    if not kind:
+        return False
+    return any(
+        isinstance(asset, dict) and asset.get("kind") == kind
+        and asset.get("platform") == platform
+        for asset in latest.get("assets") or []
+    )
 
 
 def _is_stale(cache: dict, now: float) -> bool:
@@ -157,6 +170,13 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
         name = str(item.get("name") or "")
         if kind not in ASSET_KINDS or kind in seen:
             raise ValueError(f"发布清单资产类型无效或重复: {kind!r}")
+        platform = str(item.get("platform") or "")
+        arch = str(item.get("arch") or "")
+        expected_platform = "windows" if kind == "windows_installer" else "linux"
+        if platform != expected_platform:
+            raise ValueError(f"发布资产平台与类型不一致: {name}")
+        if arch not in {"x64", "amd64"}:
+            raise ValueError(f"发布资产架构无效: {name}")
         if not name or Path(name).name != name:
             raise ValueError("发布资产名称无效")
         published = known.get(name)
@@ -177,7 +197,10 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
         if published.get("browser_download_url") and str(published["browser_download_url"]) != url:
             raise ValueError(f"发布资产地址与 Release 不一致: {name}")
         seen.add(kind)
-        assets.append({"kind": kind, "name": name, "size": size, "sha256": sha, "url": url})
+        assets.append({
+            "kind": kind, "name": name, "size": size, "sha256": sha, "url": url,
+            "platform": platform, "arch": arch,
+        })
     return {
         "version": version,
         "channel": manifest_channel,
@@ -198,9 +221,11 @@ class UpdateService:
         repository: str = DEFAULT_REPOSITORY,
         fetcher: Callable[[str, dict[str, str], float], tuple[int, dict[str, str], bytes]] | None = None,
         clock: Callable[[], float] = time.time,
+        platform: str | None = None,
     ) -> None:
         self.app_root = Path(app_root)
         self.role = role
+        self.platform = platform or _platform_name()
         self.repository = repository
         self.data_dir = self.app_root / "data"
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -263,12 +288,12 @@ class UpdateService:
         return {
             "role": self.role,
             "repository": self.repository,
-            "platform": _platform_name(),
+            "platform": self.platform,
             "current_version": current,
             "channel": preferences.get("channel", "stable"),
             "preferences": preferences,
             "latest": latest,
-            "update_available": _update_available(latest, current),
+            "update_available": _update_available(latest, current, self.platform),
             "last_checked": _iso(cache.get("checked_at")),
             "stale": _is_stale(cache, now),
             "error": str(cache.get("error") or ""),

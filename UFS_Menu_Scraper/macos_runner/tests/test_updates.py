@@ -64,6 +64,8 @@ def manifest(version: str, channel: str = "stable") -> dict:
             "size": 1024,
             "sha256": "a" * 64,
             "url": f"{BASE}/v{version}/MenuCapture-v{version}.exe",
+            "platform": "windows",
+            "arch": "x64",
         }],
     }
 
@@ -104,7 +106,9 @@ class BlockingFetcher(Fetcher):
 
 
 def make_service(tmp_path: Path, releases, manifests, *, current="0.2.0", channel="stable", fetcher=None):
-    service = UpdateService(tmp_path, role="worker", fetcher=fetcher or Fetcher(releases, manifests))
+    service = UpdateService(
+        tmp_path, role="worker", fetcher=fetcher or Fetcher(releases, manifests), platform="windows"
+    )
     service.save_preferences({"channel": channel})
     service._cache = {}
     if current:
@@ -189,6 +193,18 @@ def test_manifest_is_required_to_match_tag_and_assets(tmp_path):
 
     assert status["latest"]["eligible"] is False
     assert "SHA-256" in status["latest"]["reason"]
+
+
+def test_wrong_platform_asset_is_rejected(tmp_path):
+    bad = manifest("0.3.0")
+    bad["assets"][0]["platform"] = "linux"
+    rel = release("v0.3.0", manifest=bad)
+    service = make_service(tmp_path, [rel], {"v0.3.0": bad}, fetcher=Fetcher([rel], {"v0.3.0": bad}))
+
+    status = service.check(force=True)
+
+    assert status["latest"]["eligible"] is False
+    assert "平台" in status["latest"]["reason"]
 
 
 def test_older_release_never_offers_downgrade(tmp_path):
