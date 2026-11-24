@@ -53,12 +53,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <NotificationRuntime />
       <aside className="hidden w-64 shrink-0 flex-col overflow-hidden bg-surface-secondary md:flex">
         <div className="flex items-center gap-2.5 px-4 py-4">
-          <span
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary-solid text-xs font-semibold text-inverse"
-            aria-hidden="true"
-          >
-            菜
-          </span>
+          <img src="/favicon.svg" alt="" width={32} height={32} className="h-8 w-8 shrink-0" />
           <div className="min-w-0">
             <p className="truncate heading-xs">菜单采集工作台</p>
             <p className="truncate text-2xs text-tertiary">共享后台 · Windows 采集端</p>
@@ -85,9 +80,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-subtle bg-surface px-4 md:px-6">
           <div className="flex min-w-0 items-center gap-2 md:hidden">
-            <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-primary-solid text-2xs font-semibold text-inverse">
-              菜
-            </span>
+            <img src="/favicon.svg" alt="" width={24} height={24} className="h-6 w-6 shrink-0" />
             <h2 className="truncate heading-xs">{currentItem?.label ?? '菜单采集工作台'}</h2>
           </div>
           <div className="ml-auto flex shrink-0 items-center gap-2.5">
