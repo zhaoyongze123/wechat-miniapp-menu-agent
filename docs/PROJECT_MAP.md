@@ -153,9 +153,8 @@ macos_runner/
 
 ## 7. 测试
 
-- 全量回归：在 `macos_runner` 下执行 `uv run --frozen pytest -q`。
-- 前端：在 `web-react` 下执行 `npm run typecheck && npm test && npm run build`。
-- 静态检查：在 `macos_runner` 下执行 `uvx ruff check .`（门禁规则见 `pyproject.toml`）。
+- 在 `macos_runner` 按改动执行 `uv run --frozen pytest -q <相关测试路径>` 和 `uvx ruff check <受影响路径>`。
+- 前端使用必要的 `npm run typecheck` 和 `npm test -- <相关测试文件>`，提交受影响的静态资源前再核对构建产物。
 - 重点覆盖：批次管理、素材 API、任务身份、UiPath 窗口契约、失败码、待检查/不合格清单、自动流水线续跑。
 - 测试不访问真实桌面、模型和网络；涉及实机链路的改动需另做单店实跑验证。
 
@@ -165,12 +164,12 @@ macos_runner/
 | --- | --- |
 | 启动控制台（Windows） | `cd UFS_Menu_Scraper/macos_runner; .\启动菜单采集.ps1` |
 | 启动控制台（macOS 调试） | `cd UFS_Menu_Scraper/macos_runner && .venv/bin/python -m menu_capture.server` |
-| 跑测试 | `uv run --frozen pytest -q` |
+| 跑针对性测试 | `uv run --frozen pytest -q <相关测试路径>` |
 | 无人值守批量采集 | `uv run --frozen python -m menu_capture.auto_pipeline --batches <batch_id> [...]` |
 | 查看任务/运行状态 | `GET /api/status`、`GET /api/tasks/active` |
 | 不合格清单 | `GET /api/rejections`、`GET /api/rejections/export.xlsx` |
 | 待检查清单 | `GET /api/reviews/pending` |
-| 构建发布产物 | `./deploy/windows/build.ps1 -Version <版本>` |
+| 最终集成验收与打包 | 全部开发完成后按 [发布与云端构建](engineering-standards.md#发布与云端构建) 执行 |
 
 ## 9. 相关文档
 

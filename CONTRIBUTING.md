@@ -15,14 +15,14 @@
 cd UFS_Menu_Scraper\macos_runner
 uv sync --frozen --python 3.12
 
-# 只跑与改动相关的测试，避免全量等待
+# 示例：改动共享路由或同步时
 uv run --frozen pytest -q tests\test_server.py tests\test_shared_workbench.py
 
 cd web-react
 npm ci
 npm run typecheck
-npm test
-npm run build   # 产物提交到 ../web/react，CI 会校验一致性
+npm test -- <相关测试文件>
+npm run build   # 仅在提交受影响的 React 静态资源前执行
 ```
 
 ## 分支与提交
@@ -33,10 +33,9 @@ npm run build   # 产物提交到 ../web/react，CI 会校验一致性
 
 ## 提交前检查
 
-1. `ruff check .`（在 `UFS_Menu_Scraper/macos_runner` 下，门禁规则见 `pyproject.toml`）。
-2. 相关 Python 测试与前端 `typecheck` / `test`。
-3. 涉及前端时重新构建并提交 `web/react` 产物。
-4. 涉及安装器、Hub 镜像或升级回滚时，说明验证方式与证据位置。
+1. 按改动路径执行必要的 `ruff check`、单测、类型检查或集成测试。
+2. 涉及前端静态资源时，在提交前生成并核对 `web/react`。
+3. 高风险改动在本地隔离验证，并引用仍有效的验收证据。完整 CI 和 Windows 安装包、Hub 镜像、发布归档集中在交付末期。
 
 ## 数据边界
 
@@ -47,5 +46,6 @@ npm run build   # 产物提交到 ../web/react，CI 会校验一致性
 ## Pull Request
 
 - 标题与描述使用中文，说明改动动机、实现要点、验证结果与未完成事项。
-- 生产切换、发布与合并需要维护者确认；PR 合并不等于发布。
+- 日常提交、PR 与合并均禁止主动触发 Actions。完整 CI 失败后的任何重跑均须用户明确授权。
+- 按维护者授权及仓库保护规则合并。生产部署和正式发布分别取得用户明确授权。
 - 详见 [SECURITY.md](SECURITY.md) 的漏洞与密钥处理要求。
