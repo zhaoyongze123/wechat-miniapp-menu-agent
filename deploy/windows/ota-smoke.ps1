@@ -92,7 +92,13 @@ function Wait-OtaTerminal {
     param([int]$TimeoutSeconds = 900)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        $state = Invoke-RestMethod "$base/api/updates/install" -UseBasicParsing -TimeoutSec 5
+        # 安装过程中采集端会被守护进程重启，短暂连接失败不代表失败，继续轮询。
+        try {
+            $state = Invoke-RestMethod "$base/api/updates/install" -UseBasicParsing -TimeoutSec 5
+        } catch {
+            Start-Sleep -Seconds 3
+            continue
+        }
         Write-Host ("OTA status: {0} - {1}" -f $state.status, $state.message)
         if ($state.status -in @('completed', 'failed', 'rolled_back')) { return $state }
         Start-Sleep -Seconds 3
@@ -123,7 +129,9 @@ try {
     $utf8 = [Text.UTF8Encoding]::new($false)
     [IO.File]::WriteAllText((Join-Path $dataDir 'update-download.json'), ($downloadState | ConvertTo-Json), $utf8)
     $cache = [ordered]@{
-        checked_at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        # checked_at 在服务端按 epoch 秒参与缓存有效期计算，不能写 ISO 字符串。
+        checked_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        backoff_until = 0
         channel = 'stable'
         latest = [ordered]@{
             version = $Version; eligible = $true; channel = 'stable'
