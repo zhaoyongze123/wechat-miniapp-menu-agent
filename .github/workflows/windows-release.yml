@@ -23,6 +23,11 @@ on:
         default: true
         required: true
         type: boolean
+      min_supported_version:
+        description: 更新清单中的最低兼容版本（低于该版本不提供应用内更新）
+        default: '0.2.0'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -163,11 +168,13 @@ jobs:
           name: menu-capture-smoke-logs
           path: ${{ runner.temp }}/menu-capture-smoke-logs-*
           if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: menu-capture-windows-x64
           path: deploy/artifacts/
           if-no-files-found: error
+          retention-days: 14
 
   hub:
     runs-on: ubuntu-latest
@@ -238,6 +245,7 @@ jobs:
           name: menu-capture-hub-linux-amd64
           path: hub-artifacts/
           if-no-files-found: error
+          retention-days: 14
       - name: 容器日志
         if: failure()
         run: docker compose -f deploy/compose.yaml logs
@@ -258,6 +266,46 @@ jobs:
         with:
           name: menu-capture-hub-linux-amd64
           path: release-assets
+      - name: 生成更新清单（update-manifest.json）
+        env:
+          VERSION: ${{ inputs.version }}
+          MIN_SUPPORTED: ${{ inputs.min_supported_version }}
+        run: |
+          tag="v$VERSION"
+          channel="stable"
+          case "$VERSION" in *-*) channel="preview" ;; esac
+          exe=$(find release-assets -maxdepth 1 -name 'MenuCapture-Setup-*.exe' -print -quit)
+          hub=$(find release-assets -maxdepth 1 -name 'menu-capture-hub-*.tar.gz' -print -quit)
+          test -n "$exe" && test -n "$hub"
+          test -s "$exe.sha256" && test -s "$hub.sha256"
+          exe_name=$(basename "$exe"); hub_name=$(basename "$hub")
+          exe_sha=$(cut -d' ' -f1 < "$exe.sha256")
+          hub_sha=$(cut -d' ' -f1 < "$hub.sha256")
+          exe_size=$(stat -c%s "$exe")
+          hub_size=$(stat -c%s "$hub")
+          python3 - "$tag" "$channel" "$GITHUB_SHA" "$MIN_SUPPORTED" \
+            "$exe_name" "$exe_size" "$exe_sha" "$hub_name" "$hub_size" "$hub_sha" <<'PY'
+          import json, os, sys
+          tag, channel, commit, min_version, exe_name, exe_size, exe_sha, hub_name, hub_size, hub_sha = sys.argv[1:11]
+          base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}"
+          manifest = {
+              "version": tag.lstrip("v"),
+              "channel": channel,
+              "git_commit": commit,
+              "built_at": os.popen("date -u +%Y-%m-%dT%H:%M:%SZ").read().strip(),
+              "min_supported_version": min_version,
+              "rollback": "supported",
+              "assets": [
+                  {"kind": "windows_installer", "name": exe_name, "size": int(exe_size),
+                   "sha256": exe_sha, "url": f"{base}/{exe_name}"},
+                  {"kind": "hub_image", "name": hub_name, "size": int(hub_size),
+                   "sha256": hub_sha, "url": f"{base}/{hub_name}"},
+              ],
+          }
+          with open("release-assets/update-manifest.json", "w", encoding="utf-8") as handle:
+              json.dump(manifest, handle, ensure_ascii=False, indent=2)
+          PY
+          test -s release-assets/update-manifest.json
       - name: 创建或更新发布草稿（复用本次已验收产物）
         env:
           GH_TOKEN: ${{ github.token }}

@@ -42,9 +42,11 @@ import { settingsKeys, useConfig, useDebugSummary } from './hooks'
 import { SharedWorkbenchCard } from './SharedWorkbenchCard'
 import { ModelUsageDialog } from '../model-usage/ModelUsageDialog'
 import { NotificationPreferencesPanel } from '../notifications/NotificationPreferencesPanel'
+import { UpdatesPanel } from '../updates/UpdatesPanel'
+import { useUpdateStatus } from '../updates/hooks'
 import type { DirectoryKind, ModelProvider, ModelTestResult, ThinkingMode } from './types'
 
-type CategoryId = 'general' | 'notifications' | 'connection' | 'model' | 'capture' | 'storage' | 'about'
+type CategoryId = 'general' | 'notifications' | 'connection' | 'model' | 'capture' | 'storage' | 'updates' | 'about'
 
 const BASE_CATEGORIES: SettingsNavItem[] = [
   { id: 'general', label: '常规', description: '目录与基础偏好' },
@@ -53,6 +55,7 @@ const BASE_CATEGORIES: SettingsNavItem[] = [
   { id: 'model', label: '模型服务', description: '接口、密钥与测试' },
   { id: 'capture', label: '采集配置', description: '页数、步数与时限' },
   { id: 'storage', label: '存储与日志', description: '容量与清理' },
+  { id: 'updates', label: '软件更新', description: '版本发现与清点' },
   { id: 'about', label: '关于', description: '版本与诊断入口' },
 ]
 
@@ -75,6 +78,7 @@ export function SettingsPage() {
     enabled: active === 'about',
     staleTime: 60_000,
   })
+  const updateStatusQuery = useUpdateStatus()
   const [form, setForm] = useState<SettingsFormState | null>(null)
   const [baseline, setBaseline] = useState<SettingsFormState | null>(null)
   const [error, setError] = useState('')
@@ -181,7 +185,13 @@ export function SettingsPage() {
   const canSelectDirectory = !isHub
   const modelConfigured = Boolean(configQuery.data?.model.base_url && configQuery.data?.model.api_key_configured)
   const debug = debugQuery.data
-  const categories = BASE_CATEGORIES.filter((item) => item.id !== 'capture' || !isHub)
+  const categories = BASE_CATEGORIES
+    .filter((item) => item.id !== 'capture' || !isHub)
+    .map((item) =>
+      item.id === 'updates' && updateStatusQuery.data?.update_available
+        ? { ...item, badge: '有新版本' }
+        : item,
+    )
 
   const save = () => {
     const message = validateForm(form)
@@ -530,6 +540,8 @@ export function SettingsPage() {
             <SharedWorkbenchCard />
           </SettingSection>
         ) : null}
+
+        {active === 'updates' ? <UpdatesPanel /> : null}
 
         {active === 'about' ? (
           <SettingSection id="about" title="关于" description="版本、运行角色与维护入口均来自真实接口。">

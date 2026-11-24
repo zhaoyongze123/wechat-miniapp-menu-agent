@@ -56,6 +56,11 @@
 
 当前处于快速开发阶段，采用 **Manual Release + Local Validation**：
 
+- 正式 Release 必须附 `update-manifest.json`（契约见 [docs/updates/README.md](updates/README.md)）；缺清单或校验失败的版本不得作为可更新版本提供。
+- 更新发现只允许固定仓库正式 Release；禁止接受前端传入的任意 URL、版本路径、镜像或命令。
+- 下载/安装/镜像切换必须有独立执行器、事务锁与健康检查；不得把 Docker Socket、宿主机 shell 或任意路径暴露给业务容器/浏览器。
+- CI 临时 artifact 默认保留 14 天；正式 Release 资产独立永久保留。
+
 - PR、普通提交、标签推送都不自动触发云端构建；合并前由开发者或 Coding Agent 按改动风险执行本地检查。
 - 正式发布仅通过手动运行 `.github/workflows/windows-release.yml`（`workflow_dispatch`）。
 - 一次手动运行完成构建与验收：`react-web`（类型检查、单测、构建一致性）、`python-lint`、`windows`（契约测试、安装包、安装与重启恢复）、`hub`（容器、版本、数据卷、升级回滚）。

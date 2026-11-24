@@ -48,6 +48,7 @@ from .environment import EnvironmentDiagnostics
 from .connections import ConnectionManager
 from .debug_log import DebugLog
 from .model_usage import UsageLedger
+from .updates import UpdateService
 from .annotation import AnnotationSession, RunnerExecutor
 from .instance_lock import InstanceLockedError, instance_lock
 from .shared import SharedConflict, SharedHub, WorkerUnauthorized
@@ -79,6 +80,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     os.environ["NO_PROXY"] = "*"
     os.environ["no_proxy"] = "*"
     configs = ConfigStore(root, managed=role != "standalone" or bool(os.environ.get("MENU_CAPTURE_HOME")))
+    updates = UpdateService(root, role=role)
     store = TaskStore(root / "data/tasks.sqlite3")
     model_usage = UsageLedger(store)
     debug_log = DebugLog(root / "data", configs.load().debug_logging.max_storage_mb)
@@ -442,6 +444,22 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             except (OSError, ValueError, AttributeError):
                 pass
         return {"version": version, "frontend": frontend}
+
+    @app.get("/api/updates/status")
+    def updates_status():
+        return updates.status()
+
+    @app.post("/api/updates/check")
+    def updates_check():
+        return updates.check(force=True)
+
+    @app.put("/api/updates/preferences")
+    def updates_preferences(payload: dict):
+        return updates.save_preferences(payload)
+
+    @app.get("/api/updates/history")
+    def updates_history(limit: Annotated[int, Query(ge=1, le=200)] = 50):
+        return updates.history(limit)
 
     @app.get("/api/model-usage")
     def model_usage_report(date_from: str | None = None, date_to: str | None = None,
