@@ -84,6 +84,10 @@ class UpdateError(ValueError):
     pass
 
 
+class ValidationError(UpdateError):
+    """请求体本身不合法（字段、格式、路径穿越）；与事务状态冲突区分，按 400 返回。"""
+
+
 class Config:
     """执行器配置全部来自环境变量；缺省值只适用于默认部署。"""
 
@@ -142,57 +146,57 @@ def _client_allowed(ip: str, networks: list[str]) -> bool:
 def validate_payload(payload: Any, config: Config) -> dict:
     """把外部请求收敛成唯一契约；任何不认识的字段直接拒绝。"""
     if not isinstance(payload, dict):
-        raise UpdateError("请求体必须是 JSON 对象")
+        raise ValidationError("请求体必须是 JSON 对象")
     allowed = {"version", "confirm", "sha256", "size", "url", "archive"}
     extra = set(payload) - allowed
     if extra:
-        raise UpdateError(f"不支持字段：{', '.join(sorted(extra))}")
+        raise ValidationError(f"不支持字段：{', '.join(sorted(extra))}")
     version = str(payload.get("version") or "").strip()
     if not VERSION_RE.match(version):
-        raise UpdateError("版本号不合法")
+        raise ValidationError("版本号不合法")
     if str(payload.get("confirm") or "") != version:
-        raise UpdateError("confirm 必须与目标版本一致")
+        raise ValidationError("confirm 必须与目标版本一致")
     sha256 = str(payload.get("sha256") or "").strip().lower()
     if not SHA256_RE.match(sha256):
-        raise UpdateError("sha256 必须是 64 位小写十六进制")
+        raise ValidationError("sha256 必须是 64 位小写十六进制")
     try:
         size = int(payload.get("size") or 0)
     except (TypeError, ValueError):
-        raise UpdateError("size 必须是字节数") from None
+        raise ValidationError("size 必须是字节数") from None
     if size <= 0 or size > MAX_ARCHIVE_BYTES:
-        raise UpdateError("归档大小超出允许范围")
+        raise ValidationError("归档大小超出允许范围")
     url = str(payload.get("url") or "").strip()
     archive = str(payload.get("archive") or "").strip()
     if bool(url) == bool(archive):
-        raise UpdateError("url 与 archive 必须二选一")
+        raise ValidationError("url 与 archive 必须二选一")
     if url:
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme != "https" or (parsed.hostname or "").lower() not in ALLOWED_HOSTS:
-            raise UpdateError("只允许从受信任的 GitHub 域名下载归档")
+            raise ValidationError("只允许从受信任的 GitHub 域名下载归档")
         if not ASSET_PATH_RE.search(parsed.path):
-            raise UpdateError("下载地址必须指向 Release 资产路径")
+            raise ValidationError("下载地址必须指向 Release 资产路径")
     else:
         # 只接受归档目录中的文件名，禁止绝对路径、子目录和 .. 穿越。
         if not ARCHIVE_RE.match(archive):
-            raise UpdateError("archive 只能是归档目录内的文件名")
+            raise ValidationError("archive 只能是归档目录内的文件名")
         candidate = (config.archive_dir / archive).resolve()
         if candidate.parent != config.archive_dir.resolve():
-            raise UpdateError("archive 越出归档目录")
+            raise ValidationError("archive 越出归档目录")
     return {"version": version, "sha256": sha256, "size": size, "url": url, "archive": archive}
 
 
 def validate_rollback(payload: Any) -> str:
     """回滚只需要版本与确认，不接受任何镜像/路径字段。"""
     if not isinstance(payload, dict):
-        raise UpdateError("请求体必须是 JSON 对象")
+        raise ValidationError("请求体必须是 JSON 对象")
     extra = set(payload) - {"version", "confirm"}
     if extra:
-        raise UpdateError(f"不支持字段：{', '.join(sorted(extra))}")
+        raise ValidationError(f"不支持字段：{', '.join(sorted(extra))}")
     version = str(payload.get("version") or "").strip()
     if not VERSION_RE.match(version):
-        raise UpdateError("版本号不合法")
+        raise ValidationError("版本号不合法")
     if str(payload.get("confirm") or "") != version:
-        raise UpdateError("confirm 必须与目标版本一致")
+        raise ValidationError("confirm 必须与目标版本一致")
     return version
 
 
@@ -646,6 +650,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, self.updater.rollback(payload))
             else:
                 self._send(404, {"error": "未知路径"})
+        except ValidationError as exc:
+            # 请求格式非法用 400；事务状态冲突（进行中、禁止降级、无回滚目标）用 409。
+            self._send(400, {"error": str(exc)})
         except UpdateError as exc:
             self._send(409, {"error": str(exc), **self.updater.journal()})
         except Exception as exc:  # noqa: BLE001 - 执行器不能把内部异常直接暴露为 500 堆栈

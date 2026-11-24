@@ -215,6 +215,21 @@ def test_stale_active_journal_is_resolved(tmp_path: Path) -> None:
     assert "0.2.4" in status["message"]
 
 
+def test_validation_error_is_distinct_from_state_error(tmp_path: Path) -> None:
+    """请求格式非法应抛 ValidationError（映射 400），状态冲突只抛 UpdateError（映射 409）。"""
+    with pytest.raises(hub_updater.ValidationError):
+        validate_payload(
+            {"version": "0.2.4", "confirm": "0.2.4", "archive": "../x.tar.gz",
+             "sha256": "a", "size": 1},
+            make_config(tmp_path),
+        )
+    docker = FakeDocker(current="menu-capture-hub:0.2.5")
+    updater = make_updater(tmp_path, docker, healthy=lambda version: {"ok": True, "version": version})
+    with pytest.raises(UpdateError) as excinfo:
+        updater.apply(archive_request(tmp_path))
+    assert not isinstance(excinfo.value, hub_updater.ValidationError)
+
+
 @pytest.mark.parametrize("payload", [
     {"version": "0.2", "confirm": "0.2", "sha256": "a" * 64, "size": 1, "archive": "a.tar.gz"},
     {"version": "0.2.4", "confirm": "0.2.3", "sha256": "a" * 64, "size": 1, "archive": "a.tar.gz"},
