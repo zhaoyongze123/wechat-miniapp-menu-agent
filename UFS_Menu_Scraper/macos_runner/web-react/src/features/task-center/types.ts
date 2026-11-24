@@ -14,6 +14,7 @@ export interface TaskCounts {
   attention?: number
   rejected?: number
   recorded?: number
+  processed?: number
   unknown?: number
   failed?: number
 }
@@ -32,6 +33,13 @@ export interface HistoryRecord {
   updated_at?: string
   message?: string
   counts?: TaskCounts
+  worker_id?: string
+  worker_name?: string
+  synced_at?: string
+  worker_last_seen?: string
+  history_status?: 'synced' | 'partial'
+  local_run_id?: string
+  can_rename?: boolean
 }
 
 export interface HistorySummary {
@@ -53,6 +61,7 @@ export interface HistoryResponse {
 export interface CaptureTaskEntry {
   task_id: string
   store_name?: string
+  source_name?: string
   batch_name?: string
   version?: string
   status?: string
