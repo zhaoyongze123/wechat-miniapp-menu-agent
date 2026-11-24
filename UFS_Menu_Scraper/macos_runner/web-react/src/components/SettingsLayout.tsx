@@ -6,6 +6,8 @@ export interface SettingsNavItem {
   label: string
   /** 可选的一行范围说明，仅在分类导航中展示。 */
   description?: string
+  /** 需要主动提醒时显示，例如“有新版本”。 */
+  badge?: string
 }
 
 interface SettingsLayoutProps {
@@ -40,7 +42,12 @@ export function SettingsLayout({ items, activeId, onSelect, children, ariaLabel 
                       : 'text-secondary hover:bg-secondary-ghost-hover hover:text-default',
                   ].join(' ')}
                 >
-                  <span className="block whitespace-nowrap lg:whitespace-normal">{item.label}</span>
+                  <span className="block whitespace-nowrap lg:whitespace-normal">
+                    {item.label}
+                    {item.badge ? (
+                      <span className="ml-2 rounded-full border border-subtle bg-surface-secondary px-1.5 py-0.5 text-2xs text-warning">{item.badge}</span>
+                    ) : null}
+                  </span>
                   {item.description ? (
                     <span className="mt-0.5 hidden text-2xs text-tertiary lg:block">{item.description}</span>
                   ) : null}
