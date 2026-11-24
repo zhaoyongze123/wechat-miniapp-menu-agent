@@ -258,6 +258,82 @@ jobs:
           MENU_CAPTURE_IMAGE=menu-capture-hub:upgrade-baseline "${compose[@]}" up --no-build -d --wait
           verify_worker
           "${compose[@]}" down -v
+      - name: Hub 更新执行器契约单测
+        run: |
+          python3 -m venv "$RUNNER_TEMP/updater-venv"
+          "$RUNNER_TEMP/updater-venv/bin/pip" install --quiet pytest
+          "$RUNNER_TEMP/updater-venv/bin/python" -m pytest -q deploy/hub-update/test_hub_updater.py
+      - name: 验收 Hub 宿主机更新执行器（隔离 Compose）
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          BASELINE_REF: e6b7ea82079b45f1720ea6dec6411bc29ed5276b
+          MENU_CAPTURE_HOST_PORT: '18788'
+        run: |
+          set -euo pipefail
+          base_version=0.2.2
+          project=menu-capture-updater
+          compose=(docker compose -p "$project" -f deploy/compose.yaml)
+          git fetch --depth 1 origin "$BASELINE_REF"
+          git worktree add --detach "$RUNNER_TEMP/hub-upd-old" "$BASELINE_REF"
+          docker build --build-arg VERSION=$base_version -t "menu-capture-hub:$base_version" \
+            -f "$RUNNER_TEMP/hub-upd-old/deploy/Dockerfile.hub" "$RUNNER_TEMP/hub-upd-old"
+
+          state="$RUNNER_TEMP/hub-updater"
+          mkdir -p "$state/archives"
+          MENU_CAPTURE_IMAGE="menu-capture-hub:$base_version" "${compose[@]}" up --no-build -d --wait
+          # 业务数据标记：切换与回滚后必须原样保留。
+          "${compose[@]}" exec -T hub sh -c 'echo hub-sentinel > /var/lib/menu-capture/ota-sentinel'
+
+          archive="hub-image-$MENU_CAPTURE_VERSION.tar.gz"
+          docker image save "$MENU_CAPTURE_IMAGE" | gzip -c > "$state/archives/$archive"
+          size=$(stat -c%s "$state/archives/$archive")
+          sha=$(sha256sum "$state/archives/$archive" | cut -d' ' -f1)
+
+          export HUB_UPDATE_TOKEN=$(openssl rand -hex 24)
+          export HUB_UPDATE_COMPOSE_FILE="$PWD/deploy/compose.yaml"
+          export HUB_UPDATE_PROJECT="$project" HUB_UPDATE_SERVICE=hub
+          export HUB_UPDATE_DATA_VOLUME="${project}_hub-data"
+          export HUB_UPDATE_STATE_DIR="$state" HUB_UPDATE_ARCHIVE_DIR="$state/archives"
+          export HUB_UPDATE_HEALTH_URL="http://127.0.0.1:$MENU_CAPTURE_HOST_PORT"
+          export HUB_UPDATE_HEALTH_USER=admin HUB_UPDATE_HEALTH_PASSWORD="$MENU_CAPTURE_ADMIN_PASSWORD"
+          export HUB_UPDATE_BIND=127.0.0.1 HUB_UPDATE_PORT=18767
+          python3 deploy/hub-update/hub_updater.py > "$state/updater.log" 2>&1 &
+          pid=$!
+          trap 'kill $pid 2>/dev/null || true' EXIT
+          auth="Authorization: Bearer $HUB_UPDATE_TOKEN"
+          for _ in $(seq 1 30); do
+            curl -fsS -H "$auth" http://127.0.0.1:18767/status > /dev/null && break
+            sleep 1
+          done
+          verify_version() {
+            curl --silent --fail -u "admin:$MENU_CAPTURE_ADMIN_PASSWORD" \
+              "http://127.0.0.1:$MENU_CAPTURE_HOST_PORT/api/version" | jq -e --arg version "$1" '.version == $version'
+          }
+
+          apply=$(jq -nc --arg version "$MENU_CAPTURE_VERSION" --arg archive "$archive" \
+            --arg sha "$sha" --argjson size "$size" \
+            '{version:$version,confirm:$version,archive:$archive,sha256:$sha,size:$size}')
+          curl --silent --fail -H "$auth" -H 'Content-Type: application/json' -d "$apply" \
+            http://127.0.0.1:18767/apply | jq -e --arg version "$MENU_CAPTURE_VERSION" \
+            '.status == "completed" and .target_version == $version and .previous_version == "0.2.2"'
+          verify_version "$MENU_CAPTURE_VERSION"
+          "${compose[@]}" exec -T hub grep -q hub-sentinel /var/lib/menu-capture/ota-sentinel
+
+          rollback=$(jq -nc --arg version "$base_version" '{version:$version,confirm:$version}')
+          curl --silent --fail -H "$auth" -H 'Content-Type: application/json' -d "$rollback" \
+            http://127.0.0.1:18767/rollback | jq -e '.status == "rolled_back"'
+          verify_version "$base_version"
+          "${compose[@]}" exec -T hub grep -q hub-sentinel /var/lib/menu-capture/ota-sentinel
+
+          # 任意路径、错误确认与未授权请求必须被拒绝，不能落到执行动作。
+          bad=$(jq -nc '{version:"9.9.9",confirm:"9.9.9",archive:"../x.tar.gz",sha256:"a",size:1}')
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "$auth" -H 'Content-Type: application/json' \
+            -d "$bad" http://127.0.0.1:18767/apply)
+          test "$code" = 400
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+            -d "$rollback" http://127.0.0.1:18767/rollback)
+          test "$code" = 401
+          "${compose[@]}" down -v
       - name: 归档共享后台镜像和校验值
         if: github.event_name == 'workflow_dispatch'
         run: |

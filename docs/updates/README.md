@@ -90,6 +90,17 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 设置中心按 `GET /api/updates/install` 的真实能力显示安装入口：下载完成且能力可用时提供"安装并重启"，确认窗口写明重启与回滚影响；能力未启用时只说明原因，不显示按钮。
 - 隔离验收：`deploy/windows/ota-smoke.ps1` 从安装 API → 任务文件 → 独立进程 → 静默安装 → 守护进程切换 → `rollback.ps1` 回滚全链路验证，不依赖手动运行安装包；由 `windows-release.yml` 的 `ota_base_version` 输入触发。
 
+## Hub 镜像更新执行器（宿主机，需显式部署）
+
+- 执行器独立于被替换的业务容器运行：容器内不能挂载 Docker Socket，也不该自己替换自己。代码见 `deploy/hub-update/hub_updater.py`，仅用标准库。
+- 入口：`GET /status`、`POST /apply`、`POST /rollback`；默认只监听 `127.0.0.1`，要求 `Authorization: Bearer <HUB_UPDATE_TOKEN>`，并按 `HUB_UPDATE_ALLOWED_CLIENTS` 网段二次校验来源。供容器访问时才把监听地址改为可达地址，并把来源收敛到 Docker 网桥网段。
+- `POST /apply` 只接受 `{version, confirm, sha256, size, url|archive}`：版本必须语义化且高于当前运行版本，`confirm` 必须等于版本，归档大小不超过 2 GiB；`url` 只允许受信任 GitHub 域名且路径必须指向 Release 资产，`archive` 只能是归档目录内的文件名，禁止绝对路径与 `..`。
+- 执行顺序：磁盘与数据卷检查 → 下载（或读取归档）→ 大小与 SHA-256 校验 → `docker load` 并确认加载出的是 `<镜像仓库>:<版本>` → 以 `MENU_CAPTURE_IMAGE=<镜像仓库>:<版本>` 执行固定的 `docker compose up -d --no-build hub` → 核对容器健康与 `/api/version` 真实版本。任一步失败都会尝试切回上一版本并核对健康。
+- 只对配置的 compose 文件、project 和 service 执行 `up -d`，从不执行 `down -v`、`prune` 或删除卷；更新前要求数据卷已存在，避免因拼错卷名创建空卷。
+- 事务状态写入 `HUB_UPDATE_STATE_DIR/hub-update.json`（含执行器 PID），执行器重启或状态查询发现进程已退出时，按实际运行镜像收尾，不会永久停在切换中；每次成功/失败/回滚追加到 `hub-update-audit.jsonl`。
+- 必须配置的环境变量：`HUB_UPDATE_TOKEN`（≥16 字符）、`HUB_UPDATE_COMPOSE_FILE`、`HUB_UPDATE_PROJECT`、`HUB_UPDATE_DATA_VOLUME`、`HUB_UPDATE_STATE_DIR`；可选 `HUB_UPDATE_ARCHIVE_DIR`、`HUB_UPDATE_HEALTH_URL`、`HUB_UPDATE_HEALTH_USER`/`HUB_UPDATE_HEALTH_PASSWORD`（Hub 的 `/api/version` 走基本认证）、`HUB_UPDATE_BIND`、`HUB_UPDATE_PORT`、`HUB_UPDATE_ALLOWED_CLIENTS`、`HUB_UPDATE_HEALTH_TIMEOUT`。
+- 当前限制：尚未由 Hub 设置页直接调用（需要服务端代理与能力上报，下一步接入）；正式发布镜像以 tar.gz 归档分发，在线拉取仓库镜像不在本期范围；历史镜像保留数量与清理策略见后续存储治理阶段。
+
 ## 本地版本清点（Windows）
 
 - 三类目录严格分离，不允许互相反推：
