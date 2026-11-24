@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
@@ -49,9 +50,11 @@ def archive_request(tmp_path: Path, version: str = "0.2.4", content: bytes = b"i
 
 
 class FakeDocker:
-    def __init__(self, current: str = "menu-capture-hub:0.2.3", loaded: str = "menu-capture-hub:0.2.4") -> None:
+    def __init__(self, current: str = "menu-capture-hub:0.2.3", loaded: str = "menu-capture-hub:0.2.4",
+                 volume_path: Path | None = None) -> None:
         self.current = current
         self.loaded = loaded
+        self.volume_path = volume_path
         self.fail_switch = False
         self.switched: list[str] = []
         self.fail_load = False
@@ -59,6 +62,8 @@ class FakeDocker:
     def run(self, args: list[str], timeout: float) -> tuple[int, str]:
         command = args[:2]
         if command == ["docker", "volume"]:
+            if "--format" in args:
+                return (0, str(self.volume_path)) if self.volume_path else (1, "missing mountpoint")
             return 0, "[]"
         if command == ["docker", "load"]:
             if self.fail_load:
@@ -83,8 +88,20 @@ class FakeDocker:
 
 
 def make_updater(tmp_path: Path, docker: FakeDocker, *, healthy: Callable[[str], dict]) -> HubUpdater:
+    volume_path = tmp_path / "volume"
+    volume_path.mkdir(parents=True, exist_ok=True)
+    docker.volume_path = volume_path
     return HubUpdater(make_config(tmp_path), run=docker.run, run_env=docker.run_env,
                       health=healthy, sleep=lambda _seconds: None)
+
+
+def create_hub_db(tmp_path: Path) -> Path:
+    path = tmp_path / "volume" / "data" / "tasks.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending')")
+        db.execute("CREATE TABLE events (task_id TEXT REFERENCES tasks(id))")
+    return path
 
 
 def test_apply_switches_and_records_previous(tmp_path: Path) -> None:
@@ -154,6 +171,7 @@ def test_rollback_uses_previous_version(tmp_path: Path) -> None:
     updater.journal_path.parent.mkdir(parents=True, exist_ok=True)
     hub_updater._write_json(updater.journal_path, {
         "status": "completed", "target_version": "0.2.4", "previous_version": "0.2.3", "pid": 0,
+        "schema_before": updater._schema_snapshot(),
     })
 
     status = updater.rollback({"version": "0.2.3", "confirm": "0.2.3"})
@@ -175,6 +193,7 @@ def test_rollback_health_failure_restores_running_version(tmp_path: Path) -> Non
     updater.journal_path.parent.mkdir(parents=True, exist_ok=True)
     hub_updater._write_json(updater.journal_path, {
         "status": "completed", "target_version": "0.2.4", "previous_version": "0.2.3", "pid": 0,
+        "schema_before": updater._schema_snapshot(),
     })
 
     with pytest.raises(UpdateError, match="恢复运行 0.2.4"):
@@ -190,6 +209,91 @@ def test_rollback_rejects_unrecorded_version(tmp_path: Path) -> None:
 
     with pytest.raises(UpdateError, match="没有可回滚"):
         updater.rollback({"version": "0.2.0", "confirm": "0.2.0"})
+
+
+def test_apply_auto_rollback_allows_additive_schema_migration(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    docker = FakeDocker()
+    migrated = False
+
+    def healthy(version: str) -> dict:
+        nonlocal migrated
+        if version == "0.2.4":
+            if not migrated:
+                with sqlite3.connect(database) as db:
+                    db.execute("ALTER TABLE tasks ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+                    db.execute("CREATE TABLE material_batches (id TEXT PRIMARY KEY)")
+                migrated = True
+            return {"ok": False, "version": "", "detail": "candidate health failed"}
+        return {"ok": True, "version": version}
+
+    updater = make_updater(tmp_path, docker, healthy=healthy)
+
+    status = updater.apply(archive_request(tmp_path))
+
+    assert status["status"] == "rolled_back"
+    assert docker.switched == ["menu-capture-hub:0.2.4", "menu-capture-hub:0.2.3"]
+
+
+def test_apply_auto_rollback_stops_after_destructive_schema_change(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    docker = FakeDocker()
+    migrated = False
+
+    def healthy(version: str) -> dict:
+        nonlocal migrated
+        if version == "0.2.4":
+            if not migrated:
+                with sqlite3.connect(database) as db:
+                    db.execute("DROP TABLE tasks")
+                migrated = True
+            return {"ok": False, "version": "", "detail": "candidate health failed"}
+        return {"ok": True, "version": version}
+
+    updater = make_updater(tmp_path, docker, healthy=healthy)
+
+    with pytest.raises(UpdateError, match="已停止自动回退"):
+        updater.apply(archive_request(tmp_path))
+
+    assert docker.switched == ["menu-capture-hub:0.2.4"]
+    assert updater.journal()["status"] == "needs_manual_recovery"
+
+
+def test_explicit_rollback_allows_additive_schema_migration(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    docker = FakeDocker(current="menu-capture-hub:0.2.4")
+    updater = make_updater(tmp_path, docker, healthy=lambda version: {"ok": True, "version": version})
+    schema_before = updater._schema_snapshot()
+    with sqlite3.connect(database) as db:
+        db.execute("ALTER TABLE tasks ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+    hub_updater._write_json(updater.journal_path, {
+        "status": "completed", "target_version": "0.2.4", "previous_version": "0.2.3", "pid": 0,
+        "schema_before": schema_before,
+    })
+
+    status = updater.rollback({"version": "0.2.3", "confirm": "0.2.3"})
+
+    assert status["status"] == "rolled_back"
+    assert docker.switched == ["menu-capture-hub:0.2.3"]
+
+
+def test_explicit_rollback_blocks_incompatible_schema_change(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    docker = FakeDocker(current="menu-capture-hub:0.2.4")
+    updater = make_updater(tmp_path, docker, healthy=lambda version: {"ok": True, "version": version})
+    schema_before = updater._schema_snapshot()
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TABLE tasks")
+    hub_updater._write_json(updater.journal_path, {
+        "status": "completed", "target_version": "0.2.4", "previous_version": "0.2.3", "pid": 0,
+        "schema_before": schema_before,
+    })
+
+    with pytest.raises(UpdateError, match="已停止自动回退"):
+        updater.rollback({"version": "0.2.3", "confirm": "0.2.3"})
+
+    assert docker.switched == []
+    assert updater.journal()["status"] == "needs_manual_recovery"
 
 
 def test_active_transaction_blocks_second_apply(tmp_path: Path) -> None:
