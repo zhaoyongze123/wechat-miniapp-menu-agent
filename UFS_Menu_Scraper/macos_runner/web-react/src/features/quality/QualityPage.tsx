@@ -475,7 +475,9 @@ export function QualityPage() {
           onCheckedChange={toggleRejectionPage}
         />
       ),
-      className: 'w-36',
+      className: 'w-10',
+      width: '3.25rem',
+      sticky: 'left',
       cell: (record) => {
         const eligible = record.source_type === 'capture' ? Boolean(record.task_id) : Boolean(record.batch_id && record.store_id)
         return (
@@ -493,25 +495,34 @@ export function QualityPage() {
     {
       id: 'store',
       header: '门店',
-      cell: (record) => (
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="truncate text-default">{formatStore(record.store_name).name}</span>
-            <StatusBadge tone={record.source_type === 'materials' ? 'info' : 'secondary'}>
-              {sourceLabelOf(record)}
-            </StatusBadge>
+      width: '17rem',
+      cell: (record) => {
+        const store = formatStore(record.store_name)
+        return (
+          <div className="min-w-0">
+            <span className="block truncate text-default" title={record.store_name}>{store.name || record.store_name}</span>
+            <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+              <span className="shrink-0">
+                <StatusBadge tone={record.source_type === 'materials' ? 'info' : 'secondary'}>
+                  {sourceLabelOf(record)}
+                </StatusBadge>
+              </span>
+              <span className="truncate text-2xs text-tertiary" title={record.source_folder || record.source_item || ''}>
+                {record.source_folder || record.source_item || '—'}
+              </span>
+            </div>
           </div>
-          <span className="text-2xs text-tertiary">{record.source_folder || record.source_item || '—'}</span>
-        </div>
-      ),
+        )
+      },
     },
     {
       id: 'batch',
       header: '批次 / 阶段',
+      width: '10rem',
       cell: (record) => (
         <div className="min-w-0">
-          <div className="truncate text-default">{record.batch_name || '—'}</div>
-          <div className="text-2xs text-tertiary">
+          <div className="truncate text-default" title={record.batch_name || ''}>{record.batch_name || '—'}</div>
+          <div className="truncate text-2xs text-tertiary">
             {workflowByBatch.get(record.batch_id)?.label || record.stage || '—'}
           </div>
         </div>
@@ -521,10 +532,11 @@ export function QualityPage() {
       id: 'reason',
       header: '原因',
       className: 'max-w-72',
+      width: '15rem',
       cell: (record) => (
-        <div>
-          <div className="text-default">{record.reason_label || record.reason_code || '—'}</div>
-          {record.detail ? <div className="line-clamp-2 text-2xs text-tertiary">{record.detail}</div> : null}
+        <div className="min-w-0">
+          <div className="truncate text-default" title={record.reason_label || record.reason_code || ''}>{record.reason_label || record.reason_code || '—'}</div>
+          {record.detail ? <div className="line-clamp-2 text-2xs text-tertiary" title={record.detail}>{record.detail}</div> : null}
         </div>
       ),
     },
@@ -532,6 +544,7 @@ export function QualityPage() {
       id: 'marked',
       header: '标记时间',
       className: 'whitespace-nowrap',
+      width: '9rem',
       cell: (record) => (
         <span className="text-secondary">{record.marked_at ? formatTime(record.marked_at) : '—'}</span>
       ),
@@ -540,6 +553,7 @@ export function QualityPage() {
       id: 'reviewed',
       header: '人工确认',
       className: 'whitespace-nowrap',
+      width: '6rem',
       cell: (record) => (
         <div onClick={(event) => event.stopPropagation()}>
           <Checkbox
@@ -555,6 +569,8 @@ export function QualityPage() {
       id: 'actions',
       header: '',
       className: 'w-20 whitespace-nowrap text-right',
+      width: '5.5rem',
+      sticky: 'right',
       cell: (record) => (
         <div onClick={(event) => event.stopPropagation()}>
           <Button
@@ -581,7 +597,9 @@ export function QualityPage() {
           onCheckedChange={togglePage}
         />
       ),
-      className: 'w-20',
+      className: 'w-10',
+      width: '3.25rem',
+      sticky: 'left',
       cell: (record) => (
         <div onClick={(event) => event.stopPropagation()}>
           <Checkbox
@@ -595,16 +613,20 @@ export function QualityPage() {
     {
       id: 'store',
       header: '门店',
+      width: '17rem',
       cell: (record) => {
         const status = statusOf(record.status)
+        const store = formatStore(record.store_name)
         return (
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="truncate text-default">{formatStore(record.store_name).name}</span>
-              <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
-              <StatusBadge tone="secondary">{bucketLabelOf(record)}</StatusBadge>
+            <span className="block truncate text-default" title={record.store_name}>{store.name || record.store_name}</span>
+            <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
+              <span className="shrink-0"><StatusBadge tone={status.tone}>{status.label}</StatusBadge></span>
+              <span className="shrink-0"><StatusBadge tone="secondary">{bucketLabelOf(record)}</StatusBadge></span>
+              <span className="truncate text-2xs text-tertiary" title={record.source_path || record.task_id}>
+                {record.source_path || record.task_id}
+              </span>
             </div>
-            <span className="text-2xs text-tertiary">{record.source_path || record.task_id}</span>
           </div>
         )
       },
@@ -612,10 +634,11 @@ export function QualityPage() {
     {
       id: 'batch',
       header: '批次 / 阶段',
+      width: '10rem',
       cell: (record) => (
         <div className="min-w-0">
-          <div className="truncate text-default">{record.batch_name || '—'}</div>
-          <div className="text-2xs text-tertiary">{record.workflow?.label || record.stage || '—'}</div>
+          <div className="truncate text-default" title={record.batch_name || ''}>{record.batch_name || '—'}</div>
+          <div className="truncate text-2xs text-tertiary">{record.workflow?.label || record.stage || '—'}</div>
         </div>
       ),
     },
@@ -623,10 +646,11 @@ export function QualityPage() {
       id: 'reason',
       header: '原因',
       className: 'max-w-72',
+      width: '15rem',
       cell: (record) => (
-        <div>
-          <div className="text-default">{record.label || record.group || '—'}</div>
-          <div className="line-clamp-2 text-2xs text-tertiary">
+        <div className="min-w-0">
+          <div className="truncate text-default" title={record.label || record.group || ''}>{record.label || record.group || '—'}</div>
+          <div className="line-clamp-2 text-2xs text-tertiary" title={record.reject_detail || record.message || record.reject_reason || ''}>
             {record.reject_detail || record.message || record.reject_reason || '—'}
           </div>
         </div>
@@ -636,6 +660,7 @@ export function QualityPage() {
       id: 'updated',
       header: '更新时间',
       className: 'whitespace-nowrap',
+      width: '9rem',
       cell: (record) => (
         <span className="text-secondary">{record.updated_at ? formatTime(record.updated_at) : '—'}</span>
       ),
@@ -644,6 +669,8 @@ export function QualityPage() {
       id: 'actions',
       header: '',
       className: 'w-32 whitespace-nowrap text-right',
+      width: '10rem',
+      sticky: 'right',
       cell: (record) => (
         <div className="flex justify-end gap-2" onClick={(event) => event.stopPropagation()}>
           <Button
@@ -820,6 +847,7 @@ export function QualityPage() {
                   rows={pageRejections}
                   rowKey={rejectionKey}
                   caption="不合格门店清单"
+                  minWidthClass="min-w-[1060px]"
                   loading={rejectionsQuery.isLoading && !rejectionsQuery.data}
                   onRowActivate={openRejection}
                   emptyState={
@@ -971,6 +999,7 @@ export function QualityPage() {
                   rows={pageReviews}
                   rowKey={(record) => record.task_id}
                   caption="待检查门店清单"
+                  minWidthClass="min-w-[1040px]"
                   loading={reviewsQuery.isLoading && !reviewsQuery.data}
                   onRowActivate={(record) => setReviewDrawerId(record.task_id)}
                   emptyState={

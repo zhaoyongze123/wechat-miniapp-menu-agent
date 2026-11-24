@@ -249,8 +249,10 @@ export function WorkerWorkbenchPage() {
         />
       ),
       className: 'w-10',
+      width: '3.25rem',
+      sticky: 'left',
       cell: (task) => (
-        <span className="inline-flex">
+        <span className="inline-flex" onClick={(event) => event.stopPropagation()}>
           <Checkbox
             checked={selectedSet.has(task.id)}
             disabled={!isRunnable(task)}
@@ -263,16 +265,18 @@ export function WorkerWorkbenchPage() {
     {
       id: 'store',
       header: '门店',
+      width: '15rem',
       cell: (task) => {
         const store = formatStore(task.source_name)
+        const meta = [
+          store.code || '编号未记录',
+          task.batch_name ?? '',
+          task.version ? `v${task.version}` : '',
+        ].filter(Boolean).join(' · ')
         return (
           <div className="min-w-0">
-            <p className="truncate font-medium text-default">{store.name || task.source_name}</p>
-            <p className="mt-0.5 text-xs text-secondary">
-              {store.code || '编号未记录'}
-              {task.batch_name ? ` · ${task.batch_name}` : ''}
-              {task.version ? ` · v${task.version}` : ''}
-            </p>
+            <p className="truncate font-medium text-default" title={task.source_name}>{store.name || task.source_name}</p>
+            <p className="mt-0.5 truncate text-xs text-secondary" title={meta}>{meta}</p>
           </div>
         )
       },
@@ -281,6 +285,7 @@ export function WorkerWorkbenchPage() {
       id: 'state',
       header: '状态',
       className: 'whitespace-nowrap',
+      width: '7rem',
       cell: (task) => {
         const meta = stateMetaOf(task)
         return <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
@@ -289,8 +294,9 @@ export function WorkerWorkbenchPage() {
     {
       id: 'message',
       header: '最近结果',
+      width: '16rem',
       cell: (task) => (
-        <span className="line-clamp-2 max-w-md text-xs text-secondary" title={task.message || ''}>
+        <span className="line-clamp-2 max-w-md text-xs text-secondary" title={task.reject_label || task.message || ''}>
           {task.reject_label || task.message || '—'}
         </span>
       ),
@@ -299,14 +305,17 @@ export function WorkerWorkbenchPage() {
       id: 'updated',
       header: '最近更新',
       className: 'whitespace-nowrap text-xs text-secondary',
+      width: '9rem',
       cell: (task) => formatTime(task.updated_at),
     },
     {
       id: 'actions',
       header: '操作',
       className: 'whitespace-nowrap',
+      width: '11.5rem',
+      sticky: 'right',
       cell: (task) => (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5" onClick={(event) => event.stopPropagation()}>
           <Button color="secondary" variant="outline" size="sm" onClick={() => setDetailTask(task)}>
             详情
           </Button>
@@ -553,6 +562,8 @@ export function WorkerWorkbenchPage() {
               rows={paged.rows}
               rowKey={(task) => task.id}
               caption="本机采集任务队列"
+              minWidthClass="min-w-[1000px]"
+              onRowActivate={(task) => setDetailTask(task)}
               emptyState={
                 <StatePanel
                   variant="empty"

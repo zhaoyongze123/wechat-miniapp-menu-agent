@@ -218,6 +218,7 @@ export function TaskCenterPage() {
       id: 'title',
       header: '任务名称',
       className: 'min-w-50 max-w-80',
+      width: '16rem',
       cell: (record) => (
         <div className="min-w-0">
           <span className="block truncate" title={`${record.title ?? record.id} · ${record.id}`}>
@@ -238,15 +239,19 @@ export function TaskCenterPage() {
       id: 'batch',
       header: '批次范围',
       className: 'w-40 min-w-32',
+      width: '10rem',
       cell: (record) => <BatchCell record={record} />,
     },
     ...(role.role === 'hub' ? [{
       id: 'worker',
       header: '任务来源',
       className: 'min-w-36',
+      width: '10rem',
       cell: (record: HistoryRecord) => (
-        <div>
-          <div>{record.worker_name || (record.kind === 'materials' ? '共享后台' : '本地历史')}</div>
+        <div className="min-w-0">
+          <div className="truncate" title={record.worker_name || (record.kind === 'materials' ? '共享后台' : '本地历史')}>
+            {record.worker_name || (record.kind === 'materials' ? '共享后台' : '本地历史')}
+          </div>
           {record.synced_at ? (
             <span className="text-xs text-secondary">
               {record.history_status === 'partial' ? '部分记录' : '上次同步'} · {formatTime(record.synced_at)}
@@ -259,6 +264,7 @@ export function TaskCenterPage() {
       id: 'status',
       header: '任务状态',
       className: 'whitespace-nowrap',
+      width: '7rem',
       cell: (record) => {
         const statusMeta = statusOf(record.status)
         return <StatusBadge tone={statusMeta.tone}>{statusMeta.label}</StatusBadge>
@@ -268,18 +274,22 @@ export function TaskCenterPage() {
       id: 'result',
       header: '结果摘要',
       className: 'min-w-42',
+      width: '14rem',
       cell: (record) => <ResultCell record={record} />,
     },
     {
       id: 'created',
       header: '开始时间',
       className: 'whitespace-nowrap text-secondary',
+      width: '10rem',
       cell: (record) => formatTime(record.created_at),
     },
     {
       id: 'actions',
       header: '操作',
       className: 'whitespace-nowrap',
+      width: '5.5rem',
+      sticky: 'right',
       cell: (record) => (
         <Button
           color="secondary"
@@ -409,6 +419,7 @@ export function TaskCenterPage() {
               caption="任务历史列表"
               columns={columns}
               rows={records}
+              minWidthClass={role.role === 'hub' ? 'min-w-[1160px]' : 'min-w-[1000px]'}
               rowKey={(record) => `${record.kind}:${record.id}`}
               loading={historyQuery.isFetching && !historyQuery.data}
               onRowActivate={(record) => openDetail(record.kind, record.id)}

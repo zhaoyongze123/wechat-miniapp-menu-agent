@@ -16,8 +16,37 @@ describe('formatStore', () => {
     })
   })
 
+  it('解析真实批次目录（长 LCA、坐标）', () => {
+    expect(formatStore('E0005__LCA0000193429__佛山市__测试酒店__113.288719,22.954428')).toEqual({
+      name: '测试酒店',
+      code: 'E0005',
+    })
+  })
+
+  it('兼容分隔符空格、全角下划线与坐标空格变体', () => {
+    expect(formatStore(' E0005 ＿＿ LCA-123 ＿＿ 佛山市 ＿＿ 测试 酒店 ＿＿ [113.288719, 22.954428] ')).toEqual({
+      name: '测试 酒店',
+      code: 'E0005',
+    })
+  })
+
+  it('解析生产目录的全角单下划线与无坐标格式', () => {
+    expect(formatStore('E0017＿回味鸭血粉丝汤＿南京市＿回味鸭血粉丝汤')).toEqual({
+      name: '回味鸭血粉丝汤',
+      code: 'E0017',
+    })
+  })
+
+  it('缺少城市段时退化为坐标前最后一段', () => {
+    expect(formatStore('E0005__LCA1__测试酒店__113.28,22.95')).toEqual({
+      name: '测试酒店',
+      code: 'E0005',
+    })
+  })
+
   it('无法识别时原样返回，不截断真实目录名', () => {
     expect(formatStore('临时门店目录')).toEqual({ name: '临时门店目录', code: '' })
+    expect(formatStore('测试酒店')).toEqual({ name: '测试酒店', code: '' })
   })
 })
 

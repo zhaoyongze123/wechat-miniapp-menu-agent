@@ -223,14 +223,15 @@ export function MaterialsPage() {
       id: 'store',
       header: '门店',
       className: 'min-w-56',
+      width: '20rem',
       cell: (store) => {
         const parsed = formatStore(store.source_name)
+        const meta = [parsed.code, batch?.name].filter(Boolean).join(' · ')
         return (
           <div className="min-w-0">
-            <span className="block truncate text-default">{parsed.name}</span>
-            <span className="mt-0.5 block truncate text-2xs text-tertiary">
-              {parsed.code ? `${parsed.code} · ` : ''}
-              {store.source_folder || store.source_name}
+            <span className="block truncate text-default" title={store.source_name}>{parsed.name}</span>
+            <span className="mt-0.5 block truncate text-2xs text-tertiary" title={meta || store.source_name}>
+              {meta || '批次信息未记录'}
             </span>
           </div>
         )
@@ -240,6 +241,7 @@ export function MaterialsPage() {
       id: 'decision',
       header: '决策',
       className: 'whitespace-nowrap',
+      width: '6rem',
       cell: (store) => {
         const meta = decisionMeta(store.decision)
         return <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
@@ -249,6 +251,7 @@ export function MaterialsPage() {
       id: 'recommendation',
       header: '推荐 / 校验',
       className: 'min-w-40',
+      width: '11rem',
       cell: (store) => (
         <div className="space-y-1">
           {store.recommendation ? (
@@ -268,6 +271,7 @@ export function MaterialsPage() {
       id: 'selection',
       header: '选码',
       className: 'whitespace-nowrap',
+      width: '9rem',
       cell: (store) => {
         if (!store.selected) return <span className="text-tertiary">—</span>
         return (
@@ -282,13 +286,16 @@ export function MaterialsPage() {
       id: 'analysis',
       header: '分析状态',
       className: 'min-w-40',
+      width: '14rem',
       cell: (store) => (
-        <div>
+        <div className="min-w-0">
           <span className="text-xs text-secondary">{analysisStatusLabel(store.analysis_status)}</span>
           {store.rejection ? (
-            <span className="mt-0.5 block text-2xs text-danger">{store.rejection.label || store.rejection.code}</span>
+            <span className="mt-0.5 block truncate text-2xs text-danger" title={store.rejection.label || store.rejection.code}>
+              {store.rejection.label || store.rejection.code}
+            </span>
           ) : store.reason ? (
-            <span className="mt-0.5 block truncate text-2xs text-tertiary">{store.reason}</span>
+            <span className="mt-0.5 block truncate text-2xs text-tertiary" title={store.reason}>{store.reason}</span>
           ) : null}
         </div>
       ),
@@ -297,6 +304,8 @@ export function MaterialsPage() {
       id: 'actions',
       header: '',
       className: 'w-20 whitespace-nowrap text-right',
+      width: '5.5rem',
+      sticky: 'right',
       cell: (store) => (
         <Button
           color="secondary"
@@ -549,6 +558,7 @@ export function MaterialsPage() {
                   caption="素材门店列表"
                   columns={columns}
                   rows={pageRows}
+                  minWidthClass="min-w-[1060px]"
                   rowKey={(store) => store.store_id}
                   loading={batchQuery.isFetching && !batchQuery.data}
                   onRowActivate={(store) => setDetailStoreId(store.store_id)}
