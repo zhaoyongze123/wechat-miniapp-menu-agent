@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
@@ -6,6 +6,7 @@ import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { Textarea } from '@openai/apps-sdk-ui/components/Textarea'
 import { AppDrawer } from '../../components/AppDrawer'
+import { KeyValuePair } from '../../components/KeyValueList'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
@@ -135,11 +136,11 @@ export function WorkerDetailDrawer({
         </div>
 
         <dl className="grid grid-cols-1 gap-x-4 gap-y-3 text-sm sm:grid-cols-2">
-          <Fact label="最近连接">{formatTime(worker.last_seen)}</Fact>
-          <Fact label="配对时间">{formatTime(worker.paired_at)}</Fact>
-          <Fact label="待补传文件">{worker.pending_uploads ? `${worker.pending_uploads} 份` : '无'}</Fact>
-          <Fact label="当前版本">{worker.software?.current_version || '未上报'}</Fact>
-          <Fact label="更新状态">
+          <KeyValuePair label="最近连接">{formatTime(worker.last_seen)}</KeyValuePair>
+          <KeyValuePair label="配对时间">{formatTime(worker.paired_at)}</KeyValuePair>
+          <KeyValuePair label="待补传文件">{worker.pending_uploads ? `${worker.pending_uploads} 份` : '无'}</KeyValuePair>
+          <KeyValuePair label="当前版本">{worker.software?.current_version || '未上报'}</KeyValuePair>
+          <KeyValuePair label="更新状态">
             {worker.software
               ? worker.software.update_available
                 ? `可更新至 ${worker.software.latest_version || '新版本'}`
@@ -147,8 +148,8 @@ export function WorkerDetailDrawer({
                   ? '已是最新'
                   : '更新状态未知'
               : '未上报'}
-          </Fact>
-          <Fact label="最近任务">
+          </KeyValuePair>
+          <KeyValuePair label="最近任务">
             {worker.last_run
               ? [
                   worker.last_run.status || '状态未记录',
@@ -160,9 +161,9 @@ export function WorkerDetailDrawer({
                   .filter(Boolean)
                   .join(' · ')
               : '暂无记录'}
-          </Fact>
-          {worker.revoked_at ? <Fact label="解除配对">{formatTime(worker.revoked_at)}</Fact> : null}
-          {worker.archived_at ? <Fact label="移除时间">{formatTime(worker.archived_at)}</Fact> : null}
+          </KeyValuePair>
+          {worker.revoked_at ? <KeyValuePair label="解除配对">{formatTime(worker.revoked_at)}</KeyValuePair> : null}
+          {worker.archived_at ? <KeyValuePair label="移除时间">{formatTime(worker.archived_at)}</KeyValuePair> : null}
         </dl>
 
         <section className="space-y-2">
@@ -242,14 +243,5 @@ export function WorkerDetailDrawer({
         </section>
       </div>
     </AppDrawer>
-  )
-}
-
-function Fact({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div>
-      <dt className="text-xs text-tertiary">{label}</dt>
-      <dd className="mt-0.5 text-default">{children}</dd>
-    </div>
   )
 }

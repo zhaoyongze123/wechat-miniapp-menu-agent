@@ -1,9 +1,10 @@
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
 import { AppDrawer } from '../../components/AppDrawer'
 import { ImagePreview } from '../../components/ImagePreview'
+import { KeyValuePair } from '../../components/KeyValueList'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { formatStore, formatTime } from '../hub/format'
@@ -144,24 +145,21 @@ export function RejectionDetailDrawer({
           <StatePanel variant="empty" title="请选择门店" description="从列表中选择一条不合格记录查看证据。" />
         ) : (
           <div className="space-y-5">
-            <section className="grid gap-3 sm:grid-cols-2" aria-label="不合格概要">
-              <Field label="来源" value={sourceLabelOf(record)} />
-              <Field label="批次 / 阶段" value={`${record.batch_name || '—'}${workflowLabel ? ` · ${workflowLabel}` : ''}`} />
-              <Field label="不合格原因" value={record.reason_label || record.reason_code || '—'} />
-              <Field label="标记时间" value={record.marked_at ? formatTime(record.marked_at) : '—'} />
-              <Field label="人工确认" value={record.reviewed_at ? `已确认 · ${formatTime(record.reviewed_at)}` : '未确认'} />
-              <Field
-                label="任务状态"
-                value={
-                  <span className="flex items-center gap-2">
-                    <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
-                    {record.stage ? <span className="text-2xs text-tertiary">{record.stage}</span> : null}
-                  </span>
-                }
-              />
-              <Field label="来源目录" value={record.source_folder || record.source_item || '—'} />
-              <Field label="记录编号" value={record.task_id || record.record_id || '—'} />
-            </section>
+            <dl className="grid gap-3 sm:grid-cols-2" aria-label="不合格概要">
+              <KeyValuePair label="来源">{sourceLabelOf(record)}</KeyValuePair>
+              <KeyValuePair label="批次 / 阶段">{`${record.batch_name || '—'}${workflowLabel ? ` · ${workflowLabel}` : ''}`}</KeyValuePair>
+              <KeyValuePair label="不合格原因">{record.reason_label || record.reason_code || '—'}</KeyValuePair>
+              <KeyValuePair label="标记时间">{record.marked_at ? formatTime(record.marked_at) : '—'}</KeyValuePair>
+              <KeyValuePair label="人工确认">{record.reviewed_at ? `已确认 · ${formatTime(record.reviewed_at)}` : '未确认'}</KeyValuePair>
+              <KeyValuePair label="任务状态">
+                <span className="flex items-center gap-2">
+                  <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
+                  {record.stage ? <span className="text-2xs text-tertiary">{record.stage}</span> : null}
+                </span>
+              </KeyValuePair>
+              <KeyValuePair label="来源目录">{record.source_folder || record.source_item || '—'}</KeyValuePair>
+              <KeyValuePair label="记录编号">{record.task_id || record.record_id || '—'}</KeyValuePair>
+            </dl>
 
             {record.detail ? (
               <section aria-label="不合格说明" className="space-y-2">
@@ -236,15 +234,6 @@ export function RejectionDetailDrawer({
         }}
       />
     </>
-  )
-}
-
-function Field({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-2xs text-tertiary">{label}</dt>
-      <dd className="mt-0.5 text-sm break-words text-default">{value || '—'}</dd>
-    </div>
   )
 }
 

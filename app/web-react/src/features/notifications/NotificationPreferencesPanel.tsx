@@ -1,6 +1,8 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useState } from 'react'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
+import { Select } from '@openai/apps-sdk-ui/components/Select'
+import { Slider } from '@openai/apps-sdk-ui/components/Slider'
 import { StatusBadge } from '../../components/StatusBadge'
 import { SettingRow } from '../../components/SettingsLayout'
 import type { AppRole } from '../../api/types'
@@ -164,27 +166,17 @@ export function NotificationPreferencesPanel({ role }: NotificationPreferencesPa
             />
           </SettingRow>
           <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <label htmlFor="notification-volume" className="text-xs text-secondary">
-                提示音音量
-              </label>
-              <span className="text-xs tabular-nums text-default">
-                {volumePercent}%{silent ? ' · 静音' : ''}
-              </span>
-            </div>
-            <input
-              id="notification-volume"
-              className="volume-slider w-full"
-              style={{ '--volume': `${volumePercent}%` } as CSSProperties}
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={preferences.volume}
+            <Slider
+              label="提示音音量"
+              value={volumePercent}
+              min={0}
+              max={100}
+              step={5}
+              unit="%"
               disabled={!canUseSound || !preferences.sound}
-              aria-valuetext={silent ? '静音' : `${volumePercent}%`}
-              onChange={(event) => update({ ...preferences, volume: Number(event.target.value) })}
+              onChange={(value) => update({ ...preferences, volume: value / 100 })}
             />
+            {silent ? <p className="text-xs text-warning">当前音量为 0，等同于静音。</p> : null}
             <p className="text-2xs text-tertiary">可用方向键微调；0% 等同于静音。</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -232,21 +224,22 @@ export function NotificationPreferencesPanel({ role }: NotificationPreferencesPa
           description="只重复提示音，不重复弹窗；等待结束或关闭提示音后自动停止。"
           htmlFor="repeat-wait"
         >
-          <select
+          <Select
             id="repeat-wait"
-            className="w-full rounded-md border border-subtle bg-surface px-2.5 py-1.5 text-sm text-default"
-            value={preferences.repeatWaitMinutes}
-            onChange={(event) =>
+            aria-label="等待人工操作的重复提醒"
+            value={String(preferences.repeatWaitMinutes)}
+            options={[
+              { value: '0', label: '关闭（默认）' },
+              { value: '1', label: '每 1 分钟重复提示音' },
+              { value: '5', label: '每 5 分钟重复提示音' },
+            ]}
+            onChange={(option) =>
               update(
-                { ...preferences, repeatWaitMinutes: Number(event.target.value) as NotificationPreferences['repeatWaitMinutes'] },
+                { ...preferences, repeatWaitMinutes: Number(option.value) as NotificationPreferences['repeatWaitMinutes'] },
                 '重复提醒设置已保存。',
               )
             }
-          >
-            <option value={0}>关闭（默认）</option>
-            <option value={1}>每 1 分钟重复提示音</option>
-            <option value={5}>每 5 分钟重复提示音</option>
-          </select>
+          />
         </SettingRow>
       ) : null}
 

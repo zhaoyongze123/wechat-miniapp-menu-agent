@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { Fragment, type ReactNode } from 'react'
 import { StatePanel } from './StatePanel'
 
 export interface DataColumn<T> {
@@ -28,6 +28,11 @@ interface AppDataTableProps<T> {
    * 无宽度配置的简单表格保持 auto，避免固定列宽裁切操作按钮。
    */
   layout?: 'auto' | 'fixed'
+  /**
+   * 行内展开内容；返回 null 表示该行未展开。
+   * 用于调用明细等“主行 + 证据/详情”场景，避免业务页面另写一套表格。
+   */
+  subRow?: (row: T) => ReactNode
 }
 
 /**
@@ -44,6 +49,7 @@ export function AppDataTable<T>({
   onRowActivate,
   minWidthClass = 'min-w-3xl',
   layout,
+  subRow,
 }: AppDataTableProps<T>) {
   const showEmpty = !loading && rows.length === 0
   const fixedLayout = layout ? layout === 'fixed' : columns.some((column) => column.width)
@@ -84,49 +90,58 @@ export function AppDataTable<T>({
         <tbody>
           {rows.map((row) => {
             const key = rowKey(row)
+            const expanded = subRow?.(row)
             return (
-              <tr
-                key={key}
-                className={[
-                  'group border-b border-subtle align-top last:border-b-0',
-                  onRowActivate
-                    ? 'cursor-pointer hover:bg-secondary-ghost-hover focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-ring)]'
-                    : '',
-                ].join(' ')}
-                tabIndex={onRowActivate ? 0 : undefined}
-                onClick={
-                  onRowActivate
-                    ? (event) => {
-                        // 复选框、链接和行内按钮保持独立语义，不触发行详情。
-                        if (isInteractiveTarget(event.target)) return
-                        onRowActivate(row)
-                      }
-                    : undefined
-                }
-                onKeyDown={
-                  onRowActivate
-                    ? (event) => {
-                        if (event.target !== event.currentTarget) return
-                        if (event.key !== 'Enter' && event.key !== ' ') return
-                        event.preventDefault()
-                        onRowActivate(row)
-                      }
-                    : undefined
-                }
-              >
-                {columns.map((column) => (
-                  <td
-                    key={column.id}
-                    className={[
-                      'px-4 py-3',
-                      stickyClass(column, false),
-                      column.className ?? '',
-                    ].join(' ')}
-                  >
-                    {column.cell(row)}
-                  </td>
-                ))}
-              </tr>
+              <Fragment key={key}>
+                <tr
+                  className={[
+                    'group border-b border-subtle align-top last:border-b-0',
+                    onRowActivate
+                      ? 'cursor-pointer hover:bg-secondary-ghost-hover focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-ring)]'
+                      : '',
+                  ].join(' ')}
+                  tabIndex={onRowActivate ? 0 : undefined}
+                  onClick={
+                    onRowActivate
+                      ? (event) => {
+                          // 复选框、链接和行内按钮保持独立语义，不触发行详情。
+                          if (isInteractiveTarget(event.target)) return
+                          onRowActivate(row)
+                        }
+                      : undefined
+                  }
+                  onKeyDown={
+                    onRowActivate
+                      ? (event) => {
+                          if (event.target !== event.currentTarget) return
+                          if (event.key !== 'Enter' && event.key !== ' ') return
+                          event.preventDefault()
+                          onRowActivate(row)
+                        }
+                      : undefined
+                  }
+                >
+                  {columns.map((column) => (
+                    <td
+                      key={column.id}
+                      className={[
+                        'px-4 py-3',
+                        stickyClass(column, false),
+                        column.className ?? '',
+                      ].join(' ')}
+                    >
+                      {column.cell(row)}
+                    </td>
+                  ))}
+                </tr>
+                {expanded ? (
+                  <tr className="border-b border-subtle bg-surface-secondary last:border-b-0">
+                    <td colSpan={columns.length} className="px-4 py-3">
+                      {expanded}
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
             )
           })}
         </tbody>

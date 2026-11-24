@@ -1,7 +1,7 @@
 interface StatCardProps {
   label: string
   value: number | string
-  tone?: 'warning' | 'danger'
+  tone?: 'warning' | 'danger' | 'success'
   active?: boolean
   onClick?: () => void
 }
@@ -12,7 +12,8 @@ export function StatCard({ label, value, tone, active, onClick }: StatCardProps)
     <>
       <span className="block text-xs text-secondary">{label}</span>
       <span className={`mt-1 block heading-lg tabular-nums ${tone === 'danger' && value ? 'text-danger'
-        : tone === 'warning' && value ? 'text-warning' : 'text-default'}`}>
+        : tone === 'warning' && value ? 'text-warning'
+        : tone === 'success' && value ? 'text-success' : 'text-default'}`}>
         {value}
       </span>
     </>

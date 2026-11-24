@@ -2,14 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
-import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { SegmentedControl } from '@openai/apps-sdk-ui/components/SegmentedControl'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppPagination } from '../../components/AppPagination'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
+import { FilterToolbar } from '../../components/FilterToolbar'
 import { PageHeader } from '../../components/PageHeader'
+import { SearchInput } from '../../components/SearchInput'
 import { StatePanel } from '../../components/StatePanel'
+import { StatCard } from '../../components/StatCard'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
@@ -516,11 +518,11 @@ export function MaterialsPage() {
           {batch ? (
             <>
               <section className="grid grid-cols-2 gap-3 sm:grid-cols-5" aria-label="批次统计">
-                <Metric label="门店" value={batch.summary.total_stores} />
-                <Metric label="原图" value={batch.summary.total_images} />
-                <Metric label="待审核" value={batch.summary.pending_stores} tone="warning" />
-                <Metric label="已确认" value={batch.summary.confirmed_stores} tone="success" />
-                <Metric label="不合格" value={batch.summary.skipped_stores} tone="danger" />
+                <StatCard label="门店" value={batch.summary.total_stores} />
+                <StatCard label="原图" value={batch.summary.total_images} />
+                <StatCard label="待审核" value={batch.summary.pending_stores} tone="warning" />
+                <StatCard label="已确认" value={batch.summary.confirmed_stores} tone="success" />
+                <StatCard label="不合格" value={batch.summary.skipped_stores} tone="danger" />
               </section>
 
               <section className="space-y-3 rounded-xl border border-subtle p-4" aria-labelledby="material-store-list">
@@ -528,22 +530,31 @@ export function MaterialsPage() {
                   <h2 id="material-store-list" className="heading-xs">
                     门店列表
                   </h2>
-                  <div className="w-64">
-                    <Input
-                      aria-label="搜索门店"
-                      value={search}
-                      placeholder="搜索门店名称或目录"
-                      onChange={(event) => setSearch(event.target.value)}
-                    />
-                  </div>
                 </div>
 
-                <SegmentedControl<StoreFilter> value={filter} onChange={setFilter} aria-label="门店决策筛选">
-                  <SegmentedControl.Option value="all">全部（{stores.length}）</SegmentedControl.Option>
-                  <SegmentedControl.Option value="pending">待审核（{counts.pending}）</SegmentedControl.Option>
-                  <SegmentedControl.Option value="confirmed">已确认（{counts.confirmed}）</SegmentedControl.Option>
-                  <SegmentedControl.Option value="skipped">不合格（{counts.skipped}）</SegmentedControl.Option>
-                </SegmentedControl>
+                <FilterToolbar
+                  label="素材门店筛选"
+                  activeCount={[search, filter !== 'all' ? filter : ''].filter(Boolean).length}
+                  onClear={() => {
+                    setSearch('')
+                    setFilter('all')
+                  }}
+                  summary={`共 ${stores.length} 家门店`}
+                >
+                  <SearchInput
+                    className="w-64"
+                    label="门店"
+                    placeholder="搜索门店名称或目录"
+                    value={search}
+                    onChange={setSearch}
+                  />
+                  <SegmentedControl<StoreFilter> value={filter} onChange={setFilter} aria-label="门店决策筛选">
+                    <SegmentedControl.Option value="all">全部（{stores.length}）</SegmentedControl.Option>
+                    <SegmentedControl.Option value="pending">待审核（{counts.pending}）</SegmentedControl.Option>
+                    <SegmentedControl.Option value="confirmed">已确认（{counts.confirmed}）</SegmentedControl.Option>
+                    <SegmentedControl.Option value="skipped">不合格（{counts.skipped}）</SegmentedControl.Option>
+                  </SegmentedControl>
+                </FilterToolbar>
 
                 <label className="flex items-center gap-2 text-xs text-secondary">
                   <input
@@ -718,23 +729,4 @@ function jobStatusText(status: string | undefined): string {
     default:
       return status ?? ''
   }
-}
-
-function Metric({
-  label,
-  value,
-  tone,
-}: {
-  label: string
-  value: number
-  tone?: 'warning' | 'success' | 'danger'
-}) {
-  const toneClass =
-    tone === 'warning' ? 'text-warning' : tone === 'success' ? 'text-success' : tone === 'danger' ? 'text-danger' : 'text-default'
-  return (
-    <div className="rounded-xl border border-subtle bg-surface px-4 py-3">
-      <span className="block text-xs text-secondary">{label}</span>
-      <span className={`mt-1 block heading-lg tabular-nums ${toneClass}`}>{value}</span>
-    </div>
-  )
 }

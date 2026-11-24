@@ -4,12 +4,14 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
-import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppPagination } from '../../components/AppPagination'
+import { BulkActionBar } from '../../components/BulkActionBar'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
+import { FilterToolbar } from '../../components/FilterToolbar'
 import { PageHeader } from '../../components/PageHeader'
+import { SearchInput } from '../../components/SearchInput'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
@@ -115,6 +117,16 @@ export function HubAssignmentsPage() {
   const pageSelected = reclaimableRecords.filter((record) => selectedSet.has(record.id))
   const allPageSelected = reclaimableRecords.length > 0 && pageSelected.length === reclaimableRecords.length
   const somePageSelected = pageSelected.length > 0 && !allPageSelected
+  // 回收确认需说明涉及设备；同一设备只列一次，避免长列表。
+  const confirmDevices = useMemo(() => {
+    if (!confirm) return ''
+    const names = new Set<string>()
+    const ids = new Set(confirm.ids)
+    for (const record of records) {
+      if (ids.has(record.id)) names.add(record.worker_name || record.worker_id || '未分配设备')
+    }
+    return Array.from(names).join('、')
+  }, [confirm, records])
   const detailRecord = records.find((record) => record.id === detailId) ?? null
   const detailIndex = detailRecord ? records.findIndex((record) => record.id === detailRecord.id) : -1
   const hasFilters = Boolean(workerId || phase || q.trim())
@@ -390,7 +402,15 @@ export function HubAssignmentsPage() {
               分配明细
             </h2>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <FilterToolbar
+            label="分配记录筛选"
+            activeCount={[workerId, phase, q.trim()].filter(Boolean).length}
+            onClear={() => {
+              setQueryText('')
+              updateQuery({ worker: '', phase: '', q: '' })
+            }}
+            summary={`当前页可回收 ${reclaimableRecords.length} 条`}
+          >
             <div className="w-52">
               <Select
                 aria-label="按采集电脑筛选"
@@ -407,27 +427,34 @@ export function HubAssignmentsPage() {
                 onChange={(option) => updateQuery({ phase: option.value })}
               />
             </div>
-            <div className="w-64">
-              <Input
-                aria-label="搜索分配记录"
-                placeholder="搜索门店、批次或任务 ID"
-                value={queryText}
-                onChange={(event) => setQueryText(event.target.value)}
-              />
-            </div>
-          </div>
+            <SearchInput
+              className="w-64"
+              label="分配记录"
+              placeholder="搜索门店、批次或任务 ID"
+              value={queryText}
+              onChange={setQueryText}
+            />
+          </FilterToolbar>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-surface-secondary px-3 py-2 text-xs">
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-default">已选 {selected.length} 条</span>
-            <span className="text-secondary">本页可回收 {reclaimableRecords.length} 条</span>
-            <span className="text-tertiary">仅当前页可批量选择</span>
-          </div>
-          <Button color="secondary" variant="ghost" size="sm" disabled={!selected.length} onClick={() => setSelected([])}>
-            清空选择
+        <BulkActionBar
+          count={selected.length}
+          hint={`本页可回收 ${reclaimableRecords.length} 条 · 仅当前页可批量选择`}
+          onClear={() => setSelected([])}
+        >
+          <Button
+            color="danger"
+            variant="outline"
+            size="sm"
+            disabled={!pageSelected.length}
+            onClick={() => {
+              setConfirmError('')
+              setConfirm({ ids: pageSelected.map((record) => record.id), label: `${pageSelected.length} 家门店` })
+            }}
+          >
+            回收选中
           </Button>
-        </div>
+        </BulkActionBar>
 
         {recordsQuery.isError ? (
           <StatePanel
@@ -526,7 +553,11 @@ export function HubAssignmentsPage() {
         title="回收分配"
         description={
           <div className="space-y-1">
-            <p>将回收 {confirm?.label}。</p>
+            <p>
+              将回收 {confirm?.ids.length ?? 0} 条分配
+              {confirmDevices ? `，涉及 ${confirmDevices}` : ''}
+              {confirm && confirm.ids.length === 1 ? `（${confirm.label}）` : ''}。
+            </p>
             <p>回收后门店立即解除占用，可重新分配；设备已下载但未上传的本机结果会转为历史留档，不会自动上传。</p>
           </div>
         }

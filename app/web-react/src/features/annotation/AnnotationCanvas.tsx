@@ -17,6 +17,13 @@ interface Point {
   y: number
 }
 
+// 标注叠加色属于画布业务语义：建议框=信息蓝、编辑框=警示琥珀、只读框=成功绿。
+// 这些颜色需在任意门店截图上保持高对比，不能直接套用界面文本 Token。
+const SUGGESTION_COLOR = '#2563eb'
+const EDIT_BOX_COLOR = '#f59e0b'
+const READONLY_BOX_COLOR = '#16a34a'
+const EDIT_BOX_FILL = 'rgba(245, 158, 11, 0.18)'
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
@@ -47,14 +54,14 @@ export function AnnotationCanvas({ url, revision, box, suggestionBox, readOnly =
       context.save()
       context.setLineDash([10, 6])
       context.lineWidth = Math.max(2, canvas.width / 700)
-      context.strokeStyle = '#2563eb'
+      context.strokeStyle = SUGGESTION_COLOR
       context.strokeRect(suggestionBox.x, suggestionBox.y, suggestionBox.width, suggestionBox.height)
       context.restore()
     }
     if (box) {
       context.save()
-      context.fillStyle = 'rgba(245, 158, 11, 0.18)'
-      context.strokeStyle = readOnly ? '#16a34a' : '#f59e0b'
+      context.fillStyle = EDIT_BOX_FILL
+      context.strokeStyle = readOnly ? READONLY_BOX_COLOR : EDIT_BOX_COLOR
       context.lineWidth = Math.max(3, canvas.width / 500)
       context.fillRect(box.x, box.y, box.width, box.height)
       context.strokeRect(box.x, box.y, box.width, box.height)

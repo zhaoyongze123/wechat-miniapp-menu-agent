@@ -1,10 +1,11 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { SegmentedControl } from '@openai/apps-sdk-ui/components/SegmentedControl'
 import { AppDrawer } from '../../components/AppDrawer'
 import { ImagePreview } from '../../components/ImagePreview'
+import { KeyValuePair } from '../../components/KeyValueList'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { errorMessage } from '../../api/client'
@@ -152,20 +153,17 @@ export function PendingReviewDrawer({
           <StatePanel variant="empty" title="请选择门店" description="从待检查列表选择一家门店查看失败原因。" />
         ) : (
           <div className="space-y-5">
-            <section className="grid gap-3 sm:grid-cols-2" aria-label="待检查概要">
-              <Field
-                label="任务状态"
-                value={
-                  <span className="flex flex-wrap items-center gap-2">
-                    <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
-                    <StatusBadge tone="secondary">{bucketLabelOf(record)}</StatusBadge>
-                  </span>
-                }
-              />
-              <Field label="失败标签" value={record.label || record.group || '—'} />
-              <Field label="批次 / 阶段" value={`${record.batch_name || '—'}${record.workflow?.label ? ` · ${record.workflow.label}` : ''}`} />
-              <Field label="更新时间" value={record.updated_at ? formatTime(record.updated_at) : '—'} />
-            </section>
+            <dl className="grid gap-3 sm:grid-cols-2" aria-label="待检查概要">
+              <KeyValuePair label="任务状态">
+                <span className="flex flex-wrap items-center gap-2">
+                  <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
+                  <StatusBadge tone="secondary">{bucketLabelOf(record)}</StatusBadge>
+                </span>
+              </KeyValuePair>
+              <KeyValuePair label="失败标签">{record.label || record.group || '—'}</KeyValuePair>
+              <KeyValuePair label="批次 / 阶段">{`${record.batch_name || '—'}${record.workflow?.label ? ` · ${record.workflow.label}` : ''}`}</KeyValuePair>
+              <KeyValuePair label="更新时间">{record.updated_at ? formatTime(record.updated_at) : '—'}</KeyValuePair>
+            </dl>
 
             <SegmentedControl<DetailSection> value={section} onChange={setSection} aria-label="门店详情分区">
               <SegmentedControl.Option value="current">当前结果</SegmentedControl.Option>
@@ -231,13 +229,10 @@ export function PendingReviewDrawer({
                 ) : historyDetail ? (
                   <div className="space-y-3">
                     <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                      <Field label="轮次状态" value={<StatusBadge tone={statusOf(historyDetail.status).tone}>{statusOf(historyDetail.status).label}</StatusBadge>} />
-                      <Field label="执行设备" value={historyDetail.worker_name || '本机'} />
-                      <Field label="开始时间" value={historyDetail.created_at ? formatTime(historyDetail.created_at) : '—'} />
-                      <Field
-                        label="同步状态"
-                        value={historyDetail.history_status === 'partial' ? '部分记录已上报' : historyDetail.worker_name ? '已同步' : '本机记录'}
-                      />
+                      <KeyValuePair label="轮次状态"><StatusBadge tone={statusOf(historyDetail.status).tone}>{statusOf(historyDetail.status).label}</StatusBadge></KeyValuePair>
+                      <KeyValuePair label="执行设备">{historyDetail.worker_name || '本机'}</KeyValuePair>
+                      <KeyValuePair label="开始时间">{historyDetail.created_at ? formatTime(historyDetail.created_at) : '—'}</KeyValuePair>
+                      <KeyValuePair label="同步状态">{historyDetail.history_status === 'partial' ? '部分记录已上报' : historyDetail.worker_name ? '已同步' : '本机记录'}</KeyValuePair>
                     </dl>
                     {historyDetail.history_status === 'partial' ? (
                       <Alert color="warning" variant="soft" title="共享端逐店记录可能尚未全部上报" description="这里只显示已收到的当次结果。" />
@@ -265,11 +260,11 @@ export function PendingReviewDrawer({
             {section === 'diagnostics' ? (
               <section className="space-y-4" aria-label="诊断证据">
                 <dl className="grid gap-3 sm:grid-cols-2">
-                  <Field label="错误码" value={record.error_code || '—'} />
-                  <Field label="任务编号" value={record.task_id || '—'} />
-                  <Field label="轮次编号" value={runId || '—'} />
-                  <Field label="源路径" value={record.source_path || '—'} />
-                  <Field label="输出目录" value={record.output_dir || '—'} />
+                  <KeyValuePair label="错误码">{record.error_code || '—'}</KeyValuePair>
+                  <KeyValuePair label="任务编号">{record.task_id || '—'}</KeyValuePair>
+                  <KeyValuePair label="轮次编号">{runId || '—'}</KeyValuePair>
+                  <KeyValuePair label="源路径">{record.source_path || '—'}</KeyValuePair>
+                  <KeyValuePair label="输出目录">{record.output_dir || '—'}</KeyValuePair>
                 </dl>
                 <div className="space-y-2">
                   <h3 className="text-xs font-medium text-secondary">动作记录</h3>
@@ -315,15 +310,6 @@ export function PendingReviewDrawer({
         }}
       />
     </>
-  )
-}
-
-function Field({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-2xs text-tertiary">{label}</dt>
-      <dd className="mt-0.5 text-sm break-words text-default">{value || '—'}</dd>
-    </div>
   )
 }
 

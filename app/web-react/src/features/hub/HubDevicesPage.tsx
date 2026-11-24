@@ -7,6 +7,7 @@ import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
 import { PageHeader } from '../../components/PageHeader'
 import { StatePanel } from '../../components/StatePanel'
+import { StatCard } from '../../components/StatCard'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
@@ -254,11 +255,11 @@ export function HubDevicesPage() {
       />
 
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-5" aria-label="采集电脑统计">
-        <Metric label="已配对" value={activeWorkers.length} />
-        <Metric label="在线" value={onlineCount} />
-        <Metric label="占用门店" value={occupiedCount} />
-        <Metric label="待更新" value={outdatedCount} {...(outdatedCount ? { tone: 'warning' as const } : {})} />
-        <Metric
+        <StatCard label="已配对" value={activeWorkers.length} />
+        <StatCard label="在线" value={onlineCount} />
+        <StatCard label="占用门店" value={occupiedCount} />
+        <StatCard label="待更新" value={outdatedCount} {...(outdatedCount ? { tone: 'warning' as const } : {})} />
+        <StatCard
           label="版本未上报"
           value={updateSummary?.unreported ?? 0}
           {...(updateSummary?.unreported ? { tone: 'warning' as const } : {})}
@@ -453,16 +454,5 @@ export function HubDevicesPage() {
         }}
       />
     </section>
-  )
-}
-
-function Metric({ label, value, tone }: { label: string; value: number; tone?: 'warning' }) {
-  return (
-    <div className="rounded-xl border border-subtle bg-surface px-4 py-3">
-      <span className="block text-xs text-secondary">{label}</span>
-      <span className={`mt-1 block heading-lg tabular-nums ${tone === 'warning' && value > 0 ? 'text-warning' : 'text-default'}`}>
-        {value}
-      </span>
-    </div>
   )
 }
