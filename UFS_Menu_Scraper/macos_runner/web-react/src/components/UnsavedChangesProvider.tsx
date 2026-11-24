@@ -11,13 +11,16 @@ const GuardContext = createContext<GuardContextValue | null>(null)
 /**
  * 未保存修改的全局守卫：
  * - 刷新/关闭标签页使用 beforeunload 原生提示；
- * - 站内链接在捕获阶段拦截，确认后才跳转（HashRouter 下直接改 hash）。
+ * - 站内链接在捕获阶段拦截，确认后才跳转（HashRouter 下直接改 hash）；
+ * - 浏览器后退/前进导致 hash 变化时先恢复原地址，再要求确认。
  * 只登记“有真实未保存变更”的页面，不改变正常导航。
  */
 export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
   const guards = useRef(new Map<string, string>())
   const [, setRevision] = useState(0)
   const [pendingHash, setPendingHash] = useState<string | null>(null)
+  const lastHash = useRef(window.location.hash)
+  const allowNavigation = useRef(false)
 
   const register = useCallback((id: string, message: string) => {
     if (guards.current.get(id) === message) return
@@ -58,6 +61,31 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
     return () => document.removeEventListener('click', onClickCapture, true)
   }, [])
 
+  useEffect(() => {
+    const releaseSoon = () => {
+      window.setTimeout(() => {
+        allowNavigation.current = false
+      }, 50)
+    }
+    const onHashChange = () => {
+      const next = window.location.hash
+      const previous = lastHash.current
+      if (next === previous) return
+      if (allowNavigation.current || !guards.current.size) {
+        lastHash.current = next
+        return
+      }
+      // 浏览器后退/前进无法取消，只能先恢复到原地址，再由统一确认框决定是否离开。
+      allowNavigation.current = true
+      window.location.hash = previous
+      lastHash.current = previous
+      setPendingHash(next)
+      releaseSoon()
+    }
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
   const message = guards.current.values().next().value as string | undefined
   // context 值必须稳定，否则使用方 useEffect 会随每次渲染重新登记/注销，形成无限循环。
   const value = useMemo<GuardContextValue>(() => ({ register, unregister }), [register, unregister])
@@ -82,7 +110,13 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
         onConfirm={() => {
           const hash = pendingHash
           setPendingHash(null)
-          if (hash) window.location.hash = hash
+          if (!hash) return
+          allowNavigation.current = true
+          window.location.hash = hash
+          lastHash.current = hash
+          window.setTimeout(() => {
+            allowNavigation.current = false
+          }, 50)
         }}
       />
     </GuardContext.Provider>

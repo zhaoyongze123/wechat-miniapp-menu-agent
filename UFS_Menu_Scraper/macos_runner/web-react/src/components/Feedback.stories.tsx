@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
+import { expect, userEvent, within } from 'storybook/test'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { AppDialog } from './AppDialog'
 import { AppDrawer } from './AppDrawer'
@@ -103,6 +104,13 @@ export const Toasts: Story = {
       <ToastDemo />
     </ToastProvider>
   ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: '成功提示' }))
+    await expect(canvas.getByText('配置已保存')).toBeTruthy()
+    await userEvent.click(canvas.getByRole('button', { name: '关闭提示' }))
+    await expect(canvas.queryByText('配置已保存')).toBeNull()
+  },
 }
 
 export const Dialog: Story = {

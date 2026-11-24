@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { UnsavedChangesProvider, useUnsavedChanges } from './UnsavedChangesProvider'
 
 function DirtyPage({ dirty }: { dirty: boolean }) {
@@ -8,6 +8,10 @@ function DirtyPage({ dirty }: { dirty: boolean }) {
 }
 
 describe('UnsavedChangesProvider', () => {
+  afterEach(() => {
+    window.history.replaceState(null, '', '#/')
+  })
+
   it('有未保存修改时拦截站内链接并要求确认', () => {
     render(
       <UnsavedChangesProvider>
@@ -32,5 +36,18 @@ describe('UnsavedChangesProvider', () => {
     fireEvent(screen.getByRole('link', { name: '设备' }), event)
     expect(event.defaultPrevented).toBe(false)
     expect(screen.queryByText('放弃未保存的修改？')).not.toBeInTheDocument()
+  })
+
+  it('浏览器后退改变 hash 时恢复原地址并要求确认', () => {
+    window.history.replaceState(null, '', '#/settings')
+    render(
+      <UnsavedChangesProvider>
+        <DirtyPage dirty />
+      </UnsavedChangesProvider>,
+    )
+    window.location.hash = '#/devices'
+    fireEvent(window, new HashChangeEvent('hashchange'))
+    expect(screen.getByText('放弃未保存的修改？')).toBeInTheDocument()
+    expect(window.location.hash).toBe('#/settings')
   })
 })
