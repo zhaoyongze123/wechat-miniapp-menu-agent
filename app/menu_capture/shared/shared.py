@@ -555,6 +555,19 @@ class SharedHub:
         if binding:
             self.require_unassigned(binding["batch_id"], {task["source_name"]})
 
+    def active_task_ids(self, task_ids: list[str]) -> set[str]:
+        """仍被采集电脑占用（含待上传）的任务，用于阻止打回导致结果丢失。"""
+        if not task_ids:
+            return set()
+        marks = ",".join("?" for _ in task_ids)
+        with self.store.connect() as db:
+            rows = db.execute(
+                f"SELECT task_id FROM shared_assignments WHERE task_id IN ({marks}) "
+                "AND status NOT IN ('completed','reclaimed')",
+                task_ids,
+            )
+        return {row["task_id"] for row in rows}
+
     @staticmethod
     def _store_index(tasks: list[dict]) -> dict:
         return {(task["batch_id"], task["source_name"]): task for task in tasks}

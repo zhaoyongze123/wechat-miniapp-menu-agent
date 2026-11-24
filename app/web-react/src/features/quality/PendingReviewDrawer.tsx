@@ -20,6 +20,8 @@ interface PendingReviewDrawerProps {
   onRerun: (record: PendingReviewRecord) => void
   /** 人工判定为不合格，直接移入不合格清单。 */
   onReject: (record: PendingReviewRecord) => void
+  /** 确认无需继续采集，退回素材清洗重新确认二维码。 */
+  onReturn: (record: PendingReviewRecord) => void
 }
 
 /** 待检查门店详情：失败原因、分类、源图与最近画面，重跑走分配流程。 */
@@ -32,6 +34,7 @@ export function PendingReviewDrawer({
   onNext,
   onRerun,
   onReject,
+  onReturn,
 }: PendingReviewDrawerProps) {
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null)
   const status = statusOf(record?.status)
@@ -73,6 +76,16 @@ export function PendingReviewDrawer({
                   onClick={() => onReject(record)}
                 >
                   标记不合格
+                </Button>
+                <Button
+                  color="secondary"
+                  variant="outline"
+                  size="sm"
+                  disabled={record.can_return_to_materials === false}
+                  title={record.return_to_materials_disabled_reason || undefined}
+                  onClick={() => onReturn(record)}
+                >
+                  打回素材清洗
                 </Button>
                 <Button
                   color="secondary"

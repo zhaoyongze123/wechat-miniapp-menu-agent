@@ -109,6 +109,9 @@ export interface PendingReviewRecord {
   batch_id: string
   batch_name: string
   workflow: WorkflowStage
+  /** 后端统一判定是否可打回素材清洗；false 时必须展示原因。 */
+  can_return_to_materials?: boolean
+  return_to_materials_disabled_reason?: string
 }
 
 export interface PendingReviewBatch {

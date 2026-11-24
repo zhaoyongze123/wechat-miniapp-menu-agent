@@ -50,6 +50,8 @@ import type { PendingReviewRecord, RejectionRecord, ReviewBucket } from './types
 type QualityView = 'rejections' | 'review'
 type SourceFilter = 'all' | 'materials' | 'capture'
 type ReviewStateFilter = 'all' | 'reviewed' | 'pending'
+/** 打回确认只需要门店与批次信息，不合格与待检查记录都可复用同一确认流程。 */
+type ReturnTarget = Pick<RejectionRecord, 'task_id' | 'store_name' | 'batch_name'>
 
 const PAGE_SIZE = 50
 
@@ -96,7 +98,7 @@ export function QualityPage() {
 
   // 弹窗
   const [assignTasks, setAssignTasks] = useState<HubSelectedTask[] | null>(null)
-  const [returnRecord, setReturnRecord] = useState<RejectionRecord | null>(null)
+  const [returnRecord, setReturnRecord] = useState<ReturnTarget | null>(null)
   const [approveOpen, setApproveOpen] = useState(false)
   const [unapproveOpen, setUnapproveOpen] = useState(false)
   const [dialogError, setDialogError] = useState('')
@@ -1138,6 +1140,10 @@ export function QualityPage() {
         }}
         onRerun={(record) => openAssign([record])}
         onReject={(record) => openReject([record.task_id])}
+        onReturn={(record) => {
+          setDialogError('')
+          setReturnRecord(record)
+        }}
       />
 
       <ConfirmActionDialog
@@ -1163,7 +1169,7 @@ export function QualityPage() {
         title="打回素材清洗"
         description={
           returnRecord
-            ? `将把「${formatStore(returnRecord.store_name).name}」（批次：${returnRecord.batch_name || '未关联'}）打回素材清洗，清除不合格标记并把门店恢复为待处理，采集任务置为已阻塞。`
+            ? `将把「${formatStore(returnRecord.store_name).name}」（批次：${returnRecord.batch_name || '未关联'}）打回素材清洗，清理不合格标记（如有）并把门店恢复为待处理，采集任务置为已阻塞。`
             : ''
         }
         confirmLabel="确认打回"

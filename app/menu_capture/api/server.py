@@ -366,6 +366,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 continue
             failure = describe_failure(task.get("error_code", ""), task.get("stage", ""),
                                        task.get("message", ""))
+            # 与打回接口共用同一判定，避免列表显示可操作但实际被拒。
+            blocker = rejections.return_blocker(task["id"], current=True)
             records.append({
                 "task_id": task["id"],
                 "store_name": task["source_name"],
@@ -385,6 +387,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 "batch_id": batch_id,
                 "batch_name": task.get("material_batch_name") or names.get(batch_id, ""),
                 "workflow": workflow.get(batch_id, {}),
+                "can_return_to_materials": not blocker,
+                "return_to_materials_disabled_reason": blocker,
             })
         # 有效任务清单已按原批次和门店归属取最新版，保留显示编号相近的各条任务。
         records.sort(key=lambda row: (row["updated_at"], row["store_name"]), reverse=True)
@@ -1801,6 +1805,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         """打回当前门店，保留此前执行与迟到结果供回查。"""
         with control_lock:
             idle()
+            # 采集电脑仍占用该门店时先阻塞，避免打回后迟到结果无处落地。
+            if hub and hub.active_task_ids([task_id]):
+                raise ValueError("该门店仍在采集电脑任务中，请等待完成或先收回后再打回")
             result = rejections.return_to_materials(task_id)
             if hub:
                 hub.reconcile_assignments()

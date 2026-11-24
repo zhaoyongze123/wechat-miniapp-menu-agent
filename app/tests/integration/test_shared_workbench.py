@@ -9,6 +9,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from zipfile import ZipFile, ZipInfo
@@ -38,6 +39,23 @@ def png(path: Path, color="white") -> Path:
     return path
 
 
+def wait_batch(materials, batch_id: str) -> dict:
+    """等待持久化素材分析 job 结束；批次状态只表示结果是否可用，不再承载运行态。"""
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        batch = materials.get_batch(batch_id)
+        job = batch.get("job")
+        if job is None:
+            return batch
+        if job["status"] == "completed":
+            if batch["status"] == "completed":
+                return batch
+        elif job["status"] in {"failed", "cancelled", "paused", "interrupted"}:
+            return batch
+        time.sleep(0.02)
+    raise AssertionError("素材分析 job 在 20 秒内未结束")
+
+
 def batch(app, folder, names, *, publish_names=None):
     materials = app.state.materials
     materials.inspector = lambda _path: [
@@ -50,8 +68,7 @@ def batch(app, folder, names, *, publish_names=None):
     entry = materials.create_local_batch(folder)
     batch_id = entry["batch_id"]
     materials.start_analysis(batch_id)
-    from test_materials import _wait
-    finished = _wait(materials, batch_id)
+    finished = wait_batch(materials, batch_id)
     assert finished["status"] == "completed", finished
     for item in finished["stores"]:
         if publish_names is None or item["source_name"] in publish_names:
@@ -559,3 +576,42 @@ def test_return_rejection_uses_originating_batch_and_archives_old_decision(tmp_p
         with app.state.store.connect() as db:
             previous = json.loads(db.execute("SELECT past_task FROM material_store_returns").fetchone()[0])
         assert previous[0]["reject_reason"] == "store_closed"
+
+
+def test_return_rejection_blocked_while_worker_owns_store(tmp_path):
+    """采集电脑仍占用门店时必须先收回，避免打回后迟到结果无处落地。"""
+    app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
+    with client_for(app, admin=True) as hub:
+        created = batch(app, tmp_path / "input", ("门店 A",))
+        task = app.state.materials.effective_capture_tasks()[0]
+        with app.state.store.connect() as db:
+            db.execute(
+                "INSERT INTO shared_assignments(id,task_id,worker_id,batch_id,batch_name,store,"
+                "revision,snapshot_id,source_hash,source_suffix,status,created_at) "
+                "VALUES('a1',?,'w1',?,'批次','门店 A','r1','s1','h1','.png','running','now')",
+                (task["id"], created["batch_id"]),
+            )
+        assert app.state.shared_hub.active_task_ids([task["id"]]) == {task["id"]}
+
+        response = hub.post(f"/api/rejections/tasks/{task['id']}/return-to-materials", headers=session(hub))
+
+        assert response.status_code == 400, response.text
+        assert "仍在采集电脑任务中" in response.text
+
+
+def test_pending_review_exposes_return_eligibility_and_can_return(tmp_path):
+    """待检查任务也允许打回，列表资格与接口判定共用同一规则。"""
+    app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
+    with client_for(app, admin=True) as hub:
+        batch(app, tmp_path / "input", ("门店 A",))
+        task = app.state.materials.effective_capture_tasks()[0]
+        app.state.store.update(task["id"], status="needs_review")
+        row = next(item for item in hub.get("/api/reviews/pending").json()["records"]
+                   if item["task_id"] == task["id"])
+        assert row["can_return_to_materials"] is True
+        assert row["return_to_materials_disabled_reason"] == ""
+
+        returned = hub.post(f"/api/rejections/tasks/{task['id']}/return-to-materials", headers=session(hub))
+
+        assert returned.status_code == 200, returned.text
+        assert app.state.store.get(task["id"])["status"] == "blocked"
