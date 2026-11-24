@@ -8,7 +8,7 @@ import pytest
 from menu_capture.window_contract import validate_target_window
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3] / "UFS_Menu_Capture_CrossPlatform"
+PROJECT_ROOT = Path(__file__).resolve().parents[3] / "compat/uipath"
 MAIN_XAML = PROJECT_ROOT / "Main.xaml"
 
 NS = {

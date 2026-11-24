@@ -382,7 +382,7 @@ def test_legacy_windows_backup_is_verified_without_changing_source(tmp_path):
                    ("batch-1", "", legacy_home + "\\data", "{}", "{}"))
         db.execute("INSERT INTO material_versions VALUES(?,?)", (snapshot, "batch-1"))
     src_hash = hashlib.sha256((data / "tasks.sqlite3").read_bytes()).hexdigest()
-    script = Path(__file__).resolve().parents[3] / "deploy/migrate_legacy.py"
+    script = Path(__file__).resolve().parents[3] / "deploy/migration/migrate_legacy.py"
     destination = tmp_path / "converted"
     command = [sys.executable, str(script), "--backup-home", str(backup_home), "--backup-output", str(outputs),
                "--legacy-home", legacy_home, "--legacy-output", legacy_output, "--destination", str(destination)]

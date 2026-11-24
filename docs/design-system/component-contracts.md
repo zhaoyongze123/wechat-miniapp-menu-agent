@@ -1,6 +1,6 @@
 # 公共组件契约
 
-新增或修改组件均位于 `UFS_Menu_Scraper/macos_runner/web-react/src/components/`。所有组件只消费 OpenAI Apps SDK UI 控件与语义 Token，不引入第三方视觉库。
+新增或修改组件均位于 `app/web-react/src/components/`。所有组件只消费 OpenAI Apps SDK UI 控件与语义 Token，不引入第三方视觉库。
 
 ## 数据展示
 

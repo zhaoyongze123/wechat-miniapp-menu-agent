@@ -65,7 +65,7 @@ _ARCH_ALIASES = {
     "i386": "x86",
     "i686": "x86",
 }
-# 程序目录默认取包所在目录的上一级（macos_runner）；与数据目录严格分离，不参与反推。
+# 程序目录默认取包所在目录的上一级（app）；与数据目录严格分离，不参与反推。
 DEFAULT_APP_ROOT = Path(__file__).resolve().parent.parent
 
 

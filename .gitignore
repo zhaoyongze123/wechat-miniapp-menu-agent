@@ -32,10 +32,10 @@ uipath.windows.profile.json
 
 # 采集输出与运行数据（目录约定，不再按日期或单文件加白名单）
 /输出/
-UFS_Menu_Scraper/macos_runner/输出/
-UFS_Menu_Scraper/macos_runner/data/
-UFS_Menu_Scraper/macos_runner/output/
-UFS_Menu_Scraper/macos_runner/web/frames/
+app/输出/
+app/data/
+app/output/
+app/web/frames/
 /outputs/
 /素材/
 /历史归档/

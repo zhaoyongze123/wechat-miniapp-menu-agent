@@ -1,0 +1,11 @@
+**
+!UFS_Menu_Scraper
+!app
+!app/pyproject.toml
+!app/uv.lock
+!app/menu_capture/
+!app/menu_capture/**
+!app/web/
+!app/web/**
+**/__pycache__/
+**/*.local.json

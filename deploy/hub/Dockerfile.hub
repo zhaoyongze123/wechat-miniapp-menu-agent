@@ -5,7 +5,7 @@ FROM python:3.12.16-slim-bookworm AS dependencies
 COPY --from=uv /uv /usr/local/bin/uv
 WORKDIR /opt/menu-capture
 ENV UV_PROJECT_ENVIRONMENT=/opt/menu-venv UV_NO_MANAGED_PYTHON=1 UV_LINK_MODE=copy
-COPY UFS_Menu_Scraper/macos_runner/pyproject.toml UFS_Menu_Scraper/macos_runner/uv.lock ./
+COPY app/pyproject.toml app/uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev
 
 FROM python:3.12.16-slim-bookworm
@@ -28,8 +28,8 @@ ENV PATH="/opt/menu-venv/bin:$PATH" \
     MENU_CAPTURE_ROLE=hub MENU_CAPTURE_HOME=/var/lib/menu-capture MENU_CAPTURE_BIND=0.0.0.0 MENU_CAPTURE_PORT=8765
 WORKDIR /opt/menu-capture
 COPY --from=dependencies /opt/menu-venv /opt/menu-venv
-COPY UFS_Menu_Scraper/macos_runner/menu_capture ./menu_capture
-COPY UFS_Menu_Scraper/macos_runner/web ./web
+COPY app/menu_capture ./menu_capture
+COPY app/web ./web
 # 镜像必须自带完整前端产物，运行时不依赖 Node、npm 或外部 CDN。
 RUN test -s web/react/index.html && test -s web/react/.vite/manifest.json
 USER 10001:10001

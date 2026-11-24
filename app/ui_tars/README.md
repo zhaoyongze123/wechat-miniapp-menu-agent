@@ -8,7 +8,7 @@
 
 ## 本地联调
 
-在 `macos_runner` 目录执行：
+在 `app` 目录执行：
 
 ```sh
 npm ci --prefix ui_tars

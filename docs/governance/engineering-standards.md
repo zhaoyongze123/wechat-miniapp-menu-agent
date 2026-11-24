@@ -39,7 +39,7 @@
 
 ## 静态检查与格式
 
-- Python：Ruff，配置在 `UFS_Menu_Scraper/macos_runner/pyproject.toml`。
+- Python：Ruff，配置在 `app/pyproject.toml`。
   - 门禁规则：`E9`、`F63`、`F7`、`F82`（语法错误、未定义名、无效比较、无效 f-string），当前 0 项。
   - 存量基线：`E4,E7,E9,F` 共 65 项（多语句单行、未使用导入/变量等），按模块逐步治理，不做一次性全量格式化。
   - 本地使用 `uvx ruff check <受影响路径>`。遇到全局配置变动等实际跨模块影响时再扩大检查范围。

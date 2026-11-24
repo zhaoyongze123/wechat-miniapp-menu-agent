@@ -92,7 +92,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     profiles = ProfileStore(root / profile_name)
     if profiles.path.exists():
         profiles.load()  # 启动时完成旧预览定位字段的单次清理。
-    project_dir = ROOT.parent.parent / "UFS_Menu_Capture_CrossPlatform"
+    project_dir = ROOT.parent.parent / "compat/uipath"
     runner = UiPathRunner(configs, store, profile_path=profiles.path,
                          project_dir=project_dir, clipboard_preparer=prepare_clipboard_image,
                          clipboard_text_preparer=prepare_clipboard_text,

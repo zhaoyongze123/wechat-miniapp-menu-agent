@@ -25,30 +25,30 @@
 Phase -1 最终文档提交 SHA：
 
 ```powershell
-git log -1 --format=%H -- docs/react-migration/sync-baseline-report.md
+git log -1 --format=%H -- docs/releases/react-migration/sync-baseline-report.md
 ```
 
 ## 三、17 个改动文件审查与去向
 
 | # | 文件 | 分类 | 去向 |
 | --- | --- | --- | --- |
-| 1 | `macos_runner/menu_capture/capture_results.py` | 门店状态口径统一 | `fc4f7bc` |
-| 2 | `macos_runner/menu_capture/config.py` | Windows 微信窗口校准配置 | `624d47d` |
-| 3 | `macos_runner/menu_capture/failures.py` | 失败原因筛选与文案 | `fc4f7bc` |
-| 4 | `macos_runner/menu_capture/materials.py` | 当前快照映射 | `fc4f7bc` |
-| 5 | `macos_runner/menu_capture/rejections.py` | 素材返工按来源路径解析批次 | `fc4f7bc` |
-| 6 | `macos_runner/menu_capture/server.py` | 审核/待检查接口口径 | `fc4f7bc` |
-| 7 | `macos_runner/menu_capture/shared.py` | 共享端快照与状态下发 | `fc4f7bc` |
-| 8 | `macos_runner/menu_capture/shared_worker.py` | 采集端快照过滤/状态跟随；缓存二维码登记 | `fc4f7bc` + `6a8a309` |
-| 9 | `macos_runner/menu_capture/store.py` | 任务/批次关联与恢复 | `fc4f7bc` |
-| 10 | `macos_runner/menu_capture/uipath_runner.py` | Windows 原生采集容错与窗口恢复 | `624d47d` |
-| 11 | `macos_runner/menu_capture/windows_desktop.py` | 微信分栏/残留小程序隔离 | `624d47d` |
-| 12 | `macos_runner/menu_capture/workbench_page.py` | 工作台统计与筛选口径 | `fc4f7bc` |
-| 13 | `macos_runner/tests/test_capture_outcomes.py` | 状态口径测试 | `fc4f7bc` |
-| 14 | `macos_runner/tests/test_failure_codes.py` | 失败原因测试 | `fc4f7bc` |
-| 15 | `macos_runner/tests/test_workbench_page.py` | 工作台测试 | `fc4f7bc` |
-| 16 | `macos_runner/ui_tars/adapter.mjs` | 工具调用格式错误重试 | `624d47d` |
-| 17 | `macos_runner/web/index.html` | 与后端协议耦合的工作台 UI | `fc4f7bc` |
+| 1 | `app/menu_capture/capture_results.py` | 门店状态口径统一 | `fc4f7bc` |
+| 2 | `app/menu_capture/config.py` | Windows 微信窗口校准配置 | `624d47d` |
+| 3 | `app/menu_capture/failures.py` | 失败原因筛选与文案 | `fc4f7bc` |
+| 4 | `app/menu_capture/materials.py` | 当前快照映射 | `fc4f7bc` |
+| 5 | `app/menu_capture/rejections.py` | 素材返工按来源路径解析批次 | `fc4f7bc` |
+| 6 | `app/menu_capture/server.py` | 审核/待检查接口口径 | `fc4f7bc` |
+| 7 | `app/menu_capture/shared.py` | 共享端快照与状态下发 | `fc4f7bc` |
+| 8 | `app/menu_capture/shared_worker.py` | 采集端快照过滤/状态跟随；缓存二维码登记 | `fc4f7bc` + `6a8a309` |
+| 9 | `app/menu_capture/store.py` | 任务/批次关联与恢复 | `fc4f7bc` |
+| 10 | `app/menu_capture/uipath_runner.py` | Windows 原生采集容错与窗口恢复 | `624d47d` |
+| 11 | `app/menu_capture/windows_desktop.py` | 微信分栏/残留小程序隔离 | `624d47d` |
+| 12 | `app/menu_capture/workbench_page.py` | 工作台统计与筛选口径 | `fc4f7bc` |
+| 13 | `app/tests/test_capture_outcomes.py` | 状态口径测试 | `fc4f7bc` |
+| 14 | `app/tests/test_failure_codes.py` | 失败原因测试 | `fc4f7bc` |
+| 15 | `app/tests/test_workbench_page.py` | 工作台测试 | `fc4f7bc` |
+| 16 | `app/ui_tars/adapter.mjs` | 工具调用格式错误重试 | `624d47d` |
+| 17 | `app/web/index.html` | 与后端协议耦合的工作台 UI | `fc4f7bc` |
 
 ### 分类结论
 

@@ -15,8 +15,8 @@
 
 | 层 | 位置 | 说明 |
 | --- | --- | --- |
-| 前端源码 | `macos_runner/web-react/` | React 19 + TS strict + Vite 7 + Tailwind 4 + TanStack Query。 |
-| 前端产物 | `macos_runner/web/react/` | 提交入库：`index.html`、`assets/*`、`.vite/manifest.json`、`favicon.svg`。 |
+| 前端源码 | `app/web-react/` | React 19 + TS strict + Vite 7 + Tailwind 4 + TanStack Query。 |
+| 前端产物 | `app/web/react/` | 提交入库：`index.html`、`assets/*`、`.vite/manifest.json`、`favicon.svg`。 |
 | 静态服务 | `menu_capture/server.py` | `/` 返回入口（`no-store`）；`/assets/{name}` 按清单白名单返回（一年 immutable）；`/favicon.svg`。 |
 | 版本信息 | `GET /api/version` | 返回 `version`（启动器/镜像注入）与 `frontend`（入口哈希文件名）。 |
 | 构建 | `deploy/windows/build.ps1` | 打包前校验 React 入口与清单，生成 `release-manifest.json`。 |
@@ -39,7 +39,7 @@
 
 ## 3. 覆盖核查与修复
 
-对照 `docs/react-migration/inventory.md`（I01–I15）、API 契约与角色矩阵逐项核对，本轮补齐：
+对照 `docs/archive/2026-11-react-migration/inventory.md`（I01–I15）、API 契约与角色矩阵逐项核对，本轮补齐：
 
 1. **Windows 采集端同步状态**：旧版只有弹窗能查看待上传与最近确认列表，React 原仅显示待上传徽标。新增 `features/worker/WorkerSyncDialog.tsx`，按后端 `assignments` 展示待上传、最近确认、连接摘要与最近错误，并在工作台提供「同步状态」入口。
 2. **全站活动任务入口**：旧版各页都有运行面板浮层。壳层新增 `ActiveTaskIndicator`，任一页面可见“运行中 N 个任务”并跳转任务中心；任务中心仍保留完整面板。
@@ -89,7 +89,7 @@ Hub 镜像：
 | Python 全量套件 | 本机存在既有环境类失败（采集 UI 自动化 / OCR / 桌面依赖相关），与本次改动模块无关；CI 以受影响的 7 个契约文件作为阻断项 |
 | 服务端契约测试 | `/` 始终 React、`/assets` 白名单、旧 `/vue` 与旧资源 404、`/api/version`、503 无构建、favicon |
 | Hub 镜像构建与运行 | `menu-capture-hub:verify`（`VERSION=0.1.0`，176MB）构建成功并实跑：`/healthz` 200；未鉴权 `/` 401、鉴权 `/` 200；`/api/version` 返回 `{"version":"0.1.0","frontend":"index-BRVN5sxk.js"}`；`/assets/index-BRVN5sxk.js` 与 CSS 200 且 `cache-control: public, max-age=31536000, immutable`；`/favicon.svg` 200；旧 `/web/index.html`、`/vue/task-center.js`、`/assets/materials.js` 与越界路径均 404；入口 HTML/JS/CSS 无外部 URL、无 `cdn.openai.com` |
-| 浏览器验收 | 见 `docs/react-migration/verify/final/`：默认入口、导航、调试视图、同步弹窗、标注页、深链跳转，控制台 0 错误 |
+| 浏览器验收 | 见 `docs/archive/2026-11-react-migration/verify/final/`：默认入口、导航、调试视图、同步弹窗、标注页、深链跳转，控制台 0 错误 |
 | 发布包前置校验 | React 入口 `web/react/index.html` 与 `.vite/manifest.json` 存在；旧 `web/index.html` 已删除；清单入口 `assets/index-BRVN5sxk.js` 与产物 SHA256 一致（`68c2be52…b8b0`，739703 字节）；入口 HTML 无外部 URL、无 `__CAPTURE_TOKEN__` 占位符 |
 | 发布脚本 | `build.ps1`/`Launch.ps1`/`smoke.ps1`/`rollback.ps1` 语法解析 0 错误 |
 

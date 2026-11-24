@@ -161,6 +161,55 @@ wheels = [
 ]
 
 [[package]]
+name = "menu-capture"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "opencv-python", marker = "sys_platform == 'win32'" },
+    { name = "opencv-python-headless", marker = "sys_platform != 'win32'" },
+    { name = "openpyxl" },
+    { name = "pillow" },
+    { name = "pydantic" },
+    { name = "pyobjc-framework-applicationservices", marker = "sys_platform == 'darwin'" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
+    { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
+    { name = "pyobjc-framework-vision", marker = "sys_platform == 'darwin'" },
+    { name = "rapidocr-onnxruntime", marker = "sys_platform == 'win32'" },
+    { name = "screeninfo" },
+    { name = "uvicorn" },
+    { name = "zxing-cpp", marker = "sys_platform == 'win32'" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115,<1" },
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "opencv-python", marker = "sys_platform == 'win32'", specifier = ">=4.10,<5" },
+    { name = "opencv-python-headless", marker = "sys_platform != 'win32'", specifier = ">=4.10,<5" },
+    { name = "openpyxl", specifier = ">=3.1,<4" },
+    { name = "pillow", specifier = ">=11,<13" },
+    { name = "pydantic", specifier = ">=2.10,<3" },
+    { name = "pyobjc-framework-applicationservices", marker = "sys_platform == 'darwin'", specifier = ">=11,<13" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'", specifier = ">=11,<13" },
+    { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'", specifier = ">=11,<13" },
+    { name = "pyobjc-framework-vision", marker = "sys_platform == 'darwin'", specifier = ">=11,<13" },
+    { name = "rapidocr-onnxruntime", marker = "sys_platform == 'win32'", specifier = "==1.4.4" },
+    { name = "screeninfo", specifier = ">=0.8.1,<1" },
+    { name = "uvicorn", specifier = ">=0.34,<1" },
+    { name = "zxing-cpp", marker = "sys_platform == 'win32'", specifier = "==3.1.1" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8,<10" }]
+
+[[package]]
 name = "numpy"
 version = "2.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -576,55 +625,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/a3/26/b09b8010994eccc3c
 wheels = [
     { url = "https://files.pythonhosted.org/packages/67/81/4add07e5172b7ac40d8ed5ff580409a7801a4fe26d529bdd915401dabfbe/typing_inspection-0.4.4-py3-none-any.whl", hash = "sha256:65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147", size = 14750, upload-time = "2026-08-12T12:37:24.648Z" },
 ]
-
-[[package]]
-name = "ufs-menu-capture-macos"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "opencv-python", marker = "sys_platform == 'win32'" },
-    { name = "opencv-python-headless", marker = "sys_platform != 'win32'" },
-    { name = "openpyxl" },
-    { name = "pillow" },
-    { name = "pydantic" },
-    { name = "pyobjc-framework-applicationservices", marker = "sys_platform == 'darwin'" },
-    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
-    { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
-    { name = "pyobjc-framework-vision", marker = "sys_platform == 'darwin'" },
-    { name = "rapidocr-onnxruntime", marker = "sys_platform == 'win32'" },
-    { name = "screeninfo" },
-    { name = "uvicorn" },
-    { name = "zxing-cpp", marker = "sys_platform == 'win32'" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = ">=0.115,<1" },
-    { name = "httpx", specifier = ">=0.28,<1" },
-    { name = "opencv-python", marker = "sys_platform == 'win32'", specifier = ">=4.10,<5" },
-    { name = "opencv-python-headless", marker = "sys_platform != 'win32'", specifier = ">=4.10,<5" },
-    { name = "openpyxl", specifier = ">=3.1,<4" },
-    { name = "pillow", specifier = ">=11,<13" },
-    { name = "pydantic", specifier = ">=2.10,<3" },
-    { name = "pyobjc-framework-applicationservices", marker = "sys_platform == 'darwin'", specifier = ">=11,<13" },
-    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'", specifier = ">=11,<13" },
-    { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'", specifier = ">=11,<13" },
-    { name = "pyobjc-framework-vision", marker = "sys_platform == 'darwin'", specifier = ">=11,<13" },
-    { name = "rapidocr-onnxruntime", marker = "sys_platform == 'win32'", specifier = "==1.4.4" },
-    { name = "screeninfo", specifier = ">=0.8.1,<1" },
-    { name = "uvicorn", specifier = ">=0.34,<1" },
-    { name = "zxing-cpp", marker = "sys_platform == 'win32'", specifier = "==3.1.1" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8,<10" }]
 
 [[package]]
 name = "uvicorn"

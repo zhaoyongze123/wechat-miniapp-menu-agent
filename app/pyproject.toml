@@ -1,7 +1,7 @@
 [project]
-name = "ufs-menu-capture-macos"
+name = "menu-capture"
 version = "0.1.0"
-description = "微信菜单采集：macOS 单线程桌面自动化与本机管理台"
+description = "微信小程序菜单采集：Windows Worker、共享 Hub 与 React 管理台"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi>=0.115,<1",

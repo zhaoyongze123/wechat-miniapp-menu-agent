@@ -54,7 +54,7 @@ React 新版本已完成开发、自动化回归、浏览器验收、单台真�
 - 远程置顶：`documentPictureInPicture` 可用，按钮「打开置顶控制窗」存在；不支持时给出明确提示。
 - 通知：`Notification.permission === granted`，设置页「通知与提醒」面板可用。
 - 连续处理：素材页「提交本店决策后自动进入下一家」、质量页「确认不合格后自动进入下一条」均可切换，刷新后偏好保持（localStorage）。
-- 截图：`docs/react-migration/screenshots/release/`（12 张）。
+- 截图：`docs/archive/2026-11-react-migration/screenshots/release/`（12 张）。
 
 ## 6. 真实微信采集验收（生产机单台）
 
@@ -62,7 +62,7 @@ React 新版本已完成开发、自动化回归、浏览器验收、单台真�
 - 链路：微信窗口准备 → 发送门店名 → 发送二维码 → 打开图片并识别 → 打开小程序 → GUI Agent 导航（12 次模型调用、12 张截图、10 次导航动作）→ 返回微信。
 - 结果：`needs_review`，`error_code=agent_needs_review`；原因为该门店小程序停留在促销横幅页，点餐入口点击后无菜品列表，属门店页面结构问题，非执行故障。
 - 复核：React 待处理队列正确显示该店为「技术重试 / GUI Agent 待人工检查」，证据截图完整。
-- 证据：`docs/react-migration/verify/real-capture/`（batch-result、navigation-result、result）；原始运行目录已从生产 `.uipath-runs` 移出至 `D:\menu-agent-delivery-artifacts\real-capture\`，未向生产 `output` 写入任何数据。
+- 证据：`docs/archive/2026-11-react-migration/verify/real-capture/`（batch-result、navigation-result、result）；原始运行目录已从生产 `.uipath-runs` 移出至 `D:\menu-agent-delivery-artifacts\real-capture\`，未向生产 `output` 写入任何数据。
 - 生产批次 `25de5ef5…` 在采集前后均为 `paused`、index 75，未被中断或改写。
 
 ## 7. 数据兼容与设备身份
