@@ -145,7 +145,9 @@ def test_orchestrator_installs_verifies_and_completes(tmp_path):
         assert args[0] == state["path"]
         assert "/VERYSILENT" in args
         # 安装目录必须显式传给安装器，不能依赖默认路径或历史注册表值。
-        assert f'/DIR="{root}"' in args
+        # 参数不能自带引号：Python 会按 CreateProcess 规则再次转义，装成 /DIR=\"...\" 后 Inno 解析失败。
+        assert f"/DIR={root}" in args
+        assert not any("=" in item and '"' in item for item in args)
         make_release(root, "0.3.0")
         (root / "current-version").write_text("0.3.0", encoding="utf-8")
         return 0, ""

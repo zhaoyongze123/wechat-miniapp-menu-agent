@@ -428,18 +428,23 @@ class InstallOrchestrator:
     def _run_installer(self) -> None:
         assert self.artifact is not None
         log_path = self.journal_path.parent / "update-install.log"
-        code, output = self.run_command([
-            str(self.artifact),
+        # 参数里不要自带引号：subprocess 会按 CreateProcess 规则再转义一次，
+        # 带引号的 /DIR="..." 会被 Inno 解析成含反斜杠的非法路径并立即以退出码 1 结束。
+        switches = [
             "/VERYSILENT",
             "/SUPPRESSMSGBOXES",
             "/NORESTART",
             "/SP-",
             # 显式指定安装目录，避免依赖安装器默认路径或历史注册表值把文件装到别处。
-            f'/DIR="{self.install_root}"',
-            f'/LOG="{log_path}"',
-        ], INSTALL_TIMEOUT_SECONDS)
+            f"/DIR={self.install_root}",
+            f"/LOG={log_path}",
+        ]
+        code, output = self.run_command([str(self.artifact), *switches], INSTALL_TIMEOUT_SECONDS)
         if code != 0:
-            raise RuntimeError(f"安装程序退出码 {code}：{output.strip()[:500]}")
+            hint = ""
+            if not log_path.exists():
+                hint = f"（安装器未生成日志，参数：{' '.join(switches)}）"
+            raise RuntimeError(f"安装程序退出码 {code}：{output.strip()[:500]}{hint}")
 
     def _verify_installed(self) -> None:
         release = self.install_root / "releases" / self.target
