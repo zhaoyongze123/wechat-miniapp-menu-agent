@@ -17,6 +17,7 @@ Thumbs.db
 node_modules/
 .playwright-cli/
 dist/
+storybook-static/
 coverage/
 *.tsbuildinfo
 

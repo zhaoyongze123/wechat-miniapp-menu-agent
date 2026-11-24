@@ -32,6 +32,12 @@ export function PendingReviewDrawer({
 }: PendingReviewDrawerProps) {
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null)
   const status = statusOf(record?.status)
+  const previewItems = record?.task_id
+    ? [
+        { src: taskSourceUrl(record.task_id), alt: '任务源图' },
+        { src: taskLastFrameUrl(record.task_id), alt: '最近画面' },
+      ]
+    : []
 
   return (
     <>
@@ -134,6 +140,8 @@ export function PendingReviewDrawer({
         src={preview?.src ?? ''}
         alt={preview?.alt ?? ''}
         caption={preview?.alt ?? ''}
+        items={previewItems}
+        initialIndex={Math.max(0, previewItems.findIndex((item) => item.src === preview?.src))}
         onOpenChange={(open) => {
           if (!open) setPreview(null)
         }}

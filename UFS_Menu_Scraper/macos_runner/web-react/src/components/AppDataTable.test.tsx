@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { AppDataTable, type DataColumn } from './AppDataTable'
 
@@ -80,5 +80,42 @@ describe('AppDataTable', () => {
 
     expect(container.querySelector('table')?.className).not.toContain('table-fixed')
     expect(container.querySelectorAll('col')).toHaveLength(0)
+  })
+
+  it('行可通过键盘进入详情，并有可见焦点', () => {
+    const onRowActivate = vi.fn()
+    const { container } = render(
+      <AppDataTable
+        caption="测试列表"
+        columns={columns()}
+        rows={rows}
+        rowKey={(row) => row.id}
+        onRowActivate={onRowActivate}
+      />,
+    )
+    const row = container.querySelectorAll('tbody tr')[0] as HTMLElement
+    expect(row.tabIndex).toBe(0)
+    fireEvent.keyDown(row, { key: 'Enter' })
+    expect(onRowActivate).toHaveBeenCalledWith(rows[0])
+    fireEvent.keyDown(row, { key: ' ' })
+    expect(onRowActivate).toHaveBeenCalledTimes(2)
+  })
+
+  it('点击行内复选框或按钮不触发行详情', () => {
+    const onRowActivate = vi.fn()
+    const onOpen = vi.fn()
+    render(
+      <AppDataTable
+        caption="测试列表"
+        columns={columns(onOpen)}
+        rows={rows}
+        rowKey={(row) => row.id}
+        onRowActivate={onRowActivate}
+      />,
+    )
+    fireEvent.click(screen.getByLabelText('选择 测试门店'))
+    fireEvent.click(screen.getAllByText('详情')[0] as HTMLElement)
+    expect(onRowActivate).not.toHaveBeenCalled()
+    expect(onOpen).toHaveBeenCalledWith('1')
   })
 })

@@ -13,14 +13,32 @@ interface RoleContextValue {
 
 const RoleContext = createContext<RoleContextValue | null>(null)
 
+const STATUS_TIMEOUT_MS = 10_000
+
 /**
  * 角色由服务端 `GET /api/shared/status` 决定，浏览器只负责隐藏无权入口；
  * 真正的写权限仍由 Python 中间件执行。
+ * 共享后台无响应时必须超时并进入可重试错误态，不能永久停在“确认角色”。
  */
 export function RoleProvider({ children }: { children: ReactNode }) {
   const query = useQuery({
     queryKey: ['shared-status'],
-    queryFn: ({ signal }) => apiFetch<SharedStatus>('/api/shared/status?include_history=false', { signal }),
+    queryFn: async ({ signal }) => {
+      const controller = new AbortController()
+      const abort = () => controller.abort()
+      signal.addEventListener('abort', abort)
+      const timer = window.setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS)
+      try {
+        return await apiFetch<SharedStatus>('/api/shared/status?include_history=false', { signal: controller.signal })
+      } catch (cause) {
+        if (signal.aborted) throw cause
+        throw new Error('读取服务角色超时，请检查共享后台连接后重试')
+      } finally {
+        signal.removeEventListener('abort', abort)
+        window.clearTimeout(timer)
+      }
+    },
+    retry: 1,
     staleTime: 15_000,
     refetchInterval: 30_000,
   })

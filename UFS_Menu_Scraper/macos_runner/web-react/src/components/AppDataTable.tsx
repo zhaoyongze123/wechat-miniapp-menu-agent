@@ -89,9 +89,30 @@ export function AppDataTable<T>({
                 key={key}
                 className={[
                   'group border-b border-subtle align-top last:border-b-0',
-                  onRowActivate ? 'cursor-pointer hover:bg-secondary-ghost-hover' : '',
+                  onRowActivate
+                    ? 'cursor-pointer hover:bg-secondary-ghost-hover focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-ring)]'
+                    : '',
                 ].join(' ')}
-                onClick={onRowActivate ? () => onRowActivate(row) : undefined}
+                tabIndex={onRowActivate ? 0 : undefined}
+                onClick={
+                  onRowActivate
+                    ? (event) => {
+                        // 复选框、链接和行内按钮保持独立语义，不触发行详情。
+                        if (isInteractiveTarget(event.target)) return
+                        onRowActivate(row)
+                      }
+                    : undefined
+                }
+                onKeyDown={
+                  onRowActivate
+                    ? (event) => {
+                        if (event.target !== event.currentTarget) return
+                        if (event.key !== 'Enter' && event.key !== ' ') return
+                        event.preventDefault()
+                        onRowActivate(row)
+                      }
+                    : undefined
+                }
               >
                 {columns.map((column) => (
                   <td
@@ -129,4 +150,12 @@ function stickyClass<T>(column: DataColumn<T>, header: boolean): string {
   const side = column.sticky === 'left' ? 'left-0 border-r' : 'right-0 border-l'
   if (header) return `sticky ${side} z-30 bg-surface-secondary border-subtle`
   return `sticky ${side} z-10 bg-surface group-hover:bg-secondary-ghost-hover border-subtle`
+}
+
+/** 行内可交互元素自行处理点击/键盘，避免行点击吞掉复选框或按钮语义。 */
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    Boolean(target.closest('a,button,input,select,textarea,label,[role="checkbox"],[role="button"],[role="switch"]'))
+  )
 }

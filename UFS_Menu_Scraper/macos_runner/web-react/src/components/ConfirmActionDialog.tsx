@@ -33,6 +33,7 @@ export function ConfirmActionDialog({
       onOpenChange={onOpenChange}
       title={title}
       widthClass="w-[min(520px,94vw)]"
+      busy={busy}
       footer={
         <div className="flex justify-end gap-2">
           <Button color="secondary" variant="outline" size="sm" onClick={() => onOpenChange(false)} disabled={busy}>

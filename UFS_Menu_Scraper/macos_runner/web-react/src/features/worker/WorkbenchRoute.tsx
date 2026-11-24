@@ -1,3 +1,4 @@
+import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { StatePanel } from '../../components/StatePanel'
 import { useRole } from '../../app/RoleProvider'
 import { HubWorkbenchPage } from '../hub/HubWorkbenchPage'
@@ -8,8 +9,22 @@ import { WorkerWorkbenchPage } from './WorkerWorkbenchPage'
  * Windows 采集端负责本机队列、全自动/半自动与断线续传。
  */
 export function WorkbenchRoute() {
-  const { role, loading } = useRole()
+  const { role, loading, error, reload } = useRole()
   if (loading) return <StatePanel variant="loading" title="正在确认运行角色…" />
+  if (error) {
+    return (
+      <StatePanel
+        variant="error"
+        title="无法确认运行角色"
+        description={error}
+        action={
+          <Button color="secondary" variant="outline" size="sm" onClick={reload}>
+            重试
+          </Button>
+        }
+      />
+    )
+  }
   if (role === 'hub') return <HubWorkbenchPage />
   if (role === 'worker') return <WorkerWorkbenchPage />
   return (

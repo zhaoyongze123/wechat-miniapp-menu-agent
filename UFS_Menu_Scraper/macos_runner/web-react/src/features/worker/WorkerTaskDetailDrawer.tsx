@@ -3,6 +3,7 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { AppDrawer } from '../../components/AppDrawer'
+import { CellText } from '../../components/CellText'
 import { ImagePreview } from '../../components/ImagePreview'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -63,6 +64,22 @@ export function WorkerTaskDetailDrawer({ task, debugView, onOpenChange }: Worker
     return [...unique].map(([id, startedAt]) => ({ id, startedAt }))
   }, [actions])
   const images = (artifactsQuery.data?.files ?? []).filter((file) => /^page-\d+\.png$/i.test(file))
+  // 证据图与已发布截图合并为一个序列，打开后可连续浏览。
+  const previewItems = task
+    ? [
+        { src: `/api/tasks/${encodeURIComponent(task.id)}/source`, alt: '原始二维码' },
+        ...(task.reject_evidence
+          ? [{ src: `/api/rejections/tasks/${encodeURIComponent(task.id)}/evidence`, alt: '不合格判断证据' }]
+          : []),
+        ...(['needs_review', 'needs_retry', 'error', 'blocked', 'failed'].includes(task.status)
+          ? [{ src: `/api/tasks/${encodeURIComponent(task.id)}/last-frame`, alt: '最近采集画面' }]
+          : []),
+        ...images.map((file) => ({
+          src: `/api/artifact/${encodeURIComponent(task.id)}/${encodeURIComponent(file)}`,
+          alt: file,
+        })),
+      ]
+    : []
 
   if (!task || !store || !meta) return null
   const statusDescription = [task.message, task.reject_label].filter((value): value is string => Boolean(value)).map(safeEvidenceText).join(' · ') || '尚无运行说明'
@@ -73,7 +90,7 @@ export function WorkerTaskDetailDrawer({ task, debugView, onOpenChange }: Worker
       onOpenChange={onOpenChange}
       title={store.name || task.source_name || '未命名门店'}
       description={[store.code, task.batch_name, task.version ? `v${task.version}` : ''].filter(Boolean).join(' · ')}
-      footer={<p className="text-xs text-secondary">任务 ID：<code className="break-all">{task.id}</code></p>}
+      footer={<p className="text-xs text-secondary">任务 ID：<CellText copyable copyLabel="任务 ID" mono>{task.id}</CellText></p>}
     >
       <div className="space-y-5">
         <div className="flex flex-wrap items-center gap-2">
@@ -144,7 +161,15 @@ export function WorkerTaskDetailDrawer({ task, debugView, onOpenChange }: Worker
           </section>
         ) : null}
       </div>
-      <ImagePreview open={Boolean(preview)} src={preview?.src ?? ''} alt={preview?.alt ?? ''} {...(preview ? { caption: preview.alt } : {})} onOpenChange={(next) => { if (!next) setPreview(null) }} />
+      <ImagePreview
+        open={Boolean(preview)}
+        src={preview?.src ?? ''}
+        alt={preview?.alt ?? ''}
+        {...(preview ? { caption: preview.alt } : {})}
+        items={previewItems}
+        initialIndex={Math.max(0, previewItems.findIndex((item) => item.src === preview?.src))}
+        onOpenChange={(next) => { if (!next) setPreview(null) }}
+      />
     </AppDrawer>
   )
 }
