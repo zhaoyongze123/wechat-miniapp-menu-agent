@@ -64,9 +64,16 @@ export function UpdatesPanel() {
   const downloadPercent = download.total > 0
     ? Math.min(100, Math.round((download.downloaded / download.total) * 100))
     : 0
-  // 已下载并校验通过时不再重复提供下载入口；安装仍需按发布说明人工执行。
+  // 下载完成必须与当前最新版本及资产绑定，否则旧版本的 completed 会挡住新版本下载。
+  const latestAsset = latest?.assets.find((asset) => asset.kind === download.asset_kind)
+  const downloadedCurrent = download.status === 'completed'
+    && latest != null
+    && download.version === latest.version
+    && (!latestAsset || latestAsset.name === download.asset_name)
+  // 已下载当前最新版本时不再提供下载入口；安装仍需按发布说明人工执行。
   const canDownload = status.capabilities.download && status.update_available
-    && !download.active && download.status !== 'completed'
+    && !download.active && !downloadedCurrent
+  const showProgress = download.active || downloadedCurrent
 
   const savePreferences = (partial: { auto_check?: boolean; channel?: 'stable' | 'preview' }) => {
     actions.savePreferences.mutate(partial, {
@@ -149,11 +156,13 @@ export function UpdatesPanel() {
               <div className="min-w-0">
                 <p className="text-sm text-default">更新包下载</p>
                 <p className="text-2xs text-tertiary">
-                  {download.status === 'completed'
+                  {downloadedCurrent
                     ? `已下载 ${download.asset_name} 并通过 SHA-256 校验；安装执行器尚未启用。`
                     : download.active
                       ? `正在${download.status === 'verifying' ? '校验' : '下载'} ${download.asset_name}`
-                      : '下载只写入数据目录，支持断点续传，完成后校验 SHA-256；不会自动安装。'}
+                      : download.status === 'completed' && download.version
+                        ? `已下载 ${download.version}；当前最新为 ${latest?.version ?? '未知'}，可下载新版本。`
+                        : '下载只写入数据目录，支持断点续传，完成后校验 SHA-256；不会自动安装。'}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -168,18 +177,18 @@ export function UpdatesPanel() {
                 ) : null}
               </div>
             </div>
-            {download.active || download.status === 'completed' ? (
+            {showProgress ? (
               <div
                 className="h-2 w-full overflow-hidden rounded-full bg-secondary-soft"
                 role="progressbar"
                 aria-label="更新包下载进度"
                 aria-valuemin={0}
                 aria-valuemax={100}
-                aria-valuenow={download.status === 'completed' ? 100 : downloadPercent}
+                aria-valuenow={downloadedCurrent ? 100 : downloadPercent}
               >
                 <div
                   className="h-full rounded-full bg-primary-solid transition-all"
-                  style={{ width: `${download.status === 'completed' ? 100 : downloadPercent}%` }}
+                  style={{ width: `${downloadedCurrent ? 100 : downloadPercent}%` }}
                 />
               </div>
             ) : null}
@@ -188,7 +197,7 @@ export function UpdatesPanel() {
                 {formatBytes(download.downloaded)} / {formatBytes(download.total)} · {downloadPercent}%
               </p>
             ) : null}
-            {download.status === 'completed' ? (
+            {downloadedCurrent ? (
               <p className="text-2xs text-tertiary">
                 {formatBytes(download.downloaded)} · {download.asset_name}
               </p>
