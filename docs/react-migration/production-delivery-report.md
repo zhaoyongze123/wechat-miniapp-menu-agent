@@ -7,10 +7,10 @@
 
 ## 1. 结论
 
-React 新版本已完成开发、自动化回归、浏览器验收与单台真实微信采集验收，发布产物已由 CI 构建并校验。
-代码与产物满足替换现有 0.1.2 的条件；**唯一未闭环项是本机 0.1.2 → 0.2.0-rc.3 安装 smoke 需要生产停机窗口**（安装器固定 AppId，升级会覆盖现有 0.1.2 并在 8765 端口重启服务）。该项需业务确认后执行，不在未授权情况下操作生产。
+React 新版本已完成开发、自动化回归、浏览器验收、单台真实微信采集验收、本机安装升级回滚 smoke，并已按确认的停机窗口切换为生产版本 `0.2.0-rc.3`。
+生产数据、设备身份与 paused 批次保持完整，`0.1.2` 版本目录保留可直接回滚。
 
-生产服务当前状态保持原样：PID 15512，`127.0.0.1:8765`，`running=false`，批次 `25de5ef5b8fe49b7aa8e0168bda9699b` 仍为 `paused`、`current_index=75/88`，本轮全部操作未触碰该批次。
+切换后生产状态：`D:\menu-agent\runtime\MenuCapture`，`current-version=0.2.0-rc.3`，`127.0.0.1:8765`，`/healthz` ok；批次 `25de5ef5b8fe49b7aa8e0168bda9699b` 仍为 `paused`、`current_index=75/88`，未自动续跑。
 
 ## 2. 交付产物
 
@@ -78,16 +78,21 @@ React 新版本已完成开发、自动化回归、浏览器验收与单台真�
 - `smoke.ps1` 按**实际监听 8765 的进程**核对版本（修复了旧守护进程仍监听导致误判的问题），并校验 `current-version`、`release-manifest.json`、前端入口 SHA256、`/api/version`。
 - CI smoke 证据：`0.1.0 → 0.2.0-rc.3 → 0.1.0`，日志显示 `Install #1/#2 exit code 0`、`Rollback switched worker 6924 to 1804 on version 0.1.0`、`Previous release install, candidate upgrade, restart recovery, rollback and data preservation passed.`
 
-待执行：
-- 本机 `0.1.2 → 0.2.0-rc.3 → 0.1.2` smoke。`smoke.ps1` 在 8765 被占用或存在 MenuCapture 计划任务时主动拒绝；安装器固定 AppId，执行即等于短暂停产升级。需确认停机窗口后运行。
+本机 smoke（已执行，2026-11-24 14:03–14:09）：
+- `smoke.ps1 -PreviousInstaller <0.1.2> -PreviousVersion 0.1.2 -Installer <rc.3> -Version 0.2.0-rc.3 -Port 8765`。
+- 日志：`Install #1 exit code: 0`；`Supervisor restarted worker 26272 as 30224`；`Install #2 exit code: 0`；`Upgrade restarted worker 25060 as 28024`；`已回滚到 0.1.2，目标版本采集服务已通过健康检查`；`Rollback switched worker 28024 to 27860 on version 0.1.2`；`Previous release install, candidate upgrade, restart recovery, rollback and data preservation passed.`
+- 完整输出保存在 `D:\menu-agent-delivery-artifacts\smoke-0.1.2-to-rc3.log`；执行后测试实例已完整卸载（无残留计划任务、无注册表项、8765 已释放）。
 
-## 9. 上线方案
+## 9. 上线执行（已按以下步骤完成）
 
-1. 备份：停止工作台继续采集（保持当前 paused），复制 `D:\menu-agent\data\MenuCapture`（含 `data\tasks.sqlite3`、`config.local.json`、`secrets.local.json`、`shared-worker.local.json`）到备份目录。
-2. 安装：运行 `MenuCapture-Setup-0.2.0-rc.3-win-x64.exe`（用户级安装，写入新版本目录），确认 `current-version` 指向 `0.2.0-rc.3`。
-3. 校验：`GET /healthz` 为 worker；`GET /api/version` 返回 `0.2.0-rc.3` 与 React 入口；打开工作台确认 paused 批次仍在、数据完整。
-4. 恢复：在原工作台继续该批次，观察首店采集与结果落库。
-5. 回填发布版本：将 `0.2.0-rc.3` 定版为 `0.2.0` 后按同一流程重打包，或直接以 rc.3 作为生产版本记录。
+1. 备份：停止采集守护（保持 paused 批次），快照 `D:\menu-agent\data\MenuCapture`（含 `data\tasks.sqlite3`、配置与 `connections.json`）到 `D:\menu-agent-delivery-artifacts\prod-backup-0.1.2\`，并导出计划任务 XML 与卸载注册表项。
+2. 安装：`MenuCapture-Setup-0.2.0-rc.3-win-x64.exe /VERYSILENT /DIR="D:\menu-agent\runtime\MenuCapture"`，退出码 0；`current-version` = `0.2.0-rc.3`，`releases` 保留 `0.1.0`、`0.1.1`、`0.1.2`、`0.2.0-rc.3`。
+3. 启动：原计划任务恢复为 `Launch.ps1 -Action Supervise`；启动后 `GET /healthz` 返回 `{"ok":true,"role":"worker"}`。
+4. 校验：`GET /api/version` 返回 `{"version":"0.2.0-rc.3","frontend":"index-CgE4JUWo.js"}`；`/`、`/assets/index-CgE4JUWo.js`、`/assets/index-G2q2KzKA.css`、`/favicon.svg`、`/api/capture/queue` 均 200。
+5. 数据核对：`PRAGMA integrity_check` = ok；26 轮、1022 条任务、2196 条分配与升级前一致；最新批次 `25de5ef5…` 仍为 `paused`、`current_index=75/88`；`connections.json` 的模型指纹 `0974af68…` 与设备名「共享端A机」保留。
+6. 界面复核：生产端浏览器加载标题「菜单采集工作台」、H1「采集工作台」、`#root` 渲染 52KB，控制台错误 0。
+
+> 说明：paused 批次在切换后仍保持 paused，未自动续跑；是否继续由业务在工作台操作。
 
 Hub 侧：`MENU_CAPTURE_VERSION=0.2.0-rc.3 MENU_CAPTURE_IMAGE=menu-capture-hub:0.2.0-rc.3 docker compose -f deploy/compose.yaml up -d --build`，数据卷不变。
 
@@ -100,7 +105,8 @@ Hub 侧：`MENU_CAPTURE_VERSION=0.2.0-rc.3 MENU_CAPTURE_IMAGE=menu-capture-hub:0
 
 ## 11. 已知限制与风险
 
-1. 本机 0.1.2 升级 smoke 未执行（需停机窗口），当前升级证据来自 CI 的 0.1.0 路径与版本目录并存机制。
+1. 本机 0.1.2 升级 smoke 已完成（`smoke.ps1`），生产已切换到 `0.2.0-rc.3`；`0.1.2` 版本目录保留，可随时 `rollback.ps1 -Version 0.1.2`。
 2. 真机验收单店结果为 `needs_review`（门店小程序页面结构），本轮未取得 `captured` 成功样本；该分支由生产历史 524 条已采集记录与契约测试覆盖。
 3. 现场仅单台生产机可用，双设备离线补传复用既有隔离测试证据。
 4. GUI Agent 依赖本机已保存的 GUI-Plus 配置与 `ui_tars/node_modules`；安装包已内置运行依赖，生产机配置沿用现有安装。
+5. 升级/回滚验证期间生产服务约 13 分钟不可用（14:03–14:16，含 smoke 与切换），paused 批次未受影响。
