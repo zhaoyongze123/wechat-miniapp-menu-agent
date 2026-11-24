@@ -64,10 +64,36 @@ export interface UpdateCapabilities {
   inventory: boolean
 }
 
+export type UpdateDownloadStatus =
+  | 'idle'
+  | 'downloading'
+  | 'verifying'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
+
+/** 下载状态机：服务端只落盘到数据目录，安装执行器仍未启用。 */
+export interface UpdateDownloadState {
+  active: boolean
+  status: UpdateDownloadStatus
+  version: string
+  asset_kind: string
+  asset_name: string
+  downloaded: number
+  total: number
+  started_at: string
+  finished_at: string
+  error: string
+  path: string
+  resumable: boolean
+}
+
 export interface UpdateStatus {
   role: string
   repository: string
   platform: string
+  arch: string
   current_version: string
   channel: UpdateChannel
   preferences: UpdatePreferences
@@ -77,6 +103,7 @@ export interface UpdateStatus {
   stale: boolean
   error: string
   checking: boolean
+  download: UpdateDownloadState
   capabilities: UpdateCapabilities
   inventory: UpdateInventory
 }

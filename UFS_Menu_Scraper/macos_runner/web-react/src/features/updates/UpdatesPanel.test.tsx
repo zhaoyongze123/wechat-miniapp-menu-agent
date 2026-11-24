@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '../../components/ToastProvider'
-import type { UpdateStatus } from './types'
+import type { UpdateDownloadState, UpdateStatus } from './types'
 
 const mocks = vi.hoisted(() => ({
   status: { isPending: false, isError: false, data: undefined as UpdateStatus | undefined, error: null, refetch: vi.fn() },
@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   actions: {
     check: { mutate: vi.fn(), isPending: false },
     savePreferences: { mutate: vi.fn(), isPending: false },
+    download: { mutate: vi.fn(), isPending: false },
+    cancelDownload: { mutate: vi.fn(), isPending: false },
   },
 }))
 
@@ -28,11 +30,30 @@ function renderPanel() {
   )
 }
 
+function downloadState(overrides: Partial<UpdateDownloadState> = {}): UpdateDownloadState {
+  return {
+    active: false,
+    status: 'idle',
+    version: '',
+    asset_kind: '',
+    asset_name: '',
+    downloaded: 0,
+    total: 0,
+    started_at: '',
+    finished_at: '',
+    error: '',
+    path: '',
+    resumable: false,
+    ...overrides,
+  }
+}
+
 function status(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
   return {
     role: 'worker',
     repository: 'zhaoyongze123/wechat-miniapp-menu-agent',
     platform: 'windows',
+    arch: 'x64',
     current_version: '0.2.2',
     channel: 'stable',
     preferences: { auto_check: true, channel: 'stable' },
@@ -59,7 +80,8 @@ function status(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
     stale: false,
     error: '',
     checking: false,
-    capabilities: { check: true, download: false, install: false, rollback: false, inventory: true },
+    download: downloadState(),
+    capabilities: { check: true, download: true, install: false, rollback: false, inventory: true },
     inventory: {
       supported: true,
       install_root: 'D:\\menu-agent',
@@ -99,17 +121,80 @@ describe('UpdatesPanel', () => {
     expect(screen.getByText('发现可更新版本')).toBeInTheDocument()
     expect(screen.getByText('修复稳定性问题。')).toBeInTheDocument()
     expect(screen.getByText(/MenuCapture-0.3.0.exe/)).toBeInTheDocument()
-    expect(screen.getByText(/当前阶段仅提供版本发现与发布清单校验/)).toBeInTheDocument()
+    expect(screen.getByText(/当前阶段提供版本发现、发布清单校验与受控下载/)).toBeInTheDocument()
   })
 
-  it('手动检查调用真实动作，不伪造下载或安装入口', () => {
+  it('手动检查调用真实动作，下载入口不伪造安装能力', () => {
     renderPanel()
 
     fireEvent.click(screen.getByRole('button', { name: '手动检查更新' }))
 
     expect(mocks.actions.check.mutate).toHaveBeenCalledTimes(1)
-    expect(screen.queryByRole('button', { name: /下载/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '下载更新包' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /安装/ })).not.toBeInTheDocument()
+  })
+
+  it('点击下载调用真实下载动作', () => {
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('button', { name: '下载更新包' }))
+
+    expect(mocks.actions.download.mutate).toHaveBeenCalledTimes(1)
+  })
+
+  it('下载中显示真实进度并允许取消', () => {
+    mocks.status.data = status({
+      download: downloadState({
+        active: true,
+        status: 'downloading',
+        version: '0.3.0',
+        asset_name: 'MenuCapture-0.3.0.exe',
+        downloaded: 512,
+        total: 1024,
+      }),
+    })
+    renderPanel()
+
+    expect(screen.getByRole('progressbar', { name: '更新包下载进度' })).toHaveAttribute('aria-valuenow', '50')
+    expect(screen.getByText(/50%/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取消下载' }))
+
+    expect(mocks.actions.cancelDownload.mutate).toHaveBeenCalledTimes(1)
+  })
+
+  it('下载失败后展示原因并允许继续续传', () => {
+    mocks.status.data = status({
+      download: downloadState({
+        status: 'failed',
+        version: '0.3.0',
+        asset_name: 'MenuCapture-0.3.0.exe',
+        downloaded: 300,
+        total: 1024,
+        error: '网络中断',
+        resumable: true,
+      }),
+    })
+    renderPanel()
+
+    expect(screen.getByText('网络中断')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '继续下载' })).toBeInTheDocument()
+  })
+
+  it('下载完成后不再重复提供下载入口', () => {
+    mocks.status.data = status({
+      download: downloadState({
+        status: 'completed',
+        version: '0.3.0',
+        asset_name: 'MenuCapture-0.3.0.exe',
+        downloaded: 1024,
+        total: 1024,
+        path: 'D:\\menu-agent\\runtime\\data\\updates\\0.3.0\\MenuCapture-0.3.0.exe',
+      }),
+    })
+    renderPanel()
+
+    expect(screen.getByText(/已下载 MenuCapture-0.3.0.exe 并通过 SHA-256 校验/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /下载/ })).not.toBeInTheDocument()
   })
 
   it('版本清点显示保护状态与清理候选，但不提供删除按钮', () => {

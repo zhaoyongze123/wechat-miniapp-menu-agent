@@ -22,13 +22,14 @@ const PLATFORM_LABEL: Record<string, string> = {
 const ACTION_LABEL: Record<string, string> = {
   check: '检查更新',
   preferences: '保存偏好',
+  download: '下载更新包',
 }
 
 function historyLabel(row: UpdateHistoryRow): string {
   return ACTION_LABEL[row.action] ?? row.action
 }
 
-/** 设置中心软件更新：只展示服务端真实状态，不伪造下载、安装或回滚能力。 */
+/** 设置中心软件更新：只展示服务端真实状态，不伪造安装或回滚能力。 */
 export function UpdatesPanel() {
   const toast = useToast()
   const statusQuery = useUpdateStatus()
@@ -56,8 +57,16 @@ export function UpdatesPanel() {
   const status = statusQuery.data
   const latest = status.latest
   const preferences = status.preferences
+  const download = status.download
   const preferenceBusy = actions.savePreferences.isPending
   const checkBusy = actions.check.isPending
+  const downloadBusy = actions.download.isPending || actions.cancelDownload.isPending
+  const downloadPercent = download.total > 0
+    ? Math.min(100, Math.round((download.downloaded / download.total) * 100))
+    : 0
+  // 已下载并校验通过时不再重复提供下载入口；安装仍需按发布说明人工执行。
+  const canDownload = status.capabilities.download && status.update_available
+    && !download.active && download.status !== 'completed'
 
   const savePreferences = (partial: { auto_check?: boolean; channel?: 'stable' | 'preview' }) => {
     actions.savePreferences.mutate(partial, {
@@ -75,18 +84,35 @@ export function UpdatesPanel() {
     })
   }
 
+  const startDownload = () => {
+    actions.download.mutate(undefined, {
+      onSuccess: (state) => toast.push(
+        state.status === 'completed' ? '更新包已下载并通过校验' : '已开始下载更新包',
+        'info',
+      ),
+      onError: (error) => toast.push(errorMessage(error), 'danger'),
+    })
+  }
+
+  const cancelDownload = () => {
+    actions.cancelDownload.mutate(undefined, {
+      onSuccess: () => toast.push('已请求取消下载，已下载部分会保留', 'info'),
+      onError: (error) => toast.push(errorMessage(error), 'danger'),
+    })
+  }
+
   return (
     <div className="space-y-6">
       <SettingSection
         id="updates-software"
         title="软件更新"
-        description="从固定 GitHub 正式 Release 发现版本；下载、安装与回滚执行器尚未启用。"
+        description="从固定 GitHub 正式 Release 发现版本，并在校验通过后下载更新包；安装与回滚执行器尚未启用。"
       >
         <Alert
           color="warning"
           variant="soft"
-          title="当前阶段仅提供版本发现与发布清单校验"
-          description="本版本不会自动下载、安装或切换运行版本，也不会中断正在进行的采集；请按后续发布说明执行升级。"
+          title="当前阶段提供版本发现、发布清单校验与受控下载"
+          description="更新包只写入数据目录并校验 SHA-256，不会自动安装或切换运行版本，也不会中断正在进行的采集。"
         />
 
         <div className="grid gap-3 sm:grid-cols-3">
@@ -115,6 +141,62 @@ export function UpdatesPanel() {
 
         {status.error ? (
           <Alert color="danger" variant="soft" title="最近一次检查失败" description={status.error} />
+        ) : null}
+
+        {status.capabilities.download && (status.update_available || download.status !== 'idle') ? (
+          <div className="space-y-2 rounded-lg border border-subtle px-3 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-sm text-default">更新包下载</p>
+                <p className="text-2xs text-tertiary">
+                  {download.status === 'completed'
+                    ? `已下载 ${download.asset_name} 并通过 SHA-256 校验；安装执行器尚未启用。`
+                    : download.active
+                      ? `正在${download.status === 'verifying' ? '校验' : '下载'} ${download.asset_name}`
+                      : '下载只写入数据目录，支持断点续传，完成后校验 SHA-256；不会自动安装。'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {download.active ? (
+                  <Button color="secondary" variant="outline" size="sm" disabled={downloadBusy} onClick={cancelDownload}>
+                    取消下载
+                  </Button>
+                ) : canDownload ? (
+                  <Button color="primary" size="sm" disabled={downloadBusy} onClick={startDownload}>
+                    {download.resumable ? '继续下载' : '下载更新包'}
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+            {download.active || download.status === 'completed' ? (
+              <div
+                className="h-2 w-full overflow-hidden rounded-full bg-secondary-soft"
+                role="progressbar"
+                aria-label="更新包下载进度"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={download.status === 'completed' ? 100 : downloadPercent}
+              >
+                <div
+                  className="h-full rounded-full bg-primary-solid transition-all"
+                  style={{ width: `${download.status === 'completed' ? 100 : downloadPercent}%` }}
+                />
+              </div>
+            ) : null}
+            {download.active ? (
+              <p className="text-2xs text-secondary">
+                {formatBytes(download.downloaded)} / {formatBytes(download.total)} · {downloadPercent}%
+              </p>
+            ) : null}
+            {download.status === 'completed' ? (
+              <p className="text-2xs text-tertiary">
+                {formatBytes(download.downloaded)} · {download.asset_name}
+              </p>
+            ) : null}
+            {download.error ? (
+              <Alert color="danger" variant="soft" title="下载未完成" description={download.error} />
+            ) : null}
+          </div>
         ) : null}
 
         <SettingRow label="发布渠道" description="默认只接收正式稳定版；预览渠道仅用于明确授权的验证。">

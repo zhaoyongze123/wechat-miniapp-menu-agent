@@ -3,22 +3,26 @@
 边界：
 - 只访问固定仓库的正式 Release，不接受前端传入 URL、命令或版本路径；
 - SHA-256 仅用于完整性校验，发布者可信度依赖固定仓库与正式 Release 语义；
-- 本阶段不执行下载/安装/切换，避免在采集期间引入未经验证的高权限执行链路。
+- 下载只写入数据目录并做断点续传与哈希校验；安装/切换执行器仍不启用。
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform as platform_module
 import re
+import shutil
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import total_ordering
 from pathlib import Path
 from typing import Any, Callable
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -33,6 +37,12 @@ ALLOWED_ASSET_HOSTS = {
 CACHE_TTL_SECONDS = 3600
 FAILURE_BACKOFF_SECONDS = 300
 MAX_RELEASE_NOTES = 8000
+DOWNLOAD_CHUNK_BYTES = 256 * 1024
+DOWNLOAD_TIMEOUT_SECONDS = 30.0
+# 预留余量：下载期间系统、日志与其他进程仍要写入，不能把磁盘恰好填满。
+DOWNLOAD_FREE_SPACE_MARGIN = 64 * 1024 * 1024
+# 进度持久化节流：每 4 MiB 落盘一次，避免每块都写小文件。
+DOWNLOAD_PROGRESS_PERSIST_BYTES = 4 * 1024 * 1024
 # GitHub Release 上附带的更新清单；与安装目录内的运行时 release-manifest.json 区分。
 MANIFEST_ASSET = "update-manifest.json"
 _VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
@@ -124,17 +134,36 @@ def _update_available(latest: dict | None, current: str, platform: str, arch: st
     return _meets_min_supported(latest, current)
 
 
-def _has_asset_for_platform(latest: dict, platform: str, arch: str) -> bool:
-    kind = {"windows": "windows_installer", "linux": "hub_image"}.get(platform)
+def _asset_kind_for_platform(platform: str) -> str:
+    return {"windows": "windows_installer", "linux": "hub_image"}.get(platform, "")
+
+
+def _downloadable_asset(latest: dict, platform: str, arch: str) -> dict | None:
+    """返回与本机平台、架构匹配的资产；下载前必须再走一次同样的匹配。"""
+    kind = _asset_kind_for_platform(platform)
     if not kind or not arch:
-        return False
-    return any(
-        isinstance(asset, dict) and asset.get("kind") == kind
-        and asset.get("platform") == platform
-        # 不仅看清单字段，还要与本机真实架构归一化后匹配，ARM64 不会拿到 x64 资产。
-        and _normalize_arch(asset.get("arch")) == arch
-        for asset in latest.get("assets") or []
-    )
+        return None
+    for asset in latest.get("assets") or []:
+        if (
+            isinstance(asset, dict)
+            and asset.get("kind") == kind
+            and asset.get("platform") == platform
+            and _normalize_arch(asset.get("arch")) == arch
+        ):
+            return asset
+    return None
+
+
+def _has_asset_for_platform(latest: dict, platform: str, arch: str) -> bool:
+    return _downloadable_asset(latest, platform, arch) is not None
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(DOWNLOAD_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _normalize_arch(value: Any) -> str:
@@ -248,6 +277,7 @@ class UpdateService:
         install_root: Path | None = None,
         repository: str = DEFAULT_REPOSITORY,
         fetcher: Callable[[str, dict[str, str], float], tuple[int, dict[str, str], bytes]] | None = None,
+        opener: Callable[[str, dict[str, str], float], Any] | None = None,
         clock: Callable[[], float] = time.time,
         platform: str | None = None,
         machine: str | None = None,
@@ -269,8 +299,12 @@ class UpdateService:
         self.cache_path = self.data_dir / "update-cache.json"
         self.preferences_path = self.data_dir / "update-preferences.json"
         self.history_path = self.data_dir / "update-history.jsonl"
+        # 下载产物与断点只落在数据目录，绝不写入程序目录或安装目录。
+        self.download_dir = self.data_dir / "updates"
+        self.download_state_path = self.data_dir / "update-download.json"
         self._lock = threading.RLock()
         self._fetcher = fetcher or _http_request
+        self._opener = opener or _http_open
         self._clock = clock
         self._cache = self._read_json(self.cache_path, {})
         self._preferences = self._read_preferences()
@@ -278,6 +312,12 @@ class UpdateService:
         self._check_done: threading.Event | None = None
         # 渠道切换时递增；在途检查写回前必须确认代号未变化，否则丢弃旧结果。
         self._generation = 0
+        # 下载同一时刻只允许一个任务；进度频繁变化，落盘按阈值节流。
+        self._downloading = False
+        self._download_cancel: threading.Event | None = None
+        self._download_thread: threading.Thread | None = None
+        self._download_persisted = 0
+        self._download_state = self._load_download_state()
 
     # ---------- 对外状态 ----------
 
@@ -337,10 +377,12 @@ class UpdateService:
             "stale": _is_stale(cache, now),
             "error": str(cache.get("error") or ""),
             "checking": checking,
+            "download": self.download_status(),
             "capabilities": {
                 "check": True,
-                # 下载/安装/切换执行器尚未纳入本阶段，UI 必须如实展示为不支持。
-                "download": False,
+                # 本阶段只提供受控下载（临时文件 + 断点续传 + SHA-256 校验）；
+                # 安装/切换仍需人工按发布说明执行，不能在前端伪造为可用。
+                "download": True,
                 "install": False,
                 "rollback": False,
                 "inventory": self._inventory_supported(),
@@ -469,6 +511,210 @@ class UpdateService:
             "cleanup_supported": False,
             "cleanup_reason": "自动清理执行器尚未启用；当前仅提供安全清点与保护规则预览",
         }
+
+    # ---------- 受控下载（只下载，不安装） ----------
+
+    def download_status(self) -> dict:
+        with self._lock:
+            state = dict(self._download_state)
+        if state.get("status") in {"failed", "cancelled", "interrupted"}:
+            state["resumable"] = self._part_path(
+                str(state.get("version") or ""), str(state.get("asset_name") or "")
+            ).is_file()
+        else:
+            state["resumable"] = False
+        return state
+
+    def start_download(self) -> dict:
+        """启动唯一的下载任务；版本、平台、架构与哈希全部来自已验证清单。"""
+        with self._lock:
+            if self._downloading:
+                raise ValueError("已有下载任务正在运行")
+            latest = self._cache.get("latest")
+            current = self.current_version()
+            if not isinstance(latest, dict) or not _update_available(latest, current, self.platform, self.local_arch):
+                raise ValueError("当前没有可下载的更新，请先检查更新并确认平台、架构匹配")
+            asset = _downloadable_asset(latest, self.platform, self.local_arch)
+            if asset is None:
+                raise ValueError("发布清单中没有与本机平台和架构匹配的资产")
+            version = str(latest.get("version") or "")
+            self._downloading = True
+            self._download_cancel = threading.Event()
+            self._download_persisted = 0
+            self._download_state = {
+                **_empty_download_state(),
+                "active": True,
+                "status": "downloading",
+                "version": version,
+                "asset_kind": str(asset.get("kind") or ""),
+                "asset_name": str(asset.get("name") or ""),
+                "total": int(asset.get("size") or 0),
+                "started_at": _utc_now(),
+            }
+            self._write_download_state()
+            thread = threading.Thread(
+                target=self._run_download,
+                args=(dict(asset), version, self._download_cancel),
+                name="menu-capture-update-download",
+                daemon=True,
+            )
+            self._download_thread = thread
+        thread.start()
+        return self.download_status()
+
+    def cancel_download(self) -> dict:
+        with self._lock:
+            cancel = self._download_cancel if self._downloading else None
+        if cancel is not None:
+            cancel.set()
+        return self.download_status()
+
+    def _run_download(self, asset: dict, version: str, cancel: threading.Event) -> None:
+        name = str(asset.get("name") or "")
+        size = int(asset.get("size") or 0)
+        sha = str(asset.get("sha256") or "")
+        final = self.download_dir / version / name
+        part = self._part_path(version, name)
+        try:
+            final.parent.mkdir(parents=True, exist_ok=True)
+            # 已存在且校验通过的产物直接复用，避免同一版本反复下载。
+            if final.is_file() and _file_sha256(final) == sha:
+                self._finish_download("completed", path=str(final), downloaded=size)
+                return
+            if final.exists():
+                final.unlink(missing_ok=True)
+            offset = part.stat().st_size if part.is_file() else 0
+            if offset > size or (offset == size and _file_sha256(part) != sha):
+                part.unlink(missing_ok=True)
+                offset = 0
+            if offset == size:
+                os.replace(part, final)
+                self._finish_download("completed", path=str(final), downloaded=size)
+                return
+            free = shutil.disk_usage(final.parent).free
+            if free < size - offset + DOWNLOAD_FREE_SPACE_MARGIN:
+                raise ValueError(f"磁盘剩余空间不足：需要 {size - offset} 字节，可用 {free} 字节")
+            if cancel.is_set():
+                self._finish_download("cancelled", error="下载已取消，已保留断点")
+                return
+            self._report_progress(offset, persist=True)
+            hasher = hashlib.sha256()
+            if offset:
+                with part.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(DOWNLOAD_CHUNK_BYTES), b""):
+                        hasher.update(chunk)
+            headers = {"Accept": "application/octet-stream", "User-Agent": "menu-capture-updater"}
+            if offset:
+                headers["Range"] = f"bytes={offset}-"
+            written = offset
+            with self._opener(str(asset.get("url") or ""), headers, DOWNLOAD_TIMEOUT_SECONDS) as opened:
+                status, _, response = opened
+                if status == 416:
+                    raise ValueError("服务器拒绝续传，请重新开始下载")
+                if status not in {200, 206}:
+                    raise ValueError(f"下载失败（HTTP {status}）")
+                append = status == 206 and offset > 0
+                if offset and not append:
+                    # 服务器忽略 Range：必须从零重写，否则新旧内容拼接会得到损坏文件。
+                    offset = 0
+                    written = 0
+                    hasher = hashlib.sha256()
+                    self._report_progress(0, persist=True)
+                with part.open("ab" if append else "wb") as handle:
+                    while True:
+                        chunk = response.read(DOWNLOAD_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        if cancel.is_set():
+                            self._finish_download("cancelled", error="下载已取消，已保留断点")
+                            return
+                        written += len(chunk)
+                        # 不能只信 Content-Length：响应体超过清单大小时立即中止。
+                        if written > size:
+                            raise ValueError("下载内容超过发布清单声明的大小，已中止")
+                        hasher.update(chunk)
+                        handle.write(chunk)
+                        self._report_progress(written)
+            if written != size:
+                raise ValueError(f"下载未完成：{written}/{size} 字节，可重试续传")
+            self._set_download_status("verifying")
+            if hasher.hexdigest() != sha:
+                part.unlink(missing_ok=True)
+                raise ValueError("SHA-256 校验失败，已删除损坏文件")
+            os.replace(part, final)
+            self._finish_download("completed", path=str(final), downloaded=size)
+        except Exception as exc:
+            # 未完成的 .part 原样保留，下一次开始下载会按 Range 续传。
+            self._finish_download("failed", error=str(exc) or "下载失败")
+        finally:
+            with self._lock:
+                self._downloading = False
+                self._download_cancel = None
+
+    def _part_path(self, version: str, name: str) -> Path:
+        return self.download_dir / str(version) / (str(name) + ".part")
+
+    def _set_download_status(self, status: str) -> None:
+        with self._lock:
+            state = dict(self._download_state)
+            state["status"] = status
+            self._download_state = state
+            self._write_download_state()
+
+    def _report_progress(self, written: int, *, persist: bool = False) -> None:
+        with self._lock:
+            state = dict(self._download_state)
+            state["downloaded"] = int(written)
+            self._download_state = state
+            should_persist = persist or written - self._download_persisted >= DOWNLOAD_PROGRESS_PERSIST_BYTES
+            if should_persist:
+                self._download_persisted = written
+        if should_persist:
+            self._write_download_state()
+
+    def _finish_download(self, status: str, *, path: str = "", error: str = "",
+                         downloaded: int | None = None) -> None:
+        with self._lock:
+            state = dict(self._download_state)
+            if downloaded is not None:
+                state["downloaded"] = int(downloaded)
+            state.update({
+                "active": False,
+                "status": status,
+                "error": error,
+                "finished_at": _utc_now(),
+                "path": path if status == "completed" else "",
+            })
+            self._download_state = state
+            self._write_download_state()
+            message = error or (f"已下载 {state.get('asset_name')}" if status == "completed" else status)
+            self._append_history("download", "ok" if status == "completed" else "failed",
+                                 message, str(state.get("version") or ""))
+
+    def _write_download_state(self) -> None:
+        try:
+            self._write_json(self.download_state_path, dict(self._download_state))
+        except OSError:
+            # 状态文件写失败不应中断真实下载；内存状态仍然有效。
+            pass
+
+    def _load_download_state(self) -> dict:
+        data = self._read_json(self.download_state_path, {})
+        state = _empty_download_state()
+        if isinstance(data, dict):
+            for key, default in state.items():
+                value = data.get(key)
+                if isinstance(value, type(default)):
+                    state[key] = value
+        if state["status"] in {"downloading", "verifying"}:
+            # 进程重启后下载线程已不存在，必须如实标记为中断并允许续传。
+            state.update({
+                "status": "interrupted",
+                "active": False,
+                "error": "下载进程已中断，可重新开始以续传",
+            })
+        state["active"] = False
+        return state
 
     # ---------- 内部实现 ----------
 
@@ -678,6 +924,37 @@ def version_text(version: Version, tag: str) -> str:
     if version.is_prerelease:
         return tag.lstrip("v")
     return f"{version.major}.{version.minor}.{version.patch}"
+
+
+def _empty_download_state() -> dict:
+    return {
+        "active": False,
+        "status": "idle",
+        "version": "",
+        "asset_kind": "",
+        "asset_name": "",
+        "downloaded": 0,
+        "total": 0,
+        "started_at": "",
+        "finished_at": "",
+        "error": "",
+        "path": "",
+    }
+
+
+@contextmanager
+def _http_open(url: str, headers: dict[str, str], timeout: float):
+    """流式打开受信任资产地址以支持 Range 续传；416 交由调用方判定是否需要重下。"""
+    request = Request(url, headers=headers)
+    try:
+        response = urlopen(request, timeout=timeout)  # noqa: S310 - 地址已在清单校验阶段限定
+    except HTTPError as exc:
+        if exc.code == 416:
+            yield 416, dict(exc.headers.items()) if exc.headers else {}, exc
+            return
+        raise
+    with response:
+        yield response.status, dict(response.headers.items()), response
 
 
 def _tree_size(directory: Path) -> int:
