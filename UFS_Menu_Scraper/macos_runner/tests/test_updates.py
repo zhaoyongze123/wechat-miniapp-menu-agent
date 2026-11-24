@@ -105,9 +105,11 @@ class BlockingFetcher(Fetcher):
         return super().__call__(url, headers, timeout)
 
 
-def make_service(tmp_path: Path, releases, manifests, *, current="0.2.0", channel="stable", fetcher=None):
+def make_service(tmp_path: Path, releases, manifests, *, current="0.2.0", channel="stable", fetcher=None,
+                 machine="AMD64"):
     service = UpdateService(
-        tmp_path, role="worker", fetcher=fetcher or Fetcher(releases, manifests), platform="windows"
+        tmp_path, role="worker", fetcher=fetcher or Fetcher(releases, manifests),
+        platform="windows", machine=machine,
     )
     service.save_preferences({"channel": channel})
     service._cache = {}
@@ -270,17 +272,24 @@ def test_inventory_protects_current_and_recent_two(tmp_path, monkeypatch):
         json.dumps({"version": "0.2.0", "built_at": "2026-02-01", "git_commit": "d" * 40}), encoding="utf-8"
     )
     (install / "current-version").write_text("0.2.0", encoding="utf-8")
+    # 数据目录下即使存在同名 releases 目录也不能被当作安装根。
+    decoy = tmp_path / "runtime" / "releases" / "9.9.9" / "app"
+    decoy.mkdir(parents=True)
     monkeypatch.setenv("MENU_CAPTURE_VERSION", "0.2.0")
     monkeypatch.setattr("menu_capture.updates.sys.platform", "win32")
 
-    service = UpdateService(current_app, role="worker")
+    # 数据目录与程序目录分离：data_root 只存缓存/审计，安装根由 app_root 推导。
+    service = UpdateService(tmp_path / "runtime", role="worker", app_root=current_app, machine="AMD64")
     inventory = service.inventory()
 
     assert inventory["supported"] is True
+    assert inventory["install_root"] == str(install)
+    assert [row["version"] for row in inventory["releases"]] == ["0.2.0", "0.1.9", "0.1.8", "0.1.7"]
     protected = {row["version"] for row in inventory["releases"] if row["protected"]}
     assert protected == {"0.2.0", "0.1.9", "0.1.8"}
     assert [row["version"] for row in inventory["cleanup_candidates"]] == ["0.1.7"]
     assert inventory["cleanup_supported"] is False
+    assert service.data_dir == tmp_path / "runtime" / "data"
 
 
 def test_history_records_preferences_and_check(tmp_path):
@@ -328,3 +337,81 @@ def test_status_is_not_blocked_by_slow_network(tmp_path):
 def test_invalid_version_is_rejected():
     with pytest.raises(ValueError):
         Version.parse("not-a-version")
+
+
+def test_arch_mismatch_is_not_offered(tmp_path):
+    rel = release("v0.3.0", manifest=manifest("0.3.0"))
+    service = make_service(tmp_path, [rel], {"v0.3.0": manifest("0.3.0")}, machine="ARM64")
+
+    status = service.check(force=True)
+
+    assert status["arch"] == "arm64"
+    assert status["latest"]["eligible"] is True
+    assert status["update_available"] is False
+
+
+def test_arch_aliases_match_x64_assets(tmp_path):
+    payload = manifest("0.3.0")
+    payload["assets"][0]["arch"] = "amd64"
+    rel = release("v0.3.0", manifest=payload)
+    service = make_service(tmp_path, [rel], {"v0.3.0": payload}, machine="x86_64")
+
+    status = service.check(force=True)
+
+    assert status["arch"] == "x64"
+    assert status["update_available"] is True
+
+
+def test_manual_check_reuses_inflight_request(tmp_path):
+    rel = release("v0.3.0", manifest=manifest("0.3.0"))
+    fetcher = BlockingFetcher([rel], {"v0.3.0": manifest("0.3.0")})
+    service = make_service(tmp_path, [rel], {"v0.3.0": manifest("0.3.0")}, fetcher=fetcher)
+
+    first = threading.Thread(target=service.check, kwargs={"force": True})
+    first.start()
+    assert fetcher.entered.wait(2)
+
+    second_results: list[dict] = []
+    second = threading.Thread(target=lambda: second_results.append(service.check(force=True)))
+    second.start()
+    time.sleep(0.2)
+    fetcher.release_event.set()
+    first.join(5)
+    second.join(5)
+
+    assert not first.is_alive() and not second.is_alive()
+    api_calls = [url for url in fetcher.calls if "api.github.com" in url]
+    assert len(api_calls) == 1
+    assert second_results[0]["latest"]["version"] == "0.3.0"
+
+
+def test_channel_switch_discards_inflight_result(tmp_path):
+    stable = release("v0.3.0", manifest=manifest("0.3.0"))
+    rc = release("v0.4.0-rc.1", manifest=manifest("0.4.0-rc.1", "preview"), prerelease=True)
+    fetcher = BlockingFetcher(
+        [stable, rc],
+        {"v0.3.0": manifest("0.3.0"), "v0.4.0-rc.1": manifest("0.4.0-rc.1", "preview")},
+    )
+    service = make_service(
+        tmp_path, [stable, rc],
+        {"v0.3.0": manifest("0.3.0"), "v0.4.0-rc.1": manifest("0.4.0-rc.1", "preview")},
+        fetcher=fetcher, channel="stable",
+    )
+
+    worker = threading.Thread(target=service.check, kwargs={"force": True})
+    worker.start()
+    assert fetcher.entered.wait(2)
+
+    service.save_preferences({"channel": "preview"})
+    fetcher.release_event.set()
+    worker.join(5)
+
+    # 旧 stable 请求返回后不得写回新 preview 渠道的缓存，也不记录为失败。
+    assert not worker.is_alive()
+    assert service._cache.get("latest") is None
+    assert service._cache.get("checked_at") == 0
+    assert not service._cache.get("error")
+    status = service.status_no_check()
+    assert status["channel"] == "preview"
+    assert status["checking"] is False
+

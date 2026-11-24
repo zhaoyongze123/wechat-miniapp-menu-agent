@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform as platform_module
 import re
 import sys
 import threading
@@ -36,6 +37,20 @@ MAX_RELEASE_NOTES = 8000
 MANIFEST_ASSET = "update-manifest.json"
 _VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+# 发布资产与本机架构统一归一化后再比较，避免 x64/amd64/x86_64 三种写法造成误判。
+_ARCH_ALIASES = {
+    "x64": "x64",
+    "amd64": "x64",
+    "x86_64": "x64",
+    "x86-64": "x64",
+    "arm64": "arm64",
+    "aarch64": "arm64",
+    "x86": "x86",
+    "i386": "x86",
+    "i686": "x86",
+}
+# 程序目录默认取包所在目录的上一级（macos_runner）；与数据目录严格分离，不参与反推。
+DEFAULT_APP_ROOT = Path(__file__).resolve().parent.parent
 
 
 @total_ordering
@@ -99,25 +114,36 @@ def _meets_min_supported(latest: dict, current: str) -> bool:
         return False
 
 
-def _update_available(latest: dict | None, current: str, platform: str) -> bool:
+def _update_available(latest: dict | None, current: str, platform: str, arch: str) -> bool:
     if not latest or not latest.get("eligible") or not current:
         return False
     if not is_newer(str(latest.get("version") or ""), current):
         return False
-    if not _has_asset_for_platform(latest, platform):
+    if not _has_asset_for_platform(latest, platform, arch):
         return False
     return _meets_min_supported(latest, current)
 
 
-def _has_asset_for_platform(latest: dict, platform: str) -> bool:
+def _has_asset_for_platform(latest: dict, platform: str, arch: str) -> bool:
     kind = {"windows": "windows_installer", "linux": "hub_image"}.get(platform)
-    if not kind:
+    if not kind or not arch:
         return False
     return any(
         isinstance(asset, dict) and asset.get("kind") == kind
         and asset.get("platform") == platform
+        # 不仅看清单字段，还要与本机真实架构归一化后匹配，ARM64 不会拿到 x64 资产。
+        and _normalize_arch(asset.get("arch")) == arch
         for asset in latest.get("assets") or []
     )
+
+
+def _normalize_arch(value: Any) -> str:
+    """把 x64/amd64/x86_64、arm64/aarch64 等写法归一化为统一架构名。"""
+    return _ARCH_ALIASES.get(str(value or "").strip().lower(), "")
+
+
+def _local_arch() -> str:
+    return _normalize_arch(platform_module.machine())
 
 
 def _is_stale(cache: dict, now: float) -> bool:
@@ -175,7 +201,7 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
         expected_platform = "windows" if kind == "windows_installer" else "linux"
         if platform != expected_platform:
             raise ValueError(f"发布资产平台与类型不一致: {name}")
-        if arch not in {"x64", "amd64"}:
+        if not _normalize_arch(arch):
             raise ValueError(f"发布资产架构无效: {name}")
         if not name or Path(name).name != name:
             raise ValueError("发布资产名称无效")
@@ -215,19 +241,30 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
 class UpdateService:
     def __init__(
         self,
-        app_root: Path,
+        data_root: Path,
         *,
         role: str,
+        app_root: Path | None = None,
+        install_root: Path | None = None,
         repository: str = DEFAULT_REPOSITORY,
         fetcher: Callable[[str, dict[str, str], float], tuple[int, dict[str, str], bytes]] | None = None,
         clock: Callable[[], float] = time.time,
         platform: str | None = None,
+        machine: str | None = None,
     ) -> None:
-        self.app_root = Path(app_root)
+        # 三个目录语义必须分开：
+        # - data_root：配置、缓存、审计等可写数据（Windows 上通常由 MENU_CAPTURE_HOME 指定）；
+        # - app_root：当前运行的程序目录（只读，含 release-manifest.json）；
+        # - install_root：多版本安装根（含 releases/），Windows 才能从 app_root 推导。
+        # 绝不能从 data_root 反推安装目录，否则清理与回滚执行器会定位到错误位置。
+        self.data_root = Path(data_root)
+        self.app_root = Path(app_root) if app_root is not None else DEFAULT_APP_ROOT
+        self._install_root_override = Path(install_root) if install_root is not None else None
         self.role = role
         self.platform = platform or _platform_name()
+        self.local_arch = _normalize_arch(machine or platform_module.machine())
         self.repository = repository
-        self.data_dir = self.app_root / "data"
+        self.data_dir = self.data_root / "data"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.cache_path = self.data_dir / "update-cache.json"
         self.preferences_path = self.data_dir / "update-preferences.json"
@@ -238,48 +275,49 @@ class UpdateService:
         self._cache = self._read_json(self.cache_path, {})
         self._preferences = self._read_preferences()
         self._checking = False
+        self._check_done: threading.Event | None = None
+        # 渠道切换时递增；在途检查写回前必须确认代号未变化，否则丢弃旧结果。
+        self._generation = 0
 
     # ---------- 对外状态 ----------
 
     def status(self) -> dict:
-        start_background = False
         with self._lock:
             preferences = dict(self._preferences)
             cache = dict(self._cache)
             now = self._clock()
             stale = _is_stale(cache, now)
-            if (
+            should_start = bool(
                 preferences.get("auto_check")
                 and stale
                 and now >= float(cache.get("backoff_until") or 0)
-                and not self._checking
-            ):
-                # 只置位并启动后台线程；网络请求不占用状态锁。
-                self._checking = True
-                start_background = True
-            checking = self._checking
+            )
+        # 只置位并启动后台线程；网络请求不占用状态锁，也不与已有检查并发。
+        start_background = should_start and self._try_begin_check()
         if start_background:
             self._spawn_background_check()
-        return self._status_payload(preferences, cache, checking)
+        return self._status_payload(preferences, cache, self._is_checking())
 
     def check(self, *, force: bool = True) -> dict:
         with self._lock:
-            if not force and not _is_stale(self._cache, self._clock()):
-                return self.status_no_check()
-            self._checking = True
-        try:
-            self._run_check(force=force)
-        finally:
-            with self._lock:
-                self._checking = False
+            stale = _is_stale(self._cache, self._clock())
+        if not force and not stale:
+            return self.status_no_check()
+        if self._try_begin_check():
+            try:
+                self._run_check(force=force)
+            finally:
+                self._end_check()
+        else:
+            # 已有检查在运行：等待它结束后返回同一份结果，避免重复请求 Release 接口。
+            self._wait_for_check()
         return self.status_no_check()
 
     def status_no_check(self) -> dict:
         with self._lock:
             preferences = dict(self._preferences)
             cache = dict(self._cache)
-            checking = self._checking
-        return self._status_payload(preferences, cache, checking)
+        return self._status_payload(preferences, cache, self._is_checking())
 
     def _status_payload(self, preferences: dict, cache: dict, checking: bool) -> dict:
         now = self._clock()
@@ -289,11 +327,12 @@ class UpdateService:
             "role": self.role,
             "repository": self.repository,
             "platform": self.platform,
+            "arch": self.local_arch,
             "current_version": current,
             "channel": preferences.get("channel", "stable"),
             "preferences": preferences,
             "latest": latest,
-            "update_available": _update_available(latest, current, self.platform),
+            "update_available": _update_available(latest, current, self.platform, self.local_arch),
             "last_checked": _iso(cache.get("checked_at")),
             "stale": _is_stale(cache, now),
             "error": str(cache.get("error") or ""),
@@ -327,6 +366,8 @@ class UpdateService:
             self._write_json(self.preferences_path, preferences)
             if preferences.get("channel") != previous_channel:
                 # 切换渠道后旧渠道的 latest 不再代表当前策略，下一次状态读取必须重新检查。
+                # 代号递增让仍在途的旧渠道请求在写回时被丢弃，不会覆盖新渠道缓存。
+                self._generation += 1
                 cache = dict(self._cache)
                 cache["checked_at"] = 0
                 cache["latest"] = None
@@ -366,8 +407,11 @@ class UpdateService:
     def _install_root(self) -> Path | None:
         if sys.platform != "win32":
             return None
-        # 安装布局：<install>/releases/<version>/app/menu_capture → 安装根为 app 的上三级。
-        root = self.app_root.parent.parent.parent
+        # 安装布局：<install>/releases/<version>/app/menu_capture → 安装根为程序目录的上三级。
+        # 这里只允许显式 install_root 或程序目录推导；数据目录（data_root）不参与定位。
+        root = self._install_root_override
+        if root is None:
+            root = self.app_root.parent.parent.parent
         return root if (root / "releases").is_dir() else None
 
     def _inventory_supported(self) -> bool:
@@ -428,13 +472,39 @@ class UpdateService:
 
     # ---------- 内部实现 ----------
 
+    def _is_checking(self) -> bool:
+        with self._lock:
+            return self._checking
+
+    def _try_begin_check(self) -> bool:
+        """原子地占用唯一的检查名额；已有检查在跑时返回 False，绝不并发请求同一接口。"""
+        with self._lock:
+            if self._checking:
+                return False
+            self._checking = True
+            self._check_done = threading.Event()
+            return True
+
+    def _end_check(self) -> None:
+        with self._lock:
+            self._checking = False
+            event = self._check_done
+            self._check_done = None
+        if event is not None:
+            event.set()
+
+    def _wait_for_check(self, timeout: float = 30.0) -> None:
+        with self._lock:
+            event = self._check_done
+        if event is not None:
+            event.wait(timeout)
+
     def _spawn_background_check(self) -> None:
         def run() -> None:
             try:
                 self._run_check(force=False)
             finally:
-                with self._lock:
-                    self._checking = False
+                self._end_check()
 
         threading.Thread(target=run, name="menu-capture-update-check", daemon=True).start()
 
@@ -443,11 +513,21 @@ class UpdateService:
         with self._lock:
             cache = dict(self._cache)
             now = self._clock()
+            channel = str(self._preferences.get("channel") or "stable")
+            # 请求发出前记录代号；期间渠道被切换时，结果与失败都不允许写回。
+            generation = self._generation
             if not force and cache.get("checked_at") and now - float(cache["checked_at"]) <= CACHE_TTL_SECONDS:
                 return
             if not force and now < float(cache.get("backoff_until") or 0):
                 return
-            channel = str(self._preferences.get("channel") or "stable")
+
+        def still_current() -> bool:
+            with self._lock:
+                return (
+                    self._generation == generation
+                    and str(self._preferences.get("channel") or "stable") == channel
+                )
+
         headers = {"Accept": "application/vnd.github+json", "User-Agent": "menu-capture-updater"}
         if cache.get("etag"):
             headers["If-None-Match"] = str(cache["etag"])
@@ -456,6 +536,8 @@ class UpdateService:
                 f"https://api.github.com/repos/{self.repository}/releases?per_page=20", headers, 10.0
             )
             if status == 304:
+                if not still_current():
+                    return
                 with self._lock:
                     latest_cache = dict(self._cache)
                     latest_cache.update({"checked_at": now, "error": "", "backoff_until": 0})
@@ -467,9 +549,14 @@ class UpdateService:
             releases = json.loads(body.decode("utf-8"))
             if not isinstance(releases, list):
                 raise ValueError("GitHub Release 响应格式无效")
+            # 渠道已切换时不再下载旧渠道的清单，直接丢弃在途结果。
+            if not still_current():
+                return
             # 清单下载也在锁外完成，避免慢网络阻塞 /api/updates/status。
             latest = self._select_release(releases, channel)
         except Exception as exc:  # 网络、清单或格式错误都保留上次成功信息
+            if not still_current():
+                return
             with self._lock:
                 failed = dict(self._cache)
                 failed["error"] = str(exc) or "更新检查失败"
@@ -477,6 +564,8 @@ class UpdateService:
                 self._cache = failed
                 self._write_json(self.cache_path, failed)
                 self._append_history("check", "failed", str(exc) or "更新检查失败", "")
+            return
+        if not still_current():
             return
         with self._lock:
             updated = dict(self._cache)

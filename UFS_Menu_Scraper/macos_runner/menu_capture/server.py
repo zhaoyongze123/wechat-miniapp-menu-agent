@@ -80,7 +80,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     os.environ["NO_PROXY"] = "*"
     os.environ["no_proxy"] = "*"
     configs = ConfigStore(root, managed=role != "standalone" or bool(os.environ.get("MENU_CAPTURE_HOME")))
-    updates = UpdateService(root, role=role)
+    # root 是可写数据目录（可能由 MENU_CAPTURE_HOME 指定）；程序目录必须单独传入，
+    # 否则安装目录/历史版本清点会错误地从数据目录反推。
+    updates = UpdateService(root, role=role, app_root=ROOT)
     store = TaskStore(root / "data/tasks.sqlite3")
     model_usage = UsageLedger(store)
     debug_log = DebugLog(root / "data", configs.load().debug_logging.max_storage_mb)
