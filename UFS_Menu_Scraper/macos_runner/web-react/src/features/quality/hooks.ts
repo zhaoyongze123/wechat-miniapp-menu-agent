@@ -8,6 +8,7 @@ import {
   fetchPendingReviews,
   fetchRejections,
   markRejectionReviewed,
+  rejectPendingTask,
   retryCaptureTask,
   returnRejectionToMaterials,
   unapproveBatches,
@@ -15,6 +16,7 @@ import {
   undoMaterialRejection,
   undoRejectionsBatch,
 } from './api'
+import { errorMessage } from '../../api/client'
 import type { RejectionQuery } from './types'
 
 export const qualityKeys = {
@@ -76,10 +78,33 @@ export function useRejectionActions() {
   }
 }
 
+export interface RejectPendingPayload {
+  taskIds: string[]
+  reason: string
+  detail: string
+}
+
 export function useReviewActions() {
   const refresh = useRefreshQuality()
   return {
     approve: useMutation({ mutationFn: approveBatches, onSuccess: refresh }),
     unapprove: useMutation({ mutationFn: unapproveBatches, onSuccess: refresh }),
+    // 后端按单任务校验并写入，这里顺序提交以便逐项返回失败，避免一次失败吞掉整批。
+    reject: useMutation({
+      mutationFn: async ({ taskIds, reason, detail }: RejectPendingPayload) => {
+        const failed: string[] = []
+        let firstError = ''
+        for (const taskId of taskIds) {
+          try {
+            await rejectPendingTask(taskId, reason, detail)
+          } catch (cause) {
+            failed.push(taskId)
+            if (!firstError) firstError = errorMessage(cause)
+          }
+        }
+        return { rejected: taskIds.length - failed.length, failed, error: firstError }
+      },
+      onSuccess: refresh,
+    }),
   }
 }

@@ -18,6 +18,8 @@ interface PendingReviewDrawerProps {
   onPrev: () => void
   onNext: () => void
   onRerun: (record: PendingReviewRecord) => void
+  /** 人工判定为不合格，直接移入不合格清单。 */
+  onReject: (record: PendingReviewRecord) => void
 }
 
 /** 待检查门店详情：失败原因、分类、源图与最近画面，重跑走分配流程。 */
@@ -29,6 +31,7 @@ export function PendingReviewDrawer({
   onPrev,
   onNext,
   onRerun,
+  onReject,
 }: PendingReviewDrawerProps) {
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null)
   const status = statusOf(record?.status)
@@ -58,19 +61,29 @@ export function PendingReviewDrawer({
         }
         footer={
           record ? (
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <span className="text-xs text-secondary">
                 当前分类：{bucketLabelOf(record)}
               </span>
-              <Button
-                color="secondary"
-                variant="outline"
-                size="sm"
-                disabled={!isRetryable(record.status)}
-                onClick={() => onRerun(record)}
-              >
-                重跑（分配采集电脑）
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  color="danger"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onReject(record)}
+                >
+                  标记不合格
+                </Button>
+                <Button
+                  color="secondary"
+                  variant="outline"
+                  size="sm"
+                  disabled={!isRetryable(record.status)}
+                  onClick={() => onRerun(record)}
+                >
+                  重跑（分配采集电脑）
+                </Button>
+              </div>
             </div>
           ) : null
         }

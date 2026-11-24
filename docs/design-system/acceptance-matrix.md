@@ -42,7 +42,7 @@
 | AnalysisDialog | 保留现状 | 关闭只关 UI，不取消后台任务 |
 | StoreDetailDrawer / ManualQrCanvas | 已完成 | 原图序列连续浏览（原有能力确认）；草稿保护保留 |
 | PublishDialog | 已完成 | 发布中锁定 Esc/遮罩/关闭，失败保留输入 |
-| QualityPage | 部分完成 | 表格沿用 #30；审核抽屉不因刷新跳项；筛选记忆未新增 |
+| QualityPage | 已完成 | 恢复待检查门店“标记不合格”：行内、批量选中与详情抽屉均可选择原因并提交；成功后移入不合格清单，失败项保留可重试；批量通过/撤销与选择范围语义不变 |
 | RejectionDetailDrawer | 已完成 | 两条证据连续浏览；处理中禁止关闭；操作成功后才进入下一条（沿用） |
 | PendingReviewDrawer | 已完成 | 源图/最近画面连续浏览 |
 | TaskCenterPage / ActiveTasksPanel | 部分完成 | 保留 5 秒轮询、批次摘要、重命名与详情；逐店长文本尚未全部替换为 CellText |
