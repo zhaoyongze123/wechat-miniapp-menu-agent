@@ -107,14 +107,49 @@ export async function getOrCreateWaitStart(id: string): Promise<number> {
   return readOrCreate()
 }
 
-export async function playNotificationSound(volume: number, kind: NotificationEventKind = 'task_complete'): Promise<boolean> {
+export async function activateNotificationAudio(): Promise<boolean> {
   const AudioContextConstructor = window.AudioContext
   if (!AudioContextConstructor) return false
   try {
-    audioContext ??= new AudioContextConstructor()
+    if (!audioContext || audioContext.state === 'closed') audioContext = new AudioContextConstructor()
     const context = audioContext
-    if (context.state === 'suspended') await context.resume()
-    if (context.state !== 'running') return false
+    if (context.state === 'running') return true
+    // 自动播放被阻止时 resume 可能一直 pending；不能让通知领取锁永远等待。
+    let timeout = 0
+    try {
+      await Promise.race([context.resume(), new Promise<void>((resolve) => { timeout = window.setTimeout(resolve, 1000) })])
+    } finally { window.clearTimeout(timeout) }
+    const ready = (context.state as AudioContextState) === 'running'
+    if (ready) window.dispatchEvent(new Event('menu-capture-notification-preferences'))
+    return ready
+  } catch { return false }
+}
+
+/** 声音与视觉提醒独立去重；只有音频节点成功启动才记为已发放。 */
+const pendingSounds = new Set<string>()
+export async function deliverNotificationSound(id: string, play: () => Promise<boolean>): Promise<boolean> {
+  const key = `sound:${id}`
+  const deliver = async () => {
+    if (readEventLedger()[key] || volatileEvents.has(key) || pendingSounds.has(key)) return false
+    pendingSounds.add(key)
+    try {
+      if (!(await play())) return false
+      claimEventWithoutLock(key)
+      return true
+    } finally { pendingSounds.delete(key) }
+  }
+  if (typeof navigator !== 'undefined' && navigator.locks?.request) {
+    return navigator.locks.request('menu-capture-notifications', { mode: 'exclusive' }, deliver)
+  }
+  return deliver()
+}
+
+export async function playNotificationSound(volume: number, kind: NotificationEventKind = 'task_complete', userInitiated = true): Promise<boolean> {
+  if (volume <= 0) return false
+  try {
+    if (userInitiated && !(await activateNotificationAudio())) return false
+    const context = audioContext
+    if (!context || context.state !== 'running') return false
     const oscillator = context.createOscillator()
     const gain = context.createGain()
     const now = context.currentTime
@@ -130,6 +165,7 @@ export async function playNotificationSound(volume: number, kind: NotificationEv
     gain.connect(context.destination)
     oscillator.start(now)
     oscillator.stop(now + 0.23)
+    oscillator.onended = () => { oscillator.disconnect(); gain.disconnect() }
     return true
   } catch {
     return false

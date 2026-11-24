@@ -18,6 +18,7 @@ import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
 import { AssignDialog } from './AssignDialog'
+import { HubStoreDetailDrawer } from './HubStoreDetailDrawer'
 import { fetchHubStatus } from './api'
 import { assignmentStatusOf, deviceStateOf, formatStore, storeStateOf } from './format'
 import { activeAssignmentMap, isWorkerActive, useHubSharedStatus } from './hooks'
@@ -80,6 +81,7 @@ export function HubWorkbenchPage() {
   })
   const [assignOpen, setAssignOpen] = useState(false)
   const [selectedOpen, setSelectedOpen] = useState(false)
+  const [detailTask, setDetailTask] = useState<HubTask | null>(null)
 
   // 一次性消费地址栏中的选择参数，后续翻页与筛选不再受其影响。
   useEffect(() => {
@@ -303,9 +305,9 @@ export function HubWorkbenchPage() {
         const store = formatStore(task.source_name)
         return (
           <div className="min-w-0">
-            <span className="block truncate text-default" title={task.source_name}>
+            <button type="button" className="block max-w-full truncate text-left text-default hover:underline focus-visible:underline" title={task.source_name} onClick={(event) => { event.stopPropagation(); setDetailTask(task) }}>
               {store.name || '未命名门店'}
-            </span>
+            </button>
             <span className="mt-0.5 block truncate text-2xs text-tertiary">
               {[store.code, task.batch_name, task.version].filter(Boolean).join(' · ') || '批次信息未记录'}
             </span>
@@ -342,6 +344,12 @@ export function HubWorkbenchPage() {
         const meta = storeStateOf(task)
         return <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
       },
+    },
+    {
+      id: 'detail',
+      header: '操作',
+      className: 'whitespace-nowrap',
+      cell: (task) => <Button color="secondary" variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); setDetailTask(task) }}>详情</Button>,
     },
   ]
 
@@ -495,7 +503,7 @@ export function HubWorkbenchPage() {
               rows={records}
               rowKey={(task) => task.id}
               loading={statusQuery.isFetching && !statusQuery.data}
-              onRowActivate={toggleSelection}
+              onRowActivate={setDetailTask}
               emptyState={
                 <StatePanel
                   variant="empty"
@@ -581,6 +589,11 @@ export function HubWorkbenchPage() {
         workers={workers}
         onExclude={(ids) => setSelectedIds((current) => removeSelection(current, ids))}
         onAssigned={handleAssigned}
+      />
+
+      <HubStoreDetailDrawer
+        task={detailTask ? records.find((task) => task.id === detailTask.id) ?? detailTask : null}
+        onClose={() => setDetailTask(null)}
       />
 
       <SelectedStoresDrawer

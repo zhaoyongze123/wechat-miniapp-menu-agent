@@ -8,7 +8,9 @@ import { fetchActiveTasks, fetchTaskDetail } from '../task-center/api'
 import type { ManualState } from '../worker/types'
 import { isOnline } from '../hub/format'
 import {
+  activateNotificationAudio,
   claimNotificationEvent,
+  deliverNotificationSound,
   getOrCreateWaitStart,
   manualWaitEventId,
   playNotificationSound,
@@ -36,16 +38,20 @@ const TERMINAL = new Set([...TERMINAL_SUCCESS, ...TERMINAL_ABNORMAL])
  */
 export function NotificationRuntime() {
   const toast = useToast()
+  // 远程控制是受限路由，不允许访问共享状态和任务历史 API。
+  const remoteControl = window.location.pathname === '/remote-control'
   const roleQuery = useQuery({
     queryKey: ['shared-status'],
     queryFn: ({ signal }) => apiFetch<SharedStatus>('/api/shared/status?include_history=false', { signal }),
+    enabled: !remoteControl,
     staleTime: 15_000,
     refetchInterval: 30_000,
   })
-  const role = roleOf(roleQuery.data)
+  const role = remoteControl ? 'worker' : roleOf(roleQuery.data)
   const tasksQuery = useQuery({
     queryKey: ['tasks-active'],
     queryFn: ({ signal }) => fetchActiveTasks(signal),
+    enabled: !remoteControl,
     refetchInterval: 5_000,
     staleTime: 4_000,
   })
@@ -54,7 +60,7 @@ export function NotificationRuntime() {
     queryFn: ({ signal }) => apiFetch<ManualControlState>('/api/manual/state', { signal }),
     enabled: role === 'worker',
     refetchInterval: 1_500,
-    refetchIntervalInBackground: false,
+    refetchIntervalInBackground: true,
     staleTime: 1_250,
   })
 
@@ -71,10 +77,18 @@ export function NotificationRuntime() {
   useEffect(() => {
     const refresh = () => setPreferenceRevision((value) => value + 1)
     const updateVisibility = () => setDocumentVisible(document.visibilityState === 'visible')
+    const unlock = () => {
+      const current = readNotificationPreferences()
+      if (current.sound && current.volume > 0) void activateNotificationAudio()
+    }
+    window.addEventListener('pointerdown', unlock)
+    window.addEventListener('keydown', unlock)
     window.addEventListener('storage', refresh)
     window.addEventListener('menu-capture-notification-preferences', refresh)
     document.addEventListener('visibilitychange', updateVisibility)
     return () => {
+      window.removeEventListener('pointerdown', unlock)
+      window.removeEventListener('keydown', unlock)
       window.removeEventListener('storage', refresh)
       window.removeEventListener('menu-capture-notification-preferences', refresh)
       document.removeEventListener('visibilitychange', updateVisibility)
@@ -89,13 +103,19 @@ export function NotificationRuntime() {
   useEffect(() => {
     let disposed = false
     const backgroundDeliveryAvailable = preferences.desktop && canUseDesktopNotifications() && Notification.permission === 'granted'
-    // 若当前页在后台且无法展示桌面提醒，不消费状态转换；前台标签稍后仍可提醒。
-    if (!isDocumentVisible && !backgroundDeliveryAvailable) return () => { disposed = true }
     const emit = async (event: NotificationEvent) => {
       const currentPreferences = readNotificationPreferences()
-      if (!currentPreferences.enabled[event.kind] || !(await claimNotificationEvent(event.id)) || disposed) return
+      if (disposed || !currentPreferences.enabled[event.kind]) return
+      if (currentPreferences.sound && currentPreferences.volume > 0) {
+        void deliverNotificationSound(event.id, () => {
+          if (disposed || (event.kind === 'manual_wait' && !manualQueryDataStillWaiting(manualSnapshot.current, event.id))) return Promise.resolve(false)
+          const latest = readNotificationPreferences()
+          return latest.sound && latest.enabled[event.kind] ? playNotificationSound(latest.volume, event.kind, false) : Promise.resolve(false)
+        })
+      }
+      // 后台声音不依赖桌面通知权限。视觉提示仅在可显示时领取。
+      if ((!isDocumentVisible && !backgroundDeliveryAvailable) || !(await claimNotificationEvent(event.id)) || disposed) return
       toast.push(event.body, event.kind === 'abnormal' || event.kind === 'sync_failure' ? 'danger' : 'info')
-      if (currentPreferences.sound) void playNotificationSound(currentPreferences.volume, event.kind)
       if (currentPreferences.desktop && canUseDesktopNotifications() && Notification.permission === 'granted') {
         try {
           const notification = new Notification(event.title, { body: event.body, tag: event.id, silent: true })
@@ -215,7 +235,7 @@ export function NotificationRuntime() {
     }
 
     return () => { disposed = true }
-  }, [deviceName, isDocumentVisible, manual, manualQuery.dataUpdatedAt, preferences.desktop, sharedStatus, tasks, tasksQuery.dataUpdatedAt, toast])
+  }, [deviceName, isDocumentVisible, manual, manualQuery.dataUpdatedAt, preferences.desktop, preferenceRevision, sharedStatus, tasks, tasksQuery.dataUpdatedAt, toast])
 
   // 可选的重复等待只重复声音；wait_id 改变、结束或取消偏好后立即清理计时。
   useEffect(() => {
@@ -234,9 +254,11 @@ export function NotificationRuntime() {
         timer = window.setTimeout(async () => {
           if (cancelled) return
           const current = manualQueryDataStillWaiting(manualSnapshot.current, waitId)
-          if (current && await claimNotificationEvent(`manual-repeat:${waitId}:${nextIndex}`)) {
+          if (current) {
             const latest = readNotificationPreferences()
-            if (latest.sound && latest.enabled.manual_wait) void playNotificationSound(latest.volume, 'manual_wait')
+            if (latest.sound && latest.enabled.manual_wait) void deliverNotificationSound(`manual-repeat:${waitId}:${nextIndex}`, () => {
+              return !cancelled && manualQueryDataStillWaiting(manualSnapshot.current, waitId) ? playNotificationSound(latest.volume, 'manual_wait', false) : Promise.resolve(false)
+            })
           }
           if (current && !cancelled) schedule()
         }, Math.max(500, nextIndex * interval - elapsed))
