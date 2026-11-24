@@ -36,7 +36,7 @@ from .store import TaskStore
 
 logger = logging.getLogger(__name__)
 
-from .capture_results import waiting_for_materials
+from .capture.results import waiting_for_materials
 
 REJECTION_REASONS = {
     "blur": "图片模糊 / 无法识别",

@@ -17,6 +17,8 @@ import pytest
 
 from menu_capture.updates import CACHE_TTL_SECONDS, UpdateService, Version, is_newer
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture(autouse=True)
 def _clean_env():

@@ -2,10 +2,13 @@
 from base64 import b64encode
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from menu_capture.server import create_app
+
+pytestmark = pytest.mark.contract
 
 
 STAMP = "2026-11-20T12:00:00+08:00"

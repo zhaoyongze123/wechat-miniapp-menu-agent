@@ -15,8 +15,8 @@ from zipfile import BadZipFile, ZipFile
 
 from PIL import Image
 
-from .capture_history import ACTIVE_RUN_STATUSES, capture_history_row
-from .capture_results import store_state, waiting_for_materials
+from .capture.history import ACTIVE_RUN_STATUSES, capture_history_row
+from .capture.results import store_state, waiting_for_materials
 from .materials import REJECTION_REASONS, MaterialService
 from .store import TaskStore
 from .shared_history import HistoryReport

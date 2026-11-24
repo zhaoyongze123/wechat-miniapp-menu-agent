@@ -3,7 +3,7 @@
 from collections import Counter
 from datetime import datetime, timezone
 
-from .capture_results import CAPTURE_RESULT_LABELS
+from .results import CAPTURE_RESULT_LABELS
 
 ACTIVE_RUN_STATUSES = {
     "queued", "running", "pause_requested", "paused", "interrupted", "blocked", "resuming", "terminating",

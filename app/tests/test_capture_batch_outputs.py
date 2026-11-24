@@ -8,8 +8,10 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from menu_capture.capture_outputs import archive_unqualified, batch_output_dir, store_output_dir
+from menu_capture.capture.outputs import archive_unqualified, batch_output_dir, store_output_dir
 from menu_capture.server import create_app
+
+pytestmark = pytest.mark.integration
 
 
 def _image(path: Path, color: str) -> Path:

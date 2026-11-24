@@ -49,13 +49,13 @@ from .checkbox_locator import refine_consent_checkbox
 from .scene_agent import SceneDecision
 from .target_candidates import build_text_candidates
 from .store import TaskStore
-from .capture_results import waiting_for_materials
+from .capture.results import waiting_for_materials
 from .preview_locator import PreviewIconNotFound, locate_preview_recognize
 from .chat_image_locator import (ChatImageNotFound, locate_chat_image_bubble, locate_sent_image,
                                  match_preview_source)
 from .ui_tars_trial import GUI_PLUS_MODEL, TrialModel, TrialProtocolError, run_navigation, trial_model_from_env
 from .robot_profile import RobotProfile
-from .capture_outputs import (
+from .capture.outputs import (
     archive_unqualified, retire_store_dir, store_output_dir, unqualified_store_dir,
 )
 from .uipath_cli import cli_entry

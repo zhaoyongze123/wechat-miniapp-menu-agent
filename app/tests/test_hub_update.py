@@ -8,6 +8,8 @@ import pytest
 
 from menu_capture.hub_update import HubInstallProxy
 
+pytestmark = pytest.mark.contract
+
 LATEST = {
     "version": "0.2.4",
     "assets": [

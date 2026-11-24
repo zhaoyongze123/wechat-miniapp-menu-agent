@@ -2,7 +2,7 @@ import type { StatusMeta } from '../hub/format'
 import { STORE_STATE, formatStore, formatTime } from '../hub/format'
 import type { CaptureMode, ManualState, WorkerFilter, WorkerRun, WorkerSort, WorkerTask } from './types'
 
-/** 门店状态与 Hub 工作台共用同一服务端口径（capture_results.store_state）。 */
+/** 门店状态与 Hub 工作台共用同一服务端口径（menu_capture.capture.results.store_state）。 */
 export { STORE_STATE, formatStore, formatTime }
 
 export const RUN_STATUS: Record<string, StatusMeta> = {

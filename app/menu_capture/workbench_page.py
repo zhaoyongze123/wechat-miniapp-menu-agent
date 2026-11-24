@@ -1,5 +1,5 @@
 """共享工作台门店分页与汇总，按当前有效任务计算筛选和勾选状态。"""
-from .capture_results import state_counts, store_state
+from .capture.results import state_counts, store_state
 from .failures import describe
 
 SELECTED_FIELDS = ("id", "source_name", "status", "reject_reason", "runnable", "batch_name", "version")

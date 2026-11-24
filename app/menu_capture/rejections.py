@@ -13,7 +13,7 @@ from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from .materials import REJECTION_REASONS, MaterialService
 from .store import TaskStore, now
-from .capture_results import capture_outcome
+from .capture.results import capture_outcome
 
 
 class RejectionService:

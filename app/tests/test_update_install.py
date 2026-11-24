@@ -16,6 +16,8 @@ from menu_capture.update_install import (
     verify_artifact,
 )
 
+pytestmark = pytest.mark.integration
+
 
 def make_release(root: Path, version: str, entry: str = "assets/index.js") -> Path:
     release = root / "releases" / version

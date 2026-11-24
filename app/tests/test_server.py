@@ -4,11 +4,14 @@ import sys
 from pathlib import Path
 from urllib.parse import quote
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from menu_capture.server import create_app
 from menu_capture.store import TaskStore
+
+pytestmark = pytest.mark.contract
 
 
 class FakeDesktop:

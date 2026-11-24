@@ -27,6 +27,13 @@ dev = ["pytest>=8,<10"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "unit: isolated logic with synthetic inputs and no external services",
+  "integration: isolated application or storage integration using temporary resources",
+  "contract: externally visible API, protocol, or compatibility behavior",
+  "platform: requires a named operating system or desktop capability",
+  "real_data: depends on explicitly supplied local capture database and screenshots",
+]
 
 [tool.ruff]
 # 只检查 Python 服务端、测试与脚本；前端源码与 Node 适配层由各自工具链负责。

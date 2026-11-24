@@ -34,10 +34,10 @@ from PIL import Image
 from starlette.background import BackgroundTask
 
 from .config import ConfigStore, ROOT, WORKSPACE_ROOT
-from .capture_outputs import batch_output_dir
+from .capture.outputs import batch_output_dir
 from .failures import describe as describe_failure
-from .capture_history import ACTIVE_RUN_STATUSES, capture_history_row, history_timestamp
-from .capture_results import capture_outcome, state_counts, store_state, waiting_for_materials
+from .capture.history import ACTIVE_RUN_STATUSES, capture_history_row, history_timestamp
+from .capture.results import capture_outcome, state_counts, store_state, waiting_for_materials
 from .store import TaskStore
 from .uipath_runner import UiPathRunner
 from .robot_profile import ProfileStore
@@ -54,9 +54,10 @@ from .hub_update import HubInstallProxy
 from .annotation import AnnotationSession, RunnerExecutor
 from .instance_lock import InstanceLockedError, instance_lock
 from .shared import SharedConflict, SharedHub, WorkerUnauthorized
-from .shared_routes import register_shared_routes
+from .api.shared_routes import register_shared_routes
 from .shared_worker import SharedWorker
 from .workbench_page import workbench_page
+from .api.update_routes import register_update_routes
 
 logger = logging.getLogger(__name__)
 
@@ -509,57 +510,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             commit = str(release.get("git_commit") or "")
         return {"version": version, "frontend": frontend, "commit": commit}
 
-    @app.get("/api/updates/status")
-    def updates_status():
-        return updates.status()
-
-    @app.post("/api/updates/check")
-    def updates_check():
-        return updates.check(force=True)
-
-    @app.put("/api/updates/preferences")
-    def updates_preferences(payload: dict):
-        return updates.save_preferences(payload)
-
-    @app.get("/api/updates/history")
-    def updates_history(limit: Annotated[int, Query(ge=1, le=200)] = 50):
-        return updates.history(limit)
-
-    @app.post("/api/updates/download")
-    def updates_download():
-        try:
-            return updates.start_download()
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
-
-    @app.post("/api/updates/download/cancel")
-    def updates_download_cancel():
-        return updates.cancel_download()
-
-    @app.get("/api/updates/cleanup")
-    def updates_cleanup_preview():
-        # 只读预览：不删除任何文件，供界面展示可释放空间与保护原因。
-        return updates.storage_preview()
-
-    @app.post("/api/updates/cleanup")
-    def updates_cleanup(payload: dict):
-        # 破坏性操作必须提交 confirm；安装/下载进行中由服务端闸门拒绝。
-        try:
-            return updates.cleanup(payload)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
-
-    @app.get("/api/updates/install")
-    def updates_install_status():
-        return install.status()
-
-    @app.post("/api/updates/install")
-    def updates_install_start(payload: dict):
-        # confirm 必须等于目标版本，避免误触把生产采集端切到非预期版本。
-        try:
-            return install.start(str(payload.get("version") or ""), str(payload.get("confirm") or ""))
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
+    register_update_routes(app, updates, install)
 
     @app.get("/api/model-usage")
     def model_usage_report(date_from: str | None = None, date_to: str | None = None,

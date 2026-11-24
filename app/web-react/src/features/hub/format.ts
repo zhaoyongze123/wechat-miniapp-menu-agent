@@ -5,7 +5,7 @@ export interface StatusMeta {
   tone: StatusTone
 }
 
-/** 门店唯一状态口径与服务端 capture_results.store_state 一致。 */
+/** 门店唯一状态口径与服务端 menu_capture.capture.results.store_state 一致。 */
 export const STORE_STATE: Record<string, StatusMeta> = {
   pending: { label: '待采集', tone: 'secondary' },
   running: { label: '采集中', tone: 'info' },

@@ -20,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from menu_capture.capture_outputs import store_output_dir  # noqa: E402
+from menu_capture.capture.outputs import store_output_dir  # noqa: E402
 
 AUDIT_CUTOFF = "2026-11-08T21:09:00+08:00"
 ACCEPTED = {
