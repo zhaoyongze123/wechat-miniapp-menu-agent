@@ -1,21 +1,28 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '../../components/ToastProvider'
-import type { UpdateDownloadState, UpdateStatus } from './types'
+import type { UpdateDownloadState, UpdateInstallState, UpdateStatus } from './types'
 
 const mocks = vi.hoisted(() => ({
   status: { isPending: false, isError: false, data: undefined as UpdateStatus | undefined, error: null, refetch: vi.fn() },
+  install: {
+    isError: false,
+    error: null as Error | null,
+    data: undefined as UpdateInstallState | undefined,
+  },
   history: { isError: false, data: [], error: null, refetch: vi.fn() },
   actions: {
     check: { mutate: vi.fn(), isPending: false },
     savePreferences: { mutate: vi.fn(), isPending: false },
     download: { mutate: vi.fn(), isPending: false },
     cancelDownload: { mutate: vi.fn(), isPending: false },
+    install: { mutate: vi.fn(), isPending: false },
   },
 }))
 
 vi.mock('./hooks', () => ({
   useUpdateStatus: () => mocks.status,
+  useUpdateInstall: () => mocks.install,
   useUpdateHistory: () => mocks.history,
   useUpdateActions: () => mocks.actions,
 }))
@@ -107,10 +114,29 @@ function status(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
   }
 }
 
+function installState(overrides: Partial<UpdateInstallState> = {}): UpdateInstallState {
+  return {
+    supported: false,
+    reason: '安装执行器需在 Windows 采集端并显式启用后才能使用',
+    active: false,
+    status: 'idle',
+    target_version: '',
+    previous_version: '',
+    started_at: '',
+    finished_at: '',
+    message: '',
+    error: '',
+    ...overrides,
+  }
+}
+
 beforeEach(() => {
   mocks.status.data = status()
   mocks.status.isPending = false
   mocks.status.isError = false
+  mocks.install.data = undefined
+  mocks.install.isError = false
+  mocks.install.error = null
   mocks.history.data = []
   mocks.history.isError = false
   vi.clearAllMocks()
@@ -125,7 +151,7 @@ describe('UpdatesPanel', () => {
     expect(screen.getByText('发现可更新版本')).toBeInTheDocument()
     expect(screen.getByText('修复稳定性问题。')).toBeInTheDocument()
     expect(screen.getByText(/MenuCapture-0.3.0.exe/)).toBeInTheDocument()
-    expect(screen.getByText(/当前阶段提供版本发现、发布清单校验与受控下载/)).toBeInTheDocument()
+    expect(screen.getByText(/下载与安装都以服务端真实能力为准/)).toBeInTheDocument()
   })
 
   it('手动检查调用真实动作，下载入口不伪造安装能力', () => {
@@ -217,6 +243,79 @@ describe('UpdatesPanel', () => {
 
     expect(screen.getByText(/已下载 0\.2\.9；当前最新为 0\.3\.0/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '下载更新包' })).toBeInTheDocument()
+  })
+
+  it('下载完成且安装能力可用时，确认后才提交真实安装请求', () => {
+    mocks.status.data = status({
+      capabilities: { check: true, download: true, install: true, rollback: true, inventory: true },
+      download: downloadState({
+        status: 'completed',
+        version: '0.3.0',
+        asset_kind: 'windows_installer',
+        asset_name: 'MenuCapture-0.3.0.exe',
+        downloaded: 1024,
+        total: 1024,
+        path: 'D:\\menu-agent\\runtime\\data\\updates\\0.3.0\\MenuCapture-0.3.0.exe',
+      }),
+    })
+    mocks.install.data = installState({ supported: true, reason: '' })
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('button', { name: '安装并重启' }))
+    expect(mocks.actions.install.mutate).not.toHaveBeenCalled()
+    expect(screen.getByText(/安装由独立进程静默完成/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '确认安装并重启' }))
+    expect(mocks.actions.install.mutate).toHaveBeenCalledWith('0.3.0', expect.anything())
+  })
+
+  it('安装能力未启用时只说明原因，不提供安装按钮', () => {
+    mocks.status.data = status({
+      download: downloadState({
+        status: 'completed',
+        version: '0.3.0',
+        asset_kind: 'windows_installer',
+        asset_name: 'MenuCapture-0.3.0.exe',
+        downloaded: 1024,
+        total: 1024,
+        path: 'D:\\menu-agent\\runtime\\data\\updates\\0.3.0\\MenuCapture-0.3.0.exe',
+      }),
+    })
+    mocks.install.data = installState()
+    renderPanel()
+
+    expect(screen.getByText('安装执行器未启用')).toBeInTheDocument()
+    expect(screen.getByText(/显式启用后才能使用/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '安装并重启' })).not.toBeInTheDocument()
+  })
+
+  it('安装进行中展示真实阶段并禁用重复提交', () => {
+    mocks.status.data = status({
+      capabilities: { check: true, download: true, install: true, rollback: true, inventory: true },
+      download: downloadState({
+        status: 'completed',
+        version: '0.3.0',
+        asset_kind: 'windows_installer',
+        asset_name: 'MenuCapture-0.3.0.exe',
+        downloaded: 1024,
+        total: 1024,
+      }),
+    })
+    mocks.install.data = installState({
+      supported: true,
+      reason: '',
+      active: true,
+      status: 'installing',
+      target_version: '0.3.0',
+      previous_version: '0.2.2',
+      message: '安装包校验通过（签名状态：valid），正在运行安装程序',
+    })
+    renderPanel()
+
+    expect(screen.getByText(/正在安装/)).toBeInTheDocument()
+    expect(screen.getByText(/目标 0\.3\.0/)).toBeInTheDocument()
+    expect(screen.getByText(/签名状态：valid/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '安装并重启' })).not.toBeInTheDocument()
   })
 
   it('版本清点显示保护状态与清理候选，但不提供删除按钮', () => {

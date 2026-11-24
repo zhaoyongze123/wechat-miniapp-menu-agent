@@ -73,7 +73,7 @@ export type UpdateDownloadStatus =
   | 'cancelled'
   | 'interrupted'
 
-/** 下载状态机：服务端只落盘到数据目录，安装执行器仍未启用。 */
+/** 下载状态机：服务端只落盘到数据目录，安装由独立执行器完成。 */
 export interface UpdateDownloadState {
   active: boolean
   status: UpdateDownloadStatus
@@ -110,6 +110,20 @@ export interface UpdateStatus {
   download: UpdateDownloadState
   capabilities: UpdateCapabilities
   inventory: UpdateInventory
+}
+
+/** 安装执行器状态：字段与 `InstallController.status()` 的 journal 输出一致。 */
+export interface UpdateInstallState {
+  supported: boolean
+  reason: string
+  active: boolean
+  status: 'idle' | 'starting' | 'installing' | 'verifying' | 'restarting' | 'rolling_back' | 'completed' | 'failed' | 'rolled_back'
+  target_version: string
+  previous_version: string
+  started_at: string
+  finished_at: string
+  message: string
+  error: string
 }
 
 export interface UpdateHistoryRow {
