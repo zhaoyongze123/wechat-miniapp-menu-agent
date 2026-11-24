@@ -22,7 +22,7 @@
 - 对全部跟踪文本文件扫描 `password|secret|token|api key|sk-*|wxid_*|手机号` 等模式：命中均为代码标识符与测试变量名，未发现硬编码真实凭据。
 - `输出/` 内含真实门店截图、运行记录与分配数据，属于业务敏感数据，已退出跟踪；本地副本保留。
 - 本机密钥文件（`config.local.json`、`secrets.local.json`、`deploy/.env`）均已忽略，未进入仓库。
-- 历史版本仍保留被删除文件的 blob。当前仓库为私有；若后续公开，需要单独评估历史重写与凭据轮换。
+- 审计当时记录的可见性已失效。当前仓库公开，旧提交仍可能访问已退出跟踪的数据。现行风险和处置状态见 [公开仓库资产核查](public-repository-review.md)。
 
 ## 3. 文档整理
 
@@ -32,7 +32,7 @@
 | 归档到 `docs/archive/2026-11-capture-fixes/` | 根目录 `spec.md`/`tasks.md`、`macos_runner/spec.md`/`tasks.md` |
 | 新增索引 | `docs/archive/README.md`（时间、原位置、替代文档） |
 | 保持现状 | `docs/react-migration/`（当前版本的迁移与验收证据） |
-| 新增 | `AGENTS.md`（精简规则）、`docs/engineering-standards.md`、`CONTRIBUTING.md`、`SECURITY.md`、`CHANGELOG.md`、`.editorconfig` |
+| 新增 | `AGENTS.md`（精简规则）、`docs/governance/engineering-standards.md`、`CONTRIBUTING.md`、`SECURITY.md`、`CHANGELOG.md`、`.editorconfig` |
 
 `AGENTS.md` 已移除个人机器绝对路径，改为环境要求与约束说明；细节规范集中在工程规范文档，避免两份规则漂移。
 

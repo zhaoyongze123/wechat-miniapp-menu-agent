@@ -79,12 +79,12 @@ UI 断言明细：
 
 截图：
 
-- `docs/react-migration/screenshots/phase-4b-worker-settings.jpg`（Worker 设置页顶部）
-- `docs/react-migration/screenshots/phase-4b-worker-settings-debug.jpg`（截图参数与调试日志）
-- `docs/react-migration/screenshots/phase-4b-clear-confirm.jpg`（清理日志二次确认）
-- `docs/react-migration/screenshots/phase-4b-worker-diagnostics.jpg`（Worker 环境诊断）
-- `docs/react-migration/screenshots/phase-4b-hub-settings.jpg`（Hub 设置与角色差异）
-- `docs/react-migration/screenshots/phase-4b-hub-diagnostics-role.jpg`（Hub 诊断角色拦截）
+- `docs/archive/2026-11-react-migration/screenshots/phase-4b-worker-settings.jpg`（Worker 设置页顶部）
+- `docs/archive/2026-11-react-migration/screenshots/phase-4b-worker-settings-debug.jpg`（截图参数与调试日志）
+- `docs/archive/2026-11-react-migration/screenshots/phase-4b-clear-confirm.jpg`（清理日志二次确认）
+- `docs/archive/2026-11-react-migration/screenshots/phase-4b-worker-diagnostics.jpg`（Worker 环境诊断）
+- `docs/archive/2026-11-react-migration/screenshots/phase-4b-hub-settings.jpg`（Hub 设置与角色差异）
+- `docs/archive/2026-11-react-migration/screenshots/phase-4b-hub-diagnostics-role.jpg`（Hub 诊断角色拦截）
 
 浏览器 console 仅剩既有噪音：CSP 拦截 KaTeX 远程字体；本阶段新增页面无脚本错误。
 

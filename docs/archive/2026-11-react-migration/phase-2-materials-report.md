@@ -75,7 +75,7 @@
 - 回收站：软删、恢复、彻底删除；演示批次已还原，`deleted_count=0`。
 - 构建后冒烟：任务中心与素材清洗均正常，侧栏选中态为官方 `bg-secondary-soft`。
 
-截图目录 `docs/react-migration/screenshots/`：
+截图目录 `docs/archive/2026-11-react-migration/screenshots/`：
 
 `materials-overview.jpg`、`materials-overview-final.jpg`、`materials-detail.jpg`、`materials-confirmed.jpg`、`materials-rejected.jpg`、`materials-rejected-stats.jpg`、`materials-undo.jpg`、`materials-rework.jpg`、`materials-publish.jpg`、`materials-management.jpg`、`materials-management-deleted.jpg`、`materials-import.jpg`、`materials-analysis.jpg`、`materials-manual.jpg`。
 

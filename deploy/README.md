@@ -50,7 +50,7 @@ python deploy/migration/migrate_legacy.py --backup-home 'D:\backup\runner' --leg
 
 日常开发、提交、PR 和合并阶段禁止触发 GitHub Actions 或完整打包。安装、自动启动、崩溃恢复、升级及回滚改动，先在隔离环境复用既有产物执行必要检查。
 
-全部开发完成后，锁定同一候选提交与版本，最多手动执行一次完整工作流。工作流生成安装包和 Hub 镜像，执行升级回滚验证，并可按显式选项用同一份产物创建 Release 草稿。失败后读取日志并在本地修复，重跑须用户明确授权。正式发布和生产部署各自另行授权。 [工程规范](../docs/engineering-standards.md#发布与云端构建)
+全部开发完成后，锁定同一候选提交与版本，最多手动执行一次完整工作流。工作流生成安装包和 Hub 镜像，执行升级回滚验证，并可按显式选项用同一份产物创建 Release 草稿。失败后读取日志并在本地修复，重跑须用户明确授权。正式发布和生产部署各自另行授权。 [工程规范](../docs/governance/engineering-standards.md#发布与云端构建)
 
 
 ## Windows 半自动远程控制

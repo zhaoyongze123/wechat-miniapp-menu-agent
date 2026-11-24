@@ -8,7 +8,7 @@
 
 **React · TypeScript · Python · GUI Agent · Windows · Docker**
 
-[快速开始](#快速开始) · [核心功能](#核心功能) · [系统架构](#系统架构) · [部署指南](deploy/README.md) · [生产交付报告](docs/react-migration/production-delivery-report.md) · [版本发布](../../releases)
+[快速开始](#快速开始) · [核心功能](#核心功能) · [系统架构](#系统架构) · [部署指南](deploy/README.md) · [生产交付报告](docs/releases/0.2.0-rc.3/README.md) · [版本发布](../../releases)
 
 > 当前主分支为 React 产品主线。新增能力以实际代码为准。`0.2.2` 已作为生产补丁完成安装、升级、回滚与生产端数据一致性验收；发布资产复用同一次构建产物，不在标签推送时重建。详见 [CHANGELOG](CHANGELOG.md) 与 [Releases](../../releases)。
 
@@ -23,9 +23,9 @@
 | 质量审核与异常返工 | 人工标注与环境诊断 |
 | 多设备任务历史查询 | 本机任务历史与远程采集控制 |
 
-[共享工作台界面](docs/react-migration/verify/final/final-hub-workbench.jpg) · [采集端同步界面](docs/react-migration/verify/final/final-worker-sync.jpg) · [人工标注界面](docs/react-migration/verify/final/final-worker-annotation.jpg)
+[共享工作台界面](docs/archive/2026-11-react-migration/verify/final/final-hub-workbench.jpg) · [采集端同步界面](docs/archive/2026-11-react-migration/verify/final/final-worker-sync.jpg) · [人工标注界面](docs/archive/2026-11-react-migration/verify/final/final-worker-annotation.jpg)
 
-以上为 React 迁移阶段的浏览器验收截图。生产版本 `0.2.0-rc.3` 切换后的实机界面见 [生产工作台截图](docs/react-migration/screenshots/release/prod-rc3-workbench.jpg)。
+以上为 React 迁移阶段的浏览器验收截图，正式交付证据见 [0.2.0-rc.3 交付记录](docs/releases/0.2.0-rc.3/README.md)。
 
 ## 核心功能
 
@@ -169,7 +169,7 @@ npm ci
 
 前端开发可使用 `npm run dev`。按改动运行相关 pytest、Vitest、类型检查或 Lint。提交受影响的前端资源前生成并核对 `web/react/`。
 
-涉及导航、数据、同步或升级回滚时保留必要的隔离与实机验证。日常开发和合并禁止触发 Actions 或完整打包，全部开发完成后集中执行最多一次完整 CI。 [工程规范](docs/engineering-standards.md#测试与验证)
+涉及导航、数据、同步或升级回滚时保留必要的隔离与实机验证。日常开发和合并禁止触发 Actions 或完整打包，全部开发完成后集中执行最多一次完整 CI。 [工程规范](docs/governance/engineering-standards.md#测试与验证)
 
 ## 版本、升级与回滚
 
@@ -177,19 +177,21 @@ npm ci
 - **Hub**：通过明确的镜像版本标签升级或回退，保留持久化数据卷；首次迁移须先用副本验证数据兼容性。
 - **版本核对**：新版本提供 `/api/version`，用于核对运行版本与前端构建入口；迁移前版本需使用相应的兼容验证方式。
 
-完整操作、旧数据迁移及验收步骤见 [部署与回滚指南](deploy/README.md)。`0.2.2` 已完成 `0.2.0-rc.3 → 0.2.2 → 0.2.0-rc.3` 安装、升级、回滚 smoke，并在生产 Windows Worker 与 Hub 使用同一份产物完成升级；数据计数与完整性校验一致。历史 `0.2.0-rc.3` 交付详情见 [生产交付报告](docs/react-migration/production-delivery-report.md)。
+完整操作、旧数据迁移及验收步骤见 [部署与回滚指南](deploy/README.md)。`0.2.2` 已完成 `0.2.0-rc.3 → 0.2.2 → 0.2.0-rc.3` 安装、升级、回滚 smoke，并在生产 Windows Worker 与 Hub 使用同一份产物完成升级；数据计数与完整性校验一致。历史 `0.2.0-rc.3` 交付详情见 [生产交付报告](docs/releases/0.2.0-rc.3/README.md)。
 
 ## 文档与维护
+
+[文档索引](docs/README.md)
 
 | 文档 | 用途 |
 | --- | --- |
 | [部署指南](deploy/README.md) | 安装、设备配对、内网访问、升级、回滚与数据迁移。 |
-| [项目导航](docs/PROJECT_MAP.md) | 既有模块职责及数据流参考；历史技术描述以当前代码为准。 |
+| [项目导航](docs/architecture/PROJECT_MAP.md) | 既有模块职责及数据流参考；历史技术描述以当前代码为准。 |
 | [开发与优化规范](docs/gui-agent-development.md) | Agent 决策权、业务边界与回归口径。 |
 | [问题与回归台账](docs/menu-capture-regression.md) | 采集问题及复测记录。 |
-| [React 迁移报告](docs/react-migration/final-migration-report.md) | 迁移阶段的技术架构、测试和已知限制。 |
-| [生产交付报告](docs/react-migration/production-delivery-report.md) | 生产验收结论、测试证据、上线与回滚方案。 |
-| [工程规范](docs/engineering-standards.md) | 分层职责、测试矩阵、静态检查与 CI 门禁。 |
+| [React 迁移报告](docs/archive/2026-11-react-migration/final-migration-report.md) | 迁移阶段的技术架构、测试和已知限制。 |
+| [生产交付报告](docs/releases/0.2.0-rc.3/README.md) | 生产验收结论、测试证据、上线与回滚方案。 |
+| [工程规范](docs/governance/engineering-standards.md) | 分层职责、测试矩阵、静态检查与 CI 门禁。 |
 | [变更记录](CHANGELOG.md) | 各版本范围与升级回滚要点。 |
 | [贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md) | 开发流程、提交规范与凭据处理要求。 |
 | [仓库协作规范](AGENTS.md) | 开发协作及交接要求。 |

@@ -99,12 +99,12 @@
 | Hub 标注页无 H1、显示角色说明、导航无标注 | 通过 |
 | 页面脚本错误 | 0 |
 
-证据：`docs/react-migration/verify/phase-4c/check.json`；截图：
+证据：`docs/archive/2026-11-react-migration/verify/phase-4c/check.json`；截图：
 
-- `docs/react-migration/screenshots/phase-4c-worker-annotation.jpg`
-- `docs/react-migration/screenshots/phase-4c-worker-usage-stats.jpg`
-- `docs/react-migration/screenshots/phase-4c-worker-usage-calls.jpg`
-- `docs/react-migration/screenshots/phase-4c-hub-annotation.jpg`
+- `docs/archive/2026-11-react-migration/screenshots/phase-4c-worker-annotation.jpg`
+- `docs/archive/2026-11-react-migration/screenshots/phase-4c-worker-usage-stats.jpg`
+- `docs/archive/2026-11-react-migration/screenshots/phase-4c-worker-usage-calls.jpg`
+- `docs/archive/2026-11-react-migration/screenshots/phase-4c-hub-annotation.jpg`
 
 说明：隔离 Worker 原账本为空，验收前临时写入 6 条样例调用以覆盖统计/明细/下钻，证据采集后已删除；未触碰 8765 运行实例与生产数据。
 

@@ -1,6 +1,6 @@
 # 工程规范
 
-本文件是 [AGENTS.md](../AGENTS.md) 的展开版，面向服务端、采集执行、前端与发布链路。规范以“正确性优先、最小变更、按风险验证”为前提，不为了流程增加流程。
+本文件是 [AGENTS.md](../../AGENTS.md) 的展开版，面向服务端、采集执行、前端与发布链路。规范以“正确性优先、最小变更、按风险验证”为前提，不为了流程增加流程。
 
 ## 分层与职责
 
@@ -43,12 +43,12 @@
   - 门禁规则：`E9`、`F63`、`F7`、`F82`（语法错误、未定义名、无效比较、无效 f-string），当前 0 项。
   - 存量基线：`E4,E7,E9,F` 共 65 项（多语句单行、未使用导入/变量等），按模块逐步治理，不做一次性全量格式化。
   - 本地使用 `uvx ruff check <受影响路径>`。遇到全局配置变动等实际跨模块影响时再扩大检查范围。
-- 前端：`tsc -b --noEmit`（`npm run typecheck`）与 Vitest 作为门禁；ESLint 暂不引入，原因见 [治理报告](governance/repository-audit-2026-11.md)，如需引入须先固化基线并只拦截新增问题。
+- 前端：`tsc -b --noEmit`（`npm run typecheck`）与 Vitest 作为门禁；ESLint 暂不引入，原因见 [治理报告](repository-audit-2026-11.md)，如需引入须先固化基线并只拦截新增问题。
 - 编码统一 UTF-8（无 BOM），换行 LF，规则见 `.editorconfig`。
 
 ## 前端设计体系
 
-- 入口：[docs/design-system/README.md](design-system/README.md)。四层模型为 L1/L2 OpenAI Apps SDK UI、L3 自有复合组件、L4 Cloudscape/Carbon 产品模式参考。
+- 入口：[docs/design-system/README.md](../design-system/README.md)。四层模型为 L1/L2 OpenAI Apps SDK UI、L3 自有复合组件、L4 Cloudscape/Carbon 产品模式参考。
 - 新页面先复用 `src/components` 契约；表格、筛选、分页、批量操作、设置布局、表单、弹窗/抽屉、图片预览与反馈不得在页面内重复实现。
 - 视觉只使用官方语义 Token；不引入 Ant Design/Carbon/Cloudscape 运行时依赖或额外主题。
 - Storybook 为开发依赖：`npm run storybook`、`npm run build-storybook`；产物 `storybook-static/` 已忽略，不进入安装包或镜像。
@@ -58,13 +58,13 @@
 
 所有当前及后续开发任务采用本地按风险验证，完整 CI 集中在交付末期。
 
-- 正式 Release 必须附 `update-manifest.json`（契约见 [docs/updates/README.md](updates/README.md)）；缺清单或校验失败的版本不得作为可更新版本提供。
+- 正式 Release 必须附 `update-manifest.json`（契约见 [docs/updates/README.md](../updates/README.md)）；缺清单或校验失败的版本不得作为可更新版本提供。
 - 更新发现只允许固定仓库正式 Release；禁止接受前端传入的任意 URL、版本路径、镜像或命令。
 - 下载/安装/镜像切换必须有独立执行器、事务锁与健康检查；不得把 Docker Socket、宿主机 shell 或任意路径暴露给业务容器/浏览器。
 - CI 临时 artifact 默认保留 14 天；正式 Release 资产独立永久保留。
 
 1. **开发与评审**期间，Issue 实施、提交、PR、合并及标签推送均不得主动触发 GitHub Actions。禁止在此期间构建完整 Windows 安装包、Hub 镜像或发布归档。合并依据本地验证证据及仓库现行保护规则。
-2. **集成交付**在本轮所有开发任务完成后集中进行。锁定候选提交、版本和必要的升级基线，同一交付最多手动运行一次 [发布工作流](../.github/workflows/windows-release.yml)。各 Issue 共用这次完整验收。工作流覆盖前端、Python 静态检查、Windows 安装与恢复、Hub 数据卷与升级回滚。
+2. **集成交付**在本轮所有开发任务完成后集中进行。锁定候选提交、版本和必要的升级基线，同一交付最多手动运行一次 [发布工作流](../../.github/workflows/windows-release.yml)。各 Issue 共用这次完整验收。工作流覆盖前端、Python 静态检查、Windows 安装与恢复、Hub 数据卷与升级回滚。
 3. **集成失败**时先读取该次日志，针对失败原因在本地隔离修复和验证。重新派发、重跑失败作业或重跑整条工作流前，均须获得用户明确授权。更换提交、分支或版本号不重置本轮次数。
 4. **交付产物**使用已验收的同一份 EXE、Hub 镜像归档、更新清单和校验值，按提交、版本与摘要核对。显式选择 `create_release` 时，工作流可用验收产物准备 Release 草稿。正式发布和生产部署各自须有用户明确授权，已正式发布的版本禁止覆盖。
 

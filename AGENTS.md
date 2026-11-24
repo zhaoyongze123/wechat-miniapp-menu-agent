@@ -1,6 +1,6 @@
 # AGENTS.md
 
-面向在本仓库工作的自动化与人工协作者。详细规范见 [docs/engineering-standards.md](docs/engineering-standards.md)，项目结构见 [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md)。
+面向在本仓库工作的自动化与人工协作者。 [工程规范](docs/governance/engineering-standards.md) · [文档索引](docs/README.md)
 
 ## 执行节奏
 
@@ -26,7 +26,7 @@
 - 状态保持唯一事实源；不引入无依据的缓存、去重或异常吞并。
 - 日常开发、Issue 实施、提交、PR 和合并阶段一律禁止主动触发 GitHub Actions，也禁止构建完整 Windows 安装包、Hub 镜像或发布归档。
 - 按改动范围与风险执行必要的本地单测、类型检查、Lint 和针对性集成测试。数据库、并发、权限、安装、升级和回滚等高风险改动保留必要验证，优先在隔离环境复用既有产物。已确认且未受影响的验收证据直接引用，避免重复构建、截图、报告和无关测试。
-- 全部开发任务完成后，同一交付最多手动运行一次完整集成 CI。失败后读取日志、本地修复和验证，任何再次触发或重跑均须用户明确授权。详见 [发布与云端构建](docs/engineering-standards.md#发布与云端构建)。
+- 全部开发任务完成后，同一交付最多手动运行一次完整集成 CI。失败后读取日志、本地修复和验证，任何再次触发或重跑均须用户明确授权。详见 [发布与云端构建](docs/governance/engineering-standards.md#发布与云端构建)。
 - 涉及前端时按影响执行类型检查和相关测试。提交前生成并核对受改动影响的 `web/react` 静态资源。
 - 前端新增或修改表格、筛选、分页、批量操作、设置布局、表单、弹窗/抽屉、图片预览与反馈时，先查 [docs/design-system](docs/design-system/README.md) 与 `src/components` 现有契约，优先复用，不重复造同类组件。
 - Storybook 仅用于开发与回归：`npm run storybook` / `npm run build-storybook`，不进入生产安装包或 Hub 镜像。

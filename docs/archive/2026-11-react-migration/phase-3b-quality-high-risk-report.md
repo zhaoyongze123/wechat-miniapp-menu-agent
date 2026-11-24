@@ -98,6 +98,6 @@
 
 ## 7. 回滚说明
 
-- 本次只新增 `docs/react-migration/screenshots/verify-*.jpg` 与 `docs/react-migration/verify/quality-high-risk/` 证据，以及本报告和风险登记中的 R15；无源码、构建产物、数据库 schema 或生产配置变更。
+- 本次只新增 `docs/archive/2026-11-react-migration/screenshots/verify-*.jpg` 与 `docs/archive/2026-11-react-migration/verify/quality-high-risk/` 证据，以及本报告和风险登记中的 R15；无源码、构建产物、数据库 schema 或生产配置变更。
 - 隔离环境回滚：停止 8786/8787/8788 进程，删除 `D:\menu-agent\.tmp-quality-test` 即可；原演示环境（8782/8783）与运行实例（8765）未受影响。
 - 如需恢复补测前数据，重新从 `.tmp-verify-hub\hub` 复制副本并按本报告第 1 节修正路径即可。

@@ -72,9 +72,9 @@ UI 断言明细：
 
 截图：
 
-- `docs/react-migration/screenshots/verify-worker-workbench.jpg`（Worker 工作台整页）
-- `docs/react-migration/screenshots/verify-worker-start-dialog.jpg`（开跑弹窗）
-- `docs/react-migration/screenshots/verify-worker-nav.jpg`（Worker 角色侧栏）
+- `docs/archive/2026-11-react-migration/screenshots/verify-worker-workbench.jpg`（Worker 工作台整页）
+- `docs/archive/2026-11-react-migration/screenshots/verify-worker-start-dialog.jpg`（开跑弹窗）
+- `docs/archive/2026-11-react-migration/screenshots/verify-worker-nav.jpg`（Worker 角色侧栏）
 
 ## 4. 隔离验证环境
 

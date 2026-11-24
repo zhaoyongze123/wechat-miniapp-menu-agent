@@ -11,7 +11,7 @@
 | 支持角色 | Hub 与 Windows 原生 Worker。基线残有 Standalone、UiPath 兼容入口，用户已确认两角色目标。React 采用此范围。旧执行器清理由独立变更验收。 |
 | 实装版本 | 本轮只读核验 Windows 运行包 0.1.2，Hub 健康接口可达。双端验收之前记录实际 Worker 发布版号、Hub 镜像摘要与 React 构建 ID，不能用 Git 提交推定部署版本。 |
 
-主规格为 [#24](https://github.com/zhaoyongze123/wechat-miniapp-menu-agent/issues/24)。[功能清单](inventory.md)、[接口契约](api-contracts.md)、[角色矩阵](role-matrix.md) 和 [风险登记](risk-register.md)是阶段交付索引。Phase 0 交付规划供评审，Phase 1 经批准后启动。
+主规格为 [#24](https://github.com/zhaoyongze123/wechat-miniapp-menu-agent/issues/24)。[功能清单](inventory.md)、[接口契约](../../architecture/api-contracts.md)、[角色矩阵](../../architecture/role-matrix.md) 和 [风险登记](risk-register.md)是阶段交付索引。Phase 0 交付规划供评审，Phase 1 经批准后启动。
 
 ## 2. 技术决策
 
@@ -25,7 +25,7 @@
 
 ### 统一组件规范
 
-面向高频桌面业务。保留现有黑白／青绿工作台识别度。主按钮与危险操作层级清晰，技术详情按需展开。以语义 Token 管字体、行高、留白、线条、提示状态、焦点、表层与圆角。状态含文字或图标，不能只有颜色。表格区域可以横向滚动，抽屉头脚固定且内容独立滚动。标题只表达功能，页面/卡片/弹窗/模块标题下不默认添加说明；必要提示按就近原则放在字段、按钮、确认框、状态区或空状态内，详见 [UI 设计规范](ui-design-spec.md)。
+面向高频桌面业务。保留现有黑白／青绿工作台识别度。主按钮与危险操作层级清晰，技术详情按需展开。以语义 Token 管字体、行高、留白、线条、提示状态、焦点、表层与圆角。状态含文字或图标，不能只有颜色。表格区域可以横向滚动，抽屉头脚固定且内容独立滚动。标题只表达功能，页面/卡片/弹窗/模块标题下不默认添加说明；必要提示按就近原则放在字段、按钮、确认框、状态区或空状态内，详见 [UI 设计规范](../../design-system/react-migration-spec.md)。
 
 | 层 | 实施内容 | 验收 |
 | --- | --- | --- |

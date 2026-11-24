@@ -83,7 +83,7 @@
 | 分类筛选 | 「素材问题（0）」显示空状态，「全部（2）」恢复 2 行 |
 | 旧路由兼容 | `#/review-queue` 自动变为 `#/rejections?view=review`，内容正常 |
 
-截图目录 `docs/react-migration/screenshots/`：
+截图目录 `docs/archive/2026-11-react-migration/screenshots/`：
 
 `quality-rejections.jpg`、`quality-rejection-detail.jpg`、`quality-continue-materials.jpg`、`quality-review-queue.jpg`、`quality-review-detail.jpg`、`quality-review-approved.jpg`。
 

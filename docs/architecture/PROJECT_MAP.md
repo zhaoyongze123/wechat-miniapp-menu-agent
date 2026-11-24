@@ -1,7 +1,7 @@
 # 项目导航（PROJECT_MAP）
 
 本文件回答三个问题：**这个仓库由哪些部分组成、每个目录/模块负责什么、一次采集的数据如何流动**。
-新同学建议按 `README.md` → 本文件 → [长期开发与优化规范](gui-agent-development.md) 的顺序阅读。
+新同学建议按 `README.md` → 本文件 → [长期开发与优化规范](../gui-agent-development.md) 的顺序阅读。
 
 ## 1. 系统定位
 
@@ -34,7 +34,7 @@ flowchart LR
 | `docs/` | 工程规范、项目导航、回归台账、产品需求、发布报告与历史归档。 |
 | `输出/` | 采集默认输出目录（运行数据，不入库）。 |
 | `.github/workflows/` | CI：前端校验、Python 回归、安装包构建、Hub 镜像与 Ruff 门禁。 |
-| `AGENTS.md` | 仓库协作规则（精简版，细节见 `docs/engineering-standards.md`）。 |
+| `AGENTS.md` | 仓库协作规则（精简版，细节见 `docs/governance/engineering-standards.md`）。 |
 
 ## 3. 应用源码
 
@@ -167,7 +167,7 @@ app/
 | 查看任务/运行状态 | `GET /api/status`、`GET /api/tasks/active` |
 | 不合格清单 | `GET /api/rejections`、`GET /api/rejections/export.xlsx` |
 | 待检查清单 | `GET /api/reviews/pending` |
-| 最终集成验收与打包 | 全部开发完成后按 [发布与云端构建](engineering-standards.md#发布与云端构建) 执行 |
+| 最终集成验收与打包 | 全部开发完成后按 [发布与云端构建](../governance/engineering-standards.md#发布与云端构建) 执行 |
 
 ## 9. 旧工作区路径
 
@@ -183,11 +183,11 @@ app/
 
 ## 10. 相关文档
 
-- [README](../README.md)：项目概览与快速开始
-- [工程规范](engineering-standards.md)：分层、测试、静态检查与 CI 门禁
-- [长期开发与优化规范](gui-agent-development.md)：Agent 决策权、工具边界与验收口径
-- [菜单采集问题与回归台账](menu-capture-regression.md)：按链路记录的问题与复测证据
-- [GUI Agent 联调说明](../app/ui_tars/README.md)：模型配置、坐标协议与隔离试验
-- [微信小程序菜单导航 Agent PRD](product/微信小程序菜单导航%20Agent%20PRD.md)：早期范围与设计记录
-- [历史文档归档](archive/README.md)：已归档的阶段需求与实施记录
-- [变更记录](../CHANGELOG.md)、[贡献指南](../CONTRIBUTING.md)、[安全策略](../SECURITY.md)
+- [README](../../README.md)：项目概览与快速开始
+- [工程规范](../governance/engineering-standards.md)：分层、测试、静态检查与 CI 门禁
+- [长期开发与优化规范](../gui-agent-development.md)：Agent 决策权、工具边界与验收口径
+- [菜单采集问题与回归台账](../menu-capture-regression.md)：按链路记录的问题与复测证据
+- [GUI Agent 联调说明](../../app/ui_tars/README.md)：模型配置、坐标协议与隔离试验
+- [微信小程序菜单导航 Agent PRD](<../product/微信小程序菜单导航 Agent PRD.md>)：早期范围与设计记录
+- [历史文档归档](../archive/README.md)：已归档的阶段需求与实施记录
+- [变更记录](../../CHANGELOG.md)、[贡献指南](../../CONTRIBUTING.md)、[安全策略](../../SECURITY.md)

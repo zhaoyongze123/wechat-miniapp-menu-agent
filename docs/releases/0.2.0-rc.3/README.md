@@ -10,7 +10,7 @@
 React 新版本已完成开发、自动化回归、浏览器验收、单台真实微信采集验收、本机安装升级回滚 smoke，并已按确认的停机窗口切换为生产版本 `0.2.0-rc.3`。
 生产数据、设备身份与 paused 批次保持完整，`0.1.2` 版本目录保留可直接回滚。
 
-切换后生产状态：`D:\menu-agent\runtime\MenuCapture`，`current-version=0.2.0-rc.3`，`127.0.0.1:8765`，`/healthz` ok；批次 `25de5ef5b8fe49b7aa8e0168bda9699b` 仍为 `paused`、`current_index=75/88`，未自动续跑。
+切换后 `current-version` 为 `0.2.0-rc.3`，健康检查通过。已暂停的批次保持原位置。
 
 ## 2. 交付产物
 
@@ -54,16 +54,16 @@ React 新版本已完成开发、自动化回归、浏览器验收、单台真�
 - 远程置顶：`documentPictureInPicture` 可用，按钮「打开置顶控制窗」存在；不支持时给出明确提示。
 - 通知：`Notification.permission === granted`，设置页「通知与提醒」面板可用。
 - 连续处理：素材页「提交本店决策后自动进入下一家」、质量页「确认不合格后自动进入下一条」均可切换，刷新后偏好保持（localStorage）。
-- 截图：`docs/react-migration/screenshots/release/`（12 张）。
+- 截图：`docs/releases/0.2.0-rc.3/screenshots/release/`（11 张）。
 
 ## 6. 真实微信采集验收（生产机单台）
 
-- 运行：`58a1ea00d8f04f7ea644866c5bfb2806`，模式 `auto`，1 家门店，13:30:09 → 13:33:06，总耗时 177s。
+- 运行模式为 `auto`，处理 1 家门店，耗时 177 秒。
 - 链路：微信窗口准备 → 发送门店名 → 发送二维码 → 打开图片并识别 → 打开小程序 → GUI Agent 导航（12 次模型调用、12 张截图、10 次导航动作）→ 返回微信。
 - 结果：`needs_review`，`error_code=agent_needs_review`；原因为该门店小程序停留在促销横幅页，点餐入口点击后无菜品列表，属门店页面结构问题，非执行故障。
 - 复核：React 待处理队列正确显示该店为「技术重试 / GUI Agent 待人工检查」，证据截图完整。
-- 证据：`docs/react-migration/verify/real-capture/`（batch-result、navigation-result、result）；原始运行目录已从生产 `.uipath-runs` 移出至 `D:\menu-agent-delivery-artifacts\real-capture\`，未向生产 `output` 写入任何数据。
-- 生产批次 `25de5ef5…` 在采集前后均为 `paused`、index 75，未被中断或改写。
+- 原始真机截图和逐店记录由维护者保管，公开报告仅保留汇总结论。本次验收未向生产输出目录写入数据。
+- 原生产批次在采集前后均保持暂停，采集位置未改变。
 
 ## 7. 数据兼容与设备身份
 
@@ -89,7 +89,7 @@ React 新版本已完成开发、自动化回归、浏览器验收、单台真�
 2. 安装：`MenuCapture-Setup-0.2.0-rc.3-win-x64.exe /VERYSILENT /DIR="D:\menu-agent\runtime\MenuCapture"`，退出码 0；`current-version` = `0.2.0-rc.3`，`releases` 保留 `0.1.0`、`0.1.1`、`0.1.2`、`0.2.0-rc.3`。
 3. 启动：原计划任务恢复为 `Launch.ps1 -Action Supervise`；启动后 `GET /healthz` 返回 `{"ok":true,"role":"worker"}`。
 4. 校验：`GET /api/version` 返回 `{"version":"0.2.0-rc.3","frontend":"index-CgE4JUWo.js"}`；`/`、`/assets/index-CgE4JUWo.js`、`/assets/index-G2q2KzKA.css`、`/favicon.svg`、`/api/capture/queue` 均 200。
-5. 数据核对：`PRAGMA integrity_check` = ok；26 轮、1022 条任务、2196 条分配与升级前一致；最新批次 `25de5ef5…` 仍为 `paused`、`current_index=75/88`；`connections.json` 的模型指纹 `0974af68…` 与设备名「共享端A机」保留。
+5. 数据核对通过。26 轮、1022 条任务、2196 条分配与升级前一致，设备身份、模型连接和暂停进度均保留。
 6. 界面复核：生产端浏览器加载标题「菜单采集工作台」、H1「采集工作台」、`#root` 渲染 52KB，控制台错误 0。
 
 > 说明：paused 批次在切换后仍保持 paused，未自动续跑；是否继续由业务在工作台操作。

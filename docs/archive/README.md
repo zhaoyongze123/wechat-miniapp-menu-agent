@@ -4,10 +4,12 @@
 
 | 路径 | 时间 | 原始位置 | 说明 | 当前替代 |
 | --- | --- | --- | --- | --- |
-| `2026-11-capture-fixes/spec-only-1-3-pages.md` | 2026-11 | 仓库根目录 `spec.md` | 采集仅截 1–3 页的需求与分析 | [生产交付报告](../react-migration/production-delivery-report.md) |
+| `2026-11-capture-fixes/spec-only-1-3-pages.md` | 2026-11 | 仓库根目录 `spec.md` | 采集仅截 1–3 页的需求与分析 | [生产交付报告](../releases/0.2.0-rc.3/README.md) |
 | `2026-11-capture-fixes/tasks-only-1-3-pages.md` | 2026-11 | 仓库根目录 `tasks.md` | 上述需求的任务拆分 | 同上 |
 | `2026-11-capture-fixes/spec-failure-attribution.md` | 2026-11 | `UFS_Menu_Scraper/macos_runner/spec.md` | 正式执行失败归因需求 | [回归说明](../menu-capture-regression.md) |
 | `2026-11-capture-fixes/tasks-failure-attribution.md` | 2026-11 | `UFS_Menu_Scraper/macos_runner/tasks.md` | 上述需求的实施记录 | 同上 |
+
+| [2026-11-react-migration](2026-11-react-migration/) | 2026-11 | `docs/react-migration/` | React 迁移阶段报告、计划、测试证据 | [当前架构](../architecture/PROJECT_MAP.md) · [正式交付](../releases/README.md) |
 
 ## 归档规则
 

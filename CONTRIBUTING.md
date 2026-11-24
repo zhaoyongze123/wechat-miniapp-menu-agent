@@ -1,6 +1,6 @@
 # 贡献指南
 
-本仓库交付 Windows 生产采集端（Worker）、共享后台（Hub）与 React 控制台。提交前请先阅读 [工程规范](docs/engineering-standards.md) 与 [项目定位](docs/PROJECT_MAP.md)。
+本仓库交付 Windows 生产采集端（Worker）、共享后台（Hub）与 React 控制台。提交前请先阅读 [工程规范](docs/governance/engineering-standards.md) 与 [项目定位](docs/architecture/PROJECT_MAP.md)。
 
 ## 环境要求
 
