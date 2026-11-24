@@ -3,13 +3,16 @@ import {
   cancelUpdateDownload,
   checkUpdates,
   fetchUpdateHistory,
+  fetchUpdateInstall,
   fetchUpdateStatus,
   saveUpdatePreferences,
   startUpdateDownload,
+  startUpdateInstall,
 } from './api'
 
 export const updateKeys = {
   status: ['updates', 'status'] as const,
+  install: ['updates', 'install'] as const,
   history: ['updates', 'history'] as const,
 }
 
@@ -21,6 +24,18 @@ export function useUpdateStatus(enabled = true) {
     enabled,
     staleTime: 30_000,
     refetchInterval: (query) => (query.state.data?.download.active ? 2_000 : 5 * 60_000),
+  })
+}
+
+/** 安装状态：安装期间服务会重启，读取失败不代表失败，仍保持短间隔轮询直到终态。 */
+export function useUpdateInstall(enabled = true) {
+  return useQuery({
+    queryKey: updateKeys.install,
+    queryFn: ({ signal }) => fetchUpdateInstall(signal),
+    enabled,
+    staleTime: 15_000,
+    refetchInterval: (query) => (query.state.data?.active ? 2_000 : 60_000),
+    retry: 2,
   })
 }
 
@@ -43,5 +58,6 @@ export function useUpdateActions() {
     savePreferences: useMutation({ mutationFn: saveUpdatePreferences, onSuccess: refresh }),
     download: useMutation({ mutationFn: startUpdateDownload, onSuccess: refresh }),
     cancelDownload: useMutation({ mutationFn: cancelUpdateDownload, onSuccess: refresh }),
+    install: useMutation({ mutationFn: startUpdateInstall, onSuccess: refresh }),
   }
 }

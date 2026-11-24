@@ -2,6 +2,8 @@ import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
+import { useState } from 'react'
+import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
 import { CopyButton } from '../../components/CopyButton'
 import { SettingRow, SettingSection } from '../../components/SettingsLayout'
 import { StatePanel } from '../../components/StatePanel'
@@ -10,7 +12,7 @@ import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { formatTime } from '../hub/format'
 import { formatBytes } from '../settings/format'
-import { useUpdateActions, useUpdateHistory, useUpdateStatus } from './hooks'
+import { useUpdateActions, useUpdateHistory, useUpdateInstall, useUpdateStatus } from './hooks'
 import type { UpdateHistoryRow } from './types'
 
 const PLATFORM_LABEL: Record<string, string> = {
@@ -23,6 +25,19 @@ const ACTION_LABEL: Record<string, string> = {
   check: '检查更新',
   preferences: '保存偏好',
   download: '下载更新包',
+  install: '安装更新',
+}
+
+const INSTALL_STATUS_LABEL: Record<string, string> = {
+  idle: '未开始',
+  starting: '正在启动独立安装进程',
+  installing: '正在安装',
+  verifying: '正在核对新版本文件',
+  restarting: '正在切换运行版本',
+  rolling_back: '安装失败，正在回滚',
+  completed: '安装完成',
+  failed: '安装失败',
+  rolled_back: '已回滚到上一版本',
 }
 
 function historyLabel(row: UpdateHistoryRow): string {
@@ -33,8 +48,10 @@ function historyLabel(row: UpdateHistoryRow): string {
 export function UpdatesPanel() {
   const toast = useToast()
   const statusQuery = useUpdateStatus()
+  const installQuery = useUpdateInstall()
   const historyQuery = useUpdateHistory()
   const actions = useUpdateActions()
+  const [confirmInstall, setConfirmInstall] = useState(false)
 
   if (statusQuery.isPending) {
     return <StatePanel variant="loading" title="正在读取更新状态…" />
@@ -70,10 +87,17 @@ export function UpdatesPanel() {
     && latest != null
     && download.version === latest.version
     && (!latestAsset || latestAsset.name === download.asset_name)
-  // 已下载当前最新版本时不再提供下载入口；安装仍需按发布说明人工执行。
+  // 已下载当前最新版本时不再提供下载入口；安装由独立执行器完成，需要下载产物与能力同时满足。
   const canDownload = status.capabilities.download && status.update_available
     && !download.active && !downloadedCurrent
   const showProgress = download.active || downloadedCurrent
+  const install = installQuery.data
+  const installActive = Boolean(install?.active)
+  const installBusy = actions.install.isPending || installActive
+  const canInstall = status.capabilities.install && downloadedCurrent && latest != null
+    && !download.active && !installActive
+  // 安装状态读取失败时只提示刷新，不把网络失败当成安装失败。
+  const installReadError = installQuery.isError ? errorMessage(installQuery.error) : ''
 
   const savePreferences = (partial: { auto_check?: boolean; channel?: 'stable' | 'preview' }) => {
     actions.savePreferences.mutate(partial, {
@@ -108,18 +132,32 @@ export function UpdatesPanel() {
     })
   }
 
+  const startInstall = () => {
+    if (!latest) return
+    actions.install.mutate(latest.version, {
+      onSuccess: (state) => {
+        setConfirmInstall(false)
+        toast.push(
+          state.active ? `已提交安装 ${latest.version}，切换期间页面会短暂断开` : '安装任务已提交',
+          'info',
+        )
+      },
+      onError: (error) => toast.push(errorMessage(error), 'danger'),
+    })
+  }
+
   return (
     <div className="space-y-6">
       <SettingSection
         id="updates-software"
         title="软件更新"
-        description="从固定 GitHub 正式 Release 发现版本，并在校验通过后下载更新包；安装与回滚执行器尚未启用。"
+        description="从固定 GitHub 正式 Release 发现版本，校验通过后下载更新包；Windows 采集端可在空闲时由独立执行器完成安装与回滚。"
       >
         <Alert
           color="warning"
           variant="soft"
-          title="当前阶段提供版本发现、发布清单校验与受控下载"
-          description="更新包只写入数据目录并校验 SHA-256，不会自动安装或切换运行版本，也不会中断正在进行的采集。"
+          title="下载与安装都以服务端真实能力为准"
+          description="下载只写入数据目录并校验 SHA-256；安装仅在 Windows 采集端显式启用且采集/标注空闲时可用，切换后服务会自动重启并核对版本与健康状态。"
         />
 
         <div className="grid gap-3 sm:grid-cols-3">
@@ -205,6 +243,40 @@ export function UpdatesPanel() {
             {download.error ? (
               <Alert color="danger" variant="soft" title="下载未完成" description={download.error} />
             ) : null}
+          </div>
+        ) : null}
+
+        {downloadedCurrent || installActive || (install != null && install.status !== 'idle') ? (
+          <div className="space-y-2 rounded-lg border border-subtle px-3 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-sm text-default">安装与切换</p>
+                <p className="text-2xs text-tertiary">
+                  {install && install.supported
+                    ? INSTALL_STATUS_LABEL[install.status] ?? install.status
+                    : '安装执行器未启用'}
+                  {install?.target_version ? ` · 目标 ${install.target_version}` : ''}
+                  {install?.previous_version ? ` · 上一版本 ${install.previous_version}` : ''}
+                </p>
+              </div>
+              {canInstall ? (
+                <Button color="primary" size="sm" disabled={installBusy} onClick={() => setConfirmInstall(true)}>
+                  安装并重启
+                </Button>
+              ) : null}
+            </div>
+            {install?.message ? <p className="text-2xs text-secondary">{install.message}</p> : null}
+            {install && (install.status === 'failed' || install.status === 'rolled_back') && install.error ? (
+              <Alert color="danger" variant="soft" title="安装未完成" description={install.error} />
+            ) : null}
+            {!status.capabilities.install ? (
+              <p className="text-2xs text-tertiary">
+                {install?.reason || '安装执行器需在 Windows 采集端并显式启用后才能使用。'}
+              </p>
+            ) : downloadedCurrent && !canInstall ? (
+              <p className="text-2xs text-tertiary">安装需在下载完成且没有其他任务占用时进行。</p>
+            ) : null}
+            {installReadError ? <p className="text-2xs text-danger">安装状态读取失败：{installReadError}</p> : null}
           </div>
         ) : null}
 
@@ -347,6 +419,23 @@ export function UpdatesPanel() {
           <p className="text-xs text-secondary">暂无更新记录。</p>
         )}
       </SettingSection>
+
+      <ConfirmActionDialog
+        open={confirmInstall}
+        title={`安装 ${latest?.version ?? ''} 并重启采集端`}
+        description={
+          <div className="space-y-2">
+            <p>安装由独立进程静默完成，随后采集端会自动重启并核对运行版本、前端入口与健康状态。</p>
+            <p>安装期间新的采集与人工标注会被拒绝；失败时执行器会尝试回滚到上一版本，如数据库已迁移则停在人工确认。</p>
+            <p>请确认当前没有正在执行的采集或标注任务。</p>
+          </div>
+        }
+        confirmLabel="确认安装并重启"
+        tone="danger"
+        busy={actions.install.isPending}
+        onConfirm={startInstall}
+        onOpenChange={setConfirmInstall}
+      />
     </div>
   )
 }
