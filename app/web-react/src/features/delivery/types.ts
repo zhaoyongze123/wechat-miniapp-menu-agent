@@ -16,6 +16,14 @@ export interface DeliveryExcludedReason {
   count: number
 }
 
+export interface DeliveryPendingItem {
+  name: string
+  directory: string
+  source: 'output' | 'legacy_sources'
+  images: number
+  reason: string
+}
+
 /** 首次存量初始化与每次核对的可解释摘要，不把未核实目录伪装成已交付。 */
 export interface DeliveryInventory {
   discovered: {
@@ -29,6 +37,12 @@ export interface DeliveryInventory {
   excluded: {
     count: number
     reasons: DeliveryExcludedReason[]
+  }
+  /** 仅凭文件系统无法确认资格的历史目录，等待人工核实，绝不直接纳入交付目录。 */
+  pending_verification: {
+    count: number
+    stores: number
+    items: DeliveryPendingItem[]
   }
   verified?: {
     stores: number

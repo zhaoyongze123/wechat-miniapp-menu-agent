@@ -122,10 +122,26 @@ def test_qualified_but_missing_screenshots_is_pending_not_fake_ready(tmp_path):
     assert "缺少菜单截图" in service.stores()["items"][0]["reason"]
 
 
-def test_same_store_id_across_batches_keeps_only_latest_round(tmp_path):
+def test_same_store_in_different_batches_stays_independent(tmp_path):
     older = _task(tmp_path, task_id="a1", batch="b1", store="E02412", name="门店 A", pages=2,
                   batch_version="1", material_version="1", updated_at="2026-11-20T00:00:00+00:00")
     newer = _task(tmp_path, task_id="a2", batch="b2", store="E02412", name="门店 A", pages=3,
+                  batch_version="1", material_version="2", updated_at="2026-11-24T00:00:00+00:00")
+    service = _service(tmp_path, [older, newer])
+
+    service.reconcile()
+
+    # 门店身份是批次 + 门店，目录名只是展示名称：同名跨批次不能互相覆盖。
+    names = sorted(path.name for path in (tmp_path / "host" / "合格").iterdir())
+    assert len(names) == 2
+    assert all((tmp_path / "host" / "合格" / name).is_dir() for name in names)
+    assert service.status()["counts"]["qualified"] == 2
+
+
+def test_same_batch_rerun_keeps_only_latest_round(tmp_path):
+    older = _task(tmp_path, task_id="a1", batch="b1", store="E02412", name="门店 A", pages=2,
+                  batch_version="1", material_version="1", updated_at="2026-11-20T00:00:00+00:00")
+    newer = _task(tmp_path, task_id="a2", batch="b1", store="E02412", name="门店 A", pages=3,
                   batch_version="1", material_version="2", updated_at="2026-11-24T00:00:00+00:00")
     service = _service(tmp_path, [older, newer])
 
@@ -201,19 +217,22 @@ def _legacy_dir(base: Path, store: str, pages: int = 2, *, batch: str = "") -> P
     return folder
 
 
-def test_legacy_output_directories_initialize_without_tasks(tmp_path):
+def test_legacy_output_without_business_record_goes_pending(tmp_path):
     _legacy_dir(tmp_path / "output", "门店 L", pages=4)
     service = _service(tmp_path, [])
 
     service.reconcile()
 
-    target = tmp_path / "host" / "合格" / "门店 L"
-    assert sorted(path.name for path in target.iterdir()) == [f"page-{index:04d}.png" for index in range(1, 5)]
+    # 文件系统不是第二事实源：没有权威业务记录的历史目录不得直接进入交付目录。
+    assert not (tmp_path / "host" / "合格" / "门店 L").exists()
     status = service.status()
-    assert status["counts"]["qualified"] == 1
+    assert status["counts"]["qualified"] == 0
     assert status["inventory"]["discovered"]["output"] == 1
-    assert status["inventory"]["legacy_included"] == 1
-    assert service.stores()["items"][0]["source"] == "output"
+    assert status["inventory"]["legacy_included"] == 0
+    pending = status["inventory"]["pending_verification"]
+    assert pending["count"] == 1 and pending["stores"] == 1
+    assert pending["items"][0]["name"] == "门店 L"
+    assert "待核验" in pending["items"][0]["reason"]
 
 
 def test_legacy_directory_is_ignored_when_business_state_is_not_qualified(tmp_path):
@@ -228,6 +247,25 @@ def test_legacy_directory_is_ignored_when_business_state_is_not_qualified(tmp_pa
     status = service.status()
     assert status["counts"]["qualified"] == 0
     assert status["inventory"]["excluded"]["reasons"] == [{"reason": "业务状态不是合格", "count": 1}]
+    assert status["inventory"]["pending_verification"]["count"] == 0
+
+
+def test_deleted_batch_legacy_directory_is_not_reincluded(tmp_path):
+    task = _task(tmp_path, task_id="a1", batch="b1", store="E02412", name="门店 A", pages=2)
+    _legacy_dir(tmp_path / "output", "门店 A", pages=3)
+    tasks = [task]
+    service = _service(tmp_path, tasks)
+    service.reconcile()
+    assert (tmp_path / "host" / "合格" / "门店 A").is_dir()
+
+    # 批次被删除后当前有效任务消失，历史目录不能把门店重新带回合格目录。
+    tasks.clear()
+    service.reconcile()
+
+    assert not (tmp_path / "host" / "合格" / "门店 A").exists()
+    status = service.status()
+    assert status["counts"]["qualified"] == 0
+    assert status["inventory"]["pending_verification"]["count"] == 1
 
 
 def test_ambiguous_legacy_rounds_are_reported_not_guessed(tmp_path):
@@ -240,12 +278,12 @@ def test_ambiguous_legacy_rounds_are_reported_not_guessed(tmp_path):
     assert not (tmp_path / "host" / "合格" / "门店 M").exists()
     status = service.status()
     assert status["counts"]["ready"] == 0
-    assert status["inventory"]["excluded"]["reasons"] == [
-        {"reason": "存在多轮历史目录，无法确认当前有效轮次", "count": 1},
-    ]
+    pending = status["inventory"]["pending_verification"]
+    assert pending["count"] == 2 and pending["stores"] == 1
+    assert all("多轮" in item["reason"] for item in pending["items"])
 
 
-def test_legacy_sources_only_include_verifiable_menu_screenshots(tmp_path):
+def test_legacy_sources_only_pending_valid_menu_screenshots(tmp_path):
     _legacy_dir(tmp_path / "legacy-sources" / "1", "门店 S", pages=3)
     broken = tmp_path / "legacy-sources" / "2" / "坏图门店"
     broken.mkdir(parents=True)
@@ -254,22 +292,25 @@ def test_legacy_sources_only_include_verifiable_menu_screenshots(tmp_path):
 
     service.reconcile()
 
-    assert (tmp_path / "host" / "合格" / "门店 S").is_dir()
+    assert not (tmp_path / "host" / "合格" / "门店 S").exists()
     assert not (tmp_path / "host" / "合格" / "坏图门店").exists()
-    assert service.status()["inventory"]["discovered"]["legacy_sources"] == 2
+    status = service.status()
+    assert status["inventory"]["discovered"]["legacy_sources"] == 2
+    assert status["inventory"]["excluded"]["reasons"] == [{"reason": "非有效菜单截图", "count": 1}]
+    assert status["inventory"]["pending_verification"]["count"] == 1
 
 
 def test_restart_resumes_initialization_from_persisted_index(tmp_path):
-    _legacy_dir(tmp_path / "output", "门店 L", pages=2)
-    first = _service(tmp_path, [])
+    task = _task(tmp_path, task_id="a1", batch="b1", store="E02412", name="门店 A", pages=2)
+    first = _service(tmp_path, [task])
     first.reconcile()
     generation = first.status()["generation"]
 
-    restarted = _service(tmp_path, [])
+    restarted = _service(tmp_path, [task])
     restarted.reconcile()
 
     assert restarted.status()["generation"] == generation
-    assert (tmp_path / "host" / "合格" / "门店 L" / "page-0002.png").is_file()
+    assert (tmp_path / "host" / "合格" / "门店 A" / "page-0002.png").is_file()
 
 
 def test_reveal_is_rejected_when_hub_runs_in_container(tmp_path, monkeypatch):
@@ -296,11 +337,69 @@ def test_failed_store_enters_backoff_and_status_partial(tmp_path, monkeypatch):
     def boom(*_args, **_kwargs):
         raise OSError("磁盘已满")
 
-    monkeypatch.setattr(delivery_module.shutil, "copy2", boom)
+    monkeypatch.setattr(delivery_module, "_copy_and_hash", boom)
     service.reconcile()
 
     status = service.status()
     assert status["state"] == "partial"
     assert status["counts"]["failed"] == 1
     index = json.loads((tmp_path / "data" / "delivery-index.json").read_text(encoding="utf-8"))
-    assert index["failures"]["store:E02412"]["error"] == "磁盘已满"
+    assert index["failures"]["batch:b1|store:E02412"]["error"] == "磁盘已满"
+
+
+def test_same_size_different_content_is_never_reused(tmp_path):
+    task = _task(tmp_path, task_id="a1", batch="b1", store="E02412", name="门店 A", pages=2)
+    service = _service(tmp_path, [task])
+    service.reconcile()
+    target = tmp_path / "host" / "合格" / "门店 A"
+
+    # 模拟重采：文件名与大小完全相同，但画面内容不同。
+    output = Path(task["output_dir"])
+    for index in (1, 2):
+        page = output / f"page-{index:04d}.png"
+        original = page.read_bytes()
+        page.write_bytes(original[:8] + b"X" * (len(original) - 8))
+    task["updated_at"] = "2026-11-25T02:00:00+00:00"
+    service.reconcile()
+
+    for index in (1, 2):
+        source = output / f"page-{index:04d}.png"
+        assert (target / f"page-{index:04d}.png").read_bytes() == source.read_bytes()
+
+
+def test_same_size_tampering_of_delivered_file_is_detected(tmp_path):
+    task = _task(tmp_path, task_id="a1", batch="b1", store="E02412", name="门店 A", pages=2)
+    service = _service(tmp_path, [task])
+    service.reconcile()
+    delivered = tmp_path / "host" / "合格" / "门店 A" / "page-0001.png"
+    original = delivered.read_bytes()
+    delivered.write_bytes(original[:8] + b"Y" * (len(original) - 8))
+
+    service.reconcile()
+
+    # 只比大小无法发现同尺寸篡改，必须按内容摘要修复。
+    assert delivered.read_bytes() == Path(task["output_dir"], "page-0001.png").read_bytes()
+
+
+def test_publish_is_abandoned_when_round_changes_mid_sync(tmp_path, monkeypatch):
+    task = _task(tmp_path, task_id="a1", batch="b1", store="E02412", name="门店 A", pages=2)
+    service = _service(tmp_path, [task])
+    service.reconcile()
+    target = tmp_path / "host" / "合格" / "门店 A"
+    before = (target / "page-0001.png").read_bytes()
+
+    output = Path(task["output_dir"])
+    for index in (1, 2):
+        page = output / f"page-{index:04d}.png"
+        page.write_bytes(b"\x89PNG\r\n\x1a\n" + b"Z" * (len(page.read_bytes()) - 8))
+    task["updated_at"] = "2026-11-25T03:00:00+00:00"
+
+    original = service._still_current
+    monkeypatch.setattr(service, "_still_current", lambda _record: False)
+    service.reconcile()
+    # 复核失败时不得发布过期轮次，旧目录保持原样等待下一轮修正。
+    assert (target / "page-0001.png").read_bytes() == before
+
+    monkeypatch.setattr(service, "_still_current", original)
+    service.reconcile()
+    assert (target / "page-0001.png").read_bytes() == (output / "page-0001.png").read_bytes()
