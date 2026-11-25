@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -50,7 +51,14 @@ class FakeTransport:
         return dict(self.reply)
 
 
-def test_action_is_async_sanitized_and_export_includes_referenced_evidence(tmp_path: Path) -> None:
+def test_action_is_async_sanitized_and_export_includes_referenced_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 该 ID 含有类似手机号的数字段，清理普通文本时必须保留文件引用。
+    monkeypatch.setattr(
+        "menu_capture.storage.debug_log.uuid.uuid4",
+        lambda: uuid.UUID("69ba00c16908488998ef576ee36e369e"),
+    )
     log = _log(tmp_path)
     try:
         source = tmp_path / "frame.png"

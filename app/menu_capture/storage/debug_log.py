@@ -485,6 +485,10 @@ class DebugLog:
                 rows.append({"omitted_items": len(value) - 500})
             return rows
         if isinstance(value, str):
+            # 截图证据 ID 是固定格式的随机十六进制名称，可能碰巧匹配手机号。
+            # 保留其原值才能让动作记录继续关联到已保存的证据文件。
+            if _MEDIA_NAME.fullmatch(value):
+                return value
             return self._safe_text(value, 2000)
         if value is None or isinstance(value, (bool, int, float)):
             return value
