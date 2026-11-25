@@ -65,6 +65,8 @@ function downloadState(overrides: Partial<UpdateDownloadState> = {}): UpdateDown
     asset_name: '',
     arch: '',
     sha256: '',
+    from_version: '',
+    fallback_reason: '',
     etag: '',
     last_modified: '',
     downloaded: 0,
@@ -380,6 +382,90 @@ describe('UpdatesPanel', () => {
 
     expect(screen.getByText(/已下载 0\.2\.9；当前最新为 0\.3\.0/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '仅下载更新包' })).toBeInTheDocument()
+  })
+
+  it('高级诊断显示实际增量方式、基线与包大小', () => {
+    mocks.status.data = status({
+      download: downloadState({
+        status: 'completed',
+        version: '0.3.4',
+        asset_kind: 'windows_patch',
+        asset_name: 'MenuCapture-0.3.3-to-0.3.4.patch.zip',
+        from_version: '0.3.3',
+        downloaded: 5 * 1024 * 1024,
+        total: 5 * 1024 * 1024,
+      }),
+    })
+    renderPanel()
+
+    fireEvent.click(screen.getByText('高级设置与诊断'))
+
+    expect(screen.getByText('Windows 文件级增量补丁')).toBeInTheDocument()
+    expect(screen.getByText('0.3.3 → 0.3.4')).toBeInTheDocument()
+    expect(screen.getByText('更新包大小：').parentElement).toHaveTextContent(/已下载/)
+  })
+
+  it('高级诊断如实显示增量补丁回退原因', () => {
+    mocks.status.data = status({
+      download: downloadState({
+        status: 'completed',
+        version: '0.3.4',
+        asset_kind: 'windows_installer',
+        asset_name: 'MenuCapture-Setup-0.3.4-win-x64.exe',
+        from_version: '0.3.3',
+        fallback_reason: '补丁基线校验失败',
+        downloaded: 1024,
+        total: 1024,
+      }),
+    })
+    renderPanel()
+
+    fireEvent.click(screen.getByText('高级设置与诊断'))
+
+    expect(screen.getByText('Windows 完整安装包')).toBeInTheDocument()
+    expect(screen.getByText('已回退到完整安装包')).toBeInTheDocument()
+    expect(screen.getByText('增量补丁未能使用：补丁基线校验失败')).toBeInTheDocument()
+  })
+
+  it('Hub OCI 诊断使用宿主选择结果且不复用旧归档大小', () => {
+    mocks.install.data = installState({
+      supported: true,
+      reason: '',
+      status: 'installing',
+      target_version: '0.3.4',
+      previous_version: '0.3.3',
+    })
+    mocks.status.data = status({
+      platform: 'linux',
+      download: downloadState({
+        status: 'completed',
+        version: '0.3.3',
+        asset_kind: 'hub_image',
+        asset_name: 'menu-capture-hub-0.3.3-linux-amd64.tar.gz',
+        downloaded: 175_310_708,
+        total: 175_310_708,
+      }),
+      schedule: {
+        armed: true,
+        version: '0.3.4',
+        mode: 'immediate',
+        delivery: 'oci',
+        requested_at: '2026-11-26T10:00:00Z',
+        note: '等待空闲，由宿主机分层拉取镜像',
+        last_result: '',
+      },
+      flow: flow({ active: true, stage: 'downloading', version: '0.3.4', progress: 25, message: '宿主机正在处理 OCI 镜像' }),
+    })
+    renderPanel()
+
+    fireEvent.click(screen.getByText('高级设置与诊断'))
+
+    expect(screen.getByText('Hub OCI 分层镜像')).toBeInTheDocument()
+    expect(screen.getByText('0.3.3 → 0.3.4')).toBeInTheDocument()
+    expect(screen.getByText(/由 Hub 宿主执行器处理/)).toBeInTheDocument()
+    expect(screen.queryByText('更新包大小：')).not.toBeInTheDocument()
+    expect(screen.queryByRole('progressbar', { name: '更新包下载进度' })).not.toBeInTheDocument()
+    expect(screen.queryAllByRole('progressbar')).toHaveLength(0)
   })
 
   it('安装执行器未启用时只在高级设置说明原因', () => {

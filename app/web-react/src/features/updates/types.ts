@@ -42,6 +42,8 @@ export interface UpdatePreferences {
 export interface UpdateSchedule {
   armed: boolean
   version: string
+  /** Hub 更新由宿主执行器选择 archive 或 oci；旧安排可能没有此字段。 */
+  delivery?: 'archive' | 'oci' | string
   /** immediate 为“立即更新”，idle 为“空闲后更新”。 */
   mode: UpdateMode
   requested_at: string
@@ -170,6 +172,10 @@ export interface UpdateDownloadState {
   asset_name: string
   arch: string
   sha256: string
+  /** 增量补丁所对应的源版本；全量资产为空。 */
+  from_version: string
+  /** 增量补丁不可用并已切换到全量包时，服务端记录的真实原因。 */
+  fallback_reason: string
   etag: string
   last_modified: string
   downloaded: number
