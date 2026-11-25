@@ -8,7 +8,7 @@ import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppPagination } from '../../components/AppPagination'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
 import { FilterToolbar } from '../../components/FilterToolbar'
-import { PageHeader } from '../../components/PageHeader'
+import { ListPageLayout } from '../../components/ListPageLayout'
 import { SearchInput } from '../../components/SearchInput'
 import { StatePanel } from '../../components/StatePanel'
 import { StatCard } from '../../components/StatCard'
@@ -363,8 +363,8 @@ export function MaterialsPage() {
   }
 
   return (
-    <section className="space-y-6" aria-labelledby="materials-heading">
-      <PageHeader
+    <>
+      <ListPageLayout
         title="素材清洗"
         headingId="materials-heading"
         actions={
@@ -377,13 +377,13 @@ export function MaterialsPage() {
             </Button>
           </>
         }
-      />
-
-      <SegmentedControl<MaterialsView> value={view} onChange={switchView} aria-label="素材视图">
-        <SegmentedControl.Option value="batch">批次清洗</SegmentedControl.Option>
-        <SegmentedControl.Option value="rework">跨批次返工</SegmentedControl.Option>
-      </SegmentedControl>
-
+        summary={
+          <SegmentedControl<MaterialsView> value={view} onChange={switchView} aria-label="素材视图">
+            <SegmentedControl.Option value="batch">批次清洗</SegmentedControl.Option>
+            <SegmentedControl.Option value="rework">跨批次返工</SegmentedControl.Option>
+          </SegmentedControl>
+        }
+      >
       {view === 'rework' ? (
         <ReworkPanel />
       ) : (optionsQuery.data ?? []).length === 0 ? (
@@ -710,7 +710,8 @@ export function MaterialsPage() {
         }}
         onConfirm={runConfirmedAction}
       />
-    </section>
+      </ListPageLayout>
+    </>
   )
 }
 

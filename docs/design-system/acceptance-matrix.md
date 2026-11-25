@@ -8,7 +8,7 @@
 | 项 | 状态 | 证据 |
 | --- | --- | --- |
 | 四层规范索引与冲突优先级 | 已完成 | `docs/design-system/README.md`、`upstream-index.md` |
-| 页面模式映射 | 已完成 | `page-patterns.md` |
+| 页面模式映射 | 已完成 | `page-patterns.md`；公共 `ListPageLayout` 已用于分配记录与素材清洗页 |
 | 组件契约 | 已完成 | `component-contracts.md` |
 | Storybook（开发依赖、不进生产包） | 已完成 | `npm run storybook`、`npm run build-storybook` 构建通过；`.gitignore` 排除产物 |
 | 关键组件故事与交互 | 已完成 | 表格长文本/窄容器/加载/空态/键盘进入/行内展开、列表筛选与批量条、信息展示（StatCard/StatusBadge/KeyValueList/KeyValuePair）、弹窗/抽屉/确认/页头均有真实合成数据实例与交互断言 |
@@ -23,7 +23,7 @@
 | 共享工作台卡片 | 已完成 | 去除重复标题层级，连接/配对/待补传集中展示 |
 | Hub 采集工作台 | 已完成 | 筛选清除、批量操作条复用、表格键盘进入详情、行内交互不触发行点击；门店详情支持当前筛选结果内上一家/下一家与位置显示 |
 | SelectedStoresDrawer | 保留现状 | 数量、移除、清空、分配与长名称查看已满足 |
-| HubStoreDetailDrawer | 已完成 | #30 入口、二维码、版本、分页与错误态；新增当前页连续查看、位置显示与门店名/任务 ID 复制 |
+| HubStoreDetailDrawer | 已完成 | #30 入口、二维码、版本、分页与错误态；新增当前页连续查看、位置显示与门店名/任务 ID 复制；待检查门店支持就地处置并保留 Hub 列表上下文 |
 | AssignDialog | 保留现状 | 处理中防重复、冲突排除与选择保留已有 |
 | HubAssignmentsPage | 已完成 | 详情任务/分配 ID 可复制；证据连续浏览；详情支持上一条/下一条；筛选条与批量条复用公共组件，恢复“回收选中”，确认说明条数、涉及设备、解除占用与迟到结果留档 |
 | AssignmentDetailDrawer | 已完成 | 结果图片序列连续浏览；ID 复制；忙碌/处理中保持现状 |
@@ -46,7 +46,7 @@
 | RejectionDetailDrawer | 已完成 | 两条证据连续浏览；处理中禁止关闭；操作成功后才进入下一条（沿用） |
 | PendingReviewDrawer | 已完成 | 当前结果/历史记录/诊断证据三分区；源图/最近画面连续浏览；历史缺失与同步状态如实说明 |
 | TaskCenterPage / ActiveTasksPanel | 已完成 | 保留 5 秒轮询、批次摘要、重命名与详情；任务 ID、轮次 ID 与原始来源可复制并省略展示，长文本不再撑开行 |
-| TaskDetailDrawer | 已完成 | 已有轮询、分页、保留最近数据警告；逐店详情补充门店画面、失败说明与直达质量审核处置，深链自动打开对应门店 |
+| TaskDetailDrawer | 已完成 | 已有轮询、分页、保留最近数据警告；逐店详情补充门店画面与失败说明，「就地处置」在原任务上下文打开处置弹窗，不跳转、不丢失轮次与页码 |
 | ModelUsageDialog | 已完成 | 统计与调用明细统一为公共表格，保留日期筛选、分组下钻、行内调用详情与 Token 空值说明；未伪造价格/ETA |
 | DiagnosticsPage | 保留现状 | 只读检查与复制降级已有；未新增重复入口 |
 | 未知路由/旧深链 | 保留现状 | `/overview`、`/environment`、`/review-queue` 重定向保留 |

@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { AppDrawer } from '../../components/AppDrawer'
 import { AppPagination } from '../../components/AppPagination'
@@ -9,6 +8,7 @@ import { ImagePreview } from '../../components/ImagePreview'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { errorMessage } from '../../api/client'
+import { ReviewDispositionDialog } from '../quality/ReviewDispositionDialog'
 import { AssignmentDetailDrawer } from './AssignmentDetailDrawer'
 import { fetchAssignmentRecords } from './api'
 import { assignmentStatusOf, formatStore, storeStateOf } from './format'
@@ -40,7 +40,8 @@ export function HubStoreDetailDrawer({
   const [page, setPage] = useState(1)
   const [assignment, setAssignment] = useState<AssignmentRecord | null>(null)
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null)
-  const navigate = useNavigate()
+  // 就地处置任务，避免跳转质量审核丢失 Hub 列表筛选与分页上下文。
+  const [dispositionTaskId, setDispositionTaskId] = useState<string | null>(null)
   const taskId = task?.id ?? ''
   useEffect(() => { setPage(1); setAssignment(null); setPreview(null) }, [taskId])
   const history = useQuery({
@@ -117,7 +118,7 @@ export function HubStoreDetailDrawer({
             查看最近画面
           </Button>
           {reviewable ? (
-            <Button color="primary" size="sm" onClick={() => navigate(`/rejections?view=review&task=${encodeURIComponent(task.id)}`)}>
+            <Button color="primary" size="sm" onClick={() => setDispositionTaskId(task.id)}>
               前往质量审核处置
             </Button>
           ) : null}
@@ -153,6 +154,14 @@ export function HubStoreDetailDrawer({
       caption={preview?.alt ?? ''}
       onOpenChange={(open) => { if (!open) setPreview(null) }}
     />
+    {dispositionTaskId !== null ? (
+      <ReviewDispositionDialog
+        open
+        taskId={dispositionTaskId}
+        storeName={task?.source_name}
+        onOpenChange={(open) => { if (!open) setDispositionTaskId(null) }}
+      />
+    ) : null}
     </>
   )
 }
