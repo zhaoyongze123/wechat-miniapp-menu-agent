@@ -34,12 +34,13 @@ from menu_capture.updates.updates import (
     UNSIGNED_ENV,
     Version,
     _SHA256_RE,
+    _downloadable_asset,
     _file_sha256,
     _http_open,
-    _incremental_enabled,
     _int_header,
     _is_reparse,
     _normalize_arch,
+    _safe_asset_url,
 )
 
 INSTALL_TIMEOUT_SECONDS = 900
@@ -127,15 +128,7 @@ def _safe_join(base: Path, *parts: str) -> Path:
     这里的顺序是校验片段 → 逐级检查链接 → 解析后确认仍位于 base 之内。
     """
     base = Path(base)
-    for part in parts:
-        text = str(part or "")
-        if text in {"", ".", ".."} or Path(text).name != text:
-            raise ValueError("更新包路径包含非法片段")
-    current = base
-    for part in parts:
-        current = current / part
-        if current.exists() and _is_reparse(current):
-            raise ValueError("更新包路径经过符号链接或重解析点")
+    current = _prepare_path(base, *parts)
     try:
         root = base.resolve(strict=True)
         resolved = current.resolve(strict=True)
@@ -149,14 +142,16 @@ def _safe_join(base: Path, *parts: str) -> Path:
 def _prepare_path(base: Path, *parts: str) -> Path:
     """拼接尚不存在的目标路径；逐级拒绝链接，最终路径不要求已存在。"""
     base = Path(base)
+    if _is_reparse(base):
+        raise ValueError("下载目录不允许是符号链接或重解析点")
     for part in parts:
         text = str(part or "")
-        if text in {"", ".", ".."} or Path(text).name != text:
+        if text in {"", ".", ".."} or any(char in text for char in "/\\:"):
             raise ValueError("更新包路径包含非法片段")
     current = base
     for part in parts:
         current = current / part
-        if current.exists() and _is_reparse(current):
+        if _is_reparse(current):
             raise ValueError("更新包路径经过符号链接或重解析点")
     return current
 
@@ -165,7 +160,7 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def verify_artifact(
+def _artifact_identity(
     download_dir: Path,
     state: dict,
     *,
@@ -174,11 +169,7 @@ def verify_artifact(
     arch: str = "",
     expected_kind: str | None = None,
 ) -> dict:
-    """安装前重新核对产物身份：版本、平台/架构、名称、大小、路径与 SHA-256。
-
-    不信任下载结束时留下的 completed 状态；文件可能已被删除、替换或损坏。
-    增量补丁由调用方显式传入 expected_kind，避免把补丁误当完整安装包。
-    """
+    """绑定可信下载记录与约定路径。文件可用性由安装方式决定。"""
     if not isinstance(state, dict) or state.get("status") != "completed":
         raise ValueError("尚未完成下载，不能安装")
     version = str(state.get("version") or "")
@@ -208,7 +199,7 @@ def verify_artifact(
         raise ValueError("下载记录大小无效")
     # 路径由服务端按 数据目录/版本/资产名 推导，绝不使用状态文件里的任意路径；
     # 拼装过程逐级拒绝链接与越界，避免下载目录被替换后指到别处。
-    expected = _safe_join(download_dir, version, name)
+    expected = _prepare_path(download_dir, version, name).resolve()
     recorded = str(state.get("path") or "")
     if recorded:
         try:
@@ -217,12 +208,6 @@ def verify_artifact(
             raise ValueError("更新包路径与版本目录不一致") from exc
         if recorded_path != expected:
             raise ValueError("更新包路径与版本目录不一致")
-    if not expected.is_file() or expected.is_symlink():
-        raise ValueError("更新包文件不存在或不是普通文件，请重新下载")
-    if expected.stat().st_size != size:
-        raise ValueError("更新包大小与下载记录不一致，请重新下载")
-    if _file_sha256(expected) != sha:
-        raise ValueError("更新包 SHA-256 校验失败，请重新下载")
     return {
         "version": version,
         "asset_kind": kind,
@@ -231,6 +216,34 @@ def verify_artifact(
         "size": size,
         "path": str(expected),
     }
+
+
+def verify_artifact(
+    download_dir: Path,
+    state: dict,
+    *,
+    expected_version: str,
+    platform: str,
+    arch: str = "",
+    expected_kind: str | None = None,
+) -> dict:
+    """安装前重新核对产物身份：版本、平台/架构、名称、大小、路径与 SHA-256。
+
+    不信任下载结束时留下的 completed 状态；文件可能已被删除、替换或损坏。
+    增量补丁由调用方显式传入 expected_kind，避免把补丁误当完整安装包。
+    """
+    artifact = _artifact_identity(
+        download_dir, state, expected_version=expected_version,
+        platform=platform, arch=arch, expected_kind=expected_kind,
+    )
+    expected = _safe_join(download_dir, artifact["version"], artifact["asset_name"])
+    if not expected.is_file() or expected.is_symlink():
+        raise ValueError("更新包文件不存在或不是普通文件，请重新下载")
+    if expected.stat().st_size != artifact["size"]:
+        raise ValueError("更新包大小与下载记录不一致，请重新下载")
+    if _file_sha256(expected) != artifact["sha256"]:
+        raise ValueError("更新包 SHA-256 校验失败，请重新下载")
+    return artifact
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -523,10 +536,9 @@ class InstallOrchestrator:
     def _install_with_patch(self) -> None:
         """先尝试增量；补丁在切换版本前失败时，同一授权内回退一次完整安装包。"""
         try:
-            self._verify_patch_trust()
-            # 补丁与本机基线是否匹配属于“增量不可用”，必须放在回退范围内；
-            # 任务本身的路径/身份校验仍在 _validate_job 中直接拒绝。
+            # 文件和基线不可用属于增量回退范围，任务身份和路径越界仍在 _validate_job 拒绝。
             self._verify_patch_applicability()
+            self._verify_patch_trust()
             self._apply_patch()
         except Exception as exc:
             self._cleanup_stage()
@@ -561,8 +573,10 @@ class InstallOrchestrator:
         if not download_dir or not Path(download_dir).is_absolute():
             raise ValueError("下载目录无效")
         releases = self.install_root / "releases"
+        if _is_reparse(releases):
+            raise ValueError("版本目录不允许是符号链接或重解析点")
         target_dir = releases / self.target
-        if target_dir.exists():
+        if target_dir.exists() or _is_reparse(target_dir):
             raise ValueError("目标版本目录已存在，已拒绝覆盖安装")
         if self.patch_mode:
             if int(self.job.get("schema") or 0) != 2:
@@ -608,6 +622,9 @@ class InstallOrchestrator:
             raise ValueError("补丁大小无效") from exc
         if expected_size <= 0:
             raise ValueError("补丁大小无效")
+        catalog = str(self.job.get("patch_catalog") or "")
+        if catalog:
+            _prepare_path(download_dir, self.target, catalog)
         self._validate_fallback_job()
         self.patch = patch
         self._patch_sha256 = expected_sha
@@ -656,8 +673,8 @@ class InstallOrchestrator:
         base_manifest = _read_json(base_dir / "release-manifest.json", {})
         if str(base_manifest.get("version") or "") != base_version:
             raise ValueError("本地基线的发布清单版本不匹配")
-        self.base_commit = str(self.job.get("base_commit") or "")
-        if self.base_commit and str(base_manifest.get("git_commit") or "") != self.base_commit:
+        self.base_commit = str(base_manifest.get("git_commit") or "")
+        if self.job.get("base_commit") and self.base_commit != self.job["base_commit"]:
             raise ValueError("本地基线的构建提交与补丁不一致")
         self.patch_base_dir = base_dir
 
@@ -746,11 +763,12 @@ class InstallOrchestrator:
         size = int(self.job.get("fallback_size") or 0)
         if size <= 0:
             raise ValueError("回退安装包大小无效")
-        target = _prepare_path(Path(str(self.job.get("download_dir") or "")), self.target, name)
-        if target.is_file() and not target.is_symlink() and _file_sha256(target) == expected_sha:
+        download_dir = Path(str(self.job.get("download_dir") or ""))
+        target = _prepare_path(download_dir, self.target, name)
+        if target.is_file() and target.stat().st_size == size and _file_sha256(target) == expected_sha:
             return target
         target.parent.mkdir(parents=True, exist_ok=True)
-        part = target.with_suffix(target.suffix + ".part")
+        part = _prepare_path(download_dir, self.target, name + ".part")
         free = shutil.disk_usage(target.parent).free
         if free < size + 64 * 1024 * 1024:
             raise ValueError("磁盘剩余空间不足以回退完整安装包")
@@ -1139,61 +1157,64 @@ class InstallController:
             raise ValueError("无法确定当前运行版本，拒绝自动安装")
         if Version.parse(version) <= Version.parse(previous):
             raise ValueError("目标版本必须高于当前版本")
-        # 整包/补丁 SHA-256 可能持续数秒到数十秒，绝不能在持锁期间执行。
+        # 完整安装包在锁外校验。补丁只核对发布身份与路径，文件和基线交由独立执行器检查，
+        # 这样补丁无法使用时，执行器还能在同一次授权内校验并运行完整安装包。
         state = self.artifact_provider()
-        use_patch = str(state.get("asset_kind") or "") == PATCH_ASSET_KIND
-        artifact = verify_artifact(
-            self.download_dir, state, expected_version=version,
-            platform=self.platform, arch=self.arch,
-            expected_kind=PATCH_ASSET_KIND if use_patch else None,
-        )
+        use_patch = isinstance(state, dict) and state.get("asset_kind") == PATCH_ASSET_KIND
         patch_meta: dict | None = None
         fallback_meta: dict | None = None
         if use_patch:
+            artifact = _artifact_identity(
+                self.download_dir, state, expected_version=version, platform=self.platform,
+                arch=self.arch, expected_kind=PATCH_ASSET_KIND,
+            )
+            base_version = str(state.get("from_version") or "")
             patch_asset = next(
                 (item for item in latest.get("patches") or []
                  if isinstance(item, dict)
                  and str(item.get("name") or "") == artifact["asset_name"]
-                 and str(item.get("from") or "") == previous),
+                 and str(item.get("from") or "") == base_version
+                 and item.get("platform") == self.platform
+                 and _normalize_arch(item.get("arch")) == _normalize_arch(self.arch)),
                 None,
             )
-            if patch_asset is None or not _incremental_enabled(patch_asset):
-                raise ValueError("增量补丁与当前发布清单不一致或未启用，请重新检查更新")
+            if patch_asset is None:
+                raise ValueError("增量补丁与当前发布清单不一致，请重新检查更新")
             if (
                 str(patch_asset.get("sha256") or "").lower() != artifact["sha256"]
                 or int(patch_asset.get("size") or 0) != artifact["size"]
             ):
                 raise ValueError("增量补丁身份与发布清单不一致，请重新下载")
-            base_manifest = _read_json(
-                self.install_root / "releases" / previous / "release-manifest.json", {}
-            )
-            if str(base_manifest.get("version") or "") != previous:
-                raise ValueError("本地基线版本与补丁不匹配，请重新检查更新")
-            full_asset = next(
-                (item for item in latest.get("assets") or []
-                 if isinstance(item, dict) and item.get("kind") == "windows_installer"
-                 and _normalize_arch(item.get("arch")) == _normalize_arch(self.arch)),
-                None,
-            )
+            full_asset = _downloadable_asset(latest, self.platform, _normalize_arch(self.arch))
             if full_asset is None:
                 raise ValueError("发布清单缺少完整安装包，无法保证增量失败时回退")
+            catalog = str(patch_asset.get("catalog") or "")
+            if catalog:
+                _prepare_path(self.download_dir, version, catalog)
+            fallback_name = str(full_asset.get("name") or "")
+            _prepare_path(self.download_dir, version, fallback_name)
+            fallback_url = _safe_asset_url(
+                str(full_asset.get("url") or ""), str(latest.get("tag") or f"v{version}"),
+            )
             patch_meta = {
                 "path": artifact["path"],
                 "asset_name": artifact["asset_name"],
                 "sha256": artifact["sha256"],
                 "size": artifact["size"],
-                "base_version": previous,
-                "base_commit": str(base_manifest.get("git_commit") or ""),
+                "base_version": base_version,
                 "target_commit": str(latest.get("git_commit") or ""),
-                "catalog": str(patch_asset.get("catalog") or ""),
+                "catalog": catalog,
             }
             fallback_meta = {
-                "asset_name": str(full_asset.get("name") or ""),
+                "asset_name": fallback_name,
                 "sha256": str(full_asset.get("sha256") or ""),
                 "size": int(full_asset.get("size") or 0),
-                "url": str(full_asset.get("url") or ""),
+                "url": fallback_url,
             }
         else:
+            artifact = verify_artifact(
+                self.download_dir, state, expected_version=version, platform=self.platform, arch=self.arch,
+            )
             # 产物必须与当前已验证发布清单一致；不能只信任本地下载状态。
             asset = next(
                 (item for item in latest.get("assets") or []
@@ -1217,9 +1238,9 @@ class InstallController:
             if not idle:
                 raise ValueError(reason or "采集或标注仍在执行，暂不能安装")
             claimed = False
-            if require_authorization and self.authorization_check is not None:
+            if require_authorization:
                 # 授权消费与取消共用更新服务锁：先到者生效，不会出现“取消成功但安装仍启动”。
-                if not self.authorization_check(version):
+                if self.authorization_check is None or not self.authorization_check(version):
                     raise ValueError("更新授权已取消，安装未启动")
                 claimed = True
             filesystem_lock = self.filesystem_lock

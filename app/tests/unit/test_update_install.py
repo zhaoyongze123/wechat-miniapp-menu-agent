@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -958,6 +960,114 @@ def patch_orchestrator(tmp_path: Path, root: Path, job: dict, run_command, probe
         verify_catalog=catalog or (lambda patch, cat: {"status": "valid"}),
         sleep=sleep, clock=clock, health_timeout=0.05,
     )
+
+
+def make_patch_controller(tmp_path):
+    from menu_capture.updates.updates import UpdateService
+
+    state, latest = {}, {}
+    controller, commands, root = make_controller(
+        tmp_path, artifact_provider=lambda: state, latest_provider=lambda: latest,
+    )
+    job = make_patch_job(tmp_path, root)
+    state.update({
+        "status": "completed", "version": job["target_version"], "asset_kind": "windows_patch",
+        "asset_name": job["patch_asset_name"], "arch": "x64", "sha256": job["patch_sha256"],
+        "total": job["patch_size"], "path": job["patch_path"], "from_version": job["base_version"],
+    })
+    latest.update({
+        "eligible": True, "version": job["target_version"], "tag": "v0.3.0",
+        "patches": [{
+            "name": job["patch_asset_name"], "from": job["base_version"], "platform": "windows",
+            "arch": "x64", "sha256": job["patch_sha256"], "size": job["patch_size"],
+        }],
+        "assets": [{
+            "kind": "windows_installer", "platform": "windows", "arch": "x64",
+            "name": job["fallback_name"], "sha256": job["fallback_sha256"],
+            "size": job["fallback_size"], "url": job["fallback_url"],
+        }],
+    })
+    service = UpdateService(tmp_path / "runtime", role="worker", platform="windows", machine="AMD64")
+    service._download_state = state
+    service.download_dir = controller.download_dir
+    service.install_capability = lambda: True
+    service.schedule_installer = lambda version: controller.start(version, version, require_authorization=True)
+    controller.authorization_check = service.claim_install
+    return controller, service, commands, root, state
+
+
+@pytest.mark.parametrize("entry", ["direct", "scheduled"])
+@pytest.mark.parametrize("problem", ["missing", "size", "sha256", "baseline", "running-version"])
+def test_patch_unavailable_after_download_falls_back_from_install_entry(tmp_path, monkeypatch, entry, problem):
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE", "1")
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
+    monkeypatch.setattr("menu_capture.updates.updates.SCHEDULE_POLL_SECONDS", 0)
+    controller, service, commands, root, state = make_patch_controller(tmp_path)
+    path = Path(state["path"])
+    if problem == "missing":
+        path.unlink()
+    elif problem == "size":
+        path.write_bytes(b"wrong-size")
+    elif problem == "sha256":
+        path.write_bytes(b"x" * state["total"])
+    elif problem == "baseline":
+        (root / "releases/0.2.2/release-manifest.json").write_text('{"version":"0.2.1"}', encoding="utf-8")
+    else:
+        make_release(root, "0.2.3")
+        (root / "current-version").write_text("0.2.3", encoding="utf-8")
+        controller.current_version = lambda: "0.2.3"
+
+    if entry == "scheduled":
+        # 执行真实调度循环，省去定时等待；控制器仍要消费同一份授权才能启动。
+        monkeypatch.setattr(service, "_arm_schedule_monitor", lambda: service._schedule_loop(threading.Event(), "0.3.0"))
+        service.schedule_install()
+        assert service.install_schedule()["last_result"] == "started"
+        assert not service.claim_install("0.3.0")
+    else:
+        controller.start("0.3.0", "0.3.0")
+
+    assert len(commands) == 1
+    job = json.loads(controller.job_path.read_text(encoding="utf-8"))
+    assert job["asset_kind"] == "windows_patch"
+    installed, verified = [], []
+    downloads = []
+
+    @contextmanager
+    def open_fallback(url, headers, timeout):
+        downloads.append(url)
+        yield 200, {}, io.BytesIO(b"installer-bytes")
+
+    if problem == "missing":
+        (controller.download_dir / "0.3.0" / job["fallback_name"]).unlink()
+    monkeypatch.setattr("menu_capture.updates.update_install._http_open", open_fallback)
+
+    def run(args, timeout):
+        installed.append(Path(args[0]).name)
+        make_release(root, "0.3.0")
+        (root / "current-version").write_text("0.3.0", encoding="utf-8")
+        return 0, ""
+
+    def verify_publisher(path):
+        verified.append(path.name)
+        return {"status": "valid"}
+
+    orchestrator = patch_orchestrator(tmp_path, root, job, run, lambda port: "0.3.0", publisher=verify_publisher)
+    assert orchestrator.execute()["status"] == "completed"
+    assert installed == verified == [job["fallback_name"]]
+    assert downloads == ([job["fallback_url"]] if problem == "missing" else [])
+
+
+@pytest.mark.parametrize("field,value,message", [
+    ("path", "/elsewhere/patch.zip", "路径与版本目录不一致"),
+    ("sha256", "f" * 64, "补丁身份与发布清单不一致"),
+    ("from_version", "0.2.1", "增量补丁与当前发布清单不一致"),
+])
+def test_patch_install_rejects_untrusted_download_record(tmp_path, field, value, message):
+    controller, _, commands, _, state = make_patch_controller(tmp_path)
+    state[field] = value
+    with pytest.raises(ValueError, match=message):
+        controller.start("0.3.0", "0.3.0")
+    assert commands == []
 
 
 def test_patch_mode_rebuilds_and_registers(tmp_path, monkeypatch):
