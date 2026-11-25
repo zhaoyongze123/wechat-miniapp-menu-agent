@@ -54,7 +54,9 @@ def _describe(root: Path, version: str | None, label: str) -> dict:
 
 
 def _emit(payload: dict, *, stream=sys.stdout) -> None:
-    json.dump(payload, stream, ensure_ascii=False, indent=2)
+    # Windows Runner 默认代码页可能是 cp1252；JSON 转义非 ASCII 字符，避免错误路径
+    # 在输出中文诊断时再抛 UnicodeEncodeError 并遮蔽最初的补丁失败原因。
+    json.dump(payload, stream, ensure_ascii=True, indent=2)
     stream.write("\n")
 
 
