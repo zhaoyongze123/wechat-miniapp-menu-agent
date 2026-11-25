@@ -38,6 +38,8 @@ STALE_JOB_GRACE_SECONDS = 120
 # 再留 5 分钟余量；超过该窗口仍无任何推进，即使 pid 仍存活（可能被复用）也判定事务失联，
 # 否则更新失败后状态会永久停在 installing，界面再也无法重试。
 MAX_ACTIVE_SECONDS = INSTALL_TIMEOUT_SECONDS + 2 * HEALTH_TIMEOUT_SECONDS + 600
+# 超时只代表疑似失联。执行器仍存活时不能解除安装互斥，否则会与旧进程同时操作版本目录与 journal。
+STALLED_MESSAGE = "安装执行器长时间无响应，仍在等待其退出，请勿重复发起安装"
 
 
 def build_job(
@@ -568,6 +570,9 @@ class InstallController:
         python: str | None = None,
         app_dir: Path | None = None,
         pid_alive: Callable[[int], bool] = _pid_alive,
+        authorization_check: Callable[[str], bool] | None = None,
+        authorization_release: Callable[[str], None] | None = None,
+        filesystem_lock: threading.Lock | None = None,
     ) -> None:
         self.download_dir = Path(download_dir)
         self.install_root = Path(install_root) if install_root is not None else None
@@ -586,6 +591,12 @@ class InstallController:
         self.python = python or sys.executable
         self.app_dir = Path(app_dir) if app_dir is not None else Path(__file__).resolve().parents[2]
         self.pid_alive = pid_alive
+        # 调度路径在真正拉起进程前必须消费授权：授权消费与取消都走更新服务锁，只会有一个成功。
+        # 回调会在持有本对象 _lock 时调用，因此对方不得反向回调本对象（单向锁序：安装锁 → 更新锁）。
+        self.authorization_check = authorization_check
+        self.authorization_release = authorization_release
+        # 与存储清理互斥：清理持锁删除期间不允许启动安装，避免删掉安装正在读取的产物。
+        self.filesystem_lock = filesystem_lock
         self._supported = bool(supported and self.install_root is not None
                                and role == "worker" and platform == "windows")
         # 串行化「检查状态 → 校验产物 → 写任务 → 启动进程」，避免两个请求同时通过空闲检查；
@@ -607,20 +618,12 @@ class InstallController:
             return str(_read_json(self.journal_path, {}).get("status") or "") in ACTIVE_STATUSES
 
     def active_nonblocking(self) -> bool:
-        """不能阻塞的调用方（HTTP 中间件）使用：拿不到锁时只读任务文件，绝不等待。
+        """事件循环等不能阻塞的调用方使用：只读任务文件，不取锁、不刷新、不写盘。
 
-        与 active() 的差别仅是跳过 _refresh 的失联收尾；活动事务在持锁方下一次
-        刷新时收尾，这里只回答“当前是否可能处于活动事务中”。
+        写入端使用临时文件 + 原子替换，读取不会看到半份内容；读取失败按“非活动”处理，
+        真正的互斥仍由 gate + active() 在请求线程内闭合。
         """
-        if self._lock.acquire(blocking=False):
-            try:
-                self._refresh()
-                journal = _read_json(self.journal_path, {})
-            finally:
-                self._lock.release()
-        else:
-            journal = _read_json(self.journal_path, {})
-        return str(journal.get("status") or "") in ACTIVE_STATUSES
+        return str(_read_json(self.journal_path, {}).get("status") or "") in ACTIVE_STATUSES
 
     def status(self) -> dict:
         with self._lock:
@@ -656,27 +659,36 @@ class InstallController:
         except OSError:
             return None
 
+    def _mark_stalled(self, journal: dict) -> None:
+        """执行器长时间无推进但仍存活：保持互斥，只更新提示，绝不解除安装事务。"""
+        if str(journal.get("message") or "") == STALLED_MESSAGE:
+            return
+        journal["message"] = STALLED_MESSAGE
+        journal["updated_at"] = _utc_now()
+        _write_json(self.journal_path, journal)
+
     def _refresh(self) -> None:
         journal = _read_json(self.journal_path, {})
         if str(journal.get("status") or "") not in ACTIVE_STATUSES:
             return
-        age = self._active_age_seconds(journal)
-        if age is not None and age > MAX_ACTIVE_SECONDS:
-            # 超过执行器全部内部超时仍无推进：进程可能已卡死或 pid 被复用，必须收尾。
-            self._resolve_stale(journal)
-            return
         pid = int(journal.get("pid") or 0)
         if pid:
             if self.pid_alive(pid):
+                age = self._active_age_seconds(journal)
+                if age is not None and age > MAX_ACTIVE_SECONDS:
+                    # 超时只代表疑似失联：执行器仍存活时若解除互斥，会与旧进程同时操作
+                    # 版本目录、版本指针与 journal，因此宁可保持活动态并提示人工介入。
+                    self._mark_stalled(journal)
                 return
-        else:
-            # 任务刚写出、执行器尚未记录 pid 时不判定超时。
-            try:
-                age = time.time() - self.journal_path.stat().st_mtime
-            except OSError:
-                return
-            if age < STALE_JOB_GRACE_SECONDS:
-                return
+            self._resolve_stale(journal)
+            return
+        # 没有 pid：任务刚写出时留给执行器登记，超过宽限期才判定异常退出。
+        try:
+            age = time.time() - self.journal_path.stat().st_mtime
+        except OSError:
+            return
+        if age < STALE_JOB_GRACE_SECONDS:
+            return
         self._resolve_stale(journal)
 
     def _resolve_stale(self, journal: dict) -> None:
@@ -708,12 +720,15 @@ class InstallController:
         })
         _write_json(self.journal_path, journal)
 
-    def start(self, version: str, confirm: str) -> dict:
+    def start(self, version: str, confirm: str, *, require_authorization: bool = False) -> dict:
         """授权并启动一次安装。
 
         锁契约：安装锁只在“确认空闲 + 写任务 + 启动进程”这个短窗口内持有。
         最新版本、下载状态、当前运行版本与整包 SHA-256 都会进入更新服务锁或做长耗时 I/O，
         必须在锁外完成；持安装锁调用它们会与状态接口（持更新锁读取安装快照）形成 ABBA 死锁。
+
+        require_authorization 仅用于后台调度：真正拉起进程前消费一次更新授权，
+        使用户在锁外校验期间取消更新时安装不会继续执行。
         """
         if not self.supported:
             raise ValueError("当前环境未启用自动安装")
@@ -757,50 +772,76 @@ class InstallController:
             idle, reason = self.idle_check()
             if not idle:
                 raise ValueError(reason or "采集或标注仍在执行，暂不能安装")
-            job = build_job(
-                artifact=artifact,
-                install_root=self.install_root,
-                download_dir=self.download_dir,
-                data_dir=self.data_dir,
-                target_version=version,
-                previous_version=previous,
-                port=self.port,
-            )
-            _write_json(self.job_path, job)
-            _write_json(self.journal_path, {
-                "status": "starting",
-                "target_version": version,
-                "previous_version": previous,
-                "started_at": _utc_now(),
-                "finished_at": "",
-                "message": "正在启动独立安装进程",
-                "error": "",
-                "updated_at": _utc_now(),
-            })
-            command = [
-                self.python, "-m", "menu_capture.updates.update_install",
-                "--job", str(self.job_path), "--journal", str(self.journal_path),
-            ]
-            kwargs: dict[str, Any] = {
-                "cwd": str(self.app_dir),
-                "stdin": subprocess.DEVNULL,
-                "stdout": subprocess.DEVNULL,
-                "stderr": subprocess.DEVNULL,
-                "close_fds": True,
-            }
-            if sys.platform == "win32":
-                # 独立进程不能随旧采集端一起被守护进程终止，否则无法完成健康验证与回滚。
-                kwargs["creationflags"] = 0x00000008 | 0x00000200
-            else:
-                kwargs["start_new_session"] = True
-            process = self.popen(command, **kwargs)
-            pid = int(getattr(process, "pid", 0) or 0)
-            if pid:
-                # 立即登记执行器进程，避免状态刷新把刚启动的任务误判为异常退出。
-                recorded = _read_json(self.journal_path, {})
-                recorded["pid"] = pid
-                _write_json(self.journal_path, recorded)
+            claimed = False
+            if require_authorization and self.authorization_check is not None:
+                # 授权消费与取消共用更新服务锁：先到者生效，不会出现“取消成功但安装仍启动”。
+                if not self.authorization_check(version):
+                    raise ValueError("更新授权已取消，安装未启动")
+                claimed = True
+            filesystem_lock = self.filesystem_lock
+            acquired_fs = False
+            if filesystem_lock is not None:
+                # 不等待：清理可能持续数十秒，长时间占着安装锁会把状态接口一起拖住。
+                if not filesystem_lock.acquire(blocking=False):
+                    self._release_claim(claimed, version)
+                    raise ValueError("存储清理进行中，请稍后重试")
+                acquired_fs = True
+            try:
+                job = build_job(
+                    artifact=artifact,
+                    install_root=self.install_root,
+                    download_dir=self.download_dir,
+                    data_dir=self.data_dir,
+                    target_version=version,
+                    previous_version=previous,
+                    port=self.port,
+                )
+                _write_json(self.job_path, job)
+                _write_json(self.journal_path, {
+                    "status": "starting",
+                    "target_version": version,
+                    "previous_version": previous,
+                    "started_at": _utc_now(),
+                    "finished_at": "",
+                    "message": "正在启动独立安装进程",
+                    "error": "",
+                    "updated_at": _utc_now(),
+                })
+                command = [
+                    self.python, "-m", "menu_capture.updates.update_install",
+                    "--job", str(self.job_path), "--journal", str(self.journal_path),
+                ]
+                kwargs: dict[str, Any] = {
+                    "cwd": str(self.app_dir),
+                    "stdin": subprocess.DEVNULL,
+                    "stdout": subprocess.DEVNULL,
+                    "stderr": subprocess.DEVNULL,
+                    "close_fds": True,
+                }
+                if sys.platform == "win32":
+                    # 独立进程不能随旧采集端一起被守护进程终止，否则无法完成健康验证与回滚。
+                    kwargs["creationflags"] = 0x00000008 | 0x00000200
+                else:
+                    kwargs["start_new_session"] = True
+                process = self.popen(command, **kwargs)
+                pid = int(getattr(process, "pid", 0) or 0)
+                if pid:
+                    # 立即登记执行器进程，避免状态刷新把刚启动的任务误判为异常退出。
+                    recorded = _read_json(self.journal_path, {})
+                    recorded["pid"] = pid
+                    _write_json(self.journal_path, recorded)
+            except BaseException:
+                # 未成功启动时归还授权，避免后台调度因为一次可重试失败而永久失去授权。
+                self._release_claim(claimed, version)
+                raise
+            finally:
+                if acquired_fs:
+                    filesystem_lock.release()
         return self.status()
+
+    def _release_claim(self, claimed: bool, version: str) -> None:
+        if claimed and self.authorization_release is not None:
+            self.authorization_release(version)
 
 
 def main(argv: list[str] | None = None) -> int:

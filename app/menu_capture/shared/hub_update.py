@@ -111,33 +111,39 @@ class HubInstallProxy:
         if self._supported:
             self.status(force=True)
 
-    def start(self, version: str, confirm: str) -> dict:
+    def start(self, version: str, confirm: str, *, require_authorization: bool = False) -> dict:
+        """提交一次 Hub 镜像更新。
+
+        授权消费在 Worker/宿主机侧完成，Hub 只负责提交；宿主执行器自身保证同一时刻
+        只有一个镜像事务。latest_provider 会进入更新服务锁，必须在取本地锁之前调用，
+        否则与状态查询路径交叉持锁会形成 ABBA 死锁。
+        """
         version = str(version or "").strip()
         if not self._supported:
             raise ValueError(self.reason)
         if not version or str(confirm or "").strip() != version:
             raise ValueError("confirm 必须与目标版本一致")
+        latest = self.latest_provider() or {}
+        if str(latest.get("version") or "") != version:
+            raise ValueError("目标版本不是当前最新版本")
+        asset = next(
+            (item for item in (latest.get("assets") or []) if item.get("kind") == "hub_image"),
+            None,
+        )
+        if not asset:
+            raise ValueError("最新版本没有可用的 Hub 镜像资产")
+        payload = {
+            "version": version,
+            "confirm": version,
+            "sha256": str(asset.get("sha256") or ""),
+            "size": int(asset.get("size") or 0),
+            "url": str(asset.get("url") or ""),
+        }
+        if not payload["sha256"] or payload["size"] <= 0 or not payload["url"]:
+            raise ValueError("镜像资产缺少校验信息，已拒绝安装")
         with self._lock:
             if self.status(force=True).get("active"):
                 raise ValueError("已有更新任务正在执行")
-            latest = self.latest_provider() or {}
-            if str(latest.get("version") or "") != version:
-                raise ValueError("目标版本不是当前最新版本")
-            asset = next(
-                (item for item in (latest.get("assets") or []) if item.get("kind") == "hub_image"),
-                None,
-            )
-            if not asset:
-                raise ValueError("最新版本没有可用的 Hub 镜像资产")
-            payload = {
-                "version": version,
-                "confirm": version,
-                "sha256": str(asset.get("sha256") or ""),
-                "size": int(asset.get("size") or 0),
-                "url": str(asset.get("url") or ""),
-            }
-            if not payload["sha256"] or payload["size"] <= 0 or not payload["url"]:
-                raise ValueError("镜像资产缺少校验信息，已拒绝安装")
             self._cache = {
                 "supported": True,
                 "reason": "",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -134,3 +135,43 @@ def test_start_submits_verified_asset_to_executor() -> None:
             break
         time.sleep(0.02)
     assert proxy.status(force=True)["status"] == "completed"
+
+
+def test_start_reads_latest_without_holding_proxy_lock() -> None:
+    """回归：latest_provider 会进入更新服务锁，调用时不得持有 Hub 代理锁。
+
+    必须换线程判断占用：RLock 可重入，同线程探测永远成功。
+    """
+    holder: dict = {}
+    seen: dict[str, bool] = {}
+
+    def lock_free_elsewhere() -> bool:
+        outcome: dict[str, bool] = {}
+
+        def probe() -> None:
+            acquired = holder["proxy"]._lock.acquire(timeout=2)
+            outcome["free"] = acquired
+            if acquired:
+                holder["proxy"]._lock.release()
+
+        thread = threading.Thread(target=probe)
+        thread.start()
+        thread.join(3)
+        return bool(outcome.get("free"))
+
+    def latest_provider() -> dict:
+        seen["lock_free"] = lock_free_elsewhere()
+        return LATEST
+
+    fake = FakeUpdater()
+    proxy = HubInstallProxy(
+        base_url="http://127.0.0.1:8767",
+        token="t" * 32,
+        latest_provider=latest_provider,
+        request=fake,
+    )
+    holder["proxy"] = proxy
+
+    proxy.start("0.2.4", "0.2.4")
+
+    assert seen["lock_free"] is True

@@ -237,22 +237,44 @@ def test_orchestrator_refuses_tampered_artifact_before_running_installer(tmp_pat
     assert calls == []
 
 
-def make_controller(tmp_path: Path, *, supported=True, latest_sha: str | None = None,
-                    idle=(True, ""), current="0.2.2", journal: dict | None = None,
-                    pid_alive=None, bind: dict | None = None,
-                    latest_provider=None, artifact_provider=None):
-    root = make_install_root(tmp_path, current)
-    state = make_artifact(tmp_path)
-    latest = {
+def artifact_latest(state: dict, sha256: str | None = None) -> dict:
+    """构造与产物一致的已验证发布清单，供安装与更新服务共用。"""
+    return {
         "version": "0.3.0",
         "eligible": True,
         "assets": [{
             "kind": "windows_installer",
             "name": state["asset_name"],
-            "sha256": latest_sha or state["sha256"],
+            "sha256": sha256 or state["sha256"],
             "size": state["total"],
         }],
     }
+
+
+def completed_download_state(state: dict) -> dict:
+    """构造与产物一致、已完成的下载状态，供测试走真实的 artifact 提供方。"""
+    return {
+        "active": False,
+        "status": "completed",
+        "version": "0.3.0",
+        "asset_kind": "windows_installer",
+        "asset_name": state["asset_name"],
+        "arch": "x64",
+        "sha256": state["sha256"],
+        "total": state["total"],
+        "path": state["path"],
+    }
+
+
+def make_controller(tmp_path: Path, *, supported=True, latest_sha: str | None = None,
+                    idle=(True, ""), current="0.2.2", journal: dict | None = None,
+                    pid_alive=None, bind: dict | None = None,
+                    latest_provider=None, artifact_provider=None,
+                    authorization_check=None, authorization_release=None,
+                    filesystem_lock=None):
+    root = make_install_root(tmp_path, current)
+    state = make_artifact(tmp_path)
+    latest = artifact_latest(state, latest_sha)
     commands: list[tuple[list[str], dict]] = []
 
     def fake_popen(command, **kwargs):
@@ -280,6 +302,9 @@ def make_controller(tmp_path: Path, *, supported=True, latest_sha: str | None = 
         python="python.exe",
         app_dir=tmp_path,
         pid_alive=pid_alive or (lambda pid: True),
+        authorization_check=authorization_check,
+        authorization_release=authorization_release,
+        filesystem_lock=filesystem_lock,
     )
     if bind is not None:
         # 供回调在内部反查控制器自身状态（例如确认调用时没有持安装锁）。
@@ -512,49 +537,114 @@ def test_controller_keeps_journal_while_executor_alive(tmp_path):
     assert controller.active() is True
 
 
-def test_controller_start_reads_providers_outside_install_lock(tmp_path):
-    """锁契约回归：latest/artifact 提供方会进入更新服务锁，
+def test_real_callbacks_do_not_deadlock_under_forced_interleaving(tmp_path):
+    """确定性 ABBA 回归：真实 UpdateService 与 InstallController 双向回调。
 
-    安装启动调用它们时安装锁必须处于释放状态，否则状态接口持更新锁读取安装快照时
-    会与安装启动形成 ABBA 死锁。
+    两个事件把两侧固定在“刚进入对方状态读取回调”的位置，不依赖随机调度。
+    修复前：安装线程持安装锁等更新锁、状态线程持更新锁等安装锁，必然互锁；
+    修复后两侧都不在持对方锁时进入回调，因此能正常完成。
+    """
+    from menu_capture.updates.updates import UpdateService
+
+    state = make_artifact(tmp_path)
+    service = UpdateService(
+        tmp_path / "runtime", role="worker", platform="windows", machine="AMD64",
+    )
+    service._cache = {"checked_at": time.time(), "latest": artifact_latest(state)}
+    service._download_state = completed_download_state(state)
+
+    in_latest = threading.Event()
+    in_snapshot = threading.Event()
+
+    def latest_provider() -> dict:
+        in_latest.set()
+        assert in_snapshot.wait(5), "状态线程未进入安装快照回调"
+        # 与生产一致：最新版本来自更新服务，会进入更新服务锁。
+        return service.status_no_check().get("latest") or {}
+
+    controller, commands, _ = make_controller(
+        tmp_path, latest_provider=latest_provider,
+        artifact_provider=service.download_status,
+    )
+
+    def snapshot() -> dict:
+        in_snapshot.set()
+        assert in_latest.wait(5), "安装线程未进入最新版本回调"
+        return controller.status()
+
+    service.install_snapshot_provider = snapshot
+    errors: list[BaseException] = []
+    results: dict[str, object] = {}
+
+    def status_thread() -> None:
+        try:
+            results["flow"] = service.update_flow()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def install_thread() -> None:
+        try:
+            results["install"] = controller.start("0.3.0", "0.3.0")
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=status_thread, daemon=True),
+        threading.Thread(target=install_thread, daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    stuck = [thread for thread in threads if thread.is_alive()]
+
+    assert not stuck, "更新状态与安装启动形成 ABBA 死锁"
+    assert not errors
+    assert results.get("install", {}).get("status") == "starting"
+    assert len(commands) == 1
+
+
+def test_controller_start_reads_providers_without_holding_install_lock(tmp_path):
+    """锁契约：调用 latest/artifact 提供方时安装锁必须空闲。
+
+    必须用另一个线程判断：RLock 支持重入，同一线程 acquire(blocking=False) 永远成功。
     """
     bind: dict = {}
     seen: dict[str, bool] = {}
 
+    def lock_free_elsewhere() -> bool:
+        outcome: dict[str, bool] = {}
+
+        def probe() -> None:
+            # 换一个线程来取锁才能反映真实占用情况。
+            acquired = bind["controller"]._lock.acquire(blocking=False)
+            outcome["free"] = acquired
+            if acquired:
+                bind["controller"]._lock.release()
+
+        thread = threading.Thread(target=probe)
+        thread.start()
+        thread.join(2)
+        return bool(outcome.get("free"))
+
     def probe(name: str, value):
-        lock = bind["controller"]._lock
-        acquired = lock.acquire(blocking=False)
-        if acquired:
-            lock.release()
-        seen[name] = acquired
+        seen[name] = lock_free_elsewhere()
         return value
 
     state = make_artifact(tmp_path)
-    latest = {
-        "version": "0.3.0",
-        "eligible": True,
-        "assets": [{
-            "kind": "windows_installer",
-            "name": state["asset_name"],
-            "sha256": state["sha256"],
-            "size": state["total"],
-        }],
-    }
     controller, commands, _ = make_controller(
         tmp_path, bind=bind,
-        latest_provider=lambda: probe("latest", latest),
+        latest_provider=lambda: probe("latest", artifact_latest(state)),
         artifact_provider=lambda: probe("artifact", state),
     )
 
-    status = controller.start("0.3.0", "0.3.0")
-
-    assert status["status"] == "starting"
+    assert controller.start("0.3.0", "0.3.0")["status"] == "starting"
     assert seen == {"latest": True, "artifact": True}
     assert len(commands) == 1
 
 
-def test_controller_reclaims_transaction_after_max_active_window(tmp_path):
-    """超时恢复：执行器内部超时全部失效后仍无推进，必须收尾并允许重新发起。"""
+def test_controller_keeps_transaction_when_executor_still_alive(tmp_path):
+    """P0：超时只代表疑似失联，执行器仍存活时绝不能解除安装互斥。"""
     stale = (datetime.now(timezone.utc)
              - timedelta(seconds=MAX_ACTIVE_SECONDS + 60)).isoformat(timespec="seconds")
     controller, commands, _ = make_controller(
@@ -566,14 +656,127 @@ def test_controller_reclaims_transaction_after_max_active_window(tmp_path):
 
     status = controller.status()
 
+    assert status["status"] == "installing"
+    assert status["active"] is True
+    with pytest.raises(ValueError, match="已有安装任务正在执行"):
+        controller.start("0.3.0", "0.3.0")
+    assert commands == []
+    journal = json.loads((tmp_path / "data" / "update-install.json").read_text(encoding="utf-8"))
+    assert "无响应" in journal["message"]
+
+
+def test_controller_reclaims_when_executor_exited(tmp_path):
+    """执行器已退出（pid 不再存活）时，过期事务必须收尾并允许重新发起。"""
+    stale = (datetime.now(timezone.utc)
+             - timedelta(seconds=MAX_ACTIVE_SECONDS + 60)).isoformat(timespec="seconds")
+    controller, commands, _ = make_controller(
+        tmp_path,
+        journal={"status": "installing", "target_version": "0.3.0",
+                 "pid": 4242, "updated_at": stale},
+        pid_alive=lambda pid: False,
+    )
+
+    status = controller.status()
+
     assert status["status"] == "failed"
     assert status["active"] is False
     assert controller.start("0.3.0", "0.3.0")["status"] == "starting"
     assert len(commands) == 1
 
 
-def test_active_nonblocking_does_not_wait_for_install_lock(tmp_path):
-    """事件循环线程的探测不能被安装锁拖住。"""
+def test_install_aborts_when_authorization_cancelled_during_verification(tmp_path):
+    """P1：锁外 SHA-256 校验期间用户取消更新，安装不得继续启动。"""
+    from menu_capture.updates.updates import UpdateService
+
+    state = make_artifact(tmp_path)
+    service = UpdateService(
+        tmp_path / "runtime", role="worker", platform="windows", machine="AMD64",
+    )
+    service._schedule = {"armed": True, "version": "0.3.0", "mode": "idle",
+                         "requested_at": "", "note": "", "last_result": ""}
+    in_verify = threading.Event()
+    proceed = threading.Event()
+
+    def artifact_provider() -> dict:
+        in_verify.set()
+        assert proceed.wait(5)
+        return completed_download_state(state)
+
+    controller, commands, _ = make_controller(
+        tmp_path,
+        latest_provider=lambda: artifact_latest(state),
+        artifact_provider=artifact_provider,
+        authorization_check=service.claim_install,
+        authorization_release=service.release_install_claim,
+    )
+    errors: list[BaseException] = []
+
+    def install_thread() -> None:
+        try:
+            controller.start("0.3.0", "0.3.0", require_authorization=True)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread = threading.Thread(target=install_thread, daemon=True)
+    thread.start()
+    assert in_verify.wait(5)
+    # 校验尚未结束时取消成功，随后安装必须因授权失效而退出。
+    service.cancel_update()
+    proceed.set()
+    thread.join(10)
+
+    assert not thread.is_alive()
+    assert len(errors) == 1 and "授权已取消" in str(errors[0])
+    assert commands == []
+
+
+def test_cancel_after_authorization_claimed_is_rejected(tmp_path):
+    """P1：授权被消费后取消必须失败，不能出现“取消成功但安装仍在执行”。"""
+    from menu_capture.updates.updates import UpdateService
+
+    state = make_artifact(tmp_path)
+    service = UpdateService(
+        tmp_path / "runtime", role="worker", platform="windows", machine="AMD64",
+    )
+    service._schedule = {"armed": True, "version": "0.3.0", "mode": "idle",
+                         "requested_at": "", "note": "", "last_result": ""}
+    controller, commands, _ = make_controller(
+        tmp_path,
+        artifact_provider=lambda: completed_download_state(state),
+        authorization_check=service.claim_install,
+        authorization_release=service.release_install_claim,
+    )
+    # 这里只验证“授权已消费”的线性化点，安装活动态由下一条并发用例覆盖。
+    service.install_snapshot_provider = lambda: {"status": "idle"}
+
+    controller.start("0.3.0", "0.3.0", require_authorization=True)
+
+    with pytest.raises(ValueError, match="安装已开始"):
+        service.cancel_update()
+    with pytest.raises(ValueError, match="安装已开始"):
+        service.cancel_install_schedule()
+    assert len(commands) == 1
+
+
+def test_install_and_cleanup_are_mutually_exclusive(tmp_path):
+    """P2：清理持文件系统锁删除期间不允许启动安装，避免删掉正在读取的产物。"""
+    fs_lock = threading.Lock()
+    controller, commands, _ = make_controller(tmp_path, filesystem_lock=fs_lock)
+
+    fs_lock.acquire()
+    try:
+        with pytest.raises(ValueError, match="存储清理进行中"):
+            controller.start("0.3.0", "0.3.0")
+    finally:
+        fs_lock.release()
+    assert commands == []
+
+    # 释放后必须能正常启动，证明互斥不会把安装永久挡住。
+    assert controller.start("0.3.0", "0.3.0")["status"] == "starting"
+
+
+def test_active_nonblocking_is_read_only_and_never_waits(tmp_path):
+    """事件循环线程的探测不取锁、不刷新、不写盘。"""
     controller, _, _ = make_controller(tmp_path)
     held = threading.Event()
     release = threading.Event()
@@ -594,20 +797,25 @@ def test_active_nonblocking_does_not_wait_for_install_lock(tmp_path):
         release.set()
         thread.join(2)
     assert elapsed < 1.0
+    # 只读探测不得创建或改写任务文件。
+    assert not (tmp_path / "data" / "update-install.json").exists()
 
 
 def test_concurrent_status_and_install_start_complete_without_deadlock(tmp_path):
-    """并发回归：状态查询（Worker 同步同链路）与安装启动反复交叉。
-
-    修复前两者会分别在更新锁与安装锁上互相等待，线程永久挂起；
-    这里要求所有线程在 5 秒内正常退出。
-    """
+    """并发回归：真实更新服务状态链路与安装启动反复交叉，线程必须在限期内退出。"""
     from menu_capture.updates.updates import UpdateService
 
+    state = make_artifact(tmp_path)
     service = UpdateService(
         tmp_path / "runtime", role="worker", platform="windows", machine="AMD64",
     )
-    controller, _, _ = make_controller(tmp_path)
+    service._cache = {"checked_at": time.time(), "latest": artifact_latest(state)}
+    service._download_state = completed_download_state(state)
+    controller, _, _ = make_controller(
+        tmp_path,
+        latest_provider=lambda: service.status_no_check().get("latest") or {},
+        artifact_provider=service.download_status,
+    )
     service.install_capability = lambda: True
     service.schedule_installer = lambda version: controller.start(version, version)
     service.install_snapshot_provider = controller.status

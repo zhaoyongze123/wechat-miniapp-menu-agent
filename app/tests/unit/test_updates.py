@@ -1303,11 +1303,20 @@ def test_update_flow_reports_waiting_reason_while_busy(tmp_path):
 
 # ---------- 锁契约回归（Issue #32 OTA ABBA 死锁） ----------
 
-def _lock_is_free(lock) -> bool:
-    acquired = lock.acquire(blocking=False)
-    if acquired:
-        lock.release()
-    return acquired
+def _lock_free_from_other_thread(lock, timeout: float = 2.0) -> bool:
+    """必须换线程判断占用：RLock 可重入，同线程 acquire(blocking=False) 永远成功。"""
+    outcome: dict[str, bool] = {}
+
+    def probe() -> None:
+        acquired = lock.acquire(timeout=timeout)
+        outcome["free"] = acquired
+        if acquired:
+            lock.release()
+
+    thread = threading.Thread(target=probe)
+    thread.start()
+    thread.join(timeout + 1)
+    return bool(outcome.get("free"))
 
 
 def test_update_flow_reads_install_snapshot_outside_service_lock(tmp_path):
@@ -1316,7 +1325,7 @@ def test_update_flow_reads_install_snapshot_outside_service_lock(tmp_path):
     seen: dict[str, bool] = {}
 
     def snapshot() -> dict:
-        seen["lock_free"] = _lock_is_free(service._lock)
+        seen["lock_free"] = _lock_free_from_other_thread(service._lock)
         return {"status": "idle"}
 
     service.install_snapshot_provider = snapshot
@@ -1331,7 +1340,7 @@ def test_authorize_and_cancel_read_install_snapshot_outside_service_lock(tmp_pat
     seen: list[bool] = []
 
     def snapshot() -> dict:
-        seen.append(_lock_is_free(service._lock))
+        seen.append(_lock_free_from_other_thread(service._lock))
         return {"status": "idle"}
 
     service.install_snapshot_provider = snapshot
@@ -1353,7 +1362,7 @@ def test_cleanup_does_not_hold_state_lock_while_deleting(tmp_path, monkeypatch):
     seen: dict[str, bool] = {}
 
     def guard() -> tuple[bool, str]:
-        seen["lock_free"] = _lock_is_free(service._lock)
+        seen["lock_free"] = _lock_free_from_other_thread(service._lock)
         return False, ""
 
     service.cleanup_guard = guard
@@ -1362,6 +1371,26 @@ def test_cleanup_does_not_hold_state_lock_while_deleting(tmp_path, monkeypatch):
 
     assert seen["lock_free"] is True
     assert [row["version"] for row in result["deleted"]] == ["0.1.0"]
+
+
+def test_cleanup_rechecks_install_state_without_taking_install_lock(tmp_path, monkeypatch):
+    """清理在持文件系统锁期间只能用锁外探测；探测为活动时必须拒绝删除。"""
+    install, current_app = _win_install(tmp_path, monkeypatch, ["0.3.0", "0.2.0", "0.1.9", "0.1.0"])
+    service = UpdateService(tmp_path / "runtime", role="worker", app_root=current_app, machine="AMD64")
+    calls: list[str] = []
+
+    def guard() -> tuple[bool, str]:
+        # 第一次（锁外）放行，第二次由文件系统锁内的只读探测接管。
+        calls.append("guard")
+        return False, ""
+
+    service.cleanup_guard = guard
+    service.install_active_provider = lambda: True
+
+    with pytest.raises(ValueError, match="安装或回滚进行中"):
+        service.cleanup({"confirm": "cleanup", "scopes": ["releases"]})
+
+    assert calls == ["guard"]
 
 
 def test_update_flow_surfaces_failure_after_background_disarms(tmp_path):

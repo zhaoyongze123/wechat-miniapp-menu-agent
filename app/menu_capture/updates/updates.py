@@ -393,6 +393,9 @@ class UpdateService:
         self.rollback_capability: Callable[[], bool] | None = None
         # 安装/回滚期间必须禁止清理历史版本，否则可能删掉正在使用的回滚目标。
         self.cleanup_guard: Callable[[], tuple[bool, str]] | None = None
+        # 锁外只读探测：cleanup 在持有文件系统锁时用它复查安装状态，
+        # 不能反向调用会取安装锁的 cleanup_guard（否则形成 文件系统锁 → 安装锁 的反向等待）。
+        self.install_active_provider: Callable[[], bool] | None = None
         # Worker 可由共享后台分发版本元数据；只有 Hub 校验后且未过期的结果才会被采纳。
         self.hub_target_provider: Callable[[], dict | None] | None = None
         # Worker 向 Hub 上报安装状态时使用；执行器未接入时留空，不推测。
@@ -855,9 +858,17 @@ class UpdateService:
             "reclaimable_bytes": sum(int(scope.get("reclaimable_bytes") or 0) for scope in scopes.values()),
         }
 
-    def _cleanup_block(self) -> tuple[bool, str]:
+    def _cleanup_block(self, *, fast_install: bool = False) -> tuple[bool, str]:
         if self._downloading:
             return True, "下载进行中，请等待完成或取消后再清理"
+        if fast_install and self.install_active_provider is not None:
+            # 已在持文件系统锁期间：只能用锁外只读探测，避免与安装启动交叉持锁。
+            try:
+                if self.install_active_provider():
+                    return True, "安装或回滚进行中，请完成后再清理"
+            except Exception:  # noqa: BLE001 - 无法确认时按阻止处理
+                return True, "无法确认安装状态，暂不允许清理"
+            return False, ""
         if self.cleanup_guard is not None:
             try:
                 return self.cleanup_guard()
@@ -975,8 +986,8 @@ class UpdateService:
         if blocked:
             raise ValueError(reason)
         with self._filesystem_lock:
-            # 取得文件系统锁后再确认一次：新的下载无法在删除过程中启动。
-            blocked, reason = self._cleanup_block()
+            # 取得文件系统锁后再确认一次：新的下载或安装无法在删除过程中启动。
+            blocked, reason = self._cleanup_block(fast_install=True)
             if blocked:
                 raise ValueError(reason)
             deleted: list[dict] = []
@@ -1245,6 +1256,40 @@ class UpdateService:
         self._arm_schedule_monitor()
         return self.update_flow()
 
+    @property
+    def filesystem_lock(self) -> threading.Lock:
+        """与安装执行器共享的文件系统互斥：清理删除期间不允许启动安装。"""
+        return self._filesystem_lock
+
+    def claim_install(self, version: str) -> bool:
+        """安装执行器拉起进程前确认授权仍有效，并原子消费这次授权。
+
+        取消与消费都在 self._lock 内线性化，只会有一个成功：
+        取消先到则安装不会启动；消费先到则取消必须失败，用户不会看到“取消成功但仍在安装”。
+        """
+        with self._lock:
+            schedule = dict(self._schedule)
+            if (
+                not schedule.get("armed")
+                or str(schedule.get("version") or "") != str(version)
+                or schedule.get("claimed")
+            ):
+                return False
+            self._schedule["claimed"] = True
+            self._schedule["last_result"] = "started"
+            self._write_json(self.schedule_path, self._schedule)
+            return True
+
+    def release_install_claim(self, version: str) -> None:
+        """安装未能真正启动（清理占用、写盘失败等）时归还授权，供后台调度重试。"""
+        with self._lock:
+            if str(self._schedule.get("version") or "") != str(version):
+                return
+            if not self._schedule.get("armed"):
+                return
+            self._schedule["claimed"] = False
+            self._write_json(self.schedule_path, self._schedule)
+
     def cancel_update(self) -> dict:
         """取消尚未开始切换的更新；安装一旦启动就只能等待执行器收尾。
 
@@ -1257,6 +1302,9 @@ class UpdateService:
         with self._lock:
             schedule = dict(self._schedule)
             version = str(schedule.get("version") or "")
+            if schedule.get("armed") and schedule.get("claimed"):
+                # 授权已被执行器消费且安排仍在生效：进程即将/已经拉起，取消不再生效。
+                raise ValueError("安装已开始，无法取消")
             if str(install.get("status") or "") == "completed" and version and version == current:
                 raise ValueError("更新已完成，无法取消")
             download = dict(self._download_state)
@@ -1354,6 +1402,9 @@ class UpdateService:
 
     def cancel_install_schedule(self) -> dict:
         with self._lock:
+            if self._schedule.get("armed") and self._schedule.get("claimed"):
+                # 与 cancel_update 同一线性化点：授权已被消费时不允许再宣布取消成功。
+                raise ValueError("安装已开始，无法取消")
             cancel = self._schedule_cancel
             self._schedule_cancel = None
             self._schedule = {
