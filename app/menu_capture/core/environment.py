@@ -61,13 +61,19 @@ def _item(
 class EnvironmentDiagnostics:
     """汇总便宜的本机检查，并缓存用户主动触发的模型/UiPath实测结果。"""
 
-    def __init__(self, configs: ConfigStore, runner: UiPathRunner, project_dir: Path):
+    def __init__(self, configs: ConfigStore, runner: UiPathRunner, project_dir: Path, *,
+                 shared_mode_provider=None):
         self.configs, self.runner = configs, runner
         self.project_dir = Path(project_dir).expanduser().resolve()
+        # 共享派单模式下门店来源目录与批次版本由工作台下发，本机全局配置不适用。
+        self.shared_mode_provider = shared_mode_provider
         self._lock = threading.RLock()
         self._test_lock = threading.Lock()
-        self._cheap_cache: tuple[float, dict, bool] | None = None
+        self._cheap_cache: tuple[float, dict, bool, bool] | None = None
         self._tests: dict[str, dict] = {}
+
+    def _shared_mode(self) -> bool:
+        return bool(self.shared_mode_provider and self.shared_mode_provider())
 
     def invalidate(self, test_id: str | None = None) -> None:
         with self._lock:
@@ -81,11 +87,13 @@ class EnvironmentDiagnostics:
                  task_ids_override: list[str] | None = None) -> dict:
         with self._lock:
             now = time.monotonic()
-            if not refresh and self._cheap_cache and now - self._cheap_cache[0] < 15 and self._cheap_cache[2] == include_task_checks:
-                cheap = self._cheap_cache[1]
+            shared = self._shared_mode()
+            cached = self._cheap_cache
+            if not refresh and cached and now - cached[0] < 15 and cached[2] == include_task_checks and cached[3] == shared:
+                cheap = cached[1]
             else:
-                cheap = self._collect_cheap(include_task_checks=include_task_checks)
-                self._cheap_cache = (now, cheap, include_task_checks)
+                cheap = self._collect_cheap(include_task_checks=include_task_checks, shared=shared)
+                self._cheap_cache = (now, cheap, include_task_checks, shared)
             checks = [dict(value) for value in cheap["checks"]]
             checks.extend(self._test_state(check_id, name, message, actions)
                           for check_id, name, message, actions in self._test_definitions())
@@ -93,9 +101,10 @@ class EnvironmentDiagnostics:
             blockers = []
             if include_task_checks:
                 readiness = self.runner.readiness(task_ids_override=task_ids_override)
-                profile_item = self._profile_check(readiness)
+                profile_item = self._profile_check(readiness, shared=shared)
                 checks.append(profile_item)
-                blockers = self._blockers(by_id, profile_item, readiness.get("mode", "attached"))
+                blockers = self._blockers(by_id, profile_item, readiness.get("mode", "attached"),
+                                          shared=shared)
             return {
                 "checked_at": cheap["checked_at"],
                 "preflight": {"ready": not blockers, "blockers": blockers},
@@ -172,7 +181,7 @@ class EnvironmentDiagnostics:
             raise RuntimeError("运行前检查未通过：" + "；".join(snapshot["preflight"]["blockers"]))
         return snapshot
 
-    def _collect_cheap(self, *, include_task_checks: bool = True) -> dict:
+    def _collect_cheap(self, *, include_task_checks: bool = True, shared: bool = False) -> dict:
         checked_at = _now()
         settings = self.configs.load()
         if sys.platform == "win32":
@@ -188,10 +197,14 @@ class EnvironmentDiagnostics:
                 self._project_check(),
             ]
         if include_task_checks:
-            checks.extend([
-                self._directory_check("input_directory", "素材目录读取", settings.input_dir, writable=False),
-                self._directory_check("output_directory", "输出目录写入", settings.output_dir, writable=True),
-            ])
+            recheck = [{"id": "recheck", "label": "重新检测", "kind": "recheck"}]
+            checks.append(
+                _item("input_directory", "素材目录读取", "ready", "由工作台下发 / 不适用",
+                      "共享派单模式下门店来源目录由工作台下发，本机无需配置素材目录。", actions=recheck)
+                if shared else
+                self._directory_check("input_directory", "素材目录读取", settings.input_dir, writable=False)
+            )
+            checks.append(self._directory_check("output_directory", "输出目录写入", settings.output_dir, writable=True))
         return {"checked_at": checked_at, "checks": checks}
 
     @staticmethod
@@ -412,17 +425,22 @@ class EnvironmentDiagnostics:
         return bool(settings.model.base_url and settings.model.model and self.configs.key())
 
     @staticmethod
-    def _profile_check(readiness: dict) -> dict:
+    def _profile_check(readiness: dict, *, shared: bool = False) -> dict:
         native = sys.platform == "win32"
         name = "采集任务与 Windows 桌面配置" if native else "采集任务与 UiPath 配置"
+        if shared:
+            return _item("capture_profile", name, "ready", "由工作台下发 / 不适用",
+                         "共享派单模式下门店来源与批次版本由工作台下发，本机无需选择素材目录或发布版本。")
         if readiness.get("ready"):
             return _item("capture_profile", name, "ready", "当前选择、来源文件和自动化参数通过静态检查",
                          "开始时仍会重新核对一次任务状态与来源文件。")
         issues = readiness.get("issues") or ["采集配置未就绪"]
-        return _item("capture_profile", name, "error", "；".join(str(value) for value in issues)[:400],
+        # 同一问题可能被多次检查重复收集，展示前按出现顺序去重。
+        unique = list(dict.fromkeys(str(value) for value in issues))
+        return _item("capture_profile", name, "error", "；".join(unique)[:400],
                      "请检查已选门店和采集设置。" if native else "请检查自动化方式、已选门店、窗口选择器和坐标校准。")
 
-    def _blockers(self, checks: dict[str, dict], profile: dict, mode: str) -> list[str]:
+    def _blockers(self, checks: dict[str, dict], profile: dict, mode: str, *, shared: bool = False) -> list[str]:
         desktop_checks = (["windows_desktop", "windows_screenshot", "windows_ocr"] if sys.platform == "win32"
                           else ["uipath_accessibility", "uipath_screenshot"])
         required = ["input_directory", "output_directory", "model_service", *desktop_checks, "wechat_login"]
@@ -431,6 +449,10 @@ class EnvironmentDiagnostics:
         elif mode == "attached":
             required.append("attached_miniapp")
         required.append("capture_profile")
+        if shared:
+            # 共享派单模式的门店来源目录与批次版本由工作台下发，这两项不构成本机前置条件。
+            required = [check_id for check_id in required
+                        if check_id not in {"input_directory", "capture_profile"}]
         blockers: list[str] = []
         for check_id in required:
             value = checks.get(check_id) or profile

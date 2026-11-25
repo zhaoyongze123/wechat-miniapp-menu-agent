@@ -133,7 +133,11 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         runner.assignment_source = worker.source_root
         store.bind_assignments = worker.bind_run
     rejections = RejectionService(store, materials, current_only=role == "hub")
-    environment = EnvironmentDiagnostics(configs, runner, project_dir)
+    # 已配对的共享采集端由工作台下发门店来源与版本，诊断据此把本机素材目录/发布版本标记为不适用。
+    environment = EnvironmentDiagnostics(
+        configs, runner, project_dir,
+        shared_mode_provider=(lambda: bool(worker.connection)) if worker is not None else None,
+    )
     connections = ConnectionManager(environment, control_lock, root)
     annotations = AnnotationSession(configs, store, profiles, RunnerExecutor(runner),
                                     root=root if role != "standalone" else root.parent.parent, ocr_reader=image_ocr,

@@ -180,3 +180,39 @@ def test_preflight_blockers_are_user_readable_strings(tmp_path: Path) -> None:
     blockers = environment._blockers(checks, profile, "automatic")
 
     assert blockers == ["素材目录读取：目录不可读"]
+
+
+def test_shared_mode_marks_local_input_and_profile_not_applicable(tmp_path: Path) -> None:
+    settings = SimpleNamespace(input_dir="", output_dir=str(tmp_path / "output"),
+                               model=SimpleNamespace(base_url="", model=""))
+    readiness = {"ready": False, "issues": ["输入目录或输出目录尚未配置"], "mode": "attached"}
+    diagnostics = EnvironmentDiagnostics(
+        SimpleNamespace(load=lambda: settings, key=lambda: ""),
+        SimpleNamespace(running=False, readiness=lambda **_kwargs: readiness),
+        tmp_path,
+        shared_mode_provider=lambda: True,
+    )
+
+    snapshot = diagnostics.snapshot(include_task_checks=True)
+    checks = {item["id"]: item for item in snapshot["checks"]}
+    assert checks["input_directory"]["status"] == "ready"
+    assert checks["input_directory"]["summary"] == "由工作台下发 / 不适用"
+    assert checks["capture_profile"]["status"] == "ready"
+    assert checks["capture_profile"]["summary"] == "由工作台下发 / 不适用"
+    assert all("素材目录读取" not in blocker and "采集任务与" not in blocker
+               for blocker in snapshot["preflight"]["blockers"])
+
+    # 解除共享配对后同一份本机配置仍应如实报错，避免共享标记掩盖真实问题。
+    diagnostics.shared_mode_provider = None
+    local = {item["id"]: item for item in diagnostics.snapshot(refresh=True)["checks"]}
+    assert local["input_directory"]["status"] == "error"
+    assert local["capture_profile"]["status"] == "error"
+
+
+def test_profile_issues_are_deduplicated() -> None:
+    issues = ["输入目录或输出目录尚未配置"] * 30
+
+    item = EnvironmentDiagnostics._profile_check({"ready": False, "issues": issues})
+
+    assert item["status"] == "error"
+    assert item["summary"].count("输入目录或输出目录尚未配置") == 1

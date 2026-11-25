@@ -2,6 +2,7 @@
 from base64 import b64encode
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -358,3 +359,40 @@ def test_qr_cache_reuses_verified_bytes_but_refreshes_corrupt_or_changed_qr(tmp_
         assert worker.status()["credential_invalid"]
         assert worker.credentials.exists()
         assert worker._source_path(fourth_assignment).is_file()
+
+
+def test_invalid_credential_can_pair_again_while_valid_one_is_rejected(tmp_path):
+    import httpx
+
+    hub_app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
+    worker_app = create_app(tmp_path / "worker", role="worker")
+    hub, worker = hub_app.state.shared_hub, worker_app.state.shared_worker
+    with TestClient(hub_app, base_url="http://127.0.0.1", headers=AUTH) as client:
+        def transport(request):
+            identity = {"Authorization": request.headers["Authorization"]} if "Authorization" in request.headers else {}
+            if request.method == "GET":
+                result = client.get(request.url.path, headers=identity)
+            else:
+                result = client.post(request.url.path, json=json.loads(request.read()), headers=identity)
+            return httpx.Response(result.status_code, content=result.content)
+
+        worker._http.close()
+        worker._http = httpx.Client(transport=httpx.MockTransport(transport))
+        url = "http://127.0.0.1"
+        worker.connect(url, hub.pairing_code()["code"], "A 机")
+        first_identifier = worker.connection["id"]
+        # 有效凭证仍不允许覆盖配对，避免误操作把正常采集端换绑。
+        with pytest.raises(ValueError, match="此采集端已配对"):
+            worker.connect(url, hub.pairing_code()["code"], "A 机")
+
+        hub.revoke_worker(first_identifier)
+        worker.poll()
+        assert worker.status()["credential_invalid"]
+        assert worker.credentials.exists()
+
+        # Hub 解除配对不会清理本机凭证文件；采集端必须先清掉失效凭证再接受新配对码。
+        worker.connect(url, hub.pairing_code()["code"], "A 机")
+        status = worker.status()
+        assert status["paired"] is True and status["credential_invalid"] is False
+        assert worker.connection["id"] != first_identifier
+        assert json.loads(worker.credentials.read_text(encoding="utf-8"))["token"] == worker.connection["token"]

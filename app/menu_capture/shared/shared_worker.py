@@ -124,7 +124,14 @@ class SharedWorker:
     def connect(self, url: str, code: str, name: str) -> dict:
         url = hub_url(url)
         if self.connection:
-            raise ValueError("此采集端已配对")
+            if not self.connection.get("invalid"):
+                raise ValueError("此采集端已配对")
+            # Hub 侧解除配对不会删除本机凭证文件，失效凭证必须在这里清掉，
+            # 否则采集端会一直认为“已配对”，无法用新配对码重新连接。
+            self.credentials.unlink(missing_ok=True)
+            self.connection = {}
+            self.online = False
+            self.error = ""
         try:
             response = self._http.post(url + "/api/shared/worker/pair", json={"code": code, "name": name})
         except httpx.RequestError:
@@ -546,6 +553,9 @@ class SharedWorker:
 
     def poll(self) -> None:
         """先保存本机结果，网络不可用时仍按本机队列执行。"""
+        # 记录本次轮询使用的凭证对象：重新配对会替换 self.connection，
+        # 旧凭证请求的 401 不能把刚写入的新凭证再误标为失效。
+        connection = self.connection
         try:
             self.error = ""
             with self.control_lock:
@@ -557,6 +567,8 @@ class SharedWorker:
             if self.connection.pop("invalid", None):
                 atomic_json(self.credentials, self.connection)
         except (httpx.HTTPError, OSError, ValueError, KeyError) as exc:
+            if self.connection is not connection:
+                return
             self.online = False
             if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
                 if not self.connection.get("invalid"):
