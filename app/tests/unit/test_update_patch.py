@@ -228,6 +228,46 @@ def test_scan_tree_rejects_symlink(tmp_path):
         update_patch.scan_tree(root)
 
 
+def test_scan_tree_accepts_published_bundle_file_count(tmp_path):
+    # v0.3.2 和 v0.3.3 的正式 bundle 各有 26,121 个文件。
+    root = tmp_path / "release"
+    root.mkdir()
+    for index in range(26_121):
+        (root / f"file-{index:05d}.bin").touch()
+    assert len(update_patch.scan_tree(root)) == 26_121
+
+
+def test_scan_tree_stops_at_release_file_cap(tmp_path, monkeypatch):
+    root = write_tree(tmp_path / "release", {"one": b"1", "two": b"2", "three": b"3"})
+    monkeypatch.setattr(update_patch, "MAX_RELEASE_FILES", 2)
+    with pytest.raises(PatchError, match="文件数量超出"):
+        update_patch.scan_tree(root)
+
+
+@pytest.mark.parametrize("path", [
+    "python/Lib/__pycache__/json.cpython-312.pyc",
+    "python/Scripts/uvicorn.exe",
+    "python/Lib/site-packages/uvicorn-1.dist-info/RECORD",
+    "python/python.exe",
+    "python/Lib/site-packages/uvicorn/main.py",
+    "python/Lib/site-packages/uvicorn-1.dist-info/METADATA",
+])
+def test_python_runtime_artifacts_remain_restricted(path):
+    assert update_patch._is_restricted(path)
+
+
+def test_make_patch_keeps_patch_operation_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(update_patch, "MAX_PATCH_FILES", 1)
+    with pytest.raises(PatchError, match="变更文件数量超出"):
+        build_patch(tmp_path)
+
+
+def test_make_patch_keeps_manifest_size_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(update_patch, "MAX_MANIFEST_BYTES", 1)
+    with pytest.raises(PatchError, match="补丁清单超出大小"):
+        build_patch(tmp_path)
+
+
 def test_apply_ignores_unlisted_base_residue(tmp_path):
     zip_path, _ = build_patch(tmp_path)
     (tmp_path / "base/app/runtime-cache.tmp").write_bytes(b"residue")

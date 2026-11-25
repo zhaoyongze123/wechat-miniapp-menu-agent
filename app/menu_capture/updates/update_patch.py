@@ -21,7 +21,11 @@ PATCH_FORMAT = "zip-sha256-v1"
 PATCH_MANIFEST_NAME = "patch-manifest.json"
 PATCH_FILES_PREFIX = "files/"
 # 解压上限：单个补丁远超这些值时说明不是本项目的应用层补丁，直接拒绝。
-MAX_ENTRIES = 20000
+# 已发布的 v0.3.2/v0.3.3 bundle 各有 26,121 个文件；此上限约为实测基线的两倍，
+# 允许正常完整构建树进入清单，同时仍限制异常膨胀的目录扫描和清单解析。
+MAX_RELEASE_FILES = 50000
+# 增量补丁本身仍限制变更文件数，避免单个 ZIP 和安装事务失控。
+MAX_PATCH_FILES = 20000
 MAX_FILE_BYTES = 512 * 1024 * 1024
 MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
@@ -134,9 +138,9 @@ def scan_tree(root: Path, *, exclude_root: tuple[str, ...] = ()) -> dict[str, st
             continue
         if not path.is_file():
             continue
+        if len(files) >= MAX_RELEASE_FILES:
+            raise PatchError("文件数量超出补丁允许范围")
         files[_validate_relative(relative)] = file_sha256(path)
-    if len(files) > MAX_ENTRIES:
-        raise PatchError("文件数量超出补丁允许范围")
     return files
 
 
@@ -187,6 +191,8 @@ def make_patch(
         name for name, sha in target_files.items() if base_files.get(name) != sha
     )
     deleted = sorted(name for name in base_files if name not in target_files)
+    if len(changed) + len(deleted) > MAX_PATCH_FILES:
+        raise PatchError("变更文件数量超出补丁允许范围")
     restricted = _restricted_changes(changed + deleted)
     if restricted:
         # 生成端再次兜底：即便指纹实现有遗漏，也不产出触碰受限区域的补丁。
@@ -208,11 +214,11 @@ def make_patch(
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     temp = output.with_suffix(output.suffix + ".tmp")
+    manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+    if len(manifest_bytes) > MAX_MANIFEST_BYTES:
+        raise PatchError("补丁清单超出大小限制")
     with zipfile.ZipFile(temp, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(
-            PATCH_MANIFEST_NAME,
-            json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
-        )
+        archive.writestr(PATCH_MANIFEST_NAME, manifest_bytes)
         for name in changed:
             source = Path(target_dir) / Path(name)
             if _is_reparse(source) or not source.is_file():
@@ -262,7 +268,7 @@ def _read_manifest(archive: zipfile.ZipFile) -> dict:
             if not isinstance(sha, str) or len(sha) != 64 or any(ch not in "0123456789abcdef" for ch in sha.lower()):
                 raise PatchError(f"补丁清单哈希无效: {name}")
             normalized[relative] = sha.lower()
-        if len(normalized) > MAX_ENTRIES:
+        if len(normalized) > MAX_RELEASE_FILES:
             raise PatchError("补丁清单文件数量超限")
         payload[key] = normalized
     for key in ("changed", "deleted"):
@@ -278,6 +284,8 @@ def _read_manifest(archive: zipfile.ZipFile) -> dict:
             seen.add(relative)
             items.append(relative)
         payload[key] = items
+    if len(payload["changed"]) + len(payload["deleted"]) > MAX_PATCH_FILES:
+        raise PatchError("补丁变更文件数量超限")
     if set(payload["changed"]) & set(payload["deleted"]):
         raise PatchError("补丁清单的新增/修改与删除存在冲突")
     if any(name not in payload["files"] for name in payload["changed"]):
@@ -407,7 +415,7 @@ def _copy_file(source: Path, target: Path, total: int) -> int:
 
 def _verify_zip_entries(archive: zipfile.ZipFile, changed: set[str]) -> None:
     infos = archive.infolist()
-    if len(infos) > MAX_ENTRIES + 1:
+    if len(infos) > MAX_PATCH_FILES + 1:
         raise PatchError("补丁条目数量超出限制")
     seen: set[str] = set()
     for info in infos:

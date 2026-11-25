@@ -233,6 +233,15 @@ try {
     } finally {
         Pop-Location
     }
+    # 清理构建期导入生成的 Python 字节码和未进入运行 PATH 的 Scripts 启动器。
+    # 运行时、依赖代码及版本指纹保持受限；首个干净基线若有变化会安全走全量安装。
+    Invoke-Checked $python @(
+        '-B',
+        (Join-Path $PSScriptRoot 'prepare_python_bundle.py'),
+        $pythonDir,
+        '--app-root',
+        $app
+    )
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtimes.json') -Destination $bundle
     Set-Content -LiteralPath (Join-Path $bundle 'vc-runtime-version.txt') -Value $crtVersion.Name -Encoding ASCII
     $language = Join-Path $stage 'ChineseSimplified.isl'

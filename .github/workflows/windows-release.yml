@@ -663,7 +663,7 @@ jobs:
               exit 1
             fi
             gh release upload "$tag" release-assets/* --clobber
-            gh release edit "$tag" --title "MenuCapture $VERSION"
+            gh release edit "$tag" --title "MenuCapture $VERSION" --target "$GITHUB_SHA"
           else
             gh release create "$tag" release-assets/* \
               --target "$GITHUB_SHA" \
