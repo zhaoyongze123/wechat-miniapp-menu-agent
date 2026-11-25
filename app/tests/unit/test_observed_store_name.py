@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 import threading
+from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile
 
+from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 from PIL import Image
 
 from menu_capture.agent.ui_tars_trial import _record_observation
+from menu_capture.api.server import create_app
+from menu_capture.materials.rejections import RejectionService
 from menu_capture.shared.shared import _observed_store_name
 from menu_capture.shared.shared_worker import SharedWorker
 from menu_capture.storage.store import TaskStore
@@ -37,6 +42,15 @@ def test_observations_are_isolated_per_run_and_survive_revoke(tmp_path: Path) ->
     store.record_observed_store_name("run-1", "task-1", "")
     assert store.observed_store_name("run-1", "task-1") == ""
     assert store.observed_store_names("run-1") == {}
+
+
+def test_record_accessor_keeps_name_and_frame_together(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    store.record_observed_store_name("run-1", "task-1", "老王饭店", frame_id="3", frame="ui-tars-003.png")
+
+    record = store.observed_store_name_record("run-1", "task-1")
+    assert (record["store_name"], record["frame_id"], record["frame"]) == ("老王饭店", "3", "ui-tars-003.png")
+    assert store.observed_store_name_record("run-1", "missing") == {}
 
 
 def test_observation_events_never_disturb_navigation() -> None:
@@ -90,3 +104,56 @@ def test_result_manifest_carries_observed_name_only_when_present(tmp_path: Path)
     worker._queue_result(assignment, task)
     with ZipFile(worker.outbox / ("b" * 32 + ".zip")) as archive:
         assert json.loads(archive.read("result.json"))["observed_store_name"] == "老王饭店（二店）"
+
+
+def _rejected_task(app) -> dict:
+    """构造一条未采集成功（标记不合格）的采集任务，验证导出仍能带上观察名称。"""
+    source = Path(app.state.store.path).parent / "inbox" / "店甲"
+    source.mkdir(parents=True)
+    Image.new("RGB", (12, 8), "white").save(source / "menu.png")
+    app.state.store.scan(source.parent)
+    task = app.state.store.tasks()[0]
+    with app.state.store.connect() as db:
+        db.execute("UPDATE tasks SET status='captured'")
+    RejectionService(app.state.store, app.state.materials).mark_task(task["id"], "other", "未采集成功")
+    return task
+
+
+def test_rejections_export_carries_observed_name_for_failed_capture(tmp_path: Path) -> None:
+    app = create_app(tmp_path)
+    task = _rejected_task(app)
+    app.state.store.record_observed_store_name("run-1", task["id"], "实际观察店名")
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    exported = client.get("/api/rejections/export.xlsx?source=capture")
+
+    assert exported.status_code == 200
+    rows = list(load_workbook(BytesIO(exported.content), read_only=True).active.iter_rows(values_only=True))
+    assert rows[0][-1] == "实际观察门店名称"
+    assert rows[1][-1] == "实际观察店名"
+    # 原始门店编号仍是主键列，名称只作附带信息追加在末尾。
+    assert rows[1][9] == task["id"]
+
+
+def test_rejections_export_consumes_injected_synced_names(tmp_path: Path) -> None:
+    app = create_app(tmp_path)
+    task = _rejected_task(app)
+    service = RejectionService(app.state.store, app.state.materials,
+                               observed_names=lambda task_id: "Hub 同步店名" if task_id == task["id"] else "")
+
+    assert service.list("capture")["records"][0]["observed_store_name"] == "Hub 同步店名"
+
+
+def test_observed_name_read_failure_does_not_block_export(tmp_path: Path) -> None:
+    app = create_app(tmp_path)
+    task = _rejected_task(app)
+
+    def boom(_task_id: str) -> str:
+        raise RuntimeError("数据库忙")
+
+    service = RejectionService(app.state.store, app.state.materials, observed_names=boom)
+    records = service.list("capture")["records"]
+    assert records[0]["task_id"] == task["id"]
+    assert records[0]["observed_store_name"] == ""
+    assert service.export_xlsx("capture")[:2] == b"PK"  # 名称读取失败不影响导出本身
+

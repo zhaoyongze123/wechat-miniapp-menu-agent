@@ -527,6 +527,13 @@ class TaskStore:
                              (str(run_id or ""), str(task_id or ""))).fetchone()
         return str(row["store_name"] or "") if row else ""
 
+    def observed_store_name_record(self, run_id: str, task_id: str) -> dict:
+        """按轮次 + 任务取完整观察记录，供跨会话恢复名称时带出同一帧引用。"""
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM observed_store_names WHERE run_id=? AND task_id=?",
+                             (str(run_id or ""), str(task_id or ""))).fetchone()
+        return dict(row) if row else {}
+
     def observed_store_names(self, run_id: str) -> dict[str, str]:
         """本轮各任务已确认的名称；显式撤销（空值）不出现在结果里。"""
         with self.connect() as db:

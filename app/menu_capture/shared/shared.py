@@ -425,6 +425,17 @@ class SharedHub:
                 source + " ORDER BY a.created_at DESC,a.id LIMIT ? OFFSET ?", (*params, size, (page - 1) * size))]
         return {"records": records, "total": total, "page": page, "pages": pages}
 
+    def observed_store_name(self, task_id: str) -> str:
+        """按原始任务编号取 Hub 已同步的最近一次观察名称，供导出等既有消费方复用。"""
+        with self.store.connect() as db:
+            row = db.execute(
+                "SELECT r.observed_store_name FROM shared_results r"
+                " JOIN shared_assignments a ON a.id=r.assignment_id"
+                " WHERE a.task_id=? AND r.observed_store_name<>''"
+                " ORDER BY r.received_at DESC, r.assignment_id DESC LIMIT 1",
+                (str(task_id or ""),)).fetchone()
+        return str(row["observed_store_name"]) if row else ""
+
     def reclaim_many(self, assignment_ids: list[str]) -> dict:
         if (not isinstance(assignment_ids, list) or not 1 <= len(assignment_ids) <= 300
                 or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{32}", value) for value in assignment_ids)):

@@ -130,9 +130,12 @@ export function extractObservation(args) {
   delete rest[OBSERVATION_FIELD];
   // 类型错误或超长属于附带信息异常：只忽略它，不因此拒绝原本合法的动作。
   if (typeof raw !== 'string' || raw.length > OBSERVATION_MAX_RAW_CHARS) return { args: rest, observation: null };
+  // 只有原始值恰为空字符串才是“显式撤销”。纯空格/换行/控制字符清洗后为空属于无效观察，
+  // 不能当成撤销，否则会在模型输出噪声时误清空此前已确认的有效名称。
+  if (raw === '') return { args: rest, observation: { revoke: true } };
   const name = raw.replace(OBSERVATION_CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim();
-  if ([...name].length > OBSERVATION_MAX_CHARS) return { args: rest, observation: null };
-  return { args: rest, observation: name ? { name } : { revoke: true } };
+  if (!name || [...name].length > OBSERVATION_MAX_CHARS) return { args: rest, observation: null };
+  return { args: rest, observation: { name } };
 }
 
 // 只用于留痕的文本字段缺失时补占位符：gui-plus 实测会输出 reason:null / target_name:null

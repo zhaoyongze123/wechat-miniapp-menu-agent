@@ -151,6 +151,12 @@ test('空字符串是显式撤销；省略或非法值都表示没有新信息',
                null);
 });
 
+test('纯空白/换行/控制字符清洗后为空按无效观察处理，不撤销已确认名称', () => {
+  for (const raw of ['   ', '\n', '\t\r\n', '\u0000\u0007', ' \n\u0008 ']) {
+    assert.equal(extractObservation({ action: 'noop', [OBSERVATION_FIELD]: raw }).observation, null, JSON.stringify(raw));
+  }
+});
+
 test('附带门店名称清洗控制字符与空白并限长，超长不截断', () => {
   const messy = extractObservation({ action: 'noop', [OBSERVATION_FIELD]: '  老王\n饭店\t(二店)  ' });
   assert.deepEqual(messy.observation, { name: '老王 饭店 (二店)' });

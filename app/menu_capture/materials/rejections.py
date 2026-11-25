@@ -19,10 +19,22 @@ from menu_capture.capture.capture_results import capture_outcome
 class RejectionService:
     """提供不合格统一视图、导出和已有业务规则对应的审核处置。"""
 
-    def __init__(self, tasks: TaskStore, materials: MaterialService, *, current_only: bool = False):
+    def __init__(self, tasks: TaskStore, materials: MaterialService, *, current_only: bool = False,
+                 observed_names=None):
         self.tasks = tasks
         self.materials = materials
         self.current_only = current_only
+        # Hub 已同步的名称落在 shared_results，Worker/单机落在本地表；由装配层注入同一查询入口。
+        self.observed_names = observed_names
+
+    def _observed_name(self, task_id: str) -> str:
+        """附带信息读取失败只返回空值，不影响不合格清单与导出主流程。"""
+        try:
+            if self.observed_names is not None:
+                return str(self.observed_names(task_id) or "")
+            return str(self.tasks.observed_store_name_latest(task_id).get("store_name") or "")
+        except Exception:  # noqa: BLE001 - 附带信息异常不得阻断清单与导出
+            return ""
 
     def _all(self) -> list[dict]:
         rows = self.materials.rejections()
@@ -69,6 +81,8 @@ class RejectionService:
                 "batch_name": task.get("material_batch_name", "") or "",
                 "task_id": task["id"],
                 "run_id": task.get("run_id", ""),
+                # 伴随提取的实际门店名称：原始编号仍是主键，名称只作为附带信息展示/导出。
+                "observed_store_name": self._observed_name(task["id"]),
                 "can_return_to_materials": can_return,
                 "return_to_materials_disabled_reason": return_disabled_reason,
             })
@@ -326,8 +340,9 @@ class RejectionService:
         workbook = Workbook(write_only=True)
         sheet = workbook.create_sheet("不合格门店")
         sheet.freeze_panes = "A2"
-        sheet.auto_filter.ref = f"A1:K{max(1, len(records) + 1)}"
-        headers = ["门店", "来源", "批次", "来源文件", "处理阶段", "不合格原因", "备注", "任务状态", "标记时间", "任务编号", "人工确认"]
+        sheet.auto_filter.ref = f"A1:L{max(1, len(records) + 1)}"
+        headers = ["门店", "来源", "批次", "来源文件", "处理阶段", "不合格原因", "备注", "任务状态", "标记时间", "任务编号", "人工确认",
+                   "实际观察门店名称"]
         header_font = Font(bold=True, color="FFFFFF")
         header_fill = PatternFill("solid", fgColor="167A70")
         header_cells = []
@@ -345,6 +360,7 @@ class RejectionService:
                 record["source_item"], record["stage"], record["reason_label"],
                 record["detail"], record["status"], record["marked_at"], record["task_id"],
                 "✓ 已确认" if record.get("reviewed_at") else "",
+                record.get("observed_store_name", ""),
             ]
             cells = []
             for value in values:
@@ -352,7 +368,7 @@ class RejectionService:
                 cell.data_type = "s"
                 cells.append(cell)
             sheet.append(cells)
-        for column, width in zip("ABCDEFGHIJK", (34, 14, 22, 28, 18, 24, 42, 18, 24, 22, 14)):
+        for column, width in zip("ABCDEFGHIJKL", (34, 14, 22, 28, 18, 24, 42, 18, 24, 22, 14, 28)):
             sheet.column_dimensions[column].width = width
         output = BytesIO()
         workbook.save(output)

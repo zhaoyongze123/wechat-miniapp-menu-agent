@@ -132,7 +132,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     if worker:
         runner.assignment_source = worker.source_root
         store.bind_assignments = worker.bind_run
-    rejections = RejectionService(store, materials, current_only=role == "hub")
+    # Hub 的名称来自已同步的 shared_results，Worker/单机来自本地观察表；导出与清单复用同一入口。
+    rejections = RejectionService(store, materials, current_only=role == "hub",
+                                  observed_names=hub.observed_store_name if hub else None)
     environment = EnvironmentDiagnostics(configs, runner, project_dir)
     connections = ConnectionManager(environment, control_lock, root)
     annotations = AnnotationSession(configs, store, profiles, RunnerExecutor(runner),

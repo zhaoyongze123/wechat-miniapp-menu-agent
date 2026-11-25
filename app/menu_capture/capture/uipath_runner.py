@@ -1607,20 +1607,41 @@ class UiPathRunner:
         self._ipc_commands = 0
         # GUI Agent 伴随提取的门店名称：启动时恢复本轮已确认值，后续跨会话沿用；
         # 按轮次 + 任务独立落库，模型显式撤销时写入空值，失败路径同样保留。
-        observed_name = str(self.store.observed_store_name(self.run_id, task["id"]) or "") if self.run_id else ""
+        def note_observed_error(exc: Exception) -> None:
+            """附带信息异常只在报告里留痕，不改写导航与采集结论。"""
+            report["observed_store_name_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+
+        observed_name, observed_frame = "", ""
+        if self.run_id:
+            try:
+                restored = self.store.observed_store_name_record(self.run_id, task["id"])
+                observed_name = str(restored.get("store_name") or "")
+                observed_frame = str(restored.get("frame") or "")
+            except Exception as exc:  # noqa: BLE001 - 附带信息读取失败不得阻断采集主任务
+                note_observed_error(exc)
         report["observed_store_name"] = observed_name
+        if observed_frame:
+            report["observed_store_name_frame"] = observed_frame
         observed_frames: dict[str, str] = {}
 
         def record_observed(name: str, frame_id: str) -> None:
             nonlocal observed_name
             observed_name = name
-            frame_path = observed_frames.get(frame_id, "")
+            # 名称与证据帧引用必须成对：当前帧缺失时清空帧引用，避免沿用上一帧造成错配。
+            frame_path = observed_frames.get(str(frame_id or ""), "")
             report["observed_store_name"] = name
             if frame_path:
                 report["observed_store_name_frame"] = frame_path
-            if self.run_id:
+            else:
+                report.pop("observed_store_name_frame", None)
+            if not self.run_id:
+                return
+            try:
                 self.store.record_observed_store_name(
-                    self.run_id, task["id"], name, frame_id=frame_id, frame=frame_path)
+                    self.run_id, task["id"], name,
+                    frame_id=str(frame_id or "") if frame_path else "", frame=frame_path)
+            except Exception as exc:  # noqa: BLE001 - 附带信息写库失败不得改写导航结论
+                note_observed_error(exc)
 
         navigation_started = capture_started = None
         timing = report["timing_ms"] = {}
@@ -1688,16 +1709,22 @@ class UiPathRunner:
                 last_frame = self._send(command)
                 self._guard_frame = last_frame
                 self._guard_dir = output_dir
+                # 证据帧引用属于附带信息：路径不在输出目录内或字段缺失时留空，不阻断截图后的导航。
+                try:
+                    relative = str(Path(last_frame["path"]).relative_to(output_dir))
+                except (KeyError, TypeError, ValueError):
+                    relative = ""
                 host_trace("frame", sequence=sequence, frame_id=str(sequence),
-                           path=str(Path(last_frame["path"]).relative_to(output_dir)),
+                           path=relative,
                            width=last_frame.get("width"), height=last_frame.get("height"),
                            window_width=last_frame.get("window_width"),
                            window_height=last_frame.get("window_height"),
                            selector=active["selector"])
-                if sequence == 1:
-                    report["initial_frame"] = str(Path(last_frame["path"]).relative_to(output_dir))
+                if sequence == 1 and relative:
+                    report["initial_frame"] = relative
                 # 帧号 → 证据相对路径：门店名称到达时据此保存可追溯的帧引用。
-                observed_frames[str(sequence)] = str(Path(last_frame["path"]).relative_to(output_dir))
+                if relative:
+                    observed_frames[str(sequence)] = relative
                 return last_frame
 
             def execute(command, frame_id):
