@@ -56,6 +56,12 @@ const FLOW_STAGE_LABEL: Record<UpdateFlowStage, string> = {
   rolled_back: '已回滚到上一版本',
 }
 
+const DOWNLOAD_METHOD_LABEL: Record<string, string> = {
+  windows_patch: 'Windows 文件级增量补丁',
+  windows_installer: 'Windows 完整安装包',
+  hub_image: 'Hub 完整镜像归档',
+}
+
 function historyLabel(row: UpdateHistoryRow): string {
   return ACTION_LABEL[row.action] ?? row.action
 }
@@ -127,6 +133,14 @@ export function UpdatesPanel() {
   const download = status.download
   const schedule = status.schedule
   const install = installQuery.data
+  const usesHubOci = status.platform === 'linux' && schedule.delivery === 'oci'
+  const downloadMethod = usesHubOci
+    ? 'Hub OCI 分层镜像'
+    : DOWNLOAD_METHOD_LABEL[download.asset_kind] ?? download.asset_kind
+  const diagnosticVersion = usesHubOci
+    ? flowVersion || schedule.version || install?.target_version || ''
+    : download.version
+  const diagnosticBaseVersion = download.from_version || (usesHubOci ? install?.previous_version ?? '' : '')
   const preferenceBusy = actions.savePreferences.isPending
   const checkBusy = actions.check.isPending
   const downloadBusy = actions.download.isPending || actions.cancelDownload.isPending
@@ -337,7 +351,7 @@ export function UpdatesPanel() {
               )}
             </div>
           </div>
-          {flowActive && flowStage === 'downloading' ? (
+          {flowActive && flowStage === 'downloading' && !usesHubOci ? (
             <div className="mt-3 space-y-1">
               <div
                 className="h-2 w-full overflow-hidden rounded-full bg-secondary-soft"
@@ -474,6 +488,36 @@ export function UpdatesPanel() {
                 ) : null}
                 {download.error ? (
                   <Alert color="danger" variant="soft" title="下载未完成" description={download.error} />
+                ) : null}
+              </div>
+            ) : null}
+
+            {usesHubOci || download.status !== 'idle' || download.asset_kind || download.fallback_reason ? (
+              <div className="space-y-2 rounded-lg border border-subtle px-3 py-3">
+                <p className="text-sm text-default">{flowActive || schedule.armed ? '本次交付诊断' : '最近一次交付诊断'}</p>
+                <div className="grid gap-1 text-2xs text-secondary sm:grid-cols-2">
+                  {downloadMethod ? (
+                    <p><span className="text-tertiary">交付方式：</span>{downloadMethod}</p>
+                  ) : null}
+                  {diagnosticVersion ? (
+                    <p><span className="text-tertiary">目标版本：</span>{diagnosticVersion}</p>
+                  ) : null}
+                  {diagnosticBaseVersion ? (
+                    <p><span className="text-tertiary">增量基线：</span>{diagnosticBaseVersion} → {diagnosticVersion || '目标版本'}</p>
+                  ) : null}
+                  {usesHubOci ? (
+                    <p><span className="text-tertiary">网络传输量：</span>由 Hub 宿主执行器处理，本页不显示估算字节或百分比</p>
+                  ) : download.total > 0 ? (
+                    <p><span className="text-tertiary">更新包大小：</span>{formatBytes(download.total)} · 已下载 {formatBytes(download.downloaded)}</p>
+                  ) : null}
+                </div>
+                {!usesHubOci && download.fallback_reason ? (
+                  <Alert
+                    color="warning"
+                    variant="soft"
+                    title="已回退到完整安装包"
+                    description={`增量补丁未能使用：${download.fallback_reason}`}
+                  />
                 ) : null}
               </div>
             ) : null}
