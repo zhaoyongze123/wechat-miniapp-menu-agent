@@ -1,5 +1,5 @@
-﻿# 通过应用内更新接口验收整条 OTA 链路：下载状态 → 安装任务文件 → 独立执行器 →
-# 静默安装 → 健康切换 → 回滚。只使用隔离目录，结束时卸载测试实例。
+﻿# 通过一次授权更新接口验收整条 OTA 链路：授权 → 下载校验 → 等待空闲 → 独立执行器 →
+# 静默安装 → 重启并自动重连 → 健康检查 → 回滚。只使用隔离目录，结束时卸载测试实例。
 # 与 smoke.ps1 的区别：这里不手动运行安装包，安装动作由采集端自身的更新执行器完成。
 [CmdletBinding()]
 param(
@@ -88,22 +88,24 @@ function Assert-VersionFile {
     if ($actual -ne $Expected) { throw "current-version=$actual, expected $Expected." }
 }
 
-function Wait-OtaTerminal {
+function Wait-OtaFlow {
     param([int]$TimeoutSeconds = 900)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         # 安装过程中采集端会被守护进程重启，短暂连接失败不代表失败，继续轮询。
         try {
-            $state = Invoke-RestMethod "$base/api/updates/install" -UseBasicParsing -TimeoutSec 5
+            $status = Invoke-RestMethod "$base/api/updates/status" -UseBasicParsing -TimeoutSec 5
         } catch {
             Start-Sleep -Seconds 3
             continue
         }
-        Write-Host ("OTA status: {0} - {1}" -f $state.status, $state.message)
-        if ($state.status -in @('completed', 'failed', 'rolled_back')) { return $state }
+        $flow = $status.flow
+        if (-not $flow) { throw 'Update status is missing the unified flow field.' }
+        Write-Host ("OTA flow: {0} - {1}" -f $flow.stage, $flow.message)
+        if ($flow.stage -in @('completed', 'failed', 'rolled_back')) { return $flow }
         Start-Sleep -Seconds 3
     }
-    throw 'OTA install did not reach a terminal state.'
+    throw 'OTA update did not reach a terminal state.'
 }
 
 try {
@@ -153,20 +155,43 @@ try {
     Start-Process -FilePath $powershell -ArgumentList $watchArgs -WindowStyle Hidden
     $first = Assert-WorkerHealthy -ExpectedVersion $PreviousVersion
 
-    # 3) 通过应用内更新接口触发安装，不再手动执行安装包。
-    $status = Invoke-RestMethod "$base/api/updates/install" -UseBasicParsing -TimeoutSec 5
-    if (-not $status.supported) { throw 'Install executor is not enabled on this worker.' }
+    # 3) 通过一次授权接口触发更新：服务端自行完成下载校验、等待空闲、安装与重启。
+    $caps = Invoke-RestMethod "$base/api/updates/status" -UseBasicParsing -TimeoutSec 5
+    if (-not $caps.capabilities.install -or -not $caps.capabilities.schedule) {
+        throw 'Update executor is not enabled on this worker.'
+    }
     $token = (Invoke-RestMethod "$base/api/session" -UseBasicParsing -TimeoutSec 5).token
-    $body = @{ version = $Version; confirm = $Version } | ConvertTo-Json
-    $null = Invoke-RestMethod -Method Post -Uri "$base/api/updates/install" -Headers @{ 'X-Capture-Token' = $token } `
-        -Body $body -ContentType 'application/json' -TimeoutSec 15
-    $terminal = Wait-OtaTerminal
-    if ($terminal.status -ne 'completed') { throw "OTA install ended as $($terminal.status): $($terminal.message)" }
+    $authorized = Invoke-RestMethod -Method Post -Uri "$base/api/updates/update" -Headers @{ 'X-Capture-Token' = $token } `
+        -Body (@{ mode = 'immediate' } | ConvertTo-Json) -ContentType 'application/json' -TimeoutSec 15
+    if ($authorized.flow.version -ne $Version) {
+        throw "Authorization targeted $($authorized.flow.version), expected $Version."
+    }
+    if ($authorized.flow.stage -notin @('downloading', 'waiting', 'installing', 'completed')) {
+        throw "Authorization did not start the update flow: $($authorized.flow.stage) $($authorized.flow.error)"
+    }
+    $terminal = Wait-OtaFlow
+    if ($terminal.stage -ne 'completed') {
+        throw "OTA update ended as $($terminal.stage): $($terminal.error) $($terminal.message)"
+    }
 
-    # 4) 独立执行器完成后，守护进程应已切换到目标版本。
+    # 4) 执行器完成后，采集端应重启到目标版本并自动恢复健康。
     Assert-VersionFile $Version
     $second = Assert-WorkerHealthy -ExpectedVersion $Version
+    if ($second.ProcessId -eq $first.ProcessId) {
+        throw 'OTA update did not restart the worker process.'
+    }
+    # 重启后新进程必须能从持久化记录恢复“更新完成”，否则页面会一直停在等待状态。
+    $afterRestart = (Invoke-RestMethod "$base/api/updates/status" -UseBasicParsing -TimeoutSec 5).flow
+    if ($afterRestart.stage -ne 'completed') {
+        throw "Update flow after restart is $($afterRestart.stage), expected completed."
+    }
     Write-Host "OTA switched worker $($first.ProcessId) to $($second.ProcessId) on $Version."
+    # 安装日志是升级审计的唯一事实源，必须在回滚前核对本次事务确实指向目标版本。
+    $journal = Get-Content -LiteralPath (Join-Path $dataDir 'update-install.json') -Raw | ConvertFrom-Json
+    if ($journal.status -ne 'completed' -or $journal.target_version -ne $Version -or
+        $journal.previous_version -ne $PreviousVersion) {
+        throw "Install journal is $($journal.status) $($journal.previous_version)->$($journal.target_version)."
+    }
 
     # 5) 回滚仍复用现有 rollback.ps1，确认切换链路可逆。
     $rollback = Join-Path $install 'rollback.ps1'
@@ -178,9 +203,7 @@ try {
     Write-Host "Rollback switched worker $($second.ProcessId) to $($third.ProcessId) on $PreviousVersion."
 
     if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne 'preserve') { throw 'OTA install removed local state.' }
-    $journal = Get-Content -LiteralPath (Join-Path $dataDir 'update-install.json') -Raw | ConvertFrom-Json
-    if ($journal.status -ne 'completed') { throw "Install journal ended as $($journal.status)." }
-    Write-Host 'OTA API install, executor switch and rollback passed.'
+    Write-Host 'OTA one-shot update, executor switch, reconnect and rollback passed.'
 } catch {
     $keep = Join-Path $tempRoot ('menu-capture-ota-logs-' + (Get-Date -Format 'yyyyMMddHHmmss'))
     $null = New-Item -ItemType Directory -Path $keep -Force
