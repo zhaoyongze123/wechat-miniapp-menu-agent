@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '../../components/ToastProvider'
 import type {
   UpdateDownloadState,
+  UpdateFlow,
+  UpdateHistoryRow,
   UpdateInstallState,
   UpdateStatus,
   UpdateStoragePreview,
@@ -15,7 +17,7 @@ const mocks = vi.hoisted(() => ({
     error: null as Error | null,
     data: undefined as UpdateInstallState | undefined,
   },
-  history: { isError: false, data: [], error: null, refetch: vi.fn() },
+  history: { isError: false, data: [] as UpdateHistoryRow[], error: null, refetch: vi.fn() },
   cleanup: {
     isError: false,
     error: null as Error | null,
@@ -28,6 +30,8 @@ const mocks = vi.hoisted(() => ({
     download: { mutate: vi.fn(), isPending: false },
     cancelDownload: { mutate: vi.fn(), isPending: false },
     install: { mutate: vi.fn(), isPending: false },
+    update: { mutate: vi.fn(), isPending: false },
+    cancelUpdate: { mutate: vi.fn(), isPending: false },
     scheduleInstall: { mutate: vi.fn(), isPending: false },
     cancelSchedule: { mutate: vi.fn(), isPending: false },
     cleanup: { mutate: vi.fn(), isPending: false },
@@ -74,6 +78,21 @@ function downloadState(overrides: Partial<UpdateDownloadState> = {}): UpdateDown
   }
 }
 
+function flow(overrides: Partial<UpdateFlow> = {}): UpdateFlow {
+  return {
+    active: false,
+    stage: 'idle',
+    version: '',
+    mode: 'immediate',
+    message: '',
+    error: '',
+    progress: 0,
+    authorized_at: '',
+    finished_at: '',
+    ...overrides,
+  }
+}
+
 function status(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
   return {
     role: 'worker',
@@ -107,7 +126,8 @@ function status(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
     error: '',
     checking: false,
     download: downloadState(),
-    schedule: { armed: false, version: '', requested_at: '', note: '', last_result: '' },
+    schedule: { armed: false, version: '', mode: 'idle', requested_at: '', note: '', last_result: '' },
+    flow: flow(),
     capabilities: { check: true, download: true, install: false, schedule: false, rollback: false, inventory: true, cleanup: true },
     inventory: {
       supported: true,
@@ -167,6 +187,8 @@ function storagePreview(overrides: Partial<UpdateStoragePreview> = {}): UpdateSt
   }
 }
 
+const INSTALL_CAPABILITIES = { check: true, download: true, install: true, schedule: true, rollback: true, inventory: true, cleanup: true }
+
 beforeEach(() => {
   mocks.status.data = status()
   mocks.status.isPending = false
@@ -183,36 +205,114 @@ beforeEach(() => {
 })
 
 describe('UpdatesPanel', () => {
-  it('展示当前版本、最新版本、发布说明与资产校验信息', () => {
+  it('首屏展示当前版本、目标版本与更新说明', () => {
     renderPanel()
 
     expect(screen.getAllByText('0.2.2').length).toBeGreaterThan(0)
     expect(screen.getByText('0.3.0')).toBeInTheDocument()
-    expect(screen.getByText('发现可更新版本')).toBeInTheDocument()
-    expect(screen.getByText('修复稳定性问题。')).toBeInTheDocument()
-    expect(screen.getByText(/MenuCapture-0.3.0.exe/)).toBeInTheDocument()
-    expect(screen.getByText(/下载与安装都以服务端真实能力为准/)).toBeInTheDocument()
+    expect(screen.getByText('有新版本可用')).toBeInTheDocument()
+    expect(screen.getByText(/当前版本 0\.2\.2，可更新至 0\.3\.0/)).toBeInTheDocument()
+    expect(screen.getAllByText('修复稳定性问题。').length).toBeGreaterThan(0)
   })
 
-  it('手动检查调用真实动作，下载入口不伪造安装能力', () => {
+  it('无安装能力时不提供立即更新，只说明原因', () => {
+    renderPanel()
+
+    expect(screen.queryByRole('button', { name: '立即更新' })).not.toBeInTheDocument()
+    expect(screen.getByText(/当前环境不支持应用内安装/)).toBeInTheDocument()
+  })
+
+  it('安装能力可用时一次点击立即更新，不再二次确认', () => {
+    mocks.status.data = status({ capabilities: INSTALL_CAPABILITIES })
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('button', { name: '立即更新' }))
+
+    expect(mocks.actions.update.mutate).toHaveBeenCalledWith('immediate', expect.anything())
+    expect(screen.queryByText('确认安装并重启')).not.toBeInTheDocument()
+  })
+
+  it('空闲后更新只授权一次，由后台等待采集结束', () => {
+    mocks.status.data = status({ capabilities: INSTALL_CAPABILITIES })
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('button', { name: '空闲后更新' }))
+
+    expect(mocks.actions.update.mutate).toHaveBeenCalledWith('idle', expect.anything())
+  })
+
+  it('更新中展示统一下载进度并可取消', () => {
+    mocks.status.data = status({
+      capabilities: INSTALL_CAPABILITIES,
+      download: downloadState({ active: true, status: 'downloading', version: '0.3.0', downloaded: 512, total: 1024 }),
+      flow: flow({ active: true, stage: 'downloading', version: '0.3.0', progress: 50, message: '正在下载并校验更新包' }),
+    })
+    renderPanel()
+
+    const bars = screen.getAllByRole('progressbar', { name: '更新包下载进度' })
+    expect(bars[0]).toHaveAttribute('aria-valuenow', '50')
+    fireEvent.click(screen.getByRole('button', { name: '取消更新' }))
+
+    expect(mocks.actions.cancelUpdate.mutate).toHaveBeenCalledTimes(1)
+    expect(screen.getByText(/可以关闭页面，后台会继续完成更新/)).toBeInTheDocument()
+  })
+
+  it('等待空闲时展示真实原因，安装开始后不允许取消', () => {
+    const waiting = status({
+      capabilities: INSTALL_CAPABILITIES,
+      download: downloadState({ status: 'completed', version: '0.3.0', asset_kind: 'windows_installer', asset_name: 'MenuCapture-0.3.0.exe', downloaded: 1024, total: 1024 }),
+      flow: flow({ active: true, stage: 'waiting', version: '0.3.0', message: '采集或人工标注正在执行' }),
+    })
+    const { rerender } = renderPanel()
+    mocks.status.data = waiting
+    rerender(
+      <ToastProvider>
+        <UpdatesPanel />
+      </ToastProvider>,
+    )
+
+    expect(screen.getByText(/采集或人工标注正在执行/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '取消更新' })).toBeInTheDocument()
+
+    mocks.status.data = status({
+      capabilities: INSTALL_CAPABILITIES,
+      flow: flow({ active: true, stage: 'restarting', version: '0.3.0', message: '正在重启服务' }),
+    })
+    rerender(
+      <ToastProvider>
+        <UpdatesPanel />
+      </ToastProvider>,
+    )
+
+    expect(screen.queryByRole('button', { name: '取消更新' })).not.toBeInTheDocument()
+    expect(screen.getByText(/安装已开始，无法取消/)).toBeInTheDocument()
+  })
+
+  it('更新失败时展示真实错误并提供重试', () => {
+    mocks.status.data = status({
+      capabilities: INSTALL_CAPABILITIES,
+      flow: flow({ stage: 'failed', version: '0.3.0', error: '健康检查超时' }),
+    })
+    renderPanel()
+
+    expect(screen.getByText('更新失败')).toBeInTheDocument()
+    expect(screen.getByText('健康检查超时')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '重试更新' }))
+
+    expect(mocks.actions.update.mutate).toHaveBeenCalledWith('immediate', expect.anything())
+  })
+
+  it('高级设置中保留手动检查与下载入口', () => {
     renderPanel()
 
     fireEvent.click(screen.getByRole('button', { name: '手动检查更新' }))
+    fireEvent.click(screen.getByRole('button', { name: '仅下载更新包' }))
 
     expect(mocks.actions.check.mutate).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole('button', { name: '下载更新包' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /安装/ })).not.toBeInTheDocument()
-  })
-
-  it('点击下载调用真实下载动作', () => {
-    renderPanel()
-
-    fireEvent.click(screen.getByRole('button', { name: '下载更新包' }))
-
     expect(mocks.actions.download.mutate).toHaveBeenCalledTimes(1)
   })
 
-  it('下载中显示真实进度并允许取消', () => {
+  it('下载中显示真实进度并允许取消下载', () => {
     mocks.status.data = status({
       download: downloadState({
         active: true,
@@ -225,21 +325,19 @@ describe('UpdatesPanel', () => {
     })
     renderPanel()
 
-    expect(screen.getByRole('progressbar', { name: '更新包下载进度' })).toHaveAttribute('aria-valuenow', '50')
-    expect(screen.getByText(/50%/)).toBeInTheDocument()
+    const bars = screen.getAllByRole('progressbar', { name: '更新包下载进度' })
+    expect(bars[0]).toHaveAttribute('aria-valuenow', '50')
     fireEvent.click(screen.getByRole('button', { name: '取消下载' }))
 
     expect(mocks.actions.cancelDownload.mutate).toHaveBeenCalledTimes(1)
   })
 
-  it('下载失败后展示原因并允许继续续传', () => {
+  it('下载失败后可继续续传', () => {
     mocks.status.data = status({
       download: downloadState({
         status: 'failed',
         version: '0.3.0',
         asset_name: 'MenuCapture-0.3.0.exe',
-        downloaded: 300,
-        total: 1024,
         error: '网络中断',
         resumable: true,
       }),
@@ -250,21 +348,21 @@ describe('UpdatesPanel', () => {
     expect(screen.getByRole('button', { name: '继续下载' })).toBeInTheDocument()
   })
 
-  it('下载完成后不再重复提供下载入口', () => {
+  it('已下载当前版本时不再提供下载入口', () => {
     mocks.status.data = status({
       download: downloadState({
         status: 'completed',
         version: '0.3.0',
+        asset_kind: 'windows_installer',
         asset_name: 'MenuCapture-0.3.0.exe',
         downloaded: 1024,
         total: 1024,
-        path: 'D:\\menu-agent\\runtime\\data\\updates\\0.3.0\\MenuCapture-0.3.0.exe',
       }),
     })
     renderPanel()
 
-    expect(screen.getByText(/已下载 MenuCapture-0.3.0.exe 并通过 SHA-256 校验/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /下载/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/已下载 MenuCapture-0\.3\.0\.exe 并通过 SHA-256 校验/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '仅下载更新包' })).not.toBeInTheDocument()
   })
 
   it('已下载旧版本不会阻止下载新版本', () => {
@@ -276,175 +374,46 @@ describe('UpdatesPanel', () => {
         asset_name: 'MenuCapture-0.2.9.exe',
         downloaded: 1024,
         total: 1024,
-        path: 'D:\\menu-agent\\runtime\\data\\updates\\0.2.9\\MenuCapture-0.2.9.exe',
       }),
     })
     renderPanel()
 
     expect(screen.getByText(/已下载 0\.2\.9；当前最新为 0\.3\.0/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '下载更新包' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '仅下载更新包' })).toBeInTheDocument()
   })
 
-  it('下载完成且安装能力可用时，确认后才提交真实安装请求', () => {
-    mocks.status.data = status({
-      capabilities: { check: true, download: true, install: true, schedule: true, rollback: true, inventory: true, cleanup: true },
-      download: downloadState({
-        status: 'completed',
-        version: '0.3.0',
-        asset_kind: 'windows_installer',
-        asset_name: 'MenuCapture-0.3.0.exe',
-        downloaded: 1024,
-        total: 1024,
-        path: 'D:\\menu-agent\\runtime\\data\\updates\\0.3.0\\MenuCapture-0.3.0.exe',
-      }),
-    })
-    mocks.install.data = installState({ supported: true, reason: '' })
-    renderPanel()
-
-    fireEvent.click(screen.getByRole('button', { name: '立即安装并重启' }))
-    expect(mocks.actions.install.mutate).not.toHaveBeenCalled()
-    expect(screen.getByText(/安装由独立进程静默完成/)).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: '确认安装并重启' }))
-    expect(mocks.actions.install.mutate).toHaveBeenCalledWith('0.3.0', expect.anything())
-  })
-
-  it('可安排空闲后更新并随时取消，不强行结束采集', () => {
-    mocks.status.data = status({
-      capabilities: { check: true, download: true, install: true, schedule: true, rollback: true, inventory: true, cleanup: true },
-      download: downloadState({
-        status: 'completed',
-        version: '0.3.0',
-        asset_kind: 'windows_installer',
-        asset_name: 'MenuCapture-0.3.0.exe',
-        downloaded: 1024,
-        total: 1024,
-        path: 'D:\\menu-agent\\runtime\\data\\updates\\0.3.0\\MenuCapture-0.3.0.exe',
-      }),
-      schedule: { armed: false, version: '', requested_at: '', note: '', last_result: '' },
-    })
-    mocks.install.data = installState({ supported: true, reason: '' })
-    renderPanel()
-
-    fireEvent.click(screen.getByRole('button', { name: '空闲后更新' }))
-    expect(mocks.actions.scheduleInstall.mutate).toHaveBeenCalled()
-  })
-
-  it('已安排的空闲后更新显示等待原因并允许取消', () => {
-    mocks.status.data = status({
-      capabilities: { check: true, download: true, install: true, schedule: true, rollback: true, inventory: true, cleanup: true },
-      download: downloadState({
-        status: 'completed',
-        version: '0.3.0',
-        asset_kind: 'windows_installer',
-        asset_name: 'MenuCapture-0.3.0.exe',
-        downloaded: 1024,
-        total: 1024,
-        path: 'D:\\menu-agent\\runtime\\data\\updates\\0.3.0\\MenuCapture-0.3.0.exe',
-      }),
-      schedule: { armed: true, version: '0.3.0', requested_at: '', note: '采集或人工标注正在执行', last_result: '' },
-    })
-    mocks.install.data = installState({ supported: true, reason: '' })
-    renderPanel()
-
-    expect(screen.getByText(/采集或人工标注正在执行/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '取消安排' }))
-    expect(mocks.actions.cancelSchedule.mutate).toHaveBeenCalled()
-  })
-
-  it('安装能力未启用时只说明原因，不提供安装按钮', () => {
-    mocks.status.data = status({
-      download: downloadState({
-        status: 'completed',
-        version: '0.3.0',
-        asset_kind: 'windows_installer',
-        asset_name: 'MenuCapture-0.3.0.exe',
-        downloaded: 1024,
-        total: 1024,
-        path: 'D:\\menu-agent\\runtime\\data\\updates\\0.3.0\\MenuCapture-0.3.0.exe',
-      }),
-    })
+  it('安装执行器未启用时只在高级设置说明原因', () => {
     mocks.install.data = installState()
     renderPanel()
 
-    expect(screen.getByText('安装执行器未启用')).toBeInTheDocument()
     expect(screen.getByText(/显式启用后才能使用/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '安装并重启' })).not.toBeInTheDocument()
   })
 
-  it('安装进行中展示真实阶段并禁用重复提交', () => {
-    mocks.status.data = status({
-      capabilities: { check: true, download: true, install: true, schedule: true, rollback: true, inventory: true, cleanup: true },
-      download: downloadState({
-        status: 'completed',
-        version: '0.3.0',
-        asset_kind: 'windows_installer',
-        asset_name: 'MenuCapture-0.3.0.exe',
-        downloaded: 1024,
-        total: 1024,
-      }),
-    })
-    mocks.install.data = installState({
-      supported: true,
-      reason: '',
-      active: true,
-      status: 'installing',
-      target_version: '0.3.0',
-      previous_version: '0.2.2',
-      message: '安装包校验通过（签名状态：valid），正在运行安装程序',
-    })
+  it('存储治理仍需确认后才提交删除', () => {
     renderPanel()
-
-    expect(screen.getByText(/正在安装/)).toBeInTheDocument()
-    expect(screen.getByText(/目标 0\.3\.0/)).toBeInTheDocument()
-    expect(screen.getByText(/签名状态：valid/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '安装并重启' })).not.toBeInTheDocument()
-  })
-
-  it('版本清点显示保护状态与清理候选，但不提供删除按钮', () => {
-    renderPanel()
-
-    expect(screen.getByText('D:\\menu-agent')).toBeInTheDocument()
-    expect(screen.getAllByText('受保护')).toHaveLength(3)
-    expect(screen.getByText(/可清理候选 1 个：0.1.9/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /删除/ })).not.toBeInTheDocument()
-  })
-
-  it('存储治理先预览，确认后才提交清理范围', () => {
-    renderPanel()
-
-    expect(screen.getByText('存储治理')).toBeInTheDocument()
-    expect(screen.getByText(/可释放约/)).toBeInTheDocument()
-    expect(screen.getByText('保留待安装：0.3.0')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '清理可清理项' }))
-    expect(mocks.actions.cleanup.mutate).not.toHaveBeenCalled()
-    expect(screen.getByText(/不会删除运行中\/当前\/最近两个版本/)).toBeInTheDocument()
-
     fireEvent.click(screen.getByRole('button', { name: '确认清理' }))
+
     expect(mocks.actions.cleanup.mutate).toHaveBeenCalledWith(['releases'], expect.anything())
   })
 
-  it('安装进行中时存储清理被服务端状态阻止', () => {
-    mocks.cleanup.data = storagePreview({ blocked: true, blocked_reason: '安装或回滚进行中，请完成后再清理' })
+  it('更新记录使用真实动作名称', () => {
+    mocks.history.data = [
+      { time: '2026-11-24T09:00:00Z', action: 'update', result: 'ok', message: '已授权一次完成下载与安装', version: '0.3.0', platform: 'windows', role: 'worker' },
+    ]
     renderPanel()
 
-    expect(screen.getByText('安装或回滚进行中，请完成后再清理')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '清理可清理项' })).toBeDisabled()
+    expect(screen.getByText('一次授权更新')).toBeInTheDocument()
   })
 
-  it('非 Windows 或缺少版本目录时如实说明不支持', () => {
-    mocks.status.data = status({
-      inventory: {
-        supported: false,
-        reason: '仅 Windows 采集端支持程序版本目录清点',
-        releases: [],
-        cleanup_candidates: [],
-      },
-    })
+  it('状态读取失败时提供重试，而不是伪造版本', () => {
+    mocks.status.data = undefined
+    mocks.status.isError = true
+    mocks.status.error = new Error('连接失败') as never
     renderPanel()
 
-    expect(screen.getByText('当前环境不支持程序版本清点')).toBeInTheDocument()
-    expect(screen.getByText(/仅 Windows 采集端支持/)).toBeInTheDocument()
+    expect(screen.getByText('更新状态读取失败')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument()
   })
 })

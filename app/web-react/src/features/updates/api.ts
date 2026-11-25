@@ -2,8 +2,10 @@ import { apiFetch } from '../../api/client'
 import type {
   UpdateCleanupResult,
   UpdateDownloadState,
+  UpdateFlow,
   UpdateHistoryRow,
   UpdateInstallState,
+  UpdateMode,
   UpdatePreferences,
   UpdateSchedule,
   UpdateStatus,
@@ -28,6 +30,16 @@ export function startUpdateDownload(): Promise<UpdateDownloadState> {
 
 export function cancelUpdateDownload(): Promise<UpdateDownloadState> {
   return apiFetch<UpdateDownloadState>('/api/updates/download/cancel', { method: 'POST', json: {} })
+}
+
+/** 一次授权：服务端自动下载、等待空闲、安装、重启与健康检查。 */
+export function authorizeUpdate(mode: UpdateMode): Promise<UpdateFlow> {
+  return apiFetch<UpdateFlow>('/api/updates/update', { method: 'POST', json: { mode } })
+}
+
+/** 尚未开始切换前可取消；安装已启动时服务端会拒绝。 */
+export function cancelUpdateFlow(): Promise<UpdateFlow> {
+  return apiFetch<UpdateFlow>('/api/updates/update/cancel', { method: 'POST', json: {} })
 }
 
 export function fetchUpdateHistory(limit = 50, signal?: AbortSignal): Promise<UpdateHistoryRow[]> {

@@ -160,6 +160,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     )
     # 安装状态上报给 Hub；执行器未接入时返回空，不推测状态。
     updates.install_status_provider = lambda: str(install.status().get("status") or "")
+    # 一次授权更新的进度需要执行器的目标版本、消息与错误；只读取真实快照。
+    updates.install_snapshot_provider = install.status
     # “空闲后更新”：执行器自行校验空闲与闸门，监控只负责在安全时机尝试启动。
     updates.schedule_installer = lambda version: install.start(version, version)
     updates.resume_schedule()

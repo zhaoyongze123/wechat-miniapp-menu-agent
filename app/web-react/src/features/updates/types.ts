@@ -42,9 +42,38 @@ export interface UpdatePreferences {
 export interface UpdateSchedule {
   armed: boolean
   version: string
+  /** immediate 为“立即更新”，idle 为“空闲后更新”。 */
+  mode: UpdateMode
   requested_at: string
   note: string
   last_result: string
+}
+
+export type UpdateMode = 'immediate' | 'idle'
+
+export type UpdateFlowStage =
+  | 'idle'
+  | 'downloading'
+  | 'waiting'
+  | 'installing'
+  | 'verifying'
+  | 'restarting'
+  | 'rolling_back'
+  | 'completed'
+  | 'failed'
+  | 'rolled_back'
+
+/** 一次授权后的服务端统一进度，前端不自行拼接下载/安排/安装状态。 */
+export interface UpdateFlow {
+  active: boolean
+  stage: UpdateFlowStage
+  version: string
+  mode: UpdateMode
+  message: string
+  error: string
+  progress: number
+  authorized_at: string
+  finished_at: string
 }
 
 export interface UpdateInventoryRelease {
@@ -162,6 +191,7 @@ export interface UpdateStatus {
   checking: boolean
   download: UpdateDownloadState
   schedule: UpdateSchedule
+  flow: UpdateFlow
   capabilities: UpdateCapabilities
   inventory: UpdateInventory
 }
