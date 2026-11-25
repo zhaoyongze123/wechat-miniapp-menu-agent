@@ -146,6 +146,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             base_url=str(os.environ.get("HUB_UPDATE_URL") or ""),
             token=str(os.environ.get("HUB_UPDATE_TOKEN") or ""),
             latest_provider=lambda: (updates.status_no_check().get("latest") or {}),
+            # 与 Windows 执行器同一契约：后台调度提交镜像前消费授权，取消与消费互斥。
+            authorization_check=updates.claim_install,
+            authorization_release=updates.release_install_claim,
         )
         updates.install_capability = lambda: install.supported
         # 手动回滚接口尚未开放；失败时由执行器自动回滚。
@@ -167,6 +170,11 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 else (False, "采集或人工标注正在执行，请先结束或暂停后再安装")
             ),
             supported=updates.install_supported(),
+            # 后台调度在真正拉起进程前消费授权；用户取消与消费共用更新锁，只会有一个成功。
+            authorization_check=updates.claim_install,
+            authorization_release=updates.release_install_claim,
+            # 与清理共享文件系统互斥，避免清理删除安装正在读取的产物。
+            filesystem_lock=updates.filesystem_lock,
         )
     # 上次进程可能在安装中途退出；启动时先收尾遗留事务，避免界面永久停在 installing。
     install.recover()
@@ -174,12 +182,16 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     updates.cleanup_guard = lambda: (
         (True, "安装或回滚进行中，请完成后再清理") if install.active() else (False, "")
     )
+    # 清理在持有文件系统锁时只能用锁外只读探测复查安装状态。
+    updates.install_active_provider = install.active_nonblocking
     # 安装状态上报给 Hub；执行器未接入时返回空，不推测状态。
     updates.install_status_provider = lambda: str(install.status().get("status") or "")
     # 一次授权更新的进度需要执行器的目标版本、消息与错误；只读取真实快照。
     updates.install_snapshot_provider = install.status
     # “空闲后更新”：执行器自行校验空闲与闸门，监控只负责在安全时机尝试启动。
-    updates.schedule_installer = lambda version: install.start(version, version)
+    updates.schedule_installer = lambda version: install.start(
+        version, version, require_authorization=True,
+    )
     updates.resume_schedule()
     if hub is not None:
         # Hub 集中检查 GitHub 后向 Worker 分发元数据，避免每台设备重复请求。
@@ -311,11 +323,12 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         ):
             return JSONResponse({"detail": "请在共享工作台管理素材和审核结果"}, status_code=409)
         # 安装期间禁止发起新的采集/标注，避免切换版本时仍有写入任务。
-        if install.active() and request.method not in {"GET", "HEAD"} and (
+        # 先按请求类型与方法短路：普通 GET 不做任何安装闸门探测，避免事件循环上的文件读取。
+        if request.method not in {"GET", "HEAD"} and (
             path in {"/api/start", "/api/scan", "/api/resume", "/api/capture/start",
                      "/api/ui-tars/trial", "/api/manual/capture"}
             or path.startswith("/api/annotation/")
-        ):
+        ) and install.active_nonblocking():
             return JSONResponse({"detail": "更新安装进行中，已暂停新的采集操作"}, status_code=409)
         if request.method not in {"GET", "HEAD"} and not worker_protocol:
             supplied = request.headers.get("x-capture-token", "")

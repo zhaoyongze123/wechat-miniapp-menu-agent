@@ -374,6 +374,9 @@ class UpdateService:
         self._generation = 0
         # 下载同一时刻只允许一个任务；进度频繁变化，落盘按阈值节流。
         self._downloading = False
+        # 串行化“启动下载”与“清理下载目录”：删除大目录不能在持状态锁时进行，
+        # 因此改由独立文件系统锁保证下载不会被正在进行的清理删掉。
+        self._filesystem_lock = threading.Lock()
         self._download_cancel: threading.Event | None = None
         self._download_thread: threading.Thread | None = None
         self._download_persisted = 0
@@ -390,6 +393,9 @@ class UpdateService:
         self.rollback_capability: Callable[[], bool] | None = None
         # 安装/回滚期间必须禁止清理历史版本，否则可能删掉正在使用的回滚目标。
         self.cleanup_guard: Callable[[], tuple[bool, str]] | None = None
+        # 锁外只读探测：cleanup 在持有文件系统锁时用它复查安装状态，
+        # 不能反向调用会取安装锁的 cleanup_guard（否则形成 文件系统锁 → 安装锁 的反向等待）。
+        self.install_active_provider: Callable[[], bool] | None = None
         # Worker 可由共享后台分发版本元数据；只有 Hub 校验后且未过期的结果才会被采纳。
         self.hub_target_provider: Callable[[], dict | None] | None = None
         # Worker 向 Hub 上报安装状态时使用；执行器未接入时留空，不推测。
@@ -852,9 +858,17 @@ class UpdateService:
             "reclaimable_bytes": sum(int(scope.get("reclaimable_bytes") or 0) for scope in scopes.values()),
         }
 
-    def _cleanup_block(self) -> tuple[bool, str]:
+    def _cleanup_block(self, *, fast_install: bool = False) -> tuple[bool, str]:
         if self._downloading:
             return True, "下载进行中，请等待完成或取消后再清理"
+        if fast_install and self.install_active_provider is not None:
+            # 已在持文件系统锁期间：只能用锁外只读探测，避免与安装启动交叉持锁。
+            try:
+                if self.install_active_provider():
+                    return True, "安装或回滚进行中，请完成后再清理"
+            except Exception:  # noqa: BLE001 - 无法确认时按阻止处理
+                return True, "无法确认安装状态，暂不允许清理"
+            return False, ""
         if self.cleanup_guard is not None:
             try:
                 return self.cleanup_guard()
@@ -966,8 +980,14 @@ class UpdateService:
         scopes = payload.get("scopes") or ["releases", "downloads", "logs"]
         if not isinstance(scopes, list) or not scopes or set(scopes) - {"releases", "downloads", "logs"}:
             raise ValueError("清理范围无效")
-        with self._lock:
-            blocked, reason = self._cleanup_block()
+        # 闸门探测会读取安装执行器状态，文件遍历与删除可能持续数十秒，
+        # 两者都不能在持 self._lock 时执行，否则会与安装启动交叉持锁并阻塞状态接口。
+        blocked, reason = self._cleanup_block()
+        if blocked:
+            raise ValueError(reason)
+        with self._filesystem_lock:
+            # 取得文件系统锁后再确认一次：新的下载或安装无法在删除过程中启动。
+            blocked, reason = self._cleanup_block(fast_install=True)
             if blocked:
                 raise ValueError(reason)
             deleted: list[dict] = []
@@ -983,16 +1003,17 @@ class UpdateService:
             summary = f"已清理 {len(deleted)} 项，释放 {freed} 字节" if deleted else "没有可清理项"
             if failures:
                 summary += f"，{len(failures)} 项失败"
+        with self._lock:
             self._append_history(
                 "cleanup", "failed" if failures else "ok", f"{summary}（范围：{', '.join(scopes)}）", ""
             )
-            return {
-                "scopes": scopes,
-                "deleted": deleted,
-                "failures": failures,
-                "freed_bytes": freed,
-                "preview": self.storage_preview(),
-            }
+        return {
+            "scopes": scopes,
+            "deleted": deleted,
+            "failures": failures,
+            "freed_bytes": freed,
+            "preview": self.storage_preview(),
+        }
 
     def _cleanup_releases(self, deleted: list[dict], failures: list[dict]) -> None:
         install_root = self._install_root()
@@ -1078,51 +1099,56 @@ class UpdateService:
         return state
 
     def start_download(self) -> dict:
-        """启动唯一的下载任务；版本、平台、架构与哈希全部来自已验证清单。"""
-        with self._lock:
-            if self._downloading:
-                raise ValueError("已有下载任务正在运行")
-            latest = self._cache.get("latest")
-            current = self.current_version()
-            if not isinstance(latest, dict) or not _update_available(latest, current, self.platform, self.local_arch):
-                raise ValueError("当前没有可下载的更新，请先检查更新并确认平台、架构匹配")
-            asset = _downloadable_asset(latest, self.platform, self.local_arch)
-            if asset is None:
-                raise ValueError("发布清单中没有与本机平台和架构匹配的资产")
-            version = str(latest.get("version") or "")
-            previous = dict(self._download_state)
-            # 同一版本、同一资产续传时保留 ETag/Last-Modified，用于 If-Range 防止拼接已变化的资源。
-            same_asset = (
-                previous.get("version") == version
-                and previous.get("asset_name") == str(asset.get("name") or "")
-                and previous.get("sha256") == str(asset.get("sha256") or "")
-            )
-            self._downloading = True
-            self._download_cancel = threading.Event()
-            self._download_persisted = 0
-            self._download_state = {
-                **_empty_download_state(),
-                "active": True,
-                "status": "downloading",
-                "version": version,
-                "asset_kind": str(asset.get("kind") or ""),
-                "asset_name": str(asset.get("name") or ""),
-                "arch": str(asset.get("arch") or ""),
-                # 记录资产身份，安装前与后续版本绑定判断都以它为准，不能只看 completed。
-                "sha256": str(asset.get("sha256") or ""),
-                "etag": str(previous.get("etag") or "") if same_asset else "",
-                "last_modified": str(previous.get("last_modified") or "") if same_asset else "",
-                "total": int(asset.get("size") or 0),
-                "started_at": _utc_now(),
-            }
-            self._write_download_state()
-            thread = threading.Thread(
-                target=self._run_download,
-                args=(dict(asset), version, self._download_cancel),
-                name="menu-capture-update-download",
-                daemon=True,
-            )
-            self._download_thread = thread
+        """启动唯一的下载任务；版本、平台、架构与哈希全部来自已验证清单。
+
+        与清理共用文件系统锁：清理在删除下载目录期间不允许再启动新下载，
+        否则刚写入的断点文件会被当成可清理项删掉。
+        """
+        with self._filesystem_lock:
+            with self._lock:
+                if self._downloading:
+                    raise ValueError("已有下载任务正在运行")
+                latest = self._cache.get("latest")
+                current = self.current_version()
+                if not isinstance(latest, dict) or not _update_available(latest, current, self.platform, self.local_arch):
+                    raise ValueError("当前没有可下载的更新，请先检查更新并确认平台、架构匹配")
+                asset = _downloadable_asset(latest, self.platform, self.local_arch)
+                if asset is None:
+                    raise ValueError("发布清单中没有与本机平台和架构匹配的资产")
+                version = str(latest.get("version") or "")
+                previous = dict(self._download_state)
+                # 同一版本、同一资产续传时保留 ETag/Last-Modified，用于 If-Range 防止拼接已变化的资源。
+                same_asset = (
+                    previous.get("version") == version
+                    and previous.get("asset_name") == str(asset.get("name") or "")
+                    and previous.get("sha256") == str(asset.get("sha256") or "")
+                )
+                self._downloading = True
+                self._download_cancel = threading.Event()
+                self._download_persisted = 0
+                self._download_state = {
+                    **_empty_download_state(),
+                    "active": True,
+                    "status": "downloading",
+                    "version": version,
+                    "asset_kind": str(asset.get("kind") or ""),
+                    "asset_name": str(asset.get("name") or ""),
+                    "arch": str(asset.get("arch") or ""),
+                    # 记录资产身份，安装前与后续版本绑定判断都以它为准，不能只看 completed。
+                    "sha256": str(asset.get("sha256") or ""),
+                    "etag": str(previous.get("etag") or "") if same_asset else "",
+                    "last_modified": str(previous.get("last_modified") or "") if same_asset else "",
+                    "total": int(asset.get("size") or 0),
+                    "started_at": _utc_now(),
+                }
+                self._write_download_state()
+                thread = threading.Thread(
+                    target=self._run_download,
+                    args=(dict(asset), version, self._download_cancel),
+                    name="menu-capture-update-download",
+                    daemon=True,
+                )
+                self._download_thread = thread
         thread.start()
         return self.download_status()
 
@@ -1179,13 +1205,14 @@ class UpdateService:
             raise ValueError("更新方式无效")
         if not self._install_capable() or self.schedule_installer is None:
             raise ValueError("当前环境不支持应用内安装")
+        # 安装快照与当前版本都在锁外读取：安装执行器可能正持锁等待本服务状态。
+        install = self._install_snapshot()
+        if str(install.get("status") or "") in INSTALL_ACTIVE_STATUSES:
+            # 安装已在进行：重复点击只返回真实进度，不创建第二个事务。
+            return self.update_flow()
+        current = self.current_version()
         with self._lock:
-            install = self._install_snapshot()
-            if str(install.get("status") or "") in INSTALL_ACTIVE_STATUSES:
-                # 安装已在进行：重复点击只返回真实进度，不创建第二个事务。
-                return self.update_flow()
             latest = self._cache.get("latest")
-            current = self.current_version()
             if not isinstance(latest, dict) or not _update_available(latest, current, self.platform, self.local_arch):
                 raise ValueError("当前没有可用的新版本")
             version = str(latest.get("version") or "")
@@ -1229,15 +1256,56 @@ class UpdateService:
         self._arm_schedule_monitor()
         return self.update_flow()
 
-    def cancel_update(self) -> dict:
-        """取消尚未开始切换的更新；安装一旦启动就只能等待执行器收尾。"""
+    @property
+    def filesystem_lock(self) -> threading.Lock:
+        """与安装执行器共享的文件系统互斥：清理删除期间不允许启动安装。"""
+        return self._filesystem_lock
+
+    def claim_install(self, version: str) -> bool:
+        """安装执行器拉起进程前确认授权仍有效，并原子消费这次授权。
+
+        取消与消费都在 self._lock 内线性化，只会有一个成功：
+        取消先到则安装不会启动；消费先到则取消必须失败，用户不会看到“取消成功但仍在安装”。
+        """
         with self._lock:
-            install = self._install_snapshot()
-            if str(install.get("status") or "") in INSTALL_ACTIVE_STATUSES:
-                raise ValueError("安装已开始，无法取消")
+            schedule = dict(self._schedule)
+            if (
+                not schedule.get("armed")
+                or str(schedule.get("version") or "") != str(version)
+                or schedule.get("claimed")
+            ):
+                return False
+            self._schedule["claimed"] = True
+            self._schedule["last_result"] = "started"
+            self._write_json(self.schedule_path, self._schedule)
+            return True
+
+    def release_install_claim(self, version: str) -> None:
+        """安装未能真正启动（清理占用、写盘失败等）时归还授权，供后台调度重试。"""
+        with self._lock:
+            if str(self._schedule.get("version") or "") != str(version):
+                return
+            if not self._schedule.get("armed"):
+                return
+            self._schedule["claimed"] = False
+            self._write_json(self.schedule_path, self._schedule)
+
+    def cancel_update(self) -> dict:
+        """取消尚未开始切换的更新；安装一旦启动就只能等待执行器收尾。
+
+        安装快照与当前版本在锁外读取，理由同 update_flow：不能与安装执行器交叉持锁。
+        """
+        install = self._install_snapshot()
+        if str(install.get("status") or "") in INSTALL_ACTIVE_STATUSES:
+            raise ValueError("安装已开始，无法取消")
+        current = self.current_version()
+        with self._lock:
             schedule = dict(self._schedule)
             version = str(schedule.get("version") or "")
-            if str(install.get("status") or "") == "completed" and version and version == self.current_version():
+            if schedule.get("armed") and schedule.get("claimed"):
+                # 授权已被执行器消费且安排仍在生效：进程即将/已经拉起，取消不再生效。
+                raise ValueError("安装已开始，无法取消")
+            if str(install.get("status") or "") == "completed" and version and version == current:
                 raise ValueError("更新已完成，无法取消")
             download = dict(self._download_state)
             cancel = None
@@ -1257,11 +1325,15 @@ class UpdateService:
         return self.update_flow()
 
     def update_flow(self) -> dict:
-        """把下载、等待、安装与执行器状态归并成单一流程，供界面直接展示。"""
+        """把下载、等待、安装与执行器状态归并成单一流程，供界面直接展示。
+
+        锁契约：安装执行器有自己的锁，且它启动时会读取本服务状态；
+        因此绝不能在持有 self._lock 时读取安装快照，否则两边交叉持锁会形成 ABBA 死锁。
+        """
         with self._lock:
             schedule = dict(self._schedule)
-            download = self.download_status()
-            install = self._install_snapshot()
+        download = self.download_status()
+        install = self._install_snapshot()
         version = str(schedule.get("version") or download.get("version") or "")
         mode = str(schedule.get("mode") or "immediate")
         status = str(install.get("status") or "")
@@ -1330,6 +1402,9 @@ class UpdateService:
 
     def cancel_install_schedule(self) -> dict:
         with self._lock:
+            if self._schedule.get("armed") and self._schedule.get("claimed"):
+                # 与 cancel_update 同一线性化点：授权已被消费时不允许再宣布取消成功。
+                raise ValueError("安装已开始，无法取消")
             cancel = self._schedule_cancel
             self._schedule_cancel = None
             self._schedule = {
