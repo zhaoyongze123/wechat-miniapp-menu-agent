@@ -137,7 +137,11 @@ try {
         channel = 'stable'
         latest = [ordered]@{
             version = $Version; eligible = $true; channel = 'stable'
-            assets = @([ordered]@{ kind = 'windows_installer'; name = $assetName; arch = 'x64'; sha256 = $hash; size = $size })
+            # 资产必须带 platform 才与本机匹配；真实清单由发布草稿生成同样的结构。
+            assets = @([ordered]@{
+                kind = 'windows_installer'; platform = 'windows'; name = $assetName; arch = 'x64'
+                sha256 = $hash; size = $size; url = ''
+            })
         }
     }
     [IO.File]::WriteAllText((Join-Path $dataDir 'update-cache.json'), ($cache | ConvertTo-Json -Depth 6), $utf8)
