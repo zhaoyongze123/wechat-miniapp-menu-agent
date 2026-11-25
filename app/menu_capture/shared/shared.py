@@ -149,15 +149,21 @@ class SharedHub:
                 CREATE INDEX IF NOT EXISTS shared_worker_assignments ON shared_assignments(worker_id,status);
                 CREATE TABLE IF NOT EXISTS shared_results (
                     assignment_id TEXT PRIMARY KEY, digest TEXT NOT NULL, disposition TEXT NOT NULL,
-                    status TEXT NOT NULL, message TEXT NOT NULL, received_at TEXT NOT NULL,
-                    observed_store_name TEXT NOT NULL DEFAULT ''
+                    status TEXT NOT NULL, message TEXT NOT NULL, received_at TEXT NOT NULL
+                );
+                -- 可选观察名称独立存储，避免给旧版 INSERT ... VALUES 增加列后破坏软件回滚。
+                CREATE TABLE IF NOT EXISTS shared_result_names (
+                    assignment_id TEXT PRIMARY KEY, store_name TEXT NOT NULL DEFAULT ''
                 );
             """)
-            # 旧库补列：observed_store_name 是本版新增的可选副产物，历史结果默认为空。
             columns = {row["name"] for row in db.execute("PRAGMA table_info(shared_results)")}
-            if "observed_store_name" not in columns:
-                db.execute("ALTER TABLE shared_results"
-                           " ADD COLUMN observed_store_name TEXT NOT NULL DEFAULT ''")
+            self._legacy_observed_store_column = "observed_store_name" in columns
+            if self._legacy_observed_store_column:
+                # 兼容已经运行过 v0.3.2 的数据库；保留旧列供回滚版本读取，同时迁移到独立表。
+                db.execute(
+                    "INSERT OR IGNORE INTO shared_result_names(assignment_id,store_name) "
+                    "SELECT assignment_id,observed_store_name FROM shared_results"
+                )
 
     def status(self, *, include_history: bool = True) -> dict:
         with self.store.connect() as db:
@@ -191,15 +197,17 @@ class SharedHub:
                 } if row else None)
             assignments = [dict(row) for row in db.execute("""
                 SELECT a.*, COALESCE(r.disposition, '') AS disposition, COALESCE(r.message, '') AS result_message,
-                       COALESCE(r.observed_store_name, '') AS observed_store_name
+                       COALESCE(n.store_name, '') AS observed_store_name
                 FROM shared_assignments a LEFT JOIN shared_results r ON a.id=r.assignment_id
+                LEFT JOIN shared_result_names n ON a.id=n.assignment_id
                 WHERE a.status IN ('assigned','ready') ORDER BY a.created_at DESC,a.id
             """)]
             if include_history:
                 assignments.extend(dict(row) for row in db.execute("""
                     SELECT a.*, COALESCE(r.disposition, '') AS disposition, COALESCE(r.message, '') AS result_message,
-                           COALESCE(r.observed_store_name, '') AS observed_store_name
+                           COALESCE(n.store_name, '') AS observed_store_name
                     FROM shared_assignments a LEFT JOIN shared_results r ON a.id=r.assignment_id
+                    LEFT JOIN shared_result_names n ON a.id=n.assignment_id
                     WHERE a.status IN ('completed','reclaimed') ORDER BY a.created_at DESC,a.id LIMIT 200
                 """))
         if any(row["status"] in ACTIVE for row in assignments):
@@ -411,7 +419,8 @@ class SharedHub:
             where.append("instr(lower(a.store || ' ' || a.batch_name || ' ' || a.revision || ' ' || a.task_id), lower(?))>0")
             params.append(query.strip())
         source = ("FROM shared_assignments a JOIN shared_workers w ON w.id=a.worker_id "
-                  "LEFT JOIN shared_results r ON r.assignment_id=a.id WHERE " + " AND ".join(where))
+                  "LEFT JOIN shared_results r ON r.assignment_id=a.id "
+                  "LEFT JOIN shared_result_names n ON n.assignment_id=a.id WHERE " + " AND ".join(where))
         with self.store.connect() as db:
             if worker_id:
                 self._worker(db, worker_id)
@@ -421,7 +430,7 @@ class SharedHub:
             records = [dict(row) for row in db.execute(
                 "SELECT a.id,a.task_id,a.worker_id,w.name AS worker_name,a.store,a.batch_name,a.revision,a.status,"
                 "COALESCE(r.disposition,'') AS disposition,COALESCE(r.message,'') AS result_message,"
-                "COALESCE(r.observed_store_name,'') AS observed_store_name " +
+                "COALESCE(n.store_name,'') AS observed_store_name " +
                 source + " ORDER BY a.created_at DESC,a.id LIMIT ? OFFSET ?", (*params, size, (page - 1) * size))]
         return {"records": records, "total": total, "page": page, "pages": pages}
 
@@ -449,8 +458,9 @@ class SharedHub:
                 return ""
             placeholders = ",".join("?" * len(owners))
             row = db.execute(
-                "SELECT r.observed_store_name FROM shared_results r"
+                "SELECT n.store_name AS observed_store_name FROM shared_results r"
                 " JOIN shared_assignments a ON a.id=r.assignment_id"
+                " LEFT JOIN shared_result_names n ON n.assignment_id=r.assignment_id"
                 f" WHERE a.task_id IN ({placeholders}) AND r.disposition='accepted'"
                 " ORDER BY r.received_at DESC, r.assignment_id DESC LIMIT 1",
                 tuple(owners)).fetchone()
@@ -903,10 +913,19 @@ class SharedHub:
                 elif live["status"] in ACTIVE:
                     db.execute("UPDATE shared_assignments SET status='reclaimed' WHERE id=?", (assignment_id,))
                 disposition = "accepted" if accepted else "history"
-                db.execute("INSERT INTO shared_results(assignment_id,digest,disposition,status,message,"
-                           "received_at,observed_store_name) VALUES(?,?,?,?,?,?,?)",
-                           (assignment_id, digest, disposition, state, message, utc_stamp(),
-                            _observed_store_name(manifest)))
+                observed_name = _observed_store_name(manifest)
+                if self._legacy_observed_store_column:
+                    # v0.3.2 已发布的旧实现会读取这一列，因此在已迁移数据库上继续双写。
+                    db.execute("INSERT INTO shared_results(assignment_id,digest,disposition,status,message,"
+                               "received_at,observed_store_name) VALUES(?,?,?,?,?,?,?)",
+                               (assignment_id, digest, disposition, state, message, utc_stamp(), observed_name))
+                else:
+                    db.execute("INSERT INTO shared_results(assignment_id,digest,disposition,status,message,"
+                               "received_at) VALUES(?,?,?,?,?,?)",
+                               (assignment_id, digest, disposition, state, message, utc_stamp()))
+                db.execute("INSERT INTO shared_result_names(assignment_id,store_name) VALUES(?,?) "
+                           "ON CONFLICT(assignment_id) DO UPDATE SET store_name=excluded.store_name",
+                           (assignment_id, observed_name))
         return {"disposition": disposition, "status": state}
 
     def _matching_current(self, assigned: dict) -> dict | None:
