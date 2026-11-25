@@ -629,13 +629,20 @@ class InstallController:
         with self._lock:
             self._refresh()
             journal = _read_json(self.journal_path, {})
+            stalled = self._is_stalled(journal)
         status = str(journal.get("status") or "idle")
-        return {
+        payload = {
             "supported": self.supported,
             "reason": "" if self.supported else "安装执行器需在 Windows 采集端并显式启用后才能使用",
             "active": status in ACTIVE_STATUSES,
+            "stalled": stalled,
             **journal,
         }
+        if stalled:
+            # 疑似失联只作为本次查询的派生提示：journal 由执行器进程独占写入，
+            # 父进程改写会覆盖执行器的真实进度，并与其并发写同一个临时文件。
+            payload["message"] = STALLED_MESSAGE
+        return payload
 
     def recover(self) -> None:
         """服务启动时调用：把上次进程遗留的活动事务收尾，避免界面永久停在 installing。"""
@@ -659,13 +666,18 @@ class InstallController:
         except OSError:
             return None
 
-    def _mark_stalled(self, journal: dict) -> None:
-        """执行器长时间无推进但仍存活：保持互斥，只更新提示，绝不解除安装事务。"""
-        if str(journal.get("message") or "") == STALLED_MESSAGE:
-            return
-        journal["message"] = STALLED_MESSAGE
-        journal["updated_at"] = _utc_now()
-        _write_json(self.journal_path, journal)
+    def _is_stalled(self, journal: dict) -> bool:
+        """只读判断“疑似失联”：执行器仍存活但长时间无任何推进。
+
+        仅用于状态查询派生，绝不回写 journal；安装互斥照旧由 status 仍为活动态保持。
+        """
+        if str(journal.get("status") or "") not in ACTIVE_STATUSES:
+            return False
+        pid = int(journal.get("pid") or 0)
+        if not pid or not self.pid_alive(pid):
+            return False
+        age = self._active_age_seconds(journal)
+        return age is not None and age > MAX_ACTIVE_SECONDS
 
     def _refresh(self) -> None:
         journal = _read_json(self.journal_path, {})
@@ -674,11 +686,8 @@ class InstallController:
         pid = int(journal.get("pid") or 0)
         if pid:
             if self.pid_alive(pid):
-                age = self._active_age_seconds(journal)
-                if age is not None and age > MAX_ACTIVE_SECONDS:
-                    # 超时只代表疑似失联：执行器仍存活时若解除互斥，会与旧进程同时操作
-                    # 版本目录、版本指针与 journal，因此宁可保持活动态并提示人工介入。
-                    self._mark_stalled(journal)
+                # 超时只代表疑似失联：执行器仍存活时若解除互斥，会与旧进程同时操作
+                # 版本目录、版本指针与 journal，因此保持活动态，提示由 status 派生。
                 return
             self._resolve_stale(journal)
             return
@@ -823,13 +832,11 @@ class InstallController:
                     kwargs["creationflags"] = 0x00000008 | 0x00000200
                 else:
                     kwargs["start_new_session"] = True
-                process = self.popen(command, **kwargs)
-                pid = int(getattr(process, "pid", 0) or 0)
-                if pid:
-                    # 立即登记执行器进程，避免状态刷新把刚启动的任务误判为异常退出。
-                    recorded = _read_json(self.journal_path, {})
-                    recorded["pid"] = pid
-                    _write_json(self.journal_path, recorded)
+                # spawn 之后 journal 归子进程独占：执行器启动后的第一件事就是带自身 pid 写入
+                # （execute → _write）。父进程再读-改-写会覆盖执行器进度，并与其共用同一个
+                # .tmp 临时文件造成写坏；子进程登记 pid 之前的空窗由 _refresh 的
+                # STALE_JOB_GRACE_SECONDS 兜底，不会被误判为异常退出。
+                self.popen(command, **kwargs)
             except BaseException:
                 # 未成功启动时归还授权，避免后台调度因为一次可重试失败而永久失去授权。
                 self._release_claim(claimed, version)

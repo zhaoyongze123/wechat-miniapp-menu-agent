@@ -14,6 +14,7 @@ import pytest
 from menu_capture.updates.update_install import (
     JOB_SCHEMA,
     MAX_ACTIVE_SECONDS,
+    STALLED_MESSAGE,
     InstallController,
     InstallOrchestrator,
     _check_publisher,
@@ -271,7 +272,7 @@ def make_controller(tmp_path: Path, *, supported=True, latest_sha: str | None = 
                     pid_alive=None, bind: dict | None = None,
                     latest_provider=None, artifact_provider=None,
                     authorization_check=None, authorization_release=None,
-                    filesystem_lock=None):
+                    filesystem_lock=None, popen=None):
     root = make_install_root(tmp_path, current)
     state = make_artifact(tmp_path)
     latest = artifact_latest(state, latest_sha)
@@ -298,7 +299,7 @@ def make_controller(tmp_path: Path, *, supported=True, latest_sha: str | None = 
         current_version=lambda: current,
         idle_check=lambda: idle,
         supported=supported,
-        popen=fake_popen,
+        popen=popen or fake_popen,
         python="python.exe",
         app_dir=tmp_path,
         pid_alive=pid_alive or (lambda pid: True),
@@ -349,6 +350,27 @@ def test_controller_spawns_detached_install_and_records_job(tmp_path):
     assert job["target_version"] == "0.3.0"
     assert job["previous_version"] == "0.2.2"
     assert job["install_root"].endswith("install")
+
+
+def test_controller_leaves_journal_to_executor_after_spawn(tmp_path):
+    """回归：spawn 后 journal 归执行器独占，父进程不再读-改-写追加 pid。
+
+    父子进程共用同一个 .tmp 临时文件，父进程回写会覆盖执行器刚写入的进度。
+    """
+    class Process:
+        pid = 4321
+
+    controller, commands, _ = make_controller(
+        tmp_path, popen=lambda command, **kwargs: Process(),
+    )
+
+    controller.start("0.3.0", "0.3.0")
+
+    journal = json.loads((tmp_path / "data" / "update-install.json").read_text(encoding="utf-8"))
+    assert "pid" not in journal
+    assert journal["status"] == "starting"
+    # 子进程登记 pid 之前仍保持互斥，不会因为暂时没有 pid 被判定为异常退出。
+    assert controller.status()["active"] is True
 
 
 def test_controller_rejects_when_unsupported(tmp_path):
@@ -647,22 +669,24 @@ def test_controller_keeps_transaction_when_executor_still_alive(tmp_path):
     """P0：超时只代表疑似失联，执行器仍存活时绝不能解除安装互斥。"""
     stale = (datetime.now(timezone.utc)
              - timedelta(seconds=MAX_ACTIVE_SECONDS + 60)).isoformat(timespec="seconds")
+    original = {"status": "installing", "target_version": "0.3.0", "pid": 4242,
+                "message": "正在运行安装程序", "updated_at": stale}
     controller, commands, _ = make_controller(
-        tmp_path,
-        journal={"status": "installing", "target_version": "0.3.0",
-                 "pid": 4242, "updated_at": stale},
-        pid_alive=lambda pid: True,
+        tmp_path, journal=original, pid_alive=lambda pid: True,
     )
+    journal_path = tmp_path / "data" / "update-install.json"
 
     status = controller.status()
 
     assert status["status"] == "installing"
     assert status["active"] is True
+    # 疑似失联只是查询时派生的提示，不能覆盖执行器写下的真实进度。
+    assert status["stalled"] is True
+    assert status["message"] == STALLED_MESSAGE
+    assert json.loads(journal_path.read_text(encoding="utf-8")) == original
     with pytest.raises(ValueError, match="已有安装任务正在执行"):
         controller.start("0.3.0", "0.3.0")
     assert commands == []
-    journal = json.loads((tmp_path / "data" / "update-install.json").read_text(encoding="utf-8"))
-    assert "无响应" in journal["message"]
 
 
 def test_controller_reclaims_when_executor_exited(tmp_path):

@@ -137,6 +137,84 @@ def test_start_submits_verified_asset_to_executor() -> None:
     assert proxy.status(force=True)["status"] == "completed"
 
 
+def test_start_consumes_authorization_and_aborts_when_cancelled() -> None:
+    """后台调度提交镜像前必须消费授权：用户已取消时不能继续切换。"""
+    released: list[str] = []
+    fake = FakeUpdater()
+    proxy = make_proxy(
+        fake,
+        authorization_check=lambda version: False,
+        authorization_release=released.append,
+    )
+
+    with pytest.raises(ValueError, match="更新授权已取消"):
+        proxy.start("0.2.4", "0.2.4", require_authorization=True)
+
+    assert not any(call[1] == "/apply" for call in fake.calls)
+    assert released == []
+    assert proxy.active_nonblocking() is False
+
+
+def test_start_claim_makes_cancel_fail(tmp_path) -> None:
+    """授权一旦被 Hub 代理消费，取消就必须失败：两者共用更新服务锁线性化。"""
+    from menu_capture.updates.updates import UpdateService
+
+    service = UpdateService(tmp_path / "runtime", role="hub", platform="linux", machine="x86_64")
+    service._schedule = {"armed": True, "version": "0.2.4", "mode": "immediate",
+                         "requested_at": "", "note": "", "last_result": ""}
+    proxy = make_proxy(
+        FakeUpdater(),
+        authorization_check=service.claim_install,
+        authorization_release=service.release_install_claim,
+    )
+
+    proxy.start("0.2.4", "0.2.4", require_authorization=True)
+
+    with pytest.raises(ValueError, match="安装已开始，无法取消"):
+        service.cancel_update()
+    assert service._schedule.get("claimed") is True
+
+
+def test_start_releases_claim_when_executor_rejects_apply() -> None:
+    """执行器没有接手更新时归还授权，后台调度才能重试。"""
+    claimed: list[str] = []
+    released: list[str] = []
+    applied = threading.Event()
+    released_event = threading.Event()
+    idle = {"supported": True, "active": False, "status": "idle", "target_version": "",
+            "previous_version": "", "message": "", "error": ""}
+
+    def request(method: str, path: str, payload: dict | None, timeout: float) -> dict:
+        if path == "/apply":
+            applied.set()
+            raise OSError("connection refused")
+        return dict(idle)
+
+    def check(version: str) -> bool:
+        claimed.append(version)
+        return True
+
+    def release(version: str) -> None:
+        released.append(version)
+        released_event.set()
+
+    proxy = HubInstallProxy(
+        base_url="http://127.0.0.1:8767",
+        token="t" * 32,
+        latest_provider=lambda: LATEST,
+        request=request,
+        authorization_check=check,
+        authorization_release=release,
+    )
+
+    proxy.start("0.2.4", "0.2.4", require_authorization=True)
+
+    assert claimed == ["0.2.4"]
+    assert applied.wait(2) and released_event.wait(2)
+    assert released == ["0.2.4"]
+    assert proxy._cache.get("status") == "failed"
+
+
 def test_start_reads_latest_without_holding_proxy_lock() -> None:
     """回归：latest_provider 会进入更新服务锁，调用时不得持有 Hub 代理锁。
 

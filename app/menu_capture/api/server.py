@@ -146,6 +146,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             base_url=str(os.environ.get("HUB_UPDATE_URL") or ""),
             token=str(os.environ.get("HUB_UPDATE_TOKEN") or ""),
             latest_provider=lambda: (updates.status_no_check().get("latest") or {}),
+            # 与 Windows 执行器同一契约：后台调度提交镜像前消费授权，取消与消费互斥。
+            authorization_check=updates.claim_install,
+            authorization_release=updates.release_install_claim,
         )
         updates.install_capability = lambda: install.supported
         # 手动回滚接口尚未开放；失败时由执行器自动回滚。
