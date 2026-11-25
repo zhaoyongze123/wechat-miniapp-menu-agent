@@ -75,6 +75,8 @@ def test_server_never_prepares_robot_without_calibrated_profile(tmp_path: Path):
     assert client.post("/api/robot/profile", json=RobotProfile().model_dump()).status_code == 403
     assert client.post("/api/robot/profile", json=RobotProfile().model_dump(), headers=headers).status_code == 200
     rejected = client.post("/api/start", json={}, headers=headers)
-    assert rejected.status_code == 400
+    # 运行前检查未通过属于“当前状态不允许启动”，统一返回 409 并带出阻塞原因。
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]
     assert not app.state.runner.running
     assert app.state.runner.run_directory is None

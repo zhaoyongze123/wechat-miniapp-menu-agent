@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Badge } from '@openai/apps-sdk-ui/components/Badge'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
@@ -17,6 +16,7 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { formatStore } from '../hub/format'
+import { ReviewDispositionDialog } from '../quality/ReviewDispositionDialog'
 import { fetchTaskDetail, renameCaptureRun } from './api'
 import { KIND_LABEL, formatTime, shortTime, statusOf } from './format'
 import type { CaptureTaskEntry, HistoryRecord, TaskDetail } from './types'
@@ -72,7 +72,7 @@ interface TaskDetailDrawerProps {
 export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: TaskDetailDrawerProps) {
   const queryClient = useQueryClient()
   const toast = useToast()
-  const navigate = useNavigate()
+  const [dispositionTaskId, setDispositionTaskId] = useState<string | null>(null)
   const [renaming, setRenaming] = useState(false)
   const [name, setName] = useState('')
   const [renameError, setRenameError] = useState('')
@@ -434,13 +434,11 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
               color="primary"
               size="sm"
               onClick={() => {
-                const taskId = storeDetail.task_id
+                setDispositionTaskId(storeDetail.task_id)
                 setStoreDetail(null)
-                onClose()
-                navigate(`/rejections?view=review&task=${encodeURIComponent(taskId)}`)
               }}
             >
-              前往质量审核处置
+              就地处置
             </Button>
           ) : null}
           <Button color="secondary" variant="outline" size="sm" onClick={() => setStoreDetail(null)}>
@@ -495,6 +493,17 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
       caption={preview?.alt ?? ''}
       onOpenChange={(open) => { if (!open) setPreview(null) }}
     />
+
+    {/* 就地处置：不离开任务详情，关闭后回到原轮次与门店列表位置。 */}
+    {dispositionTaskId !== null ? (
+      <ReviewDispositionDialog
+        open
+        taskId={dispositionTaskId}
+        onOpenChange={(open) => {
+          if (!open) setDispositionTaskId(null)
+        }}
+      />
+    ) : null}
     </>
   )
 }

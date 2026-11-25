@@ -5,6 +5,7 @@ import type {
   UpdateHistoryRow,
   UpdateInstallState,
   UpdatePreferences,
+  UpdateSchedule,
   UpdateStatus,
   UpdateStoragePreview,
 } from './types'
@@ -43,6 +44,15 @@ export function startUpdateInstall(version: string): Promise<UpdateInstallState>
     method: 'POST',
     json: { version, confirm: version },
   })
+}
+
+/** 空闲后更新：服务端保存安排，采集或标注结束后由后台尝试安装。 */
+export function scheduleUpdateInstall(): Promise<UpdateSchedule> {
+  return apiFetch<UpdateSchedule>('/api/updates/install/schedule', { method: 'POST', json: {} })
+}
+
+export function cancelUpdateInstallSchedule(): Promise<UpdateSchedule> {
+  return apiFetch<UpdateSchedule>('/api/updates/install/schedule/cancel', { method: 'POST', json: {} })
 }
 
 export function fetchUpdateCleanup(signal?: AbortSignal): Promise<UpdateStoragePreview> {

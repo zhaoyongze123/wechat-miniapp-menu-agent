@@ -42,6 +42,18 @@ def setup_flow(tmp_path):
     }
     runner._send = lambda command: commands.append({**command, "trace": dict(getattr(runner, "_trace_click", {}))}) or {"windows": []}
     runner._recognize_preview = lambda *_: {"preview_opened": True}
+    # 输入区像素判定（图片是否附着、回车是否清空）由 platform 测试单独覆盖；
+    # 这里只验证命令序列、剪贴板顺序与点击坐标，故固定返回当前聊天帧。
+    def current_frame(*_args, **_kwargs):
+        return {"path": str(tmp_path / "chat.png"), "width": 864, "height": 958,
+                "window_width": 432, "window_height": 479}
+
+    runner._await_image_attached = current_frame
+
+    def press_send(profile, *_args, **_kwargs):
+        runner._send({"action": "key", "selector": profile["wechat_selector"], "key": profile["send_key"]})
+        return current_frame()
+    runner._press_send_until_cleared = press_send
     task = {"id": "test", "source_name": NAME, "source_path": str(tmp_path / "source.png")}
     profile = {"wechat_selector": "assistant", "wechat_input_x_ratio": .7, "wechat_input_y_ratio": .9,
                "paste_shortcut": "Cmd+V", "send_key": "Enter"}
@@ -162,6 +174,8 @@ def test_visible_thumbnail_opens_preview_without_resending(tmp_path, monkeypatch
     # 文本粘贴+回车合并为一条；图片粘贴与回车分开两条。
     assert len([c for c in commands if c["action"] == "key"]) == 3
     assert len([c for c in commands if c["action"] == "double_click"]) == 1
-    # 正常路径不再有固定等待；只会点击输入框一次。
+    # 正常路径不再有固定等待。
     assert not [c for c in commands if c["action"] == "noop"]
-    assert len([c for c in commands if c["action"] == "click"]) == 1
+    # 输入框点两次：开始前定位输入框一次；店名回车后焦点可能被聊天区接管，
+    # 粘图前必须重新点回，否则图片会被微信吞掉。
+    assert len([c for c in commands if c["action"] == "click"]) == 2

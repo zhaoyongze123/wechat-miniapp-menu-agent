@@ -47,6 +47,12 @@ DOWNLOAD_PROGRESS_PERSIST_BYTES = 4 * 1024 * 1024
 LOG_CLEANUP_MAX_AGE_SECONDS = 7 * 24 * 3600
 # 清理是破坏性操作，必须由调用方提交固定确认标记，避免误触。
 CLEANUP_CONFIRM = "cleanup"
+# 程序版本保留数量：默认当前 + 最近两个可回滚版本；下限 2 保证至少保留一个回滚目标。
+DEFAULT_KEEP_VERSIONS = 3
+MIN_KEEP_VERSIONS = 2
+MAX_KEEP_VERSIONS = 5
+# “空闲后更新”监控轮询；发现不空闲时只记录原因，不打断采集。
+SCHEDULE_POLL_SECONDS = 20.0
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 # GitHub Release 上附带的更新清单；与安装目录内的运行时 release-manifest.json 区分。
 MANIFEST_ASSET = "update-manifest.json"
@@ -338,6 +344,8 @@ class UpdateService:
         self.cache_path = self.data_dir / "update-cache.json"
         self.preferences_path = self.data_dir / "update-preferences.json"
         self.history_path = self.data_dir / "update-history.jsonl"
+        # 已安排的“空闲后更新”必须跨浏览器刷新与服务重启保留；执行仍由后台监控负责。
+        self.schedule_path = self.data_dir / "update-schedule.json"
         # 下载产物与断点只落在数据目录，绝不写入程序目录或安装目录。
         self.download_dir = self.data_dir / "updates"
         self.download_state_path = self.data_dir / "update-download.json"
@@ -366,6 +374,13 @@ class UpdateService:
         self.hub_target_provider: Callable[[], dict | None] | None = None
         # Worker 向 Hub 上报安装状态时使用；执行器未接入时留空，不推测。
         self.install_status_provider: Callable[[], str] | None = None
+        # “空闲后更新”：监控线程在安全条件满足时调用执行器启动安装，自身不判断业务空闲。
+        self.schedule_installer: Callable[[str], dict] | None = None
+        self._schedule = self._read_schedule()
+        self._schedule_cancel: threading.Event | None = None
+        self._schedule_thread: threading.Thread | None = None
+        if self._schedule.get("armed") and self.schedule_installer is not None:
+            self._arm_schedule_monitor()
 
     # ---------- 对外状态 ----------
 
@@ -428,12 +443,15 @@ class UpdateService:
             "error": str(cache.get("error") or ""),
             "checking": checking,
             "download": self.download_status(),
+            "schedule": self.install_schedule(),
             "capabilities": {
                 "check": True,
                 # 本阶段提供受控下载（临时文件 + 断点续传 + SHA-256 校验）；
                 # 安装执行器需按角色接入：Windows 本地执行器或 Hub 宿主机代理。
                 "download": True,
                 "install": self._install_capable(),
+                # 自动安装需由执行器接入；未接入时界面只提供手动安装。
+                "schedule": self.schedule_installer is not None and self._install_capable(),
                 "rollback": self._rollback_capable(),
                 "inventory": self._inventory_supported(),
                 # 清理始终先预览；安装/回滚期间由 cleanup_guard 阻止实际删除。
@@ -536,7 +554,7 @@ class UpdateService:
         return latest, checked_at
 
     def save_preferences(self, payload: dict) -> dict:
-        if not isinstance(payload, dict) or set(payload) - {"auto_check", "channel"}:
+        if not isinstance(payload, dict) or set(payload) - {"auto_check", "channel", "auto_download", "keep_versions"}:
             raise ValueError("更新偏好参数无效")
         preferences = dict(self._preferences)
         previous_channel = preferences.get("channel", "stable")
@@ -544,6 +562,16 @@ class UpdateService:
             if not isinstance(payload["auto_check"], bool):
                 raise ValueError("自动检查开关应为布尔值")
             preferences["auto_check"] = payload["auto_check"]
+        if "auto_download" in payload:
+            # 自动下载只下载不安装；安装仍需用户明确触发或安排空闲后更新。
+            if not isinstance(payload["auto_download"], bool):
+                raise ValueError("自动下载开关应为布尔值")
+            preferences["auto_download"] = payload["auto_download"]
+        if "keep_versions" in payload:
+            keep = payload["keep_versions"]
+            if not isinstance(keep, int) or isinstance(keep, bool) or not MIN_KEEP_VERSIONS <= keep <= MAX_KEEP_VERSIONS:
+                raise ValueError(f"保留版本数量应为 {MIN_KEEP_VERSIONS}-{MAX_KEEP_VERSIONS} 的整数")
+            preferences["keep_versions"] = keep
         if "channel" in payload:
             if payload["channel"] not in CHANNELS:
                 raise ValueError("发布渠道无效")
@@ -671,8 +699,10 @@ class UpdateService:
             })
         releases.sort(key=lambda row: Version.parse(row["version"]), reverse=True)
         protected_versions = {current, running} - {""}
+        # 保留数量可配置，但永远不低于下限：当前版本与运行版本始终受保护。
+        keep_total = max(MIN_KEEP_VERSIONS, min(MAX_KEEP_VERSIONS, int(self._preferences.get("keep_versions") or DEFAULT_KEEP_VERSIONS)))
         for row in releases:
-            if row["version"] not in protected_versions and len(protected_versions) < 3:
+            if row["version"] not in protected_versions and len(protected_versions) < keep_total:
                 protected_versions.add(row["version"])
         for row in releases:
             row["current"] = row["version"] == current
@@ -687,7 +717,8 @@ class UpdateService:
             "cleanup_candidates": [row for row in releases if not row["protected"]],
             # 清点保持只读；真正删除必须调用 cleanup() 并提交确认标记，且以重算结果为准。
             "cleanup_supported": True,
-            "cleanup_reason": "清理需显式确认；保护运行中、当前与最近两个可回滚版本",
+            "cleanup_reason": f"清理需显式确认；保护运行中、当前与最近可回滚版本（保留 {keep_total} 个）",
+            "keep_versions": keep_total,
         }
 
     # ---------- 存储治理（只读预览 + 显式确认删除） ----------
@@ -988,6 +1019,139 @@ class UpdateService:
             cancel.set()
         return self.download_status()
 
+    # ---------- 空闲后更新（安排 / 取消） ----------
+
+    def install_schedule(self) -> dict:
+        with self._lock:
+            return dict(self._schedule)
+
+    def resume_schedule(self) -> None:
+        """服务启动并注入执行器后恢复已安排的更新；未注入时不误报已安排。"""
+        with self._lock:
+            armed = bool(self._schedule.get("armed"))
+        if armed and self.schedule_installer is not None:
+            self._arm_schedule_monitor()
+
+    def schedule_install(self) -> dict:
+        """安排下载完成后在安全空闲时自动安装；不强行结束采集。"""
+        if not self._install_capable() or self.schedule_installer is None:
+            raise ValueError("当前环境不支持自动安装，无法安排空闲后更新")
+        with self._lock:
+            state = dict(self._download_state)
+            version = str(state.get("version") or "")
+            if state.get("status") != "completed" or not version:
+                raise ValueError("请先下载更新，再安排空闲后安装")
+        if not self._downloaded_artifact_ready(version):
+            raise ValueError("下载产物不完整或已被清理，请重新下载后再安排")
+        with self._lock:
+            self._schedule = {
+                "armed": True,
+                "version": version,
+                "requested_at": _utc_now(),
+                "note": "等待采集与人工标注结束",
+                "last_result": "",
+            }
+            self._write_json(self.schedule_path, self._schedule)
+            self._append_history("schedule", "ok", "已安排在空闲时安装更新", version)
+            schedule = dict(self._schedule)
+        self._arm_schedule_monitor()
+        return schedule
+
+    def cancel_install_schedule(self) -> dict:
+        with self._lock:
+            cancel = self._schedule_cancel
+            self._schedule_cancel = None
+            self._schedule = {
+                **self._schedule,
+                "armed": False,
+                "note": "已取消安排",
+                "cancelled_at": _utc_now(),
+            }
+            self._write_json(self.schedule_path, self._schedule)
+            self._append_history("schedule", "ok", "已取消空闲后更新安排", str(self._schedule.get("version") or ""))
+            schedule = dict(self._schedule)
+        if cancel is not None:
+            cancel.set()
+        return schedule
+
+    def _downloaded_artifact_ready(self, version: str) -> bool:
+        state = dict(self._download_state)
+        name = str(state.get("asset_name") or "")
+        if state.get("version") != version or Path(name).name != name or not name:
+            return False
+        try:
+            target = self.download_dir / version / name
+            return target.is_file() and not _is_reparse(target)
+        except OSError:
+            return False
+
+    def _arm_schedule_monitor(self) -> None:
+        with self._lock:
+            if self._schedule_thread is not None and self._schedule_thread.is_alive():
+                return
+            cancel = threading.Event()
+            self._schedule_cancel = cancel
+            version = str(self._schedule.get("version") or "")
+            self._schedule_thread = threading.Thread(
+                target=self._schedule_loop,
+                args=(cancel, version),
+                name="update-schedule",
+                daemon=True,
+            )
+            self._schedule_thread.start()
+
+    def _schedule_loop(self, cancel: threading.Event, version: str) -> None:
+        """后台等待安全时机；执行器负责最终的空闲判断与闸门，避免检查后竞态。"""
+        while not cancel.wait(SCHEDULE_POLL_SECONDS):
+            with self._lock:
+                if not self._schedule.get("armed") or str(self._schedule.get("version")) != version:
+                    return
+            installer = self.schedule_installer
+            if installer is None:
+                return
+            try:
+                installer(version)
+            except ValueError as exc:
+                message = str(exc) or "当前不满足安装条件"
+                with self._lock:
+                    # 采集/标注占用属于预期等待，不取消安排；其他错误如实记录并解除安排。
+                    if any(word in message for word in ("空闲", "采集", "标注", "进行中", "正在执行", "暂停")):
+                        self._schedule["note"] = message
+                        self._write_json(self.schedule_path, self._schedule)
+                        continue
+                    self._schedule.update({"armed": False, "last_result": message, "note": message})
+                    self._write_json(self.schedule_path, self._schedule)
+                    self._append_history("schedule", "failed", message, version)
+                return
+            except Exception as exc:  # noqa: BLE001 - 执行器异常不能留下永久“等待中”
+                with self._lock:
+                    self._schedule.update({"armed": False, "last_result": str(exc), "note": "安装启动失败"})
+                    self._write_json(self.schedule_path, self._schedule)
+                    self._append_history("schedule", "failed", str(exc), version)
+                return
+            with self._lock:
+                self._schedule.update({
+                    "armed": False,
+                    "started_at": _utc_now(),
+                    "note": "已开始安装",
+                    "last_result": "started",
+                })
+                self._write_json(self.schedule_path, self._schedule)
+                self._append_history("schedule", "ok", "已在空闲时启动安装", version)
+            return
+
+    def _read_schedule(self) -> dict:
+        data = self._read_json(self.schedule_path, {})
+        if not isinstance(data, dict):
+            return {"armed": False}
+        return {
+            "armed": bool(data.get("armed")) and bool(str(data.get("version") or "")),
+            "version": str(data.get("version") or ""),
+            "requested_at": str(data.get("requested_at") or ""),
+            "note": str(data.get("note") or ""),
+            "last_result": str(data.get("last_result") or ""),
+        }
+
     def _run_download(self, asset: dict, version: str, cancel: threading.Event) -> None:
         name = str(asset.get("name") or "")
         size = int(asset.get("size") or 0)
@@ -1260,6 +1424,7 @@ class UpdateService:
                 self._write_json(self.cache_path, self._cache)
             self._append_history("check", "ok", "使用共享后台分发的版本信息",
                                  str((latest or {}).get("version") or ""))
+            self._maybe_auto_download()
             return
 
         headers = {"Accept": "application/vnd.github+json", "User-Agent": "menu-capture-updater"}
@@ -1278,6 +1443,7 @@ class UpdateService:
                                          "source": "github"})
                     self._cache = latest_cache
                     self._write_json(self.cache_path, latest_cache)
+                self._maybe_auto_download()
                 return
             if status != 200:
                 raise ValueError(f"GitHub 返回 HTTP {status}")
@@ -1317,6 +1483,26 @@ class UpdateService:
             self._write_json(self.cache_path, updated)
             message = f"最新版本 {latest.get('version')}" if latest else "没有可用的正式发布"
             self._append_history("check", "ok", message, str((latest or {}).get("version") or ""))
+        self._maybe_auto_download()
+
+    def _maybe_auto_download(self) -> None:
+        """自动下载只复用受控下载链路；失败、空间不足或并发下载都静默保留给用户手动处理。"""
+        with self._lock:
+            if not self._preferences.get("auto_download") or self._downloading:
+                return
+            latest = self._cache.get("latest")
+            state = dict(self._download_state)
+        if not isinstance(latest, dict):
+            return
+        if not _update_available(latest, self.current_version(), self.platform, self.local_arch):
+            return
+        version = str(latest.get("version") or "")
+        if state.get("status") == "completed" and state.get("version") == version:
+            return
+        try:
+            self.start_download()
+        except ValueError:
+            return
 
     def _select_release(self, releases: list[dict], channel: str) -> dict | None:
         candidates: list[tuple[Version, dict]] = []
@@ -1371,12 +1557,22 @@ class UpdateService:
 
     def _read_preferences(self) -> dict:
         data = self._read_json(self.preferences_path, {})
-        preferences = {"auto_check": True, "channel": "stable"}
+        preferences = {
+            "auto_check": True,
+            "channel": "stable",
+            "auto_download": False,
+            "keep_versions": DEFAULT_KEEP_VERSIONS,
+        }
         if isinstance(data, dict):
             if isinstance(data.get("auto_check"), bool):
                 preferences["auto_check"] = data["auto_check"]
             if data.get("channel") in CHANNELS:
                 preferences["channel"] = data["channel"]
+            if isinstance(data.get("auto_download"), bool):
+                preferences["auto_download"] = data["auto_download"]
+            keep = data.get("keep_versions")
+            if isinstance(keep, int) and not isinstance(keep, bool) and MIN_KEEP_VERSIONS <= keep <= MAX_KEEP_VERSIONS:
+                preferences["keep_versions"] = keep
         return preferences
 
     def _append_history(self, action: str, result: str, message: str, version: str) -> None:

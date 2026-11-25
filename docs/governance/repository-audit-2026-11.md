@@ -80,3 +80,30 @@
 ## 8. 回滚
 
 本分支只涉及文档、忽略规则、跟踪清单与 CI 配置，不涉及运行时数据与安装器逻辑。回滚方式为 `git revert` 相关提交；本地运行数据未受影响。
+
+## 9. 敏感信息复扫（2026-11-25，Issue #57）
+
+前一轮审计只覆盖当时跟踪文件，未留下可复现证据。本轮新增扫描脚本
+`deploy/tools/audit_sensitive.py`，覆盖私钥、云厂商密钥、GitHub/OpenAI/Slack/Google 令牌、
+JWT、微信 ID、手机号与密码赋值，并且只输出位置与类型，不打印命中原文。
+
+扫描结果（本机执行）：
+
+| 范围 | 结果 | 说明 |
+| --- | --- | --- |
+| 当前跟踪文件 | 0 命中 | 测试中的 `do-not-return-this-secret` 等哨兵值按占位符规则排除 |
+| Git 历史新增行 | 命中旧调试日志 | 提交 `f5f8c00` 的 `UFS_Menu_Scraper/macos_runner/data/debug-logs/segments/*.jsonl`，含门店名称与 11 位手机号形态字符串，约 60 处、10+ 个文件 |
+
+判断与处置：
+
+- 这些文件在当前树中已不被跟踪，`.gitignore` 覆盖 `data/`、`debug-logs`、日志与数据库；新增提交不会再次带入。
+- 历史 blob 仍可通过 `git show` 访问。仓库当前为私有，风险受控；若计划公开，必须先经维护者授权做历史重写
+  （`git filter-repo`/BFG）并协调所有克隆重新拉取，同时评估相关账号/凭据轮换。未经授权不重写历史。
+- 当前树未发现硬编码凭据；本机 `config.local.json`、`secrets.local.json`、`deploy/hub/.env` 仍未进入仓库。
+
+复现命令：
+
+```bash
+python3 deploy/tools/audit_sensitive.py            # 当前树
+python3 deploy/tools/audit_sensitive.py --history  # 含历史新增行
+```

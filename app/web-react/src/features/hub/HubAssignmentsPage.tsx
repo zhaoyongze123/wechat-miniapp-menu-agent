@@ -10,7 +10,7 @@ import { AppPagination } from '../../components/AppPagination'
 import { BulkActionBar } from '../../components/BulkActionBar'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
 import { FilterToolbar } from '../../components/FilterToolbar'
-import { PageHeader } from '../../components/PageHeader'
+import { ListPageLayout } from '../../components/ListPageLayout'
 import { SearchInput } from '../../components/SearchInput'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -316,8 +316,8 @@ export function HubAssignmentsPage() {
   ]
 
   return (
-    <section className="space-y-6" aria-labelledby="hub-assignments-heading">
-      <PageHeader
+    <>
+      <ListPageLayout
         title="分配记录"
         headingId="hub-assignments-heading"
         actions={
@@ -346,10 +346,9 @@ export function HubAssignmentsPage() {
             </Button>
           </>
         }
-      />
-
-      {reclaimResult ? (
-        <Alert
+        summary={
+          reclaimResult ? (
+            <Alert
           color={reclaimResult.results.some((item) => item.status === 'failed') ? 'warning' : 'success'}
           variant="soft"
           title={
@@ -393,15 +392,9 @@ export function HubAssignmentsPage() {
             </div>
           }
         />
-      ) : null}
-
-      <section className="rounded-xl border border-subtle bg-surface space-y-4 p-4 md:p-5" aria-labelledby="hub-records-list-heading">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 id="hub-records-list-heading" className="heading-xs">
-              分配明细
-            </h2>
-          </div>
+          ) : null
+        }
+        filters={
           <FilterToolbar
             label="分配记录筛选"
             activeCount={[workerId, phase, q.trim()].filter(Boolean).length}
@@ -435,27 +428,41 @@ export function HubAssignmentsPage() {
               onChange={setQueryText}
             />
           </FilterToolbar>
-        </div>
-
-        <BulkActionBar
-          count={selected.length}
-          hint={`本页可回收 ${reclaimableRecords.length} 条 · 仅当前页可批量选择`}
-          onClear={() => setSelected([])}
-        >
-          <Button
-            color="danger"
-            variant="outline"
-            size="sm"
-            disabled={!pageSelected.length}
-            onClick={() => {
-              setConfirmError('')
-              setConfirm({ ids: pageSelected.map((record) => record.id), label: `${pageSelected.length} 家门店` })
-            }}
+        }
+        bulk={
+          <BulkActionBar
+            count={selected.length}
+            hint={`本页可回收 ${reclaimableRecords.length} 条 · 仅当前页可批量选择`}
+            onClear={() => setSelected([])}
           >
-            回收选中
-          </Button>
-        </BulkActionBar>
-
+            <Button
+              color="danger"
+              variant="outline"
+              size="sm"
+              disabled={!pageSelected.length}
+              onClick={() => {
+                setConfirmError('')
+                setConfirm({ ids: pageSelected.map((record) => record.id), label: `${pageSelected.length} 家门店` })
+              }}
+            >
+              回收选中
+            </Button>
+          </BulkActionBar>
+        }
+        listTitle="分配明细"
+        listTitleId="hub-records-list-heading"
+        pagination={
+          <AppPagination
+            page={recordsQuery.data?.page ?? page}
+            pageCount={recordsQuery.data?.pages ?? 1}
+            total={recordsQuery.data?.total ?? 0}
+            pageSize={size}
+            pageSizeOptions={PAGE_SIZES}
+            onPageChange={(next) => updateQuery({ page: String(next) }, { resetPage: false })}
+            onPageSizeChange={(next) => updateQuery({ size: String(next) })}
+          />
+        }
+      >
         {recordsQuery.isError ? (
           <StatePanel
             variant="error"
@@ -468,59 +475,47 @@ export function HubAssignmentsPage() {
             }
           />
         ) : (
-          <>
-            <AppDataTable
-              caption="门店分配记录"
-              columns={columns}
-              rows={records}
-              minWidthClass="min-w-[900px]"
-              rowKey={(record) => record.id}
-              loading={recordsQuery.isFetching && !recordsQuery.data}
-              onRowActivate={(record) => setDetailId(record.id)}
-              emptyState={
-                <StatePanel
-                  variant="empty"
-                  title={hasFilters ? '没有符合条件的分配记录' : '还没有分配记录'}
-                  description={
-                    hasFilters
-                      ? '调整采集电脑、状态或搜索条件后再试。'
-                      : '在采集工作台把门店分配给采集电脑后，记录会出现在这里。'
-                  }
-                  action={
-                    hasFilters ? (
-                      <Button
-                        color="secondary"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setQueryText('')
-                          updateQuery({ worker: '', phase: '', q: '' })
-                        }}
-                      >
-                        清除筛选
-                      </Button>
-                    ) : (
-                      <Link className="text-sm text-default underline-offset-2 hover:underline" to="/workbench">
-                        去分配门店
-                      </Link>
-                    )
-                  }
-                />
-              }
-            />
-
-            <AppPagination
-              page={recordsQuery.data?.page ?? page}
-              pageCount={recordsQuery.data?.pages ?? 1}
-              total={recordsQuery.data?.total ?? 0}
-              pageSize={size}
-              pageSizeOptions={PAGE_SIZES}
-              onPageChange={(next) => updateQuery({ page: String(next) }, { resetPage: false })}
-              onPageSizeChange={(next) => updateQuery({ size: String(next) })}
-            />
-          </>
+          <AppDataTable
+            caption="门店分配记录"
+            columns={columns}
+            rows={records}
+            minWidthClass="min-w-[900px]"
+            rowKey={(record) => record.id}
+            loading={recordsQuery.isFetching && !recordsQuery.data}
+            onRowActivate={(record) => setDetailId(record.id)}
+            emptyState={
+              <StatePanel
+                variant="empty"
+                title={hasFilters ? '没有符合条件的分配记录' : '还没有分配记录'}
+                description={
+                  hasFilters
+                    ? '调整采集电脑、状态或搜索条件后再试。'
+                    : '在采集工作台把门店分配给采集电脑后，记录会出现在这里。'
+                }
+                action={
+                  hasFilters ? (
+                    <Button
+                      color="secondary"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setQueryText('')
+                        updateQuery({ worker: '', phase: '', q: '' })
+                      }}
+                    >
+                      清除筛选
+                    </Button>
+                  ) : (
+                    <Link className="text-sm text-default underline-offset-2 hover:underline" to="/workbench">
+                      去分配门店
+                    </Link>
+                  )
+                }
+              />
+            }
+          />
         )}
-      </section>
+      </ListPageLayout>
 
       <AssignmentDetailDrawer
         record={detailRecord}
@@ -575,6 +570,6 @@ export function HubAssignmentsPage() {
           if (confirm) mutation.mutate(confirm.ids)
         }}
       />
-    </section>
+    </>
   )
 }

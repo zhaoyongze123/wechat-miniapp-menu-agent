@@ -372,7 +372,11 @@ def test_screenshot_retries_once_after_foreground_race(tmp_path):
                     "window_width": 100, "window_height": 200}
 
     dummy = Dummy()
+    dummy.profile_path = tmp_path / "profile.json"
     dummy._screenshot = types.MethodType(UiPathRunner._screenshot, dummy)
+    # _screenshot 现在会把可疑的同名浮窗截图交给重拍逻辑，这里同样绑定真实实现。
+    dummy._retry_non_main_wechat_frame = types.MethodType(UiPathRunner._retry_non_main_wechat_frame, dummy)
+    dummy._configured_wechat_selector = types.MethodType(UiPathRunner._configured_wechat_selector, dummy)
     reply = dummy._screenshot(tmp_path, "<wnd app='WeChat' />", "retry.png")
     assert reply["width"] == 200
     assert len(dummy.calls) == 2

@@ -956,3 +956,154 @@ def test_cleanup_refuses_symlinked_release_directory(tmp_path):
     with pytest.raises(ValueError):
         UpdateService._remove_release(install, "0.1.0")
     assert (outside / "keep.txt").is_file()
+
+
+# ---------- 自动下载、空闲后更新与保留数量（Issue #32 生命周期） ----------
+
+def test_preferences_default_auto_download_off_and_keep_three(tmp_path):
+    service = UpdateService(tmp_path, role="worker", platform="windows", machine="AMD64")
+
+    preferences = service.status_no_check()["preferences"]
+
+    assert preferences["auto_check"] is True
+    assert preferences["auto_download"] is False
+    assert preferences["keep_versions"] == 3
+
+
+def test_preferences_validate_auto_download_and_keep_versions(tmp_path):
+    service = UpdateService(tmp_path, role="worker", platform="windows", machine="AMD64")
+
+    saved = service.save_preferences({"auto_download": True, "keep_versions": 5})
+
+    assert saved["auto_download"] is True
+    assert saved["keep_versions"] == 5
+    # 重新加载仍保留；非法值不落盘。
+    reloaded = UpdateService(tmp_path, role="worker", platform="windows", machine="AMD64")
+    assert reloaded.status_no_check()["preferences"]["keep_versions"] == 5
+    for payload in ({"keep_versions": 1}, {"keep_versions": 6}, {"keep_versions": True},
+                    {"auto_download": "yes"}, {"unknown": 1}):
+        with pytest.raises(ValueError):
+            service.save_preferences(payload)
+
+
+def test_keep_versions_extends_protected_releases(tmp_path, monkeypatch):
+    install, current_app = _win_install(tmp_path, monkeypatch, ["0.5.0", "0.4.0", "0.3.0", "0.2.0", "0.1.0"])
+    service = UpdateService(tmp_path / "runtime", role="worker", app_root=current_app, machine="AMD64")
+    service.save_preferences({"keep_versions": 4})
+
+    preview = service.storage_preview()["scopes"]["releases"]
+
+    # 保护 0.5/0.4/0.3/0.2，只剩 0.1.0 可清理。
+    assert [item["version"] for item in preview["items"]] == ["0.1.0"]
+    assert service.inventory()["keep_versions"] == 4
+
+
+def test_auto_download_starts_after_check_when_enabled(tmp_path):
+    body = b"auto" * 500
+    payload = download_manifest("0.3.0", body)
+    rel = download_release("v0.3.0", payload, body)
+    opener = FakeOpener(body)
+    service = make_service(tmp_path, [rel], {"v0.3.0": payload}, opener=opener)
+    service.save_preferences({"auto_download": True})
+
+    service.check(force=True)
+
+    state = wait_download(service)
+    assert state["status"] == "completed"
+    assert state["version"] == "0.3.0"
+
+
+def test_auto_download_disabled_keeps_download_idle(tmp_path):
+    body = b"manual" * 500
+    payload = download_manifest("0.3.0", body)
+    rel = download_release("v0.3.0", payload, body)
+    service = make_service(tmp_path, [rel], {"v0.3.0": payload}, opener=FakeOpener(body))
+
+    service.check(force=True)
+
+    assert service.download_status()["status"] == "idle"
+
+
+def _prepared_completed_download(tmp_path: Path) -> tuple[UpdateService, str]:
+    body = b"sched" * 400
+    service = prepared_service(tmp_path, body, FakeOpener(body))
+    service.start_download()
+    state = wait_download(service)
+    assert state["status"] == "completed"
+    return service, state["version"]
+
+
+def test_schedule_install_requires_completed_download(tmp_path):
+    service = prepared_service(tmp_path, b"not-downloaded" * 100, FakeOpener(b"x" * 100))
+    service.install_capability = lambda: True
+    service.schedule_installer = lambda version: {"status": "starting"}
+
+    with pytest.raises(ValueError, match="请先下载更新"):
+        service.schedule_install()
+
+
+def test_schedule_install_arms_and_cancel_disarms(tmp_path):
+    service, version = _prepared_completed_download(tmp_path)
+    service.install_capability = lambda: True
+    service.schedule_installer = lambda target: {"status": "starting"}
+
+    armed = service.schedule_install()
+    assert armed["armed"] is True
+    assert armed["version"] == version
+    assert service.status_no_check()["schedule"]["armed"] is True
+
+    cancelled = service.cancel_install_schedule()
+    assert cancelled["armed"] is False
+    assert service.status_no_check()["schedule"]["armed"] is False
+    assert any(row["action"] == "schedule" for row in service.history())
+
+
+def test_schedule_monitor_retries_while_busy_then_starts(tmp_path, monkeypatch):
+    import menu_capture.updates.updates as updates_module
+
+    service, version = _prepared_completed_download(tmp_path)
+    service.install_capability = lambda: True
+    calls: list[str] = []
+
+    def installer(target: str) -> dict:
+        calls.append(target)
+        if len(calls) < 3:
+            raise ValueError("采集或人工标注正在执行，请先结束或暂停后再安装")
+        return {"status": "starting"}
+
+    service.schedule_installer = installer
+    # 先缩短轮询间隔再启动监控，避免线程已按默认间隔等待。
+    monkeypatch.setattr(updates_module, "SCHEDULE_POLL_SECONDS", 0.01)
+    service.schedule_install()
+
+    thread = service._schedule_thread
+    assert thread is not None
+    thread.join(timeout=5)
+
+    assert calls == [version, version, version]
+    schedule = service.install_schedule()
+    assert schedule["armed"] is False
+    assert schedule["last_result"] == "started"
+
+
+def test_schedule_monitor_disarms_on_permanent_error(tmp_path, monkeypatch):
+    import menu_capture.updates.updates as updates_module
+
+    service, _ = _prepared_completed_download(tmp_path)
+    service.install_capability = lambda: True
+
+    def installer(_: str) -> dict:
+        raise ValueError("更新包与当前发布清单不一致，请重新检查更新并下载")
+
+    service.schedule_installer = installer
+    # 先缩短轮询间隔再启动监控，避免线程已按默认间隔等待。
+    monkeypatch.setattr(updates_module, "SCHEDULE_POLL_SECONDS", 0.01)
+    service.schedule_install()
+
+    thread = service._schedule_thread
+    assert thread is not None
+    thread.join(timeout=5)
+
+    schedule = service.install_schedule()
+    assert schedule["armed"] is False
+    assert "不一致" in schedule["last_result"]

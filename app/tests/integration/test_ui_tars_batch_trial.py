@@ -349,6 +349,20 @@ def test_trial_handoff_failure_keeps_agent_decision(tmp_path, monkeypatch):
     runner._set_stage = lambda *_args, **_kwargs: None
     runner._ensure_file_assistant = lambda *_args, **_kwargs: None
     runner._close_miniapp_windows = lambda *_args, **_kwargs: None
+
+    def send(command):
+        if command["action"] == "discover":
+            return {"windows": []}
+        if command["action"] == "screenshot":
+            # Agent 判定成功后宿主会重拍一张交接帧；截图必须真实可读，才能走到交接校验。
+            path = Path(command["path"])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (200, 400), "white").save(path)
+            return {"path": str(path), "width": 200, "height": 400,
+                    "window_width": 100, "window_height": 200}
+        return {}
+
+    runner._send = send
     monkeypatch.setattr(uipath_runner_module, "trial_model_from_env", lambda *_args: FakeModel())
     # Agent 判定可交接，但没有可用证据图：交接校验失败，原始判断必须保留在报告里。
     monkeypatch.setattr(uipath_runner_module, "run_navigation", lambda *_args, **_kwargs: (

@@ -1,7 +1,9 @@
-"""预览扫码链路验证：只用已保存截图和假 UiPath 传输，不控制真实桌面。"""
+"""预览扫码链路验证：只用合成截图和假 UiPath 传输，不控制真实桌面。"""
 from pathlib import Path
 import shutil
 
+import cv2
+import numpy as np
 import pytest
 
 from menu_capture.core.config import ConfigStore
@@ -10,13 +12,25 @@ from menu_capture.capture.uipath_runner import UiPathRunner, NeedsReview
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FRAME = ROOT / "data/verification/wechat-9c322e80/preview.png"
+TEMPLATE = cv2.imread(str(ROOT / "menu_capture/assets/preview-recognize.png"))
 MAIN = {"app": "WeChat", "title": "微信", "role": "AXWindow", "position": {"x": 10, "y": 10, "width": 900, "height": 850}}
 MINI = {"app": "WeChat", "title": "扫码测试门店", "role": "AXWindow", "position": {"x": 100, "y": 35, "width": 310, "height": 800}}
 
 
+def _write_preview_frame(path: Path) -> None:
+    """用仓库内图标模板合成 825×760 预览截图，替代 data/verification 真实采集帧。"""
+    image = np.full((760, 825, 3), 245, dtype=np.uint8)
+    image[:41] = (210, 210, 210)
+    image[7:7 + TEMPLATE.shape[0], 526:526 + TEMPLATE.shape[1]] = TEMPLATE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    assert cv2.imwrite(str(path), image)
+
+
 def setup_flow(tmp_path, *, opens_at=1, blank=False):
     runner = UiPathRunner(ConfigStore(tmp_path), TaskStore(tmp_path / "tasks.sqlite3"), tmp_path / "profile.json")
+    frame = tmp_path / "preview.png"
+    if not blank:
+        _write_preview_frame(frame)
     commands = []
     observations = 0
     runner._debug_frame_ref = lambda _: None
@@ -35,7 +49,7 @@ def setup_flow(tmp_path, *, opens_at=1, blank=False):
                 from PIL import Image
                 Image.new("RGB", (825, 760), "white").save(path)
             else:
-                shutil.copyfile(FRAME, path)
+                shutil.copyfile(frame, path)
             return {"path": str(path), "width": 825, "height": 760,
                     "window_width": 412.5, "window_height": 380}
         return {"ok": True}
