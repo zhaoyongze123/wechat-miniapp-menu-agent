@@ -1,5 +1,6 @@
 import csv
 import json
+import sys
 import threading
 import time
 import types
@@ -22,6 +23,14 @@ from menu_capture.materials.rejections import RejectionService
 from menu_capture.vision.scene_agent import SceneDecision
 from menu_capture.storage.store import TaskStore
 from menu_capture.capture.uipath_runner import RobotCommandError, UiPathRunner
+
+
+@pytest.fixture(autouse=True)
+def fixed_screen(monkeypatch):
+    """标注会按主显示器统一窗口几何；单测注入固定屏幕，避免无显示环境（CI）走降级分支。"""
+    screen = types.SimpleNamespace(x=0, y=0, width=1920, height=1080, is_primary=True)
+    monkeypatch.setitem(sys.modules, "screeninfo", types.SimpleNamespace(get_monitors=lambda: [screen]))
+    return screen
 
 
 class FakeConfigs:
