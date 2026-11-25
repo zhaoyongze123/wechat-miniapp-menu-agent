@@ -1301,6 +1301,69 @@ def test_update_flow_reports_waiting_reason_while_busy(tmp_path):
     assert "采集" in flow["message"]
 
 
+# ---------- 锁契约回归（Issue #32 OTA ABBA 死锁） ----------
+
+def _lock_is_free(lock) -> bool:
+    acquired = lock.acquire(blocking=False)
+    if acquired:
+        lock.release()
+    return acquired
+
+
+def test_update_flow_reads_install_snapshot_outside_service_lock(tmp_path):
+    """回归：持更新锁读取安装快照会与安装启动交叉持锁，形成 ABBA 死锁。"""
+    service = _flow_service(tmp_path)
+    seen: dict[str, bool] = {}
+
+    def snapshot() -> dict:
+        seen["lock_free"] = _lock_is_free(service._lock)
+        return {"status": "idle"}
+
+    service.install_snapshot_provider = snapshot
+
+    service.update_flow()
+
+    assert seen["lock_free"] is True
+
+
+def test_authorize_and_cancel_read_install_snapshot_outside_service_lock(tmp_path):
+    service = _flow_service(tmp_path)
+    seen: list[bool] = []
+
+    def snapshot() -> dict:
+        seen.append(_lock_is_free(service._lock))
+        return {"status": "idle"}
+
+    service.install_snapshot_provider = snapshot
+    service.schedule_installer = lambda version: {}
+    # 没有可更新版本时授权会在取锁后立即失败，但快照必须已在锁外读过。
+    service._cache = {"checked_at": 0, "latest": None}
+
+    with pytest.raises(ValueError, match="没有可用的新版本"):
+        service.authorize_update({"mode": "immediate"})
+    service.cancel_update()
+
+    assert seen and all(seen)
+
+
+def test_cleanup_does_not_hold_state_lock_while_deleting(tmp_path, monkeypatch):
+    """回归：清理会读取安装执行器状态并遍历删除大目录，不能占用全局状态锁。"""
+    install, current_app = _win_install(tmp_path, monkeypatch, ["0.3.0", "0.2.0", "0.1.9", "0.1.0"])
+    service = UpdateService(tmp_path / "runtime", role="worker", app_root=current_app, machine="AMD64")
+    seen: dict[str, bool] = {}
+
+    def guard() -> tuple[bool, str]:
+        seen["lock_free"] = _lock_is_free(service._lock)
+        return False, ""
+
+    service.cleanup_guard = guard
+
+    result = service.cleanup({"confirm": "cleanup", "scopes": ["releases"]})
+
+    assert seen["lock_free"] is True
+    assert [row["version"] for row in result["deleted"]] == ["0.1.0"]
+
+
 def test_update_flow_surfaces_failure_after_background_disarms(tmp_path):
     service = _flow_service(tmp_path)
     service._schedule = {

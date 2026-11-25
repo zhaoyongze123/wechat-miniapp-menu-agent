@@ -34,6 +34,10 @@ ASSET_KIND = {"windows": "windows_installer"}
 JOB_SCHEMA = 1
 # 兼容没有 pid 的旧任务：超过该时限仍未推进，视为执行器已异常退出。
 STALE_JOB_GRACE_SECONDS = 120
+# 执行器全部内部超时之和约 1680 秒（安装 900 + 健康 240 + 回滚 300 + 回滚后健康 240），
+# 再留 5 分钟余量；超过该窗口仍无任何推进，即使 pid 仍存活（可能被复用）也判定事务失联，
+# 否则更新失败后状态会永久停在 installing，界面再也无法重试。
+MAX_ACTIVE_SECONDS = INSTALL_TIMEOUT_SECONDS + 2 * HEALTH_TIMEOUT_SECONDS + 600
 
 
 def build_job(
@@ -602,6 +606,22 @@ class InstallController:
             self._refresh()
             return str(_read_json(self.journal_path, {}).get("status") or "") in ACTIVE_STATUSES
 
+    def active_nonblocking(self) -> bool:
+        """不能阻塞的调用方（HTTP 中间件）使用：拿不到锁时只读任务文件，绝不等待。
+
+        与 active() 的差别仅是跳过 _refresh 的失联收尾；活动事务在持锁方下一次
+        刷新时收尾，这里只回答“当前是否可能处于活动事务中”。
+        """
+        if self._lock.acquire(blocking=False):
+            try:
+                self._refresh()
+                journal = _read_json(self.journal_path, {})
+            finally:
+                self._lock.release()
+        else:
+            journal = _read_json(self.journal_path, {})
+        return str(journal.get("status") or "") in ACTIVE_STATUSES
+
     def status(self) -> dict:
         with self._lock:
             self._refresh()
@@ -619,9 +639,31 @@ class InstallController:
         with self._lock:
             self._refresh()
 
+    def _active_age_seconds(self, journal: dict) -> float | None:
+        """活动事务最近一次推进距今的秒数；时间戳不可读时回退到任务文件 mtime。"""
+        text = str(journal.get("updated_at") or journal.get("started_at") or "")
+        if text:
+            try:
+                stamp = datetime.fromisoformat(text)
+            except ValueError:
+                stamp = None
+            if stamp is not None:
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+                return max(0.0, (datetime.now(timezone.utc) - stamp).total_seconds())
+        try:
+            return max(0.0, time.time() - self.journal_path.stat().st_mtime)
+        except OSError:
+            return None
+
     def _refresh(self) -> None:
         journal = _read_json(self.journal_path, {})
         if str(journal.get("status") or "") not in ACTIVE_STATUSES:
+            return
+        age = self._active_age_seconds(journal)
+        if age is not None and age > MAX_ACTIVE_SECONDS:
+            # 超过执行器全部内部超时仍无推进：进程可能已卡死或 pid 被复用，必须收尾。
+            self._resolve_stale(journal)
             return
         pid = int(journal.get("pid") or 0)
         if pid:
@@ -667,10 +709,12 @@ class InstallController:
         _write_json(self.journal_path, journal)
 
     def start(self, version: str, confirm: str) -> dict:
-        with self._lock:
-            return self._start_locked(version, confirm)
+        """授权并启动一次安装。
 
-    def _start_locked(self, version: str, confirm: str) -> dict:
+        锁契约：安装锁只在“确认空闲 + 写任务 + 启动进程”这个短窗口内持有。
+        最新版本、下载状态、当前运行版本与整包 SHA-256 都会进入更新服务锁或做长耗时 I/O，
+        必须在锁外完成；持安装锁调用它们会与状态接口（持更新锁读取安装快照）形成 ABBA 死锁。
+        """
         if not self.supported:
             raise ValueError("当前环境未启用自动安装")
         version = str(version or "").strip()
@@ -681,11 +725,12 @@ class InstallController:
         latest = self.latest_provider()
         if not isinstance(latest, dict) or not latest.get("eligible") or str(latest.get("version") or "") != version:
             raise ValueError("目标版本不是当前可更新的最新版本")
-        previous = self.current_version().strip()
+        previous = str(self.current_version() or "").strip()
         if not previous:
             raise ValueError("无法确定当前运行版本，拒绝自动安装")
         if Version.parse(version) <= Version.parse(previous):
             raise ValueError("目标版本必须高于当前版本")
+        # 整包 SHA-256 可能持续数秒到数十秒，绝不能在持锁期间执行。
         artifact = verify_artifact(
             self.download_dir, self.artifact_provider(), expected_version=version,
             platform=self.platform, arch=self.arch,
@@ -703,52 +748,58 @@ class InstallController:
             or int(asset.get("size") or 0) != artifact["size"]
         ):
             raise ValueError("更新包与当前发布清单不一致，请重新检查更新并下载")
-        idle, reason = self.idle_check()
-        if not idle:
-            raise ValueError(reason or "采集或标注仍在执行，暂不能安装")
-        job = build_job(
-            artifact=artifact,
-            install_root=self.install_root,
-            download_dir=self.download_dir,
-            data_dir=self.data_dir,
-            target_version=version,
-            previous_version=previous,
-            port=self.port,
-        )
-        _write_json(self.job_path, job)
-        _write_json(self.journal_path, {
-            "status": "starting",
-            "target_version": version,
-            "previous_version": previous,
-            "started_at": _utc_now(),
-            "finished_at": "",
-            "message": "正在启动独立安装进程",
-            "error": "",
-            "updated_at": _utc_now(),
-        })
-        command = [
-            self.python, "-m", "menu_capture.updates.update_install",
-            "--job", str(self.job_path), "--journal", str(self.journal_path),
-        ]
-        kwargs: dict[str, Any] = {
-            "cwd": str(self.app_dir),
-            "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-            "close_fds": True,
-        }
-        if sys.platform == "win32":
-            # 独立进程不能随旧采集端一起被守护进程终止，否则无法完成健康验证与回滚。
-            kwargs["creationflags"] = 0x00000008 | 0x00000200
-        else:
-            kwargs["start_new_session"] = True
-        process = self.popen(command, **kwargs)
-        pid = int(getattr(process, "pid", 0) or 0)
-        if pid:
-            # 立即登记执行器进程，避免状态刷新把刚启动的任务误判为异常退出。
+        with self._lock:
+            # 锁内重新确认：锁外校验期间可能有第二个请求已完成启动，或采集刚刚开始。
+            self._refresh()
             journal = _read_json(self.journal_path, {})
-            journal["pid"] = pid
-            _write_json(self.journal_path, journal)
+            if str(journal.get("status") or "") in ACTIVE_STATUSES:
+                raise ValueError("已有安装任务正在执行")
+            idle, reason = self.idle_check()
+            if not idle:
+                raise ValueError(reason or "采集或标注仍在执行，暂不能安装")
+            job = build_job(
+                artifact=artifact,
+                install_root=self.install_root,
+                download_dir=self.download_dir,
+                data_dir=self.data_dir,
+                target_version=version,
+                previous_version=previous,
+                port=self.port,
+            )
+            _write_json(self.job_path, job)
+            _write_json(self.journal_path, {
+                "status": "starting",
+                "target_version": version,
+                "previous_version": previous,
+                "started_at": _utc_now(),
+                "finished_at": "",
+                "message": "正在启动独立安装进程",
+                "error": "",
+                "updated_at": _utc_now(),
+            })
+            command = [
+                self.python, "-m", "menu_capture.updates.update_install",
+                "--job", str(self.job_path), "--journal", str(self.journal_path),
+            ]
+            kwargs: dict[str, Any] = {
+                "cwd": str(self.app_dir),
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "close_fds": True,
+            }
+            if sys.platform == "win32":
+                # 独立进程不能随旧采集端一起被守护进程终止，否则无法完成健康验证与回滚。
+                kwargs["creationflags"] = 0x00000008 | 0x00000200
+            else:
+                kwargs["start_new_session"] = True
+            process = self.popen(command, **kwargs)
+            pid = int(getattr(process, "pid", 0) or 0)
+            if pid:
+                # 立即登记执行器进程，避免状态刷新把刚启动的任务误判为异常退出。
+                recorded = _read_json(self.journal_path, {})
+                recorded["pid"] = pid
+                _write_json(self.journal_path, recorded)
         return self.status()
 
 

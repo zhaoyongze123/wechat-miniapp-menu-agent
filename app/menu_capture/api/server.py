@@ -311,7 +311,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         ):
             return JSONResponse({"detail": "请在共享工作台管理素材和审核结果"}, status_code=409)
         # 安装期间禁止发起新的采集/标注，避免切换版本时仍有写入任务。
-        if install.active() and request.method not in {"GET", "HEAD"} and (
+        # 中间件运行在事件循环线程上：这里只能做非阻塞探测，不能让安装锁拖住整个站点。
+        if install.active_nonblocking() and request.method not in {"GET", "HEAD"} and (
             path in {"/api/start", "/api/scan", "/api/resume", "/api/capture/start",
                      "/api/ui-tars/trial", "/api/manual/capture"}
             or path.startswith("/api/annotation/")

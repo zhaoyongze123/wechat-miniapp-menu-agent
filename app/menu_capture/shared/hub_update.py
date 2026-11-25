@@ -98,6 +98,14 @@ class HubInstallProxy:
     def active(self) -> bool:
         return bool(self.status().get("active"))
 
+    def active_nonblocking(self) -> bool:
+        """事件循环等不能阻塞的调用方使用：只读最近一次状态快照，绝不发网络请求。
+
+        与 Windows 执行器保持一致的方法名；真正的采集闸门仍由 gate + active() 闭合，
+        这里只用于中间件提前返回 409，读不到快照时按未安装处理，不能把整个站点拖住。
+        """
+        return bool(self._cache.get("active"))
+
     def recover(self) -> None:
         """执行器自己会在启动/查询时收尾遗留事务，这里只刷新一次快照。"""
         if self._supported:

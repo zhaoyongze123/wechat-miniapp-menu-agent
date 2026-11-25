@@ -4,12 +4,16 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from menu_capture.updates.update_install import (
     JOB_SCHEMA,
+    MAX_ACTIVE_SECONDS,
     InstallController,
     InstallOrchestrator,
     _check_publisher,
@@ -235,7 +239,8 @@ def test_orchestrator_refuses_tampered_artifact_before_running_installer(tmp_pat
 
 def make_controller(tmp_path: Path, *, supported=True, latest_sha: str | None = None,
                     idle=(True, ""), current="0.2.2", journal: dict | None = None,
-                    pid_alive=None):
+                    pid_alive=None, bind: dict | None = None,
+                    latest_provider=None, artifact_provider=None):
     root = make_install_root(tmp_path, current)
     state = make_artifact(tmp_path)
     latest = {
@@ -266,8 +271,8 @@ def make_controller(tmp_path: Path, *, supported=True, latest_sha: str | None = 
         platform="windows",
         arch="x64",
         port=8765,
-        latest_provider=lambda: latest,
-        artifact_provider=lambda: state,
+        latest_provider=latest_provider or (lambda: latest),
+        artifact_provider=artifact_provider or (lambda: state),
         current_version=lambda: current,
         idle_check=lambda: idle,
         supported=supported,
@@ -276,6 +281,9 @@ def make_controller(tmp_path: Path, *, supported=True, latest_sha: str | None = 
         app_dir=tmp_path,
         pid_alive=pid_alive or (lambda pid: True),
     )
+    if bind is not None:
+        # 供回调在内部反查控制器自身状态（例如确认调用时没有持安装锁）。
+        bind["controller"] = controller
     return controller, commands, root
 
 
@@ -502,3 +510,144 @@ def test_controller_keeps_journal_while_executor_alive(tmp_path):
 
     assert controller.status()["status"] == "installing"
     assert controller.active() is True
+
+
+def test_controller_start_reads_providers_outside_install_lock(tmp_path):
+    """锁契约回归：latest/artifact 提供方会进入更新服务锁，
+
+    安装启动调用它们时安装锁必须处于释放状态，否则状态接口持更新锁读取安装快照时
+    会与安装启动形成 ABBA 死锁。
+    """
+    bind: dict = {}
+    seen: dict[str, bool] = {}
+
+    def probe(name: str, value):
+        lock = bind["controller"]._lock
+        acquired = lock.acquire(blocking=False)
+        if acquired:
+            lock.release()
+        seen[name] = acquired
+        return value
+
+    state = make_artifact(tmp_path)
+    latest = {
+        "version": "0.3.0",
+        "eligible": True,
+        "assets": [{
+            "kind": "windows_installer",
+            "name": state["asset_name"],
+            "sha256": state["sha256"],
+            "size": state["total"],
+        }],
+    }
+    controller, commands, _ = make_controller(
+        tmp_path, bind=bind,
+        latest_provider=lambda: probe("latest", latest),
+        artifact_provider=lambda: probe("artifact", state),
+    )
+
+    status = controller.start("0.3.0", "0.3.0")
+
+    assert status["status"] == "starting"
+    assert seen == {"latest": True, "artifact": True}
+    assert len(commands) == 1
+
+
+def test_controller_reclaims_transaction_after_max_active_window(tmp_path):
+    """超时恢复：执行器内部超时全部失效后仍无推进，必须收尾并允许重新发起。"""
+    stale = (datetime.now(timezone.utc)
+             - timedelta(seconds=MAX_ACTIVE_SECONDS + 60)).isoformat(timespec="seconds")
+    controller, commands, _ = make_controller(
+        tmp_path,
+        journal={"status": "installing", "target_version": "0.3.0",
+                 "pid": 4242, "updated_at": stale},
+        pid_alive=lambda pid: True,
+    )
+
+    status = controller.status()
+
+    assert status["status"] == "failed"
+    assert status["active"] is False
+    assert controller.start("0.3.0", "0.3.0")["status"] == "starting"
+    assert len(commands) == 1
+
+
+def test_active_nonblocking_does_not_wait_for_install_lock(tmp_path):
+    """事件循环线程的探测不能被安装锁拖住。"""
+    controller, _, _ = make_controller(tmp_path)
+    held = threading.Event()
+    release = threading.Event()
+
+    def holder() -> None:
+        with controller._lock:
+            held.set()
+            release.wait(2)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    assert held.wait(2)
+    started = time.monotonic()
+    try:
+        assert controller.active_nonblocking() is False
+    finally:
+        elapsed = time.monotonic() - started
+        release.set()
+        thread.join(2)
+    assert elapsed < 1.0
+
+
+def test_concurrent_status_and_install_start_complete_without_deadlock(tmp_path):
+    """并发回归：状态查询（Worker 同步同链路）与安装启动反复交叉。
+
+    修复前两者会分别在更新锁与安装锁上互相等待，线程永久挂起；
+    这里要求所有线程在 5 秒内正常退出。
+    """
+    from menu_capture.updates.updates import UpdateService
+
+    service = UpdateService(
+        tmp_path / "runtime", role="worker", platform="windows", machine="AMD64",
+    )
+    controller, _, _ = make_controller(tmp_path)
+    service.install_capability = lambda: True
+    service.schedule_installer = lambda version: controller.start(version, version)
+    service.install_snapshot_provider = controller.status
+    journal = tmp_path / "data" / "update-install.json"
+
+    stop = threading.Event()
+    errors: list[BaseException] = []
+
+    def status_loop() -> None:
+        try:
+            while not stop.is_set():
+                service.update_flow()
+                try:
+                    service.cancel_update()
+                except ValueError:
+                    pass
+                service.worker_software_status()
+        except BaseException as exc:  # noqa: BLE001 - 线程内异常汇总到主线程断言
+            errors.append(exc)
+
+    def install_loop() -> None:
+        try:
+            while not stop.is_set():
+                try:
+                    controller.start("0.3.0", "0.3.0")
+                except ValueError:
+                    pass
+                journal.unlink(missing_ok=True)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=status_loop), threading.Thread(target=install_loop)]
+    for thread in threads:
+        thread.start()
+    # 先让两个线程充分交叉，再请求退出；真正死锁时线程无法观察到 stop。
+    time.sleep(1.5)
+    stop.set()
+    for thread in threads:
+        thread.join(timeout=3)
+    stuck = [thread for thread in threads if thread.is_alive()]
+
+    assert not stuck, "并发更新状态与安装启动发生死锁"
+    assert not errors
