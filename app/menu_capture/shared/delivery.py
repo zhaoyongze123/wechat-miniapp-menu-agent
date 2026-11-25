@@ -2,17 +2,18 @@
 
 业务状态（``effective_capture_tasks`` + ``store_state``）是唯一事实源，交付目录只是派生视图：
 
-- 同一门店（优先 store_id，其次门店名）跨批次只保留一条最新有效轮次；同名不同 store_id 独立；
+- 门店身份沿用现有模型：批次 ID + 门店 ID；缺少 store_id 时使用同一批次内的门店名，
+  绝不按门店名跨批次合并。目录名只是展示名称，不是业务主键；
 - 每家门店整轮目录替换，绝不合并多轮、追加文件或用历史截图补齐当前缺失；
+- 每张成品必须由当前有效轮次的源文件逐字节复制，并校验两者 SHA-256 一致；
 - 只读取当前有效结果目录中的 ``page-*.png``，从不修改原始结果；
-- 用户删改交付文件不会回写业务状态，周期核对发现差异后重新同步；
-- 首次部署把 ``shared-results/``、旧版 ``output/``、``legacy-sources/`` 中可核实的
-  历史截图统一纳入初始化；无任务可关联且存在多轮歧义的目录只报告、不猜测。
+- 用户删改交付文件不会回写业务状态，周期核对用内容摘要发现差异后重新同步；
+- 历史 ``output/``、``legacy-sources/`` 目录必须先通过权威业务记录验证资格；
+  未关联或无法确认的目录只进入待核验清单，不直接纳入合格目录。
 
 实现取舍：
-- 首次与变更门店按门店增量复制；同门店未变化文件在交付文件系统内用硬链接复用，
-  既不重复占用空间，也不与原始结果共享 inode（原始图与交付图始终隔离）。
-- 替换采用 staging → 旧目录移出 → 新目录就位，失败时恢复旧目录，避免新旧混杂。
+- 替换采用 staging → 旧目录移出 → 新目录就位，替换前再次核对当前有效任务与代次，
+  防止过期同步任务发布旧轮次。
 - 初始化按时间片分批推进，索引逐店落盘，进程中断后可继续。
 """
 from __future__ import annotations
@@ -42,12 +43,14 @@ RESERVED_NAMES = {
     *(f"LPT{index}" for index in range(1, 10)),
 }
 DEFAULT_POLL_SECONDS = 5.0
-# 每轮只抽检一部分已同步门店，避免每几秒扫描几十 GB 文件。
-VERIFY_BATCH = 64
+# 每轮只抽检一小批已同步门店，但会逐文件核对内容摘要，避免只比大小漏掉同尺寸篡改。
+VERIFY_BATCH = 8
 MAX_RETRY_SECONDS = 60
 # 首次初始化可能涉及上千家、几十 GB；按时间片推进，保持状态接口与其他业务可用。
 INIT_TIME_BUDGET_SECONDS = 8.0
 LEGACY_SCAN_DEPTH = 3
+# 待核验清单只回传有限条目，避免状态接口过大；总数仍完整统计。
+PENDING_ITEM_LIMIT = 50
 
 
 def _stamp() -> str:
@@ -85,6 +88,49 @@ def _valid_png(path: Path) -> bool:
             return handle.read(8) == PNG_MAGIC
     except OSError:
         return False
+
+
+class StaleResult(Exception):
+    """同步期间业务轮次已变化：放弃发布，交给下一轮重新同步。"""
+
+
+def _copy_and_hash(source: Path, destination: Path) -> tuple[int, str]:
+    """边复制边计算源文件摘要；返回值同时作为成品摘要，失败时不留下半成品。"""
+    digest = hashlib.sha256()
+    size = 0
+    with source.open("rb") as reader, destination.open("wb") as writer:
+        for chunk in iter(lambda: reader.read(1024 * 1024), b""):
+            writer.write(chunk)
+            digest.update(chunk)
+            size += len(chunk)
+    shutil.copystat(source, destination)
+    return size, digest.hexdigest()
+
+
+def _inventory_view(raw: object) -> dict:
+    """统一初始化核对结构，首次扫描完成前前端也能安全读取。"""
+    data = raw if isinstance(raw, dict) else {}
+    discovered = data.get("discovered") if isinstance(data.get("discovered"), dict) else {}
+    excluded = data.get("excluded") if isinstance(data.get("excluded"), dict) else {}
+    pending = data.get("pending_verification") if isinstance(data.get("pending_verification"), dict) else {}
+    return {
+        "discovered": {
+            key: int(discovered.get(key) or 0)
+            for key in ("shared_results", "output", "legacy_sources", "total")
+        },
+        "included": int(data.get("included") or 0),
+        "legacy_included": int(data.get("legacy_included") or 0),
+        "excluded": {
+            "count": int(excluded.get("count") or 0),
+            "reasons": [dict(item) for item in excluded.get("reasons") or [] if isinstance(item, dict)],
+        },
+        "pending_verification": {
+            "count": int(pending.get("count") or 0),
+            "stores": int(pending.get("stores") or 0),
+            "items": [dict(item) for item in pending.get("items") or [] if isinstance(item, dict)],
+        },
+        "verified": data.get("verified") if isinstance(data.get("verified"), dict) else {},
+    }
 
 
 def safe_directory_name(raw: str) -> str:
@@ -142,6 +188,9 @@ class DeliveryService:
         self._records: list[dict] = []
         self._names_dirty = False
         self._verify_cursor = 0
+        # 发布前复核用的短缓存：避免为每家门店重复查询业务任务，同时保证发现的延迟足够小。
+        self._fresh_chosen: dict[str, dict] = {}
+        self._fresh_at = 0.0
         self._snapshot = {
             "state": "initializing" if self.configured else "unconfigured", "message": "",
             "qualified": 0, "ready": 0, "pending": 0, "failed": 0, "images": 0, "bytes": 0,
@@ -188,7 +237,7 @@ class DeliveryService:
     def status(self) -> dict:
         with self._lock:
             snapshot = dict(self._snapshot)
-            inventory = dict(snapshot.get("inventory") or {})
+            inventory = _inventory_view(snapshot.get("inventory"))
         configured = self.configured
         state, message = snapshot["state"], snapshot["message"]
         root_error = self._root_error() if configured else "尚未配置宿主机交付目录"
@@ -320,6 +369,10 @@ class DeliveryService:
                 continue
             try:
                 self._sync_store(record)
+            except StaleResult:
+                # 业务轮次在同步期间变化：放弃发布，立即唤醒下一轮重新计算。
+                self._mark_stale(key)
+                self._wake.set()
             except Exception as error:  # noqa: BLE001 - 单店失败不影响其他门店
                 self._record_failure(key, str(error) or "同步失败")
             if time.monotonic() > deadline:
@@ -336,10 +389,12 @@ class DeliveryService:
     # ---------- 收集当前有效结果与历史存量 ----------
 
     def _identity(self, task: dict) -> str:
+        """沿用现有门店模型：批次 ID + 门店 ID；无 store_id 时用同批次内门店名。"""
+        batch = str(task.get("batch_id") or "").strip()
         store_id = str(task.get("store_id") or "").strip()
         if store_id:
-            return f"store:{store_id}"
-        return f"name:{str(task.get('source_name') or '').strip()}"
+            return f"batch:{batch}|store:{store_id}"
+        return f"batch:{batch}|name:{str(task.get('source_name') or '').strip()}"
 
     @staticmethod
     def _newer(left: dict, right: dict) -> bool:
@@ -350,7 +405,8 @@ class DeliveryService:
                      str(right.get("updated_at") or ""))
         return left_key >= right_key
 
-    def _collect_records(self) -> tuple[list[dict], dict]:
+    def _collect_tasks(self) -> tuple[dict[str, dict], set[str]]:
+        """按批次+门店选当前有效轮次；返回选中任务与非合格门店名（用于历史目录排除）。"""
         tasks = list(self.task_provider() if self.task_provider is not None else [])
         blocked_names: set[str] = set()
         chosen: dict[str, dict] = {}
@@ -361,6 +417,10 @@ class DeliveryService:
             identity = self._identity(task)
             if identity not in chosen or self._newer(task, chosen[identity]):
                 chosen[identity] = task
+        return chosen, blocked_names
+
+    def _collect_records(self) -> tuple[list[dict], dict]:
+        chosen, blocked_names = self._collect_tasks()
 
         records: list[dict] = []
         task_outputs: set[str] = set()
@@ -381,6 +441,8 @@ class DeliveryService:
             elif source in discovered:
                 discovered[source] += 1
 
+        # 历史目录只做资格核实：权威记录已覆盖的跳过，其余进入待核验清单，绝不凭文件系统直接纳入。
+        pending: list[dict] = []
         for source, base in (("output", self.output_root), ("legacy_sources", self.legacy_root)):
             groups: dict[str, list[tuple[Path, list[Path]]]] = {}
             for path, files in self._scan_legacy(base):
@@ -399,21 +461,29 @@ class DeliveryService:
                     continue
                 groups.setdefault(name, []).append((path, files))
             for name, group in groups.items():
-                if len(group) > 1:
-                    excluded["存在多轮历史目录，无法确认当前有效轮次"] = (
-                        excluded.get("存在多轮历史目录，无法确认当前有效轮次", 0) + 1)
-                    continue
-                folder, files = group[0]
-                records.append(self._legacy_record(folder, files, source))
-                names.add(name)
+                reason = "存在多轮历史目录，无法确认当前有效轮次" if len(group) > 1 else "缺少权威业务记录，待核验"
+                for folder, files in group:
+                    pending.append({
+                        "name": name,
+                        "directory": folder.name,
+                        "source": source,
+                        "images": len(files),
+                        "reason": reason,
+                    })
 
         inventory = {
             "discovered": {**discovered, "total": sum(discovered.values())},
+            # 交付目录只包含通过权威记录验证的当前有效结果，历史目录不再直接纳入。
             "included": len(records),
-            "legacy_included": len([record for record in records if record["legacy"]]),
+            "legacy_included": 0,
             "excluded": {
                 "count": sum(excluded.values()),
                 "reasons": [{"reason": reason, "count": count} for reason, count in excluded.items()],
+            },
+            "pending_verification": {
+                "count": len(pending),
+                "stores": len({item["name"] for item in pending}),
+                "items": pending[:PENDING_ITEM_LIMIT],
             },
         }
         return records, inventory
@@ -456,26 +526,6 @@ class DeliveryService:
             "files": files,
             "ready": not reason,
             "reason": reason,
-        }
-
-    def _legacy_record(self, folder: Path, files: list[Path], source: str) -> dict:
-        name = folder.name
-        identity = f"legacy:{source}:{name}"
-        return {
-            "key": identity,
-            "task_id": "",
-            "batch_id": f"legacy:{source}",
-            "batch_name": "历史存量",
-            "store_name": name,
-            "store_id": "",
-            "directory_name": self._allocate_name(identity, name, ""),
-            "output_dir": str(folder),
-            "task_updated_at": "legacy",
-            "source": source,
-            "legacy": True,
-            "files": files,
-            "ready": True,
-            "reason": "",
         }
 
     def _scan_legacy(self, base: Path) -> list[tuple[Path, list[Path]]]:
@@ -528,6 +578,9 @@ class DeliveryService:
             return True
         if entry.get("status") != "ready":
             return True
+        if not entry.get("digests"):
+            # 旧索引缺少内容摘要，无法证明成品与源一致，自动重建一次。
+            return True
         if entry.get("source_updated_at") != record["task_updated_at"]:
             return True
         return entry.get("output_dir") != record["output_dir"]
@@ -552,30 +605,23 @@ class DeliveryService:
         staging.mkdir(parents=True, exist_ok=True)
         old = target if target.is_dir() else None
         try:
+            # 整轮覆盖必须逐字节复制当前有效轮次的源文件；禁止按大小相同复用旧截图。
+            sizes: dict[str, int] = {}
+            digests: dict[str, str] = {}
             for source in record["files"]:
-                destination = staging / source.name
-                # 交付目录内部用硬链接复用未变化文件；绝不链接原始结果，保持写隔离。
-                reused = False
-                if old is not None:
-                    previous = old / source.name
-                    try:
-                        if previous.is_file() and previous.stat().st_size == source.stat().st_size:
-                            os.link(previous, destination)
-                            reused = True
-                    except OSError:
-                        reused = False
-                if not reused:
-                    shutil.copy2(source, destination)
-            self._assert_staged(staging, record["files"])
+                size, sha = _copy_and_hash(source, staging / source.name)
+                sizes[source.name] = size
+                digests[source.name] = sha
+            self._assert_staged(staging, digests)
+            ordered = sorted(digests)
             digest = hashlib.sha256()
-            sizes: list[int] = []
-            for name in sorted(path.name for path in record["files"]):
-                file = staging / name
-                size = file.stat().st_size
-                sizes.append(size)
-                digest.update(f"{name}\0{size}\0{_file_sha256(file)}\n".encode())
+            for name in ordered:
+                digest.update(f"{name}\0{digests[name]}\n".encode())
+            # 发布前复核当前有效任务与代次，防止同步期间业务状态变化导致过期发布。
+            if not self._still_current(record):
+                raise StaleResult(record["key"])
             recycle = None
-            if target.exists():
+            if old is not None:
                 self.trash_root.mkdir(parents=True, exist_ok=True)
                 recycle = self.trash_root / f"{hashed}-{int(time.time() * 1000)}"
                 os.replace(target, recycle)
@@ -600,9 +646,10 @@ class DeliveryService:
                 "legacy": record["legacy"],
                 "source_updated_at": record["task_updated_at"],
                 "output_dir": record["output_dir"],
-                "files": [path.name for path in record["files"]],
-                "sizes": sizes,
-                "bytes": sum(sizes),
+                "files": ordered,
+                "sizes": [sizes[name] for name in ordered],
+                "digests": digests,
+                "bytes": sum(sizes.values()),
                 "content_digest": digest.hexdigest(),
                 "status": "ready",
                 "error": "",
@@ -614,12 +661,38 @@ class DeliveryService:
             self._snapshot["last_sync_at"] = _stamp()
             _atomic_json(self.index_path, self._index)
 
+    def _still_current(self, record: dict) -> bool:
+        """发布前复核：对应门店仍是同一批次/门店的当前有效轮次，且业务状态仍合格。"""
+        now = time.monotonic()
+        if not self._fresh_at or now - self._fresh_at > 2.0:
+            self._fresh_chosen, _ = self._collect_tasks()
+            self._fresh_at = now
+        current = self._fresh_chosen.get(record["key"])
+        return bool(
+            current
+            and str(current.get("id") or "") == record["task_id"]
+            and str(current.get("output_dir") or "") == record["output_dir"]
+            and str(current.get("updated_at") or "") == record["task_updated_at"]
+        )
+
+    def _mark_stale(self, key: str) -> None:
+        """标记为待重同步而不是失败，下一轮会按最新有效轮次重建。"""
+        with self._lock:
+            entry = self._index["stores"].get(key)
+            if entry:
+                entry["status"] = "pending"
+                entry["error"] = "业务轮次已变化，等待重新同步"
+            self._fresh_at = 0.0
+            _atomic_json(self.index_path, self._index)
+
     @staticmethod
-    def _assert_staged(staging: Path, files: list[Path]) -> None:
-        expected = {path.name: path.stat().st_size for path in files}
-        actual = {path.name: path.stat().st_size for path in staging.iterdir() if path.is_file()}
-        if actual != expected:
+    def _assert_staged(staging: Path, digests: dict[str, str]) -> None:
+        actual = {path.name for path in staging.iterdir() if path.is_file()}
+        if actual != set(digests):
             raise ValueError("暂存文件与当前截图清单不一致")
+        for name, expected in digests.items():
+            if _file_sha256(staging / name) != expected:
+                raise ValueError(f"暂存文件内容校验失败：{name}")
 
     def _remove_entry(self, key: str) -> None:
         with self._lock:
@@ -658,7 +731,7 @@ class DeliveryService:
             _atomic_json(self.index_path, self._index)
 
     def _verify_slice(self, desired: list[dict]) -> None:
-        """每轮抽检一小批已同步目录；手工删改会在有限轮次内被发现并修复。"""
+        """每轮抽检一小批已同步目录，逐文件比对内容摘要：成品被同尺寸篡改或源已变化都能发现。"""
         ready = [record for record in desired if record["ready"]
                  and self._index["stores"].get(record["key"], {}).get("status") == "ready"]
         if not ready:
@@ -670,19 +743,30 @@ class DeliveryService:
             if not entry:
                 continue
             target = self._target(record["directory_name"])
-            expected = {name: size for name, size in zip(entry.get("files", []), entry.get("sizes", []))}
-            actual = {}
+            expected = dict(entry.get("digests") or {})
+            actual: dict[str, str] = {}
             if target.is_dir():
-                actual = {path.name: path.stat().st_size for path in target.iterdir()
+                actual = {path.name: _file_sha256(path) for path in target.iterdir()
                           if path.is_file() and PAGE_PATTERN.match(path.name)}
-            if actual != expected:
-                # 文件侧被删改：移出索引后重新复制，不回写任何业务状态。
-                with self._lock:
-                    self._index["stores"].pop(record["key"], None)
-                try:
-                    self._sync_store(record)
-                except Exception as error:  # noqa: BLE001
-                    self._record_failure(record["key"], str(error) or "修复失败")
+            mismatch = actual != expected
+            if not mismatch:
+                # 同时核对源文件摘要，防止源内容在相同 updated_at 下被替换而未被发现。
+                for source in record["files"]:
+                    if not source.is_file() or _file_sha256(source) != expected.get(source.name):
+                        mismatch = True
+                        break
+            if not mismatch:
+                continue
+            # 文件侧被删改或源已变化：移出索引后按当前有效轮次重新复制，不回写业务状态。
+            with self._lock:
+                self._index["stores"].pop(record["key"], None)
+            try:
+                self._sync_store(record)
+            except StaleResult:
+                self._mark_stale(record["key"])
+                self._wake.set()
+            except Exception as error:  # noqa: BLE001
+                self._record_failure(record["key"], str(error) or "修复失败")
 
     def _finish(self, desired: list[dict], inventory: dict) -> None:
         with self._lock:

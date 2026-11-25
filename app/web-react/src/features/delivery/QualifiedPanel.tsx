@@ -304,8 +304,14 @@ export function QualifiedPanel() {
             <p>
               扫描：共享结果 {countText(inventory.discovered.shared_results)} · 历史输出 {' '}
               {countText(inventory.discovered.output)} · 历史来源 {countText(inventory.discovered.legacy_sources)}
-              ，纳入 {countText(inventory.included)} 家（历史存量 {countText(inventory.legacy_included)} 家）。
+              ，纳入 {countText(inventory.included)} 家（历史目录直接纳入 {countText(inventory.legacy_included)} 家）。
             </p>
+            {inventory.pending_verification.count ? (
+              <p>
+                待核验 {countText(inventory.pending_verification.count)} 个历史目录（
+                {countText(inventory.pending_verification.stores)} 家）：缺少当前权威业务记录，未纳入交付目录。
+              </p>
+            ) : null}
             {inventory.excluded.reasons.map((item) => (
               <p key={item.reason}>排除 {countText(item.count)} 家：{item.reason}</p>
             ))}

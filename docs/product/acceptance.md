@@ -87,7 +87,7 @@
 | U12 模型用量→分组下钻→返回 | 设置/诊断入口 → 模型用量弹窗 | 分组下钻、条件保留、未知/0 区分、不泄露密钥 | 已核对（`ModelUsageDialog`、`tests/unit/test_model_usage.py`、`test_model_usage_integration.py`、`features/model-usage/format.test.ts`） |
 | U13 更新与存储治理 | 设置中心软件更新 | 首屏一次授权：立即更新/空闲后更新→下载→等待采集结束→安装→重启→自动重连；页面关闭后后台继续；安装开始后不可取消；失败可重试并展示真实错误；技术细节收进高级设置。仍区分当前/目标/下载/安装，保留数量 2–5 且保护运行中与回滚目标；清理先预览后确认 | 已核对（`UpdatesPanel`、`features/updates/UpdatesPanel.test.tsx`、`tests/unit/test_updates.py`）；真实浏览器 + 隔离环境 OTA 全流程待解冻后按 Issue #32 验收条件产出，生产冻结未发布 |
 | U14 诊断失败→恢复 | 诊断页只读检查 + 复制降级 | 真实阻塞与下一步；不抢占桌面 | 已核对（`DiagnosticsPage`、`tests/unit/test_environment.py`）；平台差异需真实环境 |
-| U15 合格清单→成品目录 | 质量审核「合格清单」：统计、目录卡片、门店表格、详情预览 | 首次自动初始化历史存量；一店一目录、最新整轮覆盖不残留；不合格/打回/重采失效自动移出，撤销恢复；误删重建不回写业务；容器内禁用打开并复制路径 | 已核对（`features/delivery/QualifiedPanel.tsx`、`docs/delivery/README.md`、`tests/unit/test_delivery.py` 17 项、前端 141 项测试）；宿主机 bind mount 全流程与 18 家历史素材性质需解冻后在隔离环境实测 |
+| U15 合格清单→成品目录 | 质量审核「合格清单」：统计、目录卡片、门店表格、详情预览 | 首次自动初始化历史存量；历史目录须经权威记录核实，未确认进「待核验」；一店一目录、最新整轮覆盖逐字节复制不残留、不按大小复用；不合格/打回/重采失效自动移出，撤销恢复；同步期间业务变化放弃发布；误删与同尺寸篡改按摘要重建不回写业务；容器内禁用打开并复制路径 | 已核对（`features/delivery/QualifiedPanel.tsx`、`docs/delivery/README.md`、`tests/unit/test_delivery.py` 22 项、前端测试）；宿主机 bind mount 全流程与 1,334 家历史存量验收需解冻后在隔离环境实测 |
 
 ### 仍需真实环境或后续补强的项
 
