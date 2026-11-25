@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  ACTIONS, ShapeError, buildHostParams, hostMethods, validateArgs,
+  ACTIONS, OBSERVATION_FIELD, OBSERVATION_MAX_CHARS, ShapeError, buildHostParams,
+  extractObservation, hostMethods, validateArgs,
 } from '../ui_tars/action-spec.mjs';
 
 const CTX = { frameId: 'frame-1', width: 1000, height: 500 };
@@ -128,4 +129,41 @@ test('坐标超出归一化空间时按字段报错', () => {
 test('supportedActions 由 schema 派生，宿主方法不重复', () => {
   const methods = hostMethods();
   assert.deepEqual(methods.sort(), ['click', 'key', 'scroll', 'switch_window', 'type_text', 'wait', 'windows']);
+});
+
+test('附带门店名称被剥离，不进入动作参数或宿主参数', () => {
+  const args = { action: 'left_click', coordinate: [10, 20], reason: '点击分类', target_name: '分类',
+                 [OBSERVATION_FIELD]: '东方饺子王（北礼士路店）' };
+  const { args: cleaned, observation } = extractObservation(args);
+  assert.deepEqual(observation, { name: '东方饺子王（北礼士路店）' });
+  assert.equal(OBSERVATION_FIELD in cleaned, false);
+  validateArgs('left_click', cleaned);
+  assert.deepEqual(buildHostParams('left_click', cleaned, CTX).params,
+                   { frame_id: 'frame-1', x: 10, y: 10 });
+});
+
+test('空字符串是显式撤销；省略或非法值都表示没有新信息', () => {
+  assert.deepEqual(extractObservation({ action: 'noop', [OBSERVATION_FIELD]: '' }).observation,
+                   { revoke: true });
+  assert.equal(extractObservation({ action: 'noop' }).observation, null);
+  assert.equal(extractObservation({ action: 'noop', [OBSERVATION_FIELD]: 42 }).observation, null);
+  assert.equal(extractObservation({ action: 'noop', [OBSERVATION_FIELD]: 'x'.repeat(OBSERVATION_MAX_CHARS + 1) }).observation,
+               null);
+});
+
+test('纯空白/换行/控制字符清洗后为空按无效观察处理，不撤销已确认名称', () => {
+  for (const raw of ['   ', '\n', '\t\r\n', '\u0000\u0007', ' \n\u0008 ']) {
+    assert.equal(extractObservation({ action: 'noop', [OBSERVATION_FIELD]: raw }).observation, null, JSON.stringify(raw));
+  }
+});
+
+test('附带门店名称清洗控制字符与空白并限长，超长不截断', () => {
+  const messy = extractObservation({ action: 'noop', [OBSERVATION_FIELD]: '  老王\n饭店\t(二店)  ' });
+  assert.deepEqual(messy.observation, { name: '老王 饭店 (二店)' });
+  const atLimit = extractObservation({ action: 'noop', [OBSERVATION_FIELD]: '店'.repeat(OBSERVATION_MAX_CHARS) });
+  assert.equal(atLimit.observation.name.length, OBSERVATION_MAX_CHARS);
+  // 非法附带值不能把原本合法的动作判成格式错误。
+  const { args } = extractObservation({ action: 'left_click', coordinate: [1, 2], reason: 'x',
+                                        target_name: 'x', [OBSERVATION_FIELD]: ['bad'] });
+  validateArgs('left_click', args);
 });

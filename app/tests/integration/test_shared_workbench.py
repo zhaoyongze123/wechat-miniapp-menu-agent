@@ -250,18 +250,47 @@ def test_two_computers_continue_multiple_stores_offline_and_retry_after_restart(
         a.close()
 
 
-def result_zip(assignment, status="needs_review", reason="store_closed"):
+def result_zip(assignment, status="needs_review", reason="store_closed", observed=None):
     data = io.BytesIO()
+    manifest = {
+        "task_id": assignment["task_id"], "snapshot_id": assignment["snapshot_id"],
+        "source_hash": assignment["source_hash"], "status": status, "reject_reason": reason,
+        "stage": "manual_rejected", "message": "已判定不合格",
+    }
+    if observed is not None:
+        # 可选副产物：旧采集端不会带这个字段，Hub 必须兼容。
+        manifest["observed_store_name"] = observed
     with ZipFile(data, "w") as archive:
-        archive.writestr("result.json", json.dumps({
-            "task_id": assignment["task_id"], "snapshot_id": assignment["snapshot_id"],
-            "source_hash": assignment["source_hash"], "status": status, "reject_reason": reason,
-            "stage": "manual_rejected", "message": "已判定不合格",
-        }))
+        archive.writestr("result.json", json.dumps(manifest))
         evidence = io.BytesIO()
         Image.new("RGB", (10, 10), "white").save(evidence, format="PNG")
         archive.writestr("evidence.png", evidence.getvalue())
     return data.getvalue()
+
+
+def test_result_syncs_observed_store_name_and_supports_task_query(tmp_path):
+    app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
+    worker = create_app(tmp_path / "worker", role="worker").state.shared_worker
+    with client_for(app, admin=True) as hub:
+        batch(app, tmp_path / "raw", ("门店 A",))
+        task = next(row for row in app.state.materials.effective_capture_tasks()
+                    if row["source_name"] == "门店 A")
+        worker_id = pair(hub, worker, "电脑 A", Link(hub))
+        entry = assign(hub, worker_id, [task["id"]]).json()["assignments"][0]
+
+        reply = hub.put(f"/api/shared/worker/assignments/{entry['id']}/result",
+                        headers=worker._headers | {"Content-Type": "application/zip"},
+                        content=result_zip(entry, observed="门店 A 实际招牌"))
+        assert reply.json()["disposition"] == "accepted"
+
+        # 按原始任务编号可检索到实际观察名称；旧结果（未带字段）默认为空字符串。
+        records = app.state.shared_hub.assignment_records(
+            worker_id=worker_id, phase="", query=task["id"], page=1, size=20)
+        assert records["records"][0]["observed_store_name"] == "门店 A 实际招牌"
+        status = app.state.shared_hub.status()
+        assert next(row for row in status["assignments"]
+                    if row["id"] == entry["id"])["observed_store_name"] == "门店 A 实际招牌"
+    worker.close()
 
 
 def test_rework_keeps_active_store_on_same_material_and_keeps_late_result_history(tmp_path):

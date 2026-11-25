@@ -26,6 +26,21 @@ MAX_ARTIFACT_SIZE = 32 * 1024**2
 MAX_SOURCE_SIZE = 32 * 1024**2
 ACTIVE = ("assigned", "ready")
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+# 与 action-schema.json observation.max_chars 一致；Hub 只做防御性校验，异常值按未提供处理。
+OBSERVED_NAME_MAX_CHARS = 40
+
+
+def _observed_store_name(manifest: dict) -> str:
+    """读取可选副产物：类型错误、超长或空白一律视为未提供，不影响结果接收。"""
+    value = manifest.get("observed_store_name")
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split())
+    if len(text) > OBSERVED_NAME_MAX_CHARS:
+        return ""
+    return text
+
+
 REPORTED_RUN_STATUSES = {"running", "pause_requested", "paused", "resuming", "blocked", "interrupted",
                          "terminating", "terminated", "completed", "failed"}
 
@@ -134,9 +149,15 @@ class SharedHub:
                 CREATE INDEX IF NOT EXISTS shared_worker_assignments ON shared_assignments(worker_id,status);
                 CREATE TABLE IF NOT EXISTS shared_results (
                     assignment_id TEXT PRIMARY KEY, digest TEXT NOT NULL, disposition TEXT NOT NULL,
-                    status TEXT NOT NULL, message TEXT NOT NULL, received_at TEXT NOT NULL
+                    status TEXT NOT NULL, message TEXT NOT NULL, received_at TEXT NOT NULL,
+                    observed_store_name TEXT NOT NULL DEFAULT ''
                 );
             """)
+            # 旧库补列：observed_store_name 是本版新增的可选副产物，历史结果默认为空。
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(shared_results)")}
+            if "observed_store_name" not in columns:
+                db.execute("ALTER TABLE shared_results"
+                           " ADD COLUMN observed_store_name TEXT NOT NULL DEFAULT ''")
 
     def status(self, *, include_history: bool = True) -> dict:
         with self.store.connect() as db:
@@ -169,13 +190,15 @@ class SharedHub:
                     "reported_at": row["reported_at"],
                 } if row else None)
             assignments = [dict(row) for row in db.execute("""
-                SELECT a.*, COALESCE(r.disposition, '') AS disposition, COALESCE(r.message, '') AS result_message
+                SELECT a.*, COALESCE(r.disposition, '') AS disposition, COALESCE(r.message, '') AS result_message,
+                       COALESCE(r.observed_store_name, '') AS observed_store_name
                 FROM shared_assignments a LEFT JOIN shared_results r ON a.id=r.assignment_id
                 WHERE a.status IN ('assigned','ready') ORDER BY a.created_at DESC,a.id
             """)]
             if include_history:
                 assignments.extend(dict(row) for row in db.execute("""
-                    SELECT a.*, COALESCE(r.disposition, '') AS disposition, COALESCE(r.message, '') AS result_message
+                    SELECT a.*, COALESCE(r.disposition, '') AS disposition, COALESCE(r.message, '') AS result_message,
+                           COALESCE(r.observed_store_name, '') AS observed_store_name
                     FROM shared_assignments a LEFT JOIN shared_results r ON a.id=r.assignment_id
                     WHERE a.status IN ('completed','reclaimed') ORDER BY a.created_at DESC,a.id LIMIT 200
                 """))
@@ -397,9 +420,41 @@ class SharedHub:
             page = min(page, pages)
             records = [dict(row) for row in db.execute(
                 "SELECT a.id,a.task_id,a.worker_id,w.name AS worker_name,a.store,a.batch_name,a.revision,a.status,"
-                "COALESCE(r.disposition,'') AS disposition,COALESCE(r.message,'') AS result_message " +
+                "COALESCE(r.disposition,'') AS disposition,COALESCE(r.message,'') AS result_message,"
+                "COALESCE(r.observed_store_name,'') AS observed_store_name " +
                 source + " ORDER BY a.created_at DESC,a.id LIMIT ? OFFSET ?", (*params, size, (page - 1) * size))]
         return {"records": records, "total": total, "page": page, "pages": pages}
+
+    def observed_store_name(self, task_id: str) -> str:
+        """按原始任务编号取当前有效采集结果伴随的门店名称。
+
+        只认当前有效结果的归属：任务自身或其 inherited_from 链上的原任务，且 disposition='accepted'
+        的同步结果。空字符串表示采集端显式撤销，必须原样返回，不能回退到任何历史名称；
+        history（迟到/换版/重采后作废）结果不参与，避免名称与当前结果错配。
+        """
+        task_id = str(task_id or "")
+        if not task_id:
+            return ""
+        with self.store.connect() as db:
+            owners: list[str] = []
+            current = task_id
+            # inherited_from 只在换版复用结果时写入，正常情况下不超过一级；带环保护防脏数据死循环。
+            for _ in range(5):
+                if not current or current in owners:
+                    break
+                owners.append(current)
+                row = db.execute("SELECT inherited_from FROM tasks WHERE id=?", (current,)).fetchone()
+                current = str(row["inherited_from"] or "") if row else ""
+            if not owners:
+                return ""
+            placeholders = ",".join("?" * len(owners))
+            row = db.execute(
+                "SELECT r.observed_store_name FROM shared_results r"
+                " JOIN shared_assignments a ON a.id=r.assignment_id"
+                f" WHERE a.task_id IN ({placeholders}) AND r.disposition='accepted'"
+                " ORDER BY r.received_at DESC, r.assignment_id DESC LIMIT 1",
+                tuple(owners)).fetchone()
+        return str(row["observed_store_name"] or "") if row else ""
 
     def reclaim_many(self, assignment_ids: list[str]) -> dict:
         if (not isinstance(assignment_ids, list) or not 1 <= len(assignment_ids) <= 300
@@ -848,8 +903,10 @@ class SharedHub:
                 elif live["status"] in ACTIVE:
                     db.execute("UPDATE shared_assignments SET status='reclaimed' WHERE id=?", (assignment_id,))
                 disposition = "accepted" if accepted else "history"
-                db.execute("INSERT INTO shared_results VALUES(?,?,?,?,?,?)",
-                           (assignment_id, digest, disposition, state, message, utc_stamp()))
+                db.execute("INSERT INTO shared_results(assignment_id,digest,disposition,status,message,"
+                           "received_at,observed_store_name) VALUES(?,?,?,?,?,?,?)",
+                           (assignment_id, digest, disposition, state, message, utc_stamp(),
+                            _observed_store_name(manifest)))
         return {"disposition": disposition, "status": state}
 
     def _matching_current(self, assigned: dict) -> dict | None:

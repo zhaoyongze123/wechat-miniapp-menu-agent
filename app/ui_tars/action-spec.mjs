@@ -112,6 +112,32 @@ export function hostMethods() {
   return [...methods];
 }
 
+// 门店名称是导航的附带观察，不是动作字段：单独剥离、单独校验，绝不进入宿主参数。
+export const OBSERVATION = SCHEMA.observation || {};
+export const OBSERVATION_FIELD = OBSERVATION.field || 'observed_store_name';
+export const OBSERVATION_MAX_CHARS = Number(OBSERVATION.max_chars) || 40;
+// 原始值超过上限直接忽略：不截断，避免把一个错误的半截店名当成确认结果。
+const OBSERVATION_MAX_RAW_CHARS = OBSERVATION_MAX_CHARS * 3;
+const OBSERVATION_CONTROL_CHARS = /[\u0000-\u001f\u007f]+/g;
+
+// 抽出并校验附带观察字段，返回去掉该字段的动作参数。
+// observation 为 { name }、{ revoke: true }（空字符串=显式撤销）或 null（没有有效的新信息）。
+export function extractObservation(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return { args, observation: null };
+  if (!Object.prototype.hasOwnProperty.call(args, OBSERVATION_FIELD)) return { args, observation: null };
+  const rest = { ...args };
+  const raw = rest[OBSERVATION_FIELD];
+  delete rest[OBSERVATION_FIELD];
+  // 类型错误或超长属于附带信息异常：只忽略它，不因此拒绝原本合法的动作。
+  if (typeof raw !== 'string' || raw.length > OBSERVATION_MAX_RAW_CHARS) return { args: rest, observation: null };
+  // 只有原始值恰为空字符串才是“显式撤销”。纯空格/换行/控制字符清洗后为空属于无效观察，
+  // 不能当成撤销，否则会在模型输出噪声时误清空此前已确认的有效名称。
+  if (raw === '') return { args: rest, observation: { revoke: true } };
+  const name = raw.replace(OBSERVATION_CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim();
+  if (!name || [...name].length > OBSERVATION_MAX_CHARS) return { args: rest, observation: null };
+  return { args: rest, observation: { name } };
+}
+
 // 只用于留痕的文本字段缺失时补占位符：gui-plus 实测会输出 reason:null / target_name:null
 // 或整段漏掉，坐标与动作本身仍然完整。这里不碰 terminate：终态理由属于业务结论，必须由模型给出。
 // 单独开关，便于对比“严格必填”和“补齐留痕字段”两种策略的成功率。

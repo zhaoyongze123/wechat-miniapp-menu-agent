@@ -132,7 +132,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     if worker:
         runner.assignment_source = worker.source_root
         store.bind_assignments = worker.bind_run
-    rejections = RejectionService(store, materials, current_only=role == "hub")
+    # Hub 的名称来自已同步的 shared_results，Worker/单机来自本地观察表；导出与清单复用同一入口。
+    rejections = RejectionService(store, materials, current_only=role == "hub",
+                                  observed_names=hub.observed_store_name if hub else None)
     environment = EnvironmentDiagnostics(configs, runner, project_dir)
     connections = ConnectionManager(environment, control_lock, root)
     annotations = AnnotationSession(configs, store, profiles, RunnerExecutor(runner),
@@ -1079,7 +1081,12 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             if run is None:
                 raise HTTPException(404, "运行记录不存在")
             results = store.capture_run_results([item_id]).get(item_id, [])
-            return capture_history_row(run, results, capture_history_task_index())
+            record = capture_history_row(run, results, capture_history_task_index())
+            # 伴随提取的门店名称按轮次独立保存，补进逐店明细；未观察到的任务为空字符串。
+            observed = store.observed_store_names(item_id)
+            for task in record.get("tasks") or []:
+                task["observed_store_name"] = observed.get(str(task.get("task_id") or ""), "")
+            return record
         if kind == "materials":
             job = materials.job_detail(item_id, events=True)
             # 与列表行保持同一口径：进度来自 job 行本身，不能返回空 counts 让前端显示 0/0。
@@ -1096,6 +1103,14 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                     },
                     "events": job.get("events", [])}
         raise HTTPException(404, "任务类型不存在")
+
+    @app.get("/api/tasks/observed-store-name/{task_id}")
+    def observed_store_name(task_id: str):
+        """按原始任务编号导出最近一次伴随提取的门店名称，含未采集成功的轮次。"""
+        record = store.observed_store_name_latest(task_id)
+        if not record:
+            raise HTTPException(404, "该任务暂无门店名称观察记录")
+        return record
 
     @app.patch("/api/tasks/history/capture/{run_id}")
     def rename_capture_run(run_id: str, payload: dict):

@@ -55,6 +55,36 @@ export async function downloadRejections(query: RejectionQuery): Promise<void> {
   }
 }
 
+/** 导出全量门店名称与采集状态：名称提取独立于采集结果，覆盖成功、待检查与不合格。 */
+export async function downloadStoreNames(): Promise<void> {
+  const response = await fetch(`${BASE}/export-store-names.xlsx`, { cache: 'no-store' })
+  if (!response.ok) {
+    let detail = `导出失败（${response.status}）`
+    try {
+      const body: unknown = await response.json()
+      if (typeof body === 'object' && body !== null) {
+        const value = (body as { detail?: unknown }).detail
+        if (typeof value === 'string' && value) detail = value
+      }
+    } catch {
+      // 非 JSON 错误响应：保留状态码提示。
+    }
+    throw new ApiError(detail, response.status)
+  }
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  try {
+    const link = document.createElement('a')
+    link.href = url
+    link.download = '全量门店名称.xlsx'
+    document.body.append(link)
+    link.click()
+    link.remove()
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
 export function markRejectionReviewed(
   payload: RejectionReviewPayload,
 ): Promise<{ ok: boolean; reviewed_at: string }> {
