@@ -76,19 +76,42 @@ jobs:
           fi
           test -s web/react/.vite/manifest.json
 
-  python-lint:
+  backend-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: 校验正式候选必须具备旧版与 OTA 基线
+        if: inputs.create_release
+        env:
+          PREVIOUS_INSTALLER_TAG: ${{ inputs.previous_installer_tag }}
+          PREVIOUS_INSTALLER_RUN: ${{ inputs.previous_installer_run }}
+          OTA_BASE_VERSION: ${{ inputs.ota_base_version }}
+        run: |
+          # 正式候选必须覆盖真实旧版升级与应用内更新，不允许静默跳过关键验收。
+          if [ -z "$PREVIOUS_INSTALLER_TAG" ] && [ -z "$PREVIOUS_INSTALLER_RUN" ]; then
+            echo "创建发布草稿前必须提供 previous_installer_tag 或 previous_installer_run"
+            exit 1
+          fi
+          if [ -z "$OTA_BASE_VERSION" ]; then
+            echo "创建发布草稿前必须提供 ota_base_version"
+            exit 1
+          fi
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.11.3'
       - name: Ruff 门禁（配置见 pyproject.toml）
         working-directory: app
         run: uvx ruff@0.17.6 check --no-cache .
+      - name: 全量通用测试（unit / integration / contract）
+        working-directory: app
+        run: |
+          uv sync --frozen --python 3.12
+          # 不再手工维护文件名清单：新增测试随目录自动纳入门禁。
+          uv run --frozen pytest -q tests/unit tests/integration tests/contract
 
   windows:
-    needs: react-web
+    # 后端门禁与前端门禁都通过后才开始昂贵的平台构建与验收。
+    needs: [backend-check, react-web]
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -126,23 +149,14 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.11.3'
-      - name: Python 回归与 Windows 原生执行契约
+      - name: Windows 原生执行契约
         shell: pwsh
         working-directory: app
         run: |
           uv sync --frozen --python 3.12
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # 服务端静态资源、共享分配、Windows 兼容、环境诊断、工作台分页与模型用量契约。
-          $suite = @(
-            'tests/integration/test_server.py', 'tests/integration/test_shared_workbench.py',
-            'tests/contract/test_windows_compat.py', 'tests/unit/test_environment.py',
-            'tests/integration/test_workbench_page.py', 'tests/unit/test_model_usage.py',
-            'tests/integration/test_model_usage_integration.py', 'tests/unit/test_materials.py',
-            'tests/unit/test_rejections_batch.py', 'tests/integration/test_review_queue.py',
-            'tests/unit/test_capture_outcomes.py', 'tests/unit/test_updates.py',
-            'tests/unit/test_update_install.py'
-          )
-          uv run --frozen pytest -q --basetemp (Join-Path $env:RUNNER_TEMP 'mc-py') @suite
+          # 通用单测、集成测试与目录级契约已在后端门禁全量执行；这里只补充 Windows 本机行为。
+          uv run --frozen pytest -q --basetemp (Join-Path $env:RUNNER_TEMP 'mc-py') tests/contract
       - name: 构建 Windows x64 安装包
         shell: pwsh
         env:
@@ -205,6 +219,7 @@ jobs:
           retention-days: 14
 
   hub:
+    needs: backend-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -371,7 +386,8 @@ jobs:
 
   draft:
     if: github.event_name == 'workflow_dispatch' && inputs.create_release
-    needs: [windows, hub]
+    # 发布草稿必须依赖全部质量门禁，任一检查失败都不生成发布准备。
+    needs: [backend-check, react-web, windows, hub]
     runs-on: ubuntu-latest
     permissions:
       contents: write
