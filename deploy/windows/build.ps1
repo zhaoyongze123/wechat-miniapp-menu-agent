@@ -3,7 +3,10 @@
 param(
     [ValidatePattern('^\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$')]
     [string]$Version = '0.1.0',
-    [string]$Output = (Join-Path $PSScriptRoot '..\artifacts')
+    [string]$Output = (Join-Path $PSScriptRoot '..\artifacts'),
+    # 可选：把本次构建的 staging bundle 另存一份，供增量补丁生成复用，
+    # 避免为生成补丁再完整构建一次。目录必须不存在，防止旧产物被误当本次构建。
+    [string]$BundleOutput = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -243,6 +246,14 @@ try {
     Invoke-Checked $compiler @("/DAppVersion=$Version", "/DBundleDir=$bundle", "/DLanguageFile=$language", "/O$Output", $setup)
     $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
     Set-Content -LiteralPath "$asset.sha256" -Value "$hash  $([IO.Path]::GetFileName($asset))" -Encoding ASCII
+    if ($BundleOutput) {
+        $bundleOutputPath = [IO.Path]::GetFullPath($BundleOutput)
+        if (Test-Path -LiteralPath $bundleOutputPath) { throw "Bundle output already exists: $bundleOutputPath" }
+        $bundleParent = Split-Path -Parent $bundleOutputPath
+        $null = New-Item -ItemType Directory -Path $bundleParent -Force
+        Copy-Item -LiteralPath $bundle -Destination $bundleOutputPath -Recurse -Force
+        Write-Host "Bundle: $bundleOutputPath"
+    }
     Write-Host "Installer: $asset"
 } finally {
     Remove-Item -LiteralPath $stage -Recurse -Force

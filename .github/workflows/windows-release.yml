@@ -18,7 +18,7 @@ on:
         required: false
         type: string
       ota_base_version:
-        description: 应用内更新验收用的基础版本（须低于 version；会额外构建一次）
+        description: 应用内更新验收用的基础版本（须低于 version；补丁只复用该版本正式发布的历史构建）
         required: false
         type: string
       create_release:
@@ -164,7 +164,9 @@ jobs:
         run: |
           $version = $env:BUILD_VERSION
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
-          ./deploy/windows/build.ps1 -Version $version
+          # 本次构建的 staging bundle 一律保留：目标版本补丁与后续版本的历史基线都只能来自真实构建产物，
+          # 不允许用当前 HEAD 改版本号重新构建来伪造历史。
+          ./deploy/windows/build.ps1 -Version $version -BundleOutput (Join-Path $env:RUNNER_TEMP 'mc-bundle-target')
       - name: 验证安装与进程恢复
         shell: pwsh
         env:
@@ -182,25 +184,131 @@ jobs:
           if (-not $env:PREVIOUS_INSTALLER) {
             Write-Host 'Upgrade/rollback smoke skipped. Dispatch with previous_installer_tag or previous_installer_run to verify the previous release.'
           }
-      - name: 构建应用内更新基础版本
-        if: inputs.ota_base_version != ''
+      - name: 归档本次构建 bundle 作为后续版本的历史基线
+        if: inputs.create_release
         shell: pwsh
+        env:
+          BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
         run: |
-          ./deploy/windows/build.ps1 -Version '${{ inputs.ota_base_version }}' -Output (Join-Path $env:RUNNER_TEMP 'ota-base')
-      - name: 验收应用内更新接口
+          $version = $env:BUILD_VERSION
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
+          $bundle = Join-Path $env:RUNNER_TEMP 'mc-bundle-target'
+          if (-not (Test-Path -LiteralPath (Join-Path $bundle 'release-manifest.json'))) {
+            throw '构建未产出带发布清单的 staging bundle，无法归档为历史基线。'
+          }
+          $zip = Join-Path 'deploy/artifacts' "MenuCapture-$version-bundle.zip"
+          # 用 ZipFile 按目录树原样打包，避免通配符漏掉以点开头的文件。
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [IO.Compression.ZipFile]::CreateFromDirectory(
+            $bundle, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
+          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath "$zip.sha256" -Value "$hash  $(Split-Path -Leaf $zip)" -Encoding ASCII
+      - name: 生成增量补丁（复用正式发布的历史构建，缺失则跳过）
         if: inputs.ota_base_version != ''
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
           OTA_BASE_VERSION: ${{ inputs.ota_base_version }}
         run: |
           $version = $env:BUILD_VERSION
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
+          $base = $env:OTA_BASE_VERSION
+          $meta = Join-Path $env:RUNNER_TEMP 'ota-base-meta'
+          $baseBundle = Join-Path $env:RUNNER_TEMP 'mc-bundle-base'
+          New-Item -ItemType Directory -Path $meta -Force | Out-Null
+          # 历史基线只能来自正式发布的真实构建产物；发布资产缺失时跳过补丁，完整安装包照常发布。
+          gh release download "v$base" --repo $env:GITHUB_REPOSITORY `
+            --pattern "MenuCapture-$base-bundle.zip" `
+            --pattern "MenuCapture-$base-bundle.zip.sha256" `
+            --pattern 'update-manifest.json' `
+            --dir $meta
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::下载 Release v$base 的历史构建失败（gh 退出码 $LASTEXITCODE），将跳过增量补丁。"
+          }
+          $bundleZip = Join-Path $meta "MenuCapture-$base-bundle.zip"
+          $releaseManifest = Join-Path $meta 'update-manifest.json'
+          if (-not (Test-Path -LiteralPath $bundleZip) -or
+              -not (Test-Path -LiteralPath "$bundleZip.sha256") -or
+              -not (Test-Path -LiteralPath $releaseManifest)) {
+            Write-Host "Release v$base 未提供历史构建 bundle、校验值或更新清单，跳过增量补丁；本次仅发布完整安装包。"
+            exit 0
+          }
+          $expected = ((Get-Content -LiteralPath "$bundleZip.sha256" -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash -LiteralPath $bundleZip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($expected -ne $actual) {
+            Write-Host '::warning::历史构建 bundle 校验值与正式发布不一致，跳过增量补丁。'
+            exit 0
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          if (Test-Path -LiteralPath $baseBundle) { Remove-Item -LiteralPath $baseBundle -Recurse -Force }
+          [IO.Compression.ZipFile]::ExtractToDirectory($bundleZip, $baseBundle)
+          $bundleManifestPath = Join-Path $baseBundle 'release-manifest.json'
+          if (-not (Test-Path -LiteralPath $bundleManifestPath)) {
+            Write-Host '历史构建 bundle 缺少发布清单，跳过增量补丁。'
+            exit 0
+          }
+          $bundleManifest = Get-Content -LiteralPath $bundleManifestPath -Raw | ConvertFrom-Json
+          $release = Get-Content -LiteralPath $releaseManifest -Raw | ConvertFrom-Json
+          # 版本与构建提交必须同时与正式发布清单一致，否则该 bundle 不能作为可信基线。
+          if ($bundleManifest.version -ne $base -or $release.version -ne $base) {
+            Write-Host '历史构建 bundle 版本与请求的基线版本不一致，跳过增量补丁。'
+            exit 0
+          }
+          if (-not $bundleManifest.git_commit -or $bundleManifest.git_commit -ne $release.git_commit) {
+            Write-Host '历史构建 bundle 的构建提交与正式发布清单不一致，跳过增量补丁。'
+            exit 0
+          }
+          $patch = Join-Path 'deploy/artifacts' "MenuCapture-$base-to-$version.patch.zip"
+          uv run --frozen --project app python deploy/windows/make_patch.py `
+            --from-dir $baseBundle `
+            --to-dir (Join-Path $env:RUNNER_TEMP 'mc-bundle-target') `
+            --from-version $base `
+            --to-version $version `
+            --output $patch
+          if ($LASTEXITCODE -ne 0) {
+            # 补丁属于可选交付，任何生成问题都不能阻断完整安装包与正式 Release。
+            Write-Host '::warning::增量补丁生成失败，本次仅发布完整安装包。'
+            Remove-Item -LiteralPath $patch -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "$patch.sha256" -Force -ErrorAction SilentlyContinue
+            exit 0
+          }
+          # skipped 表示运行环境/依赖/安装器变化，不产出补丁，继续发布完整安装包。
+          if (Test-Path -LiteralPath $patch) {
+            $hash = (Get-FileHash -LiteralPath $patch -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content -LiteralPath "$patch.sha256" -Value "$hash  $(Split-Path -Leaf $patch)" -Encoding ASCII
+          } else {
+            Write-Host 'Incremental patch skipped; full installer remains the only update asset.'
+          }
+      - name: 验收应用内更新接口（使用正式历史安装包，缺失则跳过）
+        if: inputs.ota_base_version != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
+          OTA_BASE_VERSION: ${{ inputs.ota_base_version }}
+        run: |
+          $version = $env:BUILD_VERSION
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
+          $base = $env:OTA_BASE_VERSION
+          $baseDir = Join-Path $env:RUNNER_TEMP 'ota-base-official'
+          New-Item -ItemType Directory -Path $baseDir -Force | Out-Null
+          # 验收基线同样必须来自正式发布，不能用当前源码重新构建。
+          gh release download "v$base" --repo $env:GITHUB_REPOSITORY `
+            --pattern 'MenuCapture-Setup-*-win-x64.exe' --dir $baseDir
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::下载 Release v$base 正式安装包失败（gh 退出码 $LASTEXITCODE）。"
+          }
+          $baseInstaller = Get-ChildItem $baseDir -Filter 'MenuCapture-Setup-*-win-x64.exe' -File |
+            Select-Object -First 1
+          if (-not $baseInstaller) {
+            Write-Host "Release v$base 未提供正式安装包，跳过应用内更新验收；完整安装包仍照常发布。"
+            exit 0
+          }
           $installer = Get-ChildItem deploy/artifacts -Filter '*.exe' -File | Select-Object -First 1
           # 0.2.2 及更早版本没有安装接口，OTA 只能从包含执行器的基础版本开始。
-          $base = Get-ChildItem (Join-Path $env:RUNNER_TEMP 'ota-base') -Filter '*.exe' -File | Select-Object -First 1
           ./deploy/windows/ota-smoke.ps1 -Installer $installer.FullName -Version $version `
-            -PreviousInstaller $base.FullName -PreviousVersion $env:OTA_BASE_VERSION
+            -PreviousInstaller $baseInstaller.FullName -PreviousVersion $base
       - name: 上传验收日志
         if: failure()
         uses: actions/upload-artifact@v4
@@ -418,10 +526,20 @@ jobs:
           hub_sha=$(cut -d' ' -f1 < "$hub.sha256")
           exe_size=$(stat -c%s "$exe")
           hub_size=$(stat -c%s "$hub")
+          # 增量补丁是可选扩展：缺失或非法时只影响 patches 字段，完整安装包照常发布。
+          patch=$(find release-assets -maxdepth 1 -name 'MenuCapture-*-to-*.patch.zip' -print -quit || true)
+          patch_name=""; patch_size=""; patch_sha=""
+          if [ -n "$patch" ] && [ -s "$patch.sha256" ]; then
+            patch_name=$(basename "$patch")
+            patch_size=$(stat -c%s "$patch")
+            patch_sha=$(cut -d' ' -f1 < "$patch.sha256")
+          fi
           python3 - "$tag" "$channel" "$GITHUB_SHA" "$MIN_SUPPORTED" \
-            "$exe_name" "$exe_size" "$exe_sha" "$hub_name" "$hub_size" "$hub_sha" <<'PY'
+            "$exe_name" "$exe_size" "$exe_sha" "$hub_name" "$hub_size" "$hub_sha" \
+            "$patch_name" "${{ inputs.ota_base_version }}" "$patch_size" "$patch_sha" <<'PY'
           import json, os, sys
-          tag, channel, commit, min_version, exe_name, exe_size, exe_sha, hub_name, hub_size, hub_sha = sys.argv[1:11]
+          (tag, channel, commit, min_version, exe_name, exe_size, exe_sha,
+           hub_name, hub_size, hub_sha, patch_name, patch_from, patch_size, patch_sha) = sys.argv[1:15]
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}"
           manifest = {
               "version": tag.lstrip("v"),
@@ -439,6 +557,18 @@ jobs:
                    "platform": "linux", "arch": "amd64"},
               ],
           }
+          if patch_name and patch_from and patch_size and patch_sha:
+              # 可选顶层扩展；旧客户端忽略该字段，只使用完整安装资产。
+              manifest["patches"] = [{
+                  "from": patch_from,
+                  "name": patch_name,
+                  "size": int(patch_size),
+                  "sha256": patch_sha,
+                  "url": f"{base}/{patch_name}",
+                  "platform": "windows",
+                  "arch": "x64",
+                  "format": "zip-sha256-v1",
+              }]
           with open("release-assets/update-manifest.json", "w", encoding="utf-8") as handle:
               json.dump(manifest, handle, ensure_ascii=False, indent=2)
           PY
