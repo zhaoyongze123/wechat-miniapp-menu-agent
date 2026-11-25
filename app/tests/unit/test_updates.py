@@ -264,6 +264,13 @@ def test_channel_switch_invalidates_cached_release(tmp_path):
     assert service._cache.get("checked_at") == 0
 
 
+def _join_release_size_scan(service: UpdateService, timeout: float = 10.0) -> None:
+    """等待后台体积统计线程结束，把异步补齐变成测试可断言的确定状态。"""
+    thread = service._release_size_thread
+    if thread is not None:
+        thread.join(timeout)
+
+
 def test_inventory_protects_current_and_recent_two(tmp_path, monkeypatch):
     install = tmp_path / "install"
     current_app = install / "releases" / "0.2.0" / "app"
@@ -859,6 +866,56 @@ def _win_install(tmp_path: Path, monkeypatch, versions: list[str]) -> tuple[Path
     return install, current_app
 
 
+def test_inventory_reads_cached_sizes_without_rescanning(tmp_path, monkeypatch):
+    # 版本目录体积遍历在 HDD 上要数分钟：状态接口只读缓存，命中时不得再次扫描。
+    install, current_app = _win_install(tmp_path, monkeypatch, ["0.3.0", "0.3.1"])
+    (install / "releases" / "0.3.0" / "app" / "blob.bin").write_bytes(b"x" * 256)
+    service = UpdateService(tmp_path / "runtime", role="worker", app_root=current_app, machine="AMD64")
+
+    first = service.inventory()
+    assert first["sizes_pending"] is True
+    assert all(row["size_bytes"] is None for row in first["releases"])
+    _join_release_size_scan(service)
+
+    def _fail(_directory):
+        raise AssertionError("命中缓存时不应重新扫描版本目录")
+
+    monkeypatch.setattr("menu_capture.updates.updates._tree_size", _fail)
+    # 新进程实例从持久缓存恢复，说明缓存跨服务重启有效。
+    again = UpdateService(
+        tmp_path / "runtime", role="worker", app_root=current_app, machine="AMD64"
+    ).inventory()
+    assert again["sizes_pending"] is False
+    sizes = {row["version"]: row["size_bytes"] for row in again["releases"]}
+    assert sizes["0.3.0"] >= 256
+    assert sizes["0.3.1"] is not None
+
+
+def test_inventory_scans_new_release_and_keeps_old_cached(tmp_path, monkeypatch):
+    install, current_app = _win_install(tmp_path, monkeypatch, ["0.3.0"])
+    service = UpdateService(tmp_path / "runtime", role="worker", app_root=current_app, machine="AMD64")
+    service.inventory()
+    _join_release_size_scan(service)
+
+    # 安装新版本只新增目录：旧版本继续命中缓存，新目录才进入后台统计。
+    new_root = install / "releases" / "0.3.1"
+    (new_root / "app").mkdir(parents=True)
+    (new_root / "release-manifest.json").write_text(
+        json.dumps({"version": "0.3.1", "built_at": "2026-02-01", "git_commit": "e" * 40}),
+        encoding="utf-8",
+    )
+    (new_root / "app" / "blob.bin").write_bytes(b"y" * 64)
+
+    pending = service.inventory()
+    rows = {row["version"]: row["size_bytes"] for row in pending["releases"]}
+    assert pending["sizes_pending"] is True
+    assert rows["0.3.0"] is not None
+    assert rows["0.3.1"] is None
+    _join_release_size_scan(service)
+    rows = {row["version"]: row["size_bytes"] for row in service.inventory()["releases"]}
+    assert rows["0.3.1"] >= 64
+
+
 def test_cleanup_previews_then_deletes_only_unprotected_releases(tmp_path, monkeypatch):
     # 保护规则优先于数量：运行中/当前 + 最近两个版本，共 3 个。
     install, current_app = _win_install(tmp_path, monkeypatch, ["0.3.0", "0.2.0", "0.1.9", "0.1.0"])
@@ -868,9 +925,17 @@ def test_cleanup_previews_then_deletes_only_unprotected_releases(tmp_path, monke
     preview = service.storage_preview()
     release_scope = preview["scopes"]["releases"]
     assert [item["version"] for item in release_scope["items"]] == ["0.1.0"]
-    assert release_scope["reclaimable_bytes"] >= 128
+    # 预览不阻塞扫描：首次未命中时体积为空并标记 pending，只累加已知值。
+    assert release_scope["sizes_pending"] is True
+    assert release_scope["reclaimable_bytes"] == 0
     # 预览绝不删除文件。
     assert (install / "releases" / "0.1.0").is_dir()
+
+    # 后台统计完成后体积来自缓存，再次预览必须命中且不再遍历目录。
+    _join_release_size_scan(service)
+    release_scope = service.storage_preview()["scopes"]["releases"]
+    assert release_scope["sizes_pending"] is False
+    assert release_scope["reclaimable_bytes"] >= 128
 
     with pytest.raises(ValueError):
         service.cleanup({})

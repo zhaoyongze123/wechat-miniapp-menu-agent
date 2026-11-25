@@ -80,7 +80,8 @@ export interface UpdateInventoryRelease {
   version: string
   built_at: string
   git_commit: string
-  size_bytes: number
+  /** 体积由后台统计；未统计完成时为 null，界面显示“正在统计”。 */
+  size_bytes: number | null
   current: boolean
   running: boolean
   protected: boolean
@@ -96,6 +97,8 @@ export interface UpdateInventory {
   cleanup_candidates: UpdateInventoryRelease[]
   cleanup_supported?: boolean
   cleanup_reason?: string
+  /** 仍有版本目录体积在后台统计；为 true 时页面短间隔刷新直到补齐。 */
+  sizes_pending?: boolean
 }
 
 export interface UpdateCapabilities {
@@ -113,7 +116,8 @@ export interface UpdateCapabilities {
 export interface UpdateCleanupItem {
   version?: string
   name?: string
-  size_bytes: number
+  /** 历史版本体积在后台统计，未完成时为 null。 */
+  size_bytes: number | null
   path?: string
 }
 
@@ -123,6 +127,8 @@ export interface UpdateCleanupScope {
   kept?: string[]
   items: UpdateCleanupItem[]
   reclaimable_bytes: number
+  /** 仍有项的体积在后台统计；此时 reclaimable_bytes 只包含已知值。 */
+  sizes_pending?: boolean
 }
 
 export interface UpdateStoragePreview {

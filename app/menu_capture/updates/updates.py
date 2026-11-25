@@ -51,6 +51,8 @@ CLEANUP_CONFIRM = "cleanup"
 DEFAULT_KEEP_VERSIONS = 3
 MIN_KEEP_VERSIONS = 2
 MAX_KEEP_VERSIONS = 5
+# 版本目录体积缓存格式；版本升级时整体重建，避免旧字段被误用。
+RELEASE_SIZE_CACHE_VERSION = 1
 # “空闲后更新”监控轮询；发现不空闲时只记录原因，不打断采集。
 SCHEDULE_POLL_SECONDS = 5.0
 # 一次授权即可完成的更新方式：immediate 为“立即更新”，idle 为“空闲后更新”。
@@ -376,6 +378,13 @@ class UpdateService:
         self._download_thread: threading.Thread | None = None
         self._download_persisted = 0
         self._download_state = self._load_download_state()
+        # 版本目录体积：每个版本约上万个文件，HDD 上全量遍历要数十秒到数分钟。
+        # /api/updates/status 绝不能同步扫描，改为“读持久缓存 + 后台单飞补齐”，未命中返回 null。
+        self.release_size_cache_path = self.data_dir / "update-release-sizes.json"
+        self._release_size_cache = self._read_release_size_cache()
+        self._release_size_lock = threading.Lock()
+        self._release_size_thread: threading.Thread | None = None
+        self._release_size_scanning = False
         # 由服务端按角色注入真实安装能力：Windows 为本地执行器，Hub 为宿主机代理。
         self.install_capability: Callable[[], bool] | None = None
         self.rollback_capability: Callable[[], bool] | None = None
@@ -680,6 +689,84 @@ class UpdateService:
                 return False
         return self.install_supported()
 
+    # ---------- 版本目录体积缓存（请求路径不扫描） ----------
+
+    def _read_release_size_cache(self) -> dict[str, dict]:
+        data = self._read_json(self.release_size_cache_path, {})
+        if data.get("version") != RELEASE_SIZE_CACHE_VERSION:
+            return {}
+        entries = data.get("entries")
+        if not isinstance(entries, dict):
+            return {}
+        return {str(key): value for key, value in entries.items() if isinstance(value, dict)}
+
+    @staticmethod
+    def _dir_signature(directory: Path) -> str:
+        """以目录 mtime 作为体积失效信号：版本装好后目录内容不再变化。"""
+        try:
+            return str(directory.stat().st_mtime_ns)
+        except OSError:
+            return ""
+
+    def _cached_release_size(self, directory: Path) -> int | None:
+        signature = self._dir_signature(directory)
+        entry = self._release_size_cache.get(str(directory))
+        if not signature or not entry or str(entry.get("mtime_ns") or "") != signature:
+            return None
+        try:
+            return int(entry.get("size"))
+        except (TypeError, ValueError):
+            return None
+
+    def _warm_release_sizes(self, pending: list[Path]) -> None:
+        """后台补齐体积缓存：同一时刻只跑一个扫描线程，避免多次请求叠加遍历。"""
+        if not pending:
+            return
+        with self._release_size_lock:
+            if self._release_size_scanning:
+                return
+            self._release_size_scanning = True
+            thread = threading.Thread(
+                target=self._scan_release_sizes,
+                args=(list(pending),),
+                name="release-size-scan",
+                daemon=True,
+            )
+            self._release_size_thread = thread
+        thread.start()
+
+    def _scan_release_sizes(self, pending: list[Path]) -> None:
+        # 扫描可能持续数分钟；期间状态接口只读旧缓存，不被阻塞。
+        scanned: dict[str, dict] = {}
+        try:
+            for directory in pending:
+                signature = self._dir_signature(directory)
+                if not signature:
+                    continue
+                scanned[str(directory)] = {
+                    "mtime_ns": signature,
+                    "size": _tree_size(directory),
+                    "scanned_at": _utc_now(),
+                }
+            with self._release_size_lock:
+                entries = self._read_release_size_cache()
+                entries.update(scanned)
+                # 已删除的版本目录不再保留缓存，避免缓存随历史版本无限增长。
+                for key in [key for key in entries if not Path(key).is_dir()]:
+                    entries.pop(key)
+                self._release_size_cache = entries
+                try:
+                    self._write_json(
+                        self.release_size_cache_path,
+                        {"version": RELEASE_SIZE_CACHE_VERSION, "entries": entries},
+                    )
+                except OSError:
+                    # 缓存写失败只影响下次重新统计，不能让状态接口失败。
+                    pass
+        finally:
+            with self._release_size_lock:
+                self._release_size_scanning = False
+
     def inventory(self) -> dict:
         install_root = self._install_root()
         if install_root is None:
@@ -696,6 +783,7 @@ class UpdateService:
             current = ""
         running = self.current_version()
         releases: list[dict] = []
+        pending: list[Path] = []
         releases_dir = install_root / "releases"
         for directory in releases_dir.iterdir() if releases_dir.is_dir() else []:
             if not directory.is_dir() or directory.is_symlink():
@@ -707,11 +795,15 @@ class UpdateService:
                 parsed = Version.parse(version)
             except (OSError, ValueError, AttributeError):
                 continue
+            size = self._cached_release_size(directory)
+            if size is None:
+                pending.append(directory)
             releases.append({
                 "version": version,
                 "built_at": str(manifest.get("built_at") or ""),
                 "git_commit": str(manifest.get("git_commit") or ""),
-                "size_bytes": _tree_size(directory),
+                # 未命中缓存时返回 null，由后台线程统计后再出现，避免阻塞状态接口。
+                "size_bytes": size,
             })
         releases.sort(key=lambda row: Version.parse(row["version"]), reverse=True)
         protected_versions = {current, running} - {""}
@@ -724,6 +816,8 @@ class UpdateService:
             row["current"] = row["version"] == current
             row["running"] = row["version"] == running
             row["protected"] = row["version"] in protected_versions
+        if pending:
+            self._warm_release_sizes(pending)
         return {
             "supported": True,
             "install_root": str(install_root),
@@ -731,6 +825,8 @@ class UpdateService:
             "running_version": running,
             "releases": releases,
             "cleanup_candidates": [row for row in releases if not row["protected"]],
+            # 体积仍在后台统计时置 true；界面据此显示“正在统计”并短间隔刷新。
+            "sizes_pending": bool(pending),
             # 清点保持只读；真正删除必须调用 cleanup() 并提交确认标记，且以重算结果为准。
             "cleanup_supported": True,
             "cleanup_reason": f"清理需显式确认；保护运行中、当前与最近可回滚版本（保留 {keep_total} 个）",
@@ -788,7 +884,9 @@ class UpdateService:
             "supported": True,
             "reason": "",
             "items": items,
-            "reclaimable_bytes": sum(item["size_bytes"] for item in items),
+            # 体积由后台统计；未完成时只累加已知值，界面按“统计中”展示。
+            "sizes_pending": any(item["size_bytes"] is None for item in items),
+            "reclaimable_bytes": sum(int(item["size_bytes"] or 0) for item in items),
         }
 
     def _pending_download_version(self) -> str:

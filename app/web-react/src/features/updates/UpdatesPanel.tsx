@@ -153,6 +153,8 @@ export function UpdatesPanel() {
       ]
     : []
   const cleanupItemCount = storageScopes.reduce((total, row) => total + row.scope.items.length, 0)
+  // 历史版本体积由服务端后台统计；未完成时不能把 0 当成真实可释放空间。
+  const storagePending = storageScopes.some((row) => row.scope.sizes_pending)
   const canCleanup = storage != null && !storage.blocked && cleanupItemCount > 0 && !cleanupBusy
 
   const flowActive = flow?.active ?? false
@@ -556,7 +558,7 @@ export function UpdatesPanel() {
                     {release.protected ? <StatusBadge tone="secondary">受保护</StatusBadge> : null}
                   </span>
                   <span className="text-xs text-tertiary">
-                    {formatBytes(release.size_bytes)}
+                    {release.size_bytes === null ? '正在统计…' : formatBytes(release.size_bytes)}
                     {release.built_at ? ` · ${formatTime(release.built_at)}` : ''}
                   </span>
                 </li>
@@ -591,7 +593,7 @@ export function UpdatesPanel() {
             <Alert
               color="warning"
               variant="soft"
-              title={`可释放约 ${formatBytes(storage.reclaimable_bytes)}`}
+              title={storagePending ? '正在统计可释放空间…' : `可释放约 ${formatBytes(storage.reclaimable_bytes)}`}
               description={
                 storage.blocked
                   ? storage.blocked_reason
@@ -606,7 +608,7 @@ export function UpdatesPanel() {
                     <span className="text-2xs text-tertiary">
                       {row.scope.supported
                         ? row.scope.items.length
-                          ? `${row.scope.items.length} 项 · ${formatBytes(row.scope.reclaimable_bytes)}`
+                          ? `${row.scope.items.length} 项 · ${row.scope.sizes_pending ? '正在统计…' : formatBytes(row.scope.reclaimable_bytes)}`
                           : '没有可清理项'
                         : row.scope.reason}
                     </span>
