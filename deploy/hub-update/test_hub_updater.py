@@ -295,7 +295,7 @@ def test_rollback_rejects_unrecorded_version(tmp_path: Path) -> None:
         updater.rollback({"version": "0.2.0", "confirm": "0.2.0"})
 
 
-def test_apply_auto_rollback_allows_additive_schema_migration(tmp_path: Path) -> None:
+def test_apply_auto_rollback_allows_new_table_migration(tmp_path: Path) -> None:
     database = create_hub_db(tmp_path)
     docker = FakeDocker()
     migrated = False
@@ -305,7 +305,6 @@ def test_apply_auto_rollback_allows_additive_schema_migration(tmp_path: Path) ->
         if version == "0.2.4":
             if not migrated:
                 with sqlite3.connect(database) as db:
-                    db.execute("ALTER TABLE tasks ADD COLUMN note TEXT NOT NULL DEFAULT ''")
                     db.execute("CREATE TABLE material_batches (id TEXT PRIMARY KEY)")
                 migrated = True
             return {"ok": False, "version": "", "detail": "candidate health failed"}
@@ -317,6 +316,30 @@ def test_apply_auto_rollback_allows_additive_schema_migration(tmp_path: Path) ->
 
     assert status["status"] == "rolled_back"
     assert docker.switched == ["menu-capture-hub:0.2.4", "menu-capture-hub:0.2.3"]
+
+
+def test_apply_auto_rollback_stops_after_new_column_with_default(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    docker = FakeDocker()
+    migrated = False
+
+    def healthy(version: str) -> dict:
+        nonlocal migrated
+        if version == "0.2.4":
+            if not migrated:
+                with sqlite3.connect(database) as db:
+                    db.execute("ALTER TABLE tasks ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+                migrated = True
+            return {"ok": False, "version": "", "detail": "candidate health failed"}
+        return {"ok": True, "version": version}
+
+    updater = make_updater(tmp_path, docker, healthy=healthy)
+
+    with pytest.raises(UpdateError, match="新增列 tasks.note 的旧版本写入兼容性无法证明"):
+        updater.apply(archive_request(tmp_path))
+
+    assert docker.switched == ["menu-capture-hub:0.2.4"]
+    assert updater.journal()["status"] == "needs_manual_recovery"
 
 
 def test_apply_auto_rollback_stops_after_destructive_schema_change(tmp_path: Path) -> None:
@@ -343,7 +366,25 @@ def test_apply_auto_rollback_stops_after_destructive_schema_change(tmp_path: Pat
     assert updater.journal()["status"] == "needs_manual_recovery"
 
 
-def test_explicit_rollback_allows_additive_schema_migration(tmp_path: Path) -> None:
+def test_explicit_rollback_allows_new_table_migration(tmp_path: Path) -> None:
+    database = create_hub_db(tmp_path)
+    docker = FakeDocker(current="menu-capture-hub:0.2.4")
+    updater = make_updater(tmp_path, docker, healthy=lambda version: {"ok": True, "version": version})
+    schema_before = updater._schema_snapshot()
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE material_batches (id TEXT PRIMARY KEY)")
+    hub_updater._write_json(updater.journal_path, {
+        "status": "completed", "target_version": "0.2.4", "previous_version": "0.2.3", "pid": 0,
+        "schema_before": schema_before,
+    })
+
+    status = updater.rollback({"version": "0.2.3", "confirm": "0.2.3"})
+
+    assert status["status"] == "rolled_back"
+    assert docker.switched == ["menu-capture-hub:0.2.3"]
+
+
+def test_explicit_rollback_blocks_new_column_with_default(tmp_path: Path) -> None:
     database = create_hub_db(tmp_path)
     docker = FakeDocker(current="menu-capture-hub:0.2.4")
     updater = make_updater(tmp_path, docker, healthy=lambda version: {"ok": True, "version": version})
@@ -355,10 +396,11 @@ def test_explicit_rollback_allows_additive_schema_migration(tmp_path: Path) -> N
         "schema_before": schema_before,
     })
 
-    status = updater.rollback({"version": "0.2.3", "confirm": "0.2.3"})
+    with pytest.raises(UpdateError, match="新增列 tasks.note 的旧版本写入兼容性无法证明"):
+        updater.rollback({"version": "0.2.3", "confirm": "0.2.3"})
 
-    assert status["status"] == "rolled_back"
-    assert docker.switched == ["menu-capture-hub:0.2.3"]
+    assert docker.switched == []
+    assert updater.journal()["status"] == "needs_manual_recovery"
 
 
 def test_explicit_rollback_blocks_incompatible_schema_change(tmp_path: Path) -> None:
