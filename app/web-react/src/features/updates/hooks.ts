@@ -30,8 +30,13 @@ export function useUpdateStatus(enabled = true) {
     queryFn: ({ signal }) => fetchUpdateStatus(signal),
     enabled,
     staleTime: 5_000,
-    refetchInterval: (query) =>
-      query.state.data?.flow.active || query.state.data?.download.active ? 2_000 : 5 * 60_000,
+    refetchInterval: (query) => {
+      const data = query.state.data
+      if (data?.flow.active || data?.download.active) return 2_000
+      // 版本目录体积由服务端后台统计，未补齐前短间隔刷新，避免页面一直显示“正在统计”。
+      if (data?.inventory?.sizes_pending) return 5_000
+      return 5 * 60_000
+    },
     retry: 1,
   })
 }
@@ -55,6 +60,9 @@ export function useUpdateCleanup(enabled = true) {
     queryFn: ({ signal }) => fetchUpdateCleanup(signal),
     enabled,
     staleTime: 30_000,
+    // 历史版本体积在后台统计，未完成时短间隔刷新，不阻塞首屏。
+    refetchInterval: (query) =>
+      query.state.data?.scopes.releases?.sizes_pending ? 5_000 : false,
   })
 }
 
