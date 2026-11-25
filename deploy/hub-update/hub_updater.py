@@ -569,7 +569,7 @@ class HubUpdater:
 
     @staticmethod
     def _schema_compatibility(before: dict, after: dict) -> tuple[bool, str]:
-        """旧 Hub 只兼容单调扩展：新增表、带安全默认值的列和索引；其余需人工恢复。"""
+        """自动回滚只接受旧代码可证明忽略的扩展；既有表加列默认不兼容。"""
         if before.get("objects") != after.get("objects"):
             return False, "数据库视图或触发器发生变化，无法证明旧版本兼容"
         old_tables = before.get("tables", {})
@@ -597,9 +597,9 @@ class HubUpdater:
             if old_foreign_keys != current_foreign_keys:
                 return False, f"数据库表 {table_name} 的外键发生变化"
             for column_name in set(new_columns) - set(old_columns):
-                column = new_columns[column_name]
-                if column["hidden"] or column["pk"] or (column["notnull"] and column["default"] is None):
-                    return False, f"新增列 {table_name}.{column_name} 没有可供旧版本写入的兼容默认值"
+                # SQLite 会把新增列追加到表尾。旧版若使用 INSERT ... VALUES(位置参数)，
+                # 即使新列有 DEFAULT，写入值个数也会不匹配；仅凭 PRAGMA 无法证明旧代码安全。
+                return False, f"新增列 {table_name}.{column_name} 的旧版本写入兼容性无法证明"
             for index_name, index in old.get("indexes", {}).items():
                 if current.get("indexes", {}).get(index_name) != index:
                     return False, f"数据库表 {table_name} 的索引 {index_name} 被删除或修改"

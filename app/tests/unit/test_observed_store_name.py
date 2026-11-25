@@ -187,8 +187,12 @@ def _seed_result(hub: SharedHub, assignment_id: str, task_id: str, disposition: 
         )
         db.execute(
             "INSERT INTO shared_results(assignment_id,digest,disposition,status,message,"
-            "received_at,observed_store_name) VALUES(?,?,?,?,?,?,?)",
-            (assignment_id, "d" * 64, disposition, "captured", "", received_at, observed),
+            "received_at) VALUES(?,?,?,?,?,?)",
+            (assignment_id, "d" * 64, disposition, "captured", "", received_at),
+        )
+        db.execute(
+            "INSERT INTO shared_result_names(assignment_id,store_name) VALUES(?,?)",
+            (assignment_id, observed),
         )
 
 
@@ -216,6 +220,38 @@ def test_hub_name_follows_inherited_ownership(tmp_path: Path) -> None:
     # 换版复用的结果落在原任务上，新任务通过 inherited_from 继承同一份有效名称。
     assert hub.observed_store_name("task-new") == "换版继承店名"
     assert hub.observed_store_name("missing") == ""
+
+
+def test_hub_upgrade_keeps_legacy_results_insert_contract(tmp_path: Path) -> None:
+    """新表应保存观察名称，不能改变 v0.3.0 的六列 INSERT VALUES 回滚契约。"""
+    hub = _hub(tmp_path)
+    with hub.store.connect() as db:
+        columns = [row["name"] for row in db.execute("PRAGMA table_info(shared_results)")]
+        assert columns == ["assignment_id", "digest", "disposition", "status", "message", "received_at"]
+        db.execute("INSERT INTO shared_results VALUES(?,?,?,?,?,?)",
+                   ("a" * 32, "d" * 64, "accepted", "captured", "", "2026-01-01T00:00:00+00:00"))
+
+
+def test_hub_migrates_published_v032_names_without_losing_rollback_compatibility(tmp_path: Path) -> None:
+    """已发布 v0.3.2 的七列数据库保留旧列，并迁移名称到独立表。"""
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    with store.connect() as db:
+        db.execute("CREATE TABLE shared_results (assignment_id TEXT PRIMARY KEY,digest TEXT NOT NULL,"
+                   "disposition TEXT NOT NULL,status TEXT NOT NULL,message TEXT NOT NULL,received_at TEXT NOT NULL,"
+                   "observed_store_name TEXT NOT NULL DEFAULT '')")
+        db.execute("INSERT INTO shared_results VALUES(?,?,?,?,?,?,?)",
+                   ("a" * 32, "d" * 64, "accepted", "captured", "", "2026-01-01T00:00:00+00:00", "旧版本门店名"))
+    configs = ConfigStore(tmp_path / "config")
+    configs.root.mkdir(parents=True, exist_ok=True)
+    hub = SharedHub(store, MaterialService(tmp_path / "materials", configs, store))
+    with hub.store.connect() as db:
+        row = db.execute("SELECT store_name FROM shared_result_names WHERE assignment_id=?", ("a" * 32,)).fetchone()
+        columns = [item["name"] for item in db.execute("PRAGMA table_info(shared_results)")]
+        assert row["store_name"] == "旧版本门店名"
+        assert "observed_store_name" in columns
+        # v0.3.2 的七列写入仍可回滚运行，且新版本通过独立表继续读取。
+        db.execute("INSERT INTO shared_results VALUES(?,?,?,?,?,?,?)",
+                   ("b" * 32, "e" * 64, "accepted", "captured", "", "2026-01-02T00:00:00+00:00", "新版本门店名"))
 
 
 def test_store_names_export_covers_all_states_and_current_round(tmp_path: Path) -> None:
