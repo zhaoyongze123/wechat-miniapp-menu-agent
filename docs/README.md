@@ -9,7 +9,7 @@
 | 项目结构 | [架构与项目地图](architecture/project-map.md) | 目录职责、模块划分、数据流与角色边界 |
 | API 与角色契约 | [接口契约](architecture/api-contracts.md) / [角色矩阵](architecture/role-matrix.md) | HTTP 契约、Hub/Worker/远程控制权限 |
 | GUI Agent 边界 | [GUI Agent 开发规范](architecture/gui-agent-development.md) | 决策权、工具边界与验收口径 |
-| 工程规范 | [工程规范](governance/engineering-standards.md) | 分层职责、测试矩阵、静态检查与 CI 门禁 |
+| 工程规范 | [工程规范](governance/engineering-standards.md) | 分层、测试、版本管理、双 Agent 协作、发布与备份、CI 门禁 |
 | 前端设计体系 | [设计体系](design-system/README.md) | L1–L4 四层模型、上游索引、组件契约与验收矩阵 |
 | 前端设计规格 | [界面设计规格](design-system/ui-design-spec.md) | 现有视觉与交互标准 |
 | 产品需求 | [产品规格](product/README.md) | 逐页面产品设计、功能保真与用户情境验收 |
