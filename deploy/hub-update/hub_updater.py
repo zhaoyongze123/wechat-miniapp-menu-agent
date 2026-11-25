@@ -37,13 +37,17 @@ from typing import Any
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ARCHIVE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
+# OCI 分层交付：固定 GHCR 仓库、固定 linux/amd64 平台与不可变 digest。
+REGISTRY_RE = re.compile(r"^ghcr\.io/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+OCI_PLATFORM = "linux/amd64"
 ALLOWED_HOSTS = {
     "github.com",
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
 }
 ASSET_PATH_RE = re.compile(r"/releases/download/[^/]+/[^/]+$")
-ACTIVE_STATUSES = {"downloading", "loading", "switching", "verifying", "rolling_back"}
+ACTIVE_STATUSES = {"pulling", "downloading", "loading", "switching", "verifying", "rolling_back"}
 # 单个镜像归档上限 2 GiB；超过说明不是本项目发布物。
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 # 下载/加载额外需要的磁盘余量，避免写到一半把宿主机写满。
@@ -213,6 +217,8 @@ class Config:
         self.service = str(env.get("HUB_UPDATE_SERVICE") or "hub")
         self.container = str(env.get("HUB_UPDATE_CONTAINER") or "")
         self.image_repo = str(env.get("HUB_UPDATE_IMAGE_REPO") or "menu-capture-hub")
+        # 留空即关闭 OCI 分层拉取；配置后只允许该固定仓库，不接受请求方任意指定镜像。
+        self.registry_repo = str(env.get("HUB_UPDATE_REGISTRY_REPO") or "").strip().lower()
         self.data_volume = str(env.get("HUB_UPDATE_DATA_VOLUME") or "")
         self.state_dir = Path(env.get("HUB_UPDATE_STATE_DIR") or "/var/lib/menu-capture-updater")
         self.archive_dir = Path(env.get("HUB_UPDATE_ARCHIVE_DIR") or str(self.state_dir / "archives"))
@@ -231,6 +237,10 @@ class Config:
     def image_ref(self, version: str) -> str:
         return f"{self.image_repo}:{version}"
 
+    @property
+    def oci_enabled(self) -> bool:
+        return bool(self.registry_repo)
+
     def validate(self) -> None:
         if not self.token or len(self.token) < 16:
             raise UpdateError("HUB_UPDATE_TOKEN 必须配置且不少于 16 个字符")
@@ -238,6 +248,8 @@ class Config:
             raise UpdateError(f"找不到 compose 文件：{self.compose_file}")
         if ":" in self.image_repo.rsplit("/", 1)[-1]:
             raise UpdateError("HUB_UPDATE_IMAGE_REPO 不能自带版本标签")
+        if self.registry_repo and not REGISTRY_RE.fullmatch(self.registry_repo):
+            raise UpdateError("HUB_UPDATE_REGISTRY_REPO 必须是 ghcr.io/<org>/<repo> 形式")
 
 
 def _client_allowed(ip: str, networks: list[str]) -> bool:
@@ -261,7 +273,7 @@ def validate_payload(payload: Any, config: Config) -> dict:
     """把外部请求收敛成唯一契约；任何不认识的字段直接拒绝。"""
     if not isinstance(payload, dict):
         raise ValidationError("请求体必须是 JSON 对象")
-    allowed = {"version", "confirm", "sha256", "size", "url", "archive"}
+    allowed = {"version", "confirm", "sha256", "size", "url", "archive", "image", "digest"}
     extra = set(payload) - allowed
     if extra:
         raise ValidationError(f"不支持字段：{', '.join(sorted(extra))}")
@@ -279,6 +291,18 @@ def validate_payload(payload: Any, config: Config) -> dict:
         raise ValidationError("size 必须是字节数") from None
     if size <= 0 or size > MAX_ARCHIVE_BYTES:
         raise ValidationError("归档大小超出允许范围")
+    image = str(payload.get("image") or "").strip().lower()
+    digest = str(payload.get("digest") or "").strip().lower()
+    # image/digest 是可选的 OCI 加速通道；url/archive 仍然是必需的归档回退依据。
+    if bool(image) != bool(digest):
+        raise ValidationError("image 与 digest 必须同时提供")
+    if image:
+        if not config.oci_enabled:
+            raise ValidationError("宿主执行器未启用镜像分层拉取")
+        if not REGISTRY_RE.fullmatch(image) or image != config.registry_repo:
+            raise ValidationError("镜像仓库不在允许清单内")
+        if not DIGEST_RE.fullmatch(digest):
+            raise ValidationError("digest 必须是 sha256:<64 位小写十六进制>")
     url = str(payload.get("url") or "").strip()
     archive = str(payload.get("archive") or "").strip()
     if bool(url) == bool(archive):
@@ -296,7 +320,10 @@ def validate_payload(payload: Any, config: Config) -> dict:
         candidate = (config.archive_dir / archive).resolve()
         if candidate.parent != config.archive_dir.resolve():
             raise ValidationError("archive 越出归档目录")
-    return {"version": version, "sha256": sha256, "size": size, "url": url, "archive": archive}
+    return {
+        "version": version, "sha256": sha256, "size": size, "url": url, "archive": archive,
+        "image": image, "digest": digest,
+    }
 
 
 def validate_rollback(payload: Any) -> str:
@@ -616,6 +643,8 @@ class HubUpdater:
             "active": status in ACTIVE_STATUSES,
             "running": alive,
             "current_image": self._current_image_ref(),
+            # 最小能力声明：Hub 只在 oci=true 时才发送 image/digest，旧执行器保持归档路径。
+            "capabilities": {"oci": self.config.oci_enabled},
             **journal,
             "status": status,
         }
@@ -680,19 +709,37 @@ class HubUpdater:
             previous = self._current_image_ref().rsplit(":", 1)[-1]
             if previous and VERSION_RE.match(previous) and self._compare(version, previous) <= 0:
                 raise UpdateError("目标版本必须高于当前运行版本，禁止降级")
-            if not self._disk_ok(request):
+            # OCI 模式不下载完整归档，因此不能先用归档体积挡住更新；
+            # 只有真正回退到归档时才检查磁盘余量。
+            if not request["image"] and not self._disk_ok(request):
                 raise UpdateError("磁盘余量不足，已拒绝开始更新")
             schema_before = self._schema_snapshot()
-            self._write("downloading", f"正在准备 {version} 镜像归档", target_version=version,
+            self._write("pulling" if request["image"] else "downloading",
+                        f"正在准备 {version} 更新", target_version=version,
                         previous_version=previous, schema_before=schema_before,
                         started_at=_utc_now(), finished_at="", error="")
-            archive = self._prepare_archive(request)
-            self._write("loading", f"正在加载镜像 {self.config.image_ref(version)}")
-            ok, output = self._load_image(archive, version)
-            if not ok:
-                self._fail(f"镜像加载失败：{output}", version)
-                raise UpdateError(f"镜像加载失败：{output}")
-            self._write("switching", f"正在切换到 {version}")
+            pulled = False
+            if request["image"]:
+                self._write("pulling", f"正在分层拉取 {request['image']}@{request['digest']}")
+                pulled, output = self._pull_image(request["image"], request["digest"], version)
+                if not pulled:
+                    # 拉取失败不改变事务身份：审计后在同一事务内改用完整归档。
+                    self._audit("pull", "failed", output, version)
+                    if not self._disk_ok(request):
+                        self._fail(f"镜像分层拉取失败且磁盘余量不足：{output}", version)
+                        raise UpdateError(f"镜像分层拉取失败且磁盘余量不足：{output}")
+                    self._write("downloading", "镜像分层拉取失败，改用完整归档", error="")
+            if not pulled:
+                if not request["image"]:
+                    self._write("downloading", f"正在准备 {version} 镜像归档")
+                archive = self._prepare_archive(request)
+                self._write("loading", f"正在加载镜像 {self.config.image_ref(version)}")
+                ok, output = self._load_image(archive, version)
+                if not ok:
+                    self._fail(f"镜像加载失败：{output}", version)
+                    raise UpdateError(f"镜像加载失败：{output}")
+            self._write("switching", f"正在切换到 {version}",
+                        delivery="oci" if pulled else "archive")
             switched, output = self._switch(version)
             if not switched:
                 return self._rollback_after_failure(previous, f"compose 切换失败：{output}", version)
@@ -773,6 +820,44 @@ class HubUpdater:
         if expected not in loaded:
             return False, f"归档未包含 {expected}（实际：{', '.join(loaded) or '未识别'}）"
         return True, output
+
+    def _pull_image(self, image: str, digest: str, version: str) -> tuple[bool, str]:
+        """按不可变摘要拉取固定仓库镜像，核对摘要/平台后再打成 compose 使用的本地标签。
+
+        只接受 validate_payload 已校验过的仓库与 digest；任何一步不一致都返回失败，
+        由调用方在同一事务内回退到完整归档，绝不使用来源不明的镜像。
+        """
+        ref = f"{image}@{digest}"
+        code, output = self.run(
+            ["docker", "pull", "--platform", OCI_PLATFORM, ref], DOCKER_TIMEOUT_SECONDS
+        )
+        if code != 0:
+            return False, f"拉取失败：{output[:600]}"
+        code, output = self.run(
+            ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", ref], 60
+        )
+        if code != 0:
+            return False, f"无法读取镜像摘要：{output[:400]}"
+        try:
+            digests = json.loads(output.strip() or "[]")
+        except ValueError:
+            digests = []
+        if not isinstance(digests, list) or ref not in digests:
+            actual = ", ".join(str(item) for item in digests) if isinstance(digests, list) else "无法解析"
+            return False, f"拉取到的镜像摘要与清单不一致：{actual or '未知'}"
+        code, output = self.run(
+            ["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", ref], 60
+        )
+        if code != 0 or output.strip() != OCI_PLATFORM:
+            return False, f"镜像平台不是 {OCI_PLATFORM}：{output.strip() or '未知'}"
+        target = self.config.image_ref(version)
+        code, output = self.run(["docker", "tag", ref, target], 60)
+        if code != 0:
+            return False, f"镜像打标签失败：{output[:400]}"
+        code, output = self.run(["docker", "image", "inspect", target], 30)
+        if code != 0:
+            return False, f"打标签后找不到 {target}"
+        return True, ""
 
     def _rollback_after_failure(self, previous: str, message: str, version: str) -> dict:
         if not previous or not VERSION_RE.match(previous):

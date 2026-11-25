@@ -329,6 +329,10 @@ jobs:
   hub:
     needs: backend-check
     runs-on: ubuntu-latest
+    # 仅向 GHCR 推送本仓库镜像；不授予无关写权限。
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - name: 生成隔离环境口令
@@ -474,6 +478,24 @@ jobs:
             -d "$rollback" http://127.0.0.1:18767/rollback)
           test "$code" = 401
           "${compose[@]}" down -v
+      - name: 推送共享后台镜像到 GHCR 并记录摘要
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          # OCI 分层交付：把本次已验收镜像按 commit 版本推到固定 GHCR 仓库，
+          # 记录不可变 digest 供发布清单使用；镜像保持私有，不在此步骤改可见性。
+          registry="ghcr.io"
+          repo="${GITHUB_REPOSITORY,,}"
+          remote="$registry/$repo:$MENU_CAPTURE_VERSION"
+          echo "$GHCR_TOKEN" | docker login "$registry" -u "${{ github.actor }}" --password-stdin
+          docker tag "$MENU_CAPTURE_IMAGE" "$remote"
+          docker push "$remote"
+          digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$remote" | sed 's/.*@//')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p hub-artifacts
+          jq -nc --arg registry "$registry/$repo" --arg digest "$digest" \
+            '{registry:$registry,digest:$digest}' > hub-artifacts/hub-image-digest.json
       - name: 归档共享后台镜像和校验值
         if: github.event_name == 'workflow_dispatch'
         run: |
@@ -541,6 +563,23 @@ jobs:
           (tag, channel, commit, min_version, exe_name, exe_size, exe_sha,
            hub_name, hub_size, hub_sha, patch_name, patch_from, patch_size, patch_sha) = sys.argv[1:15]
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}"
+          # OCI 是 hub_image 的可选扩展：摘要文件缺失或非法时只影响分层拉取，
+          # 完整归档资产照常发布，旧客户端完全不受影响。
+          oci = {}
+          try:
+              with open("release-assets/hub-image-digest.json", encoding="utf-8") as handle:
+                  candidate = json.load(handle)
+              registry = str(candidate.get("registry") or "")
+              digest = str(candidate.get("digest") or "")
+              if (registry.startswith("ghcr.io/") and digest.startswith("sha256:")
+                      and len(digest) == 71 and all(c in "0123456789abcdef" for c in digest[7:])):
+                  oci = {"registry": registry, "digest": digest}
+          except (OSError, ValueError):
+              oci = {}
+          hub_asset = {"kind": "hub_image", "name": hub_name, "size": int(hub_size),
+                       "sha256": hub_sha, "url": f"{base}/{hub_name}",
+                       "platform": "linux", "arch": "amd64"}
+          hub_asset.update(oci)
           manifest = {
               "version": tag.lstrip("v"),
               "channel": channel,
@@ -552,9 +591,7 @@ jobs:
                   {"kind": "windows_installer", "name": exe_name, "size": int(exe_size),
                    "sha256": exe_sha, "url": f"{base}/{exe_name}",
                    "platform": "windows", "arch": "x64"},
-                  {"kind": "hub_image", "name": hub_name, "size": int(hub_size),
-                   "sha256": hub_sha, "url": f"{base}/{hub_name}",
-                   "platform": "linux", "arch": "amd64"},
+                  hub_asset,
               ],
           }
           if patch_name and patch_from and patch_size and patch_sha:

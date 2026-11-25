@@ -24,10 +24,14 @@ from hub_updater import (
 TOKEN = "t" * 32
 
 
-def make_config(tmp_path: Path) -> Config:
+REGISTRY = "ghcr.io/zhaoyongze123/wechat-miniapp-menu-agent"
+DIGEST = "sha256:" + "a" * 64
+
+
+def make_config(tmp_path: Path, registry: str = "") -> Config:
     compose = tmp_path / "compose.yaml"
     compose.write_text("services: {}\n", encoding="utf-8")
-    return Config({
+    env = {
         "HUB_UPDATE_TOKEN": TOKEN,
         "HUB_UPDATE_COMPOSE_FILE": str(compose),
         "HUB_UPDATE_PROJECT": "menu-capture",
@@ -35,7 +39,10 @@ def make_config(tmp_path: Path) -> Config:
         "HUB_UPDATE_ARCHIVE_DIR": str(tmp_path / "archives"),
         "HUB_UPDATE_DATA_VOLUME": "menu-capture_hub-data",
         "HUB_UPDATE_HEALTH_TIMEOUT": "1",
-    })
+    }
+    if registry:
+        env["HUB_UPDATE_REGISTRY_REPO"] = registry
+    return Config(env)
 
 
 def archive_request(tmp_path: Path, version: str = "0.2.4", content: bytes = b"image-bytes") -> dict:
@@ -61,11 +68,28 @@ class FakeDocker:
         self.fail_switch = False
         self.switched: list[str] = []
         self.fail_load = False
+        self.fail_pull = False
+        self.pulled = ""
+        # None 表示“回显刚拉取的引用”，用于制造摘要不一致场景时显式覆盖。
+        self.repo_digests: list[str] | None = None
+        self.platform = "linux/amd64"
+        self.tags: list[tuple[str, str]] = []
+        self.loads: list[str] = []
 
     def run(self, args: list[str], timeout: float) -> tuple[int, str]:
         command = args[:2]
         if command == ["docker", "volume"]:
             return 0, "[]"
+        if command == ["docker", "pull"]:
+            assert args[2] == "--platform"
+            assert args[3] == "linux/amd64"
+            if self.fail_pull:
+                return 1, "pull access denied"
+            self.pulled = args[4]
+            return 0, "pulled"
+        if command == ["docker", "tag"]:
+            self.tags.append((args[2], args[3]))
+            return 0, ""
         if command == ["docker", "run"]:
             assert args[args.index("--network") + 1] == "none"
             assert "--pull=never" in args
@@ -79,6 +103,7 @@ class FakeDocker:
         if command == ["docker", "load"]:
             if self.fail_load:
                 return 1, "invalid archive"
+            self.loads.append(args[3])
             return 0, f"Loaded image: {self.loaded}"
         if command == ["docker", "compose"] and "ps" in args:
             return 0, "cid-1"
@@ -87,6 +112,13 @@ class FakeDocker:
                 return 0, "healthy"
             return 0, self.current
         if command == ["docker", "image"]:
+            if "--format" in args:
+                template = args[args.index("--format") + 1]
+                if "RepoDigests" in template:
+                    digests = self.repo_digests if self.repo_digests is not None else [self.pulled]
+                    return 0, json.dumps(digests)
+                if "Architecture" in template:
+                    return 0, self.platform
             return 0, "[]"
         raise AssertionError(f"unexpected command: {args}")
 
@@ -98,11 +130,12 @@ class FakeDocker:
         return 0, ""
 
 
-def make_updater(tmp_path: Path, docker: FakeDocker, *, healthy: Callable[[str], dict]) -> HubUpdater:
+def make_updater(tmp_path: Path, docker: FakeDocker, *, healthy: Callable[[str], dict],
+                 registry: str = "") -> HubUpdater:
     volume_path = tmp_path / "volume"
     volume_path.mkdir(parents=True, exist_ok=True)
     docker.volume_path = volume_path
-    return HubUpdater(make_config(tmp_path), run=docker.run, run_env=docker.run_env,
+    return HubUpdater(make_config(tmp_path, registry), run=docker.run, run_env=docker.run_env,
                       health=healthy, sleep=lambda _seconds: None)
 
 
@@ -503,3 +536,108 @@ def updater_journal(tmp_path: Path) -> dict:
     import json
 
     return json.loads((tmp_path / "state" / "hub-update.json").read_text(encoding="utf-8"))
+
+
+# ---------- OCI 分层交付 ----------
+
+def oci_request(tmp_path: Path, **overrides: object) -> dict:
+    payload = archive_request(tmp_path)
+    payload.update({"image": REGISTRY, "digest": DIGEST})
+    payload.update(overrides)
+    return payload
+
+
+def healthy(version: str) -> dict:
+    return {"ok": True, "version": version}
+
+
+def test_status_declares_oci_capability_only_when_configured(tmp_path: Path) -> None:
+    plain = make_updater(tmp_path, FakeDocker(), healthy=healthy)
+    assert plain.status()["capabilities"] == {"oci": False}
+    enabled = make_updater(tmp_path, FakeDocker(), healthy=healthy, registry=REGISTRY)
+    assert enabled.status()["capabilities"] == {"oci": True}
+
+
+def test_apply_oci_pulls_digest_and_never_loads_archive(tmp_path: Path) -> None:
+    docker = FakeDocker()
+    updater = make_updater(tmp_path, docker, healthy=healthy, registry=REGISTRY)
+
+    result = updater.apply(oci_request(tmp_path))
+
+    assert result["status"] == "completed"
+    assert docker.pulled == f"{REGISTRY}@{DIGEST}"
+    assert docker.tags == [(f"{REGISTRY}@{DIGEST}", "menu-capture-hub:0.2.4")]
+    assert docker.loads == []
+    assert updater.journal()["delivery"] == "oci"
+
+
+def test_apply_oci_pull_failure_falls_back_to_archive(tmp_path: Path) -> None:
+    docker = FakeDocker()
+    docker.fail_pull = True
+    updater = make_updater(tmp_path, docker, healthy=healthy, registry=REGISTRY)
+
+    result = updater.apply(oci_request(tmp_path))
+
+    assert result["status"] == "completed"
+    assert docker.tags == []
+    assert docker.loads and docker.loads[0].endswith("hub-image-0.2.4.tar.gz")
+    assert updater.journal()["delivery"] == "archive"
+    audit = (tmp_path / "state" / "hub-update-audit.jsonl").read_text(encoding="utf-8")
+    assert '"action": "pull"' in audit
+    assert '"result": "failed"' in audit
+
+
+def test_apply_oci_digest_mismatch_falls_back_to_archive(tmp_path: Path) -> None:
+    docker = FakeDocker()
+    docker.repo_digests = [f"{REGISTRY}@sha256:{'b' * 64}"]
+    updater = make_updater(tmp_path, docker, healthy=healthy, registry=REGISTRY)
+
+    result = updater.apply(oci_request(tmp_path))
+
+    assert result["status"] == "completed"
+    assert docker.tags == []
+    assert updater.journal()["delivery"] == "archive"
+
+
+def test_apply_oci_platform_mismatch_falls_back_to_archive(tmp_path: Path) -> None:
+    docker = FakeDocker()
+    docker.platform = "linux/arm64"
+    updater = make_updater(tmp_path, docker, healthy=healthy, registry=REGISTRY)
+
+    result = updater.apply(oci_request(tmp_path))
+
+    assert result["status"] == "completed"
+    assert docker.tags == []
+    assert updater.journal()["delivery"] == "archive"
+
+
+def test_validate_accepts_oci_fields_when_enabled(tmp_path: Path) -> None:
+    parsed = validate_payload(oci_request(tmp_path), make_config(tmp_path, REGISTRY))
+
+    assert parsed["image"] == REGISTRY
+    assert parsed["digest"] == DIGEST
+
+
+def test_validate_rejects_oci_when_executor_disabled(tmp_path: Path) -> None:
+    with pytest.raises(UpdateError, match="未启用"):
+        validate_payload(oci_request(tmp_path), make_config(tmp_path))
+
+
+def test_validate_requires_image_and_digest_together(tmp_path: Path) -> None:
+    payload = archive_request(tmp_path)
+    payload["image"] = REGISTRY
+
+    with pytest.raises(UpdateError, match="同时提供"):
+        validate_payload(payload, make_config(tmp_path, REGISTRY))
+
+
+@pytest.mark.parametrize("image,digest,message", [
+    (REGISTRY, "sha256:" + "a" * 63, "digest"),
+    ("ghcr.io/other/repo", DIGEST, "允许清单"),
+    ("docker.io/owner/repo", DIGEST, "允许清单"),
+])
+def test_validate_rejects_untrusted_oci(tmp_path: Path, image: str, digest: str, message: str) -> None:
+    payload = oci_request(tmp_path, image=image, digest=digest)
+
+    with pytest.raises(UpdateError, match=message):
+        validate_payload(payload, make_config(tmp_path, REGISTRY))

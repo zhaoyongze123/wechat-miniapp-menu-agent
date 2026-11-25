@@ -77,6 +77,7 @@ Issue #32 最新正文已把产品形态收敛为「一次授权完成更新」�
 - 资产平台/架构必须与类型一致：`windows_installer` 为 `windows/x64`，`hub_image` 为 `linux/amd64`；架构写法按 `x64/amd64/x86_64`、`arm64/aarch64` 归一化后再与本机真实 CPU 架构比较，当前平台没有匹配资产时不提供更新。
 - 大小与 Release 资产一致；SHA-256 为 64 位十六进制；若 Release 提供 `digest: sha256:...` 必须一致。
 - 资产 URL 只允许 HTTPS 的 `github.com` / `objects.githubusercontent.com` / `release-assets.githubusercontent.com`，且路径必须包含 `/releases/download/<tag>/`。
+- `hub_image` 可带可选 `registry`（固定 `ghcr.io/<org>/<repo>`）与 `digest`（`sha256:<64 位十六进制>`），用于 OCI 分层拉取；任一字段非法只丢弃这两个可选字段，完整归档资产仍然可用，旧客户端完全不受影响。
 - 缺少清单或校验失败时仍展示该 Release，但标记不可更新并说明原因，不静默回退到旧版本。
 
 SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Release 语义；后续如引入签名/发布证明，必须在此文档与实现中显式升级，不能把摘要当作唯一真实性依据。
@@ -129,16 +130,26 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 
 - 执行器独立于被替换的业务容器运行：容器内不能挂载 Docker Socket，也不该自己替换自己。代码见 `deploy/hub-update/hub_updater.py`，仅用标准库。
 - 入口：`GET /status`、`POST /apply`、`POST /rollback`；默认只监听 `127.0.0.1`，要求 `Authorization: Bearer <HUB_UPDATE_TOKEN>`，并按 `HUB_UPDATE_ALLOWED_CLIENTS` 网段二次校验来源。供容器访问时才把监听地址改为可达地址，并把来源收敛到 Docker 网桥网段。请求体格式非法返回 400，事务状态冲突（进行中、禁止降级、无回滚目标）返回 409，未授权返回 401。
-- `POST /apply` 只接受 `{version, confirm, sha256, size, url|archive}`：版本必须语义化且高于当前运行版本，`confirm` 必须等于版本，归档大小不超过 2 GiB；`url` 只允许受信任 GitHub 域名且路径必须指向 Release 资产，`archive` 只能是归档目录内的文件名，禁止绝对路径与 `..`。
+- `POST /apply` 接受 `{version, confirm, sha256, size, url|archive}`，并可带可选的 `image`/`digest`（OCI 分层交付，见下节）：版本必须语义化且高于当前运行版本，`confirm` 必须等于版本，归档大小不超过 2 GiB；`url` 只允许受信任 GitHub 域名且路径必须指向 Release 资产，`archive` 只能是归档目录内的文件名，禁止绝对路径与 `..`。`image`/`digest` 必须成对出现，`image` 必须等于配置的固定仓库，`digest` 必须是 `sha256:<64 位小写十六进制>`；`url`/`archive` 仍是必需的归档回退依据。
 - 执行顺序：磁盘与数据卷检查 → 下载（或读取归档）→ 大小与 SHA-256 校验 → `docker load` 并确认加载出的是 `<镜像仓库>:<版本>` → 以 `MENU_CAPTURE_IMAGE=<镜像仓库>:<版本>` 执行固定的 `docker compose up -d --no-build hub` → 核对容器健康与 `/api/version` 真实版本。任一步失败都会尝试切回上一版本并核对健康。
 - 只对配置的 compose 文件、project 和 service 执行 `up -d`，从不执行 `down -v`、`prune` 或删除卷；更新前要求数据卷已存在，避免因拼错卷名创建空卷。
 - 事务状态写入 `HUB_UPDATE_STATE_DIR/hub-update.json`（含执行器 PID），执行器重启或状态查询发现进程已退出时，按实际运行镜像收尾，不会永久停在切换中；每次成功/失败/回滚追加到 `hub-update-audit.jsonl`。
 - 必须配置的环境变量：`HUB_UPDATE_TOKEN`（≥16 字符）、`HUB_UPDATE_COMPOSE_FILE`、`HUB_UPDATE_PROJECT`、`HUB_UPDATE_DATA_VOLUME`、`HUB_UPDATE_STATE_DIR`；可选 `HUB_UPDATE_ARCHIVE_DIR`、`HUB_UPDATE_HEALTH_URL`、`HUB_UPDATE_HEALTH_USER`/`HUB_UPDATE_HEALTH_PASSWORD`（Hub 的 `/api/version` 走基本认证）、`HUB_UPDATE_BIND`、`HUB_UPDATE_PORT`、`HUB_UPDATE_ALLOWED_CLIENTS`、`HUB_UPDATE_HEALTH_TIMEOUT`。
-- Hub 服务端通过 `HUB_UPDATE_URL` / `HUB_UPDATE_TOKEN` 代理调用执行器（`deploy/hub/compose.yaml` 已声明 `host.docker.internal:host-gateway`）；未配置时设置页只显示原因，不提供安装按钮。容器只提交「最新版本 + 清单校验后的 SHA-256/大小/URL」，由执行器再次校验。
+- Hub 服务端通过 `HUB_UPDATE_URL` / `HUB_UPDATE_TOKEN` 代理调用执行器（`deploy/hub/compose.yaml` 已声明 `host.docker.internal:host-gateway`）；未配置时设置页只显示原因，不提供安装按钮。容器提交「最新版本 + 清单校验后的 SHA-256/大小/URL」，并在执行器声明 OCI 能力时附带 `image`/`digest`，由执行器再次校验。
 - 部署时执行器必须监听容器可达的地址，并把 `HUB_UPDATE_ALLOWED_CLIENTS` 收敛到 Docker 网桥网段；切勿对公网开放。
 - 回滚兜底：手动回滚或安装失败自动回滚时，若目标版本切回后健康检查不通过，执行器会立即切回回滚前仍在运行的版本并复核健康，避免把采集服务留在停机状态；恢复失败才标记失败并保留状态与审计。
 - 回滚架构边界：切换前用当前应用镜像启动一次隔离只读探测容器，禁用网络和 Linux capabilities，只挂载命名数据卷且为只读，不读取宿主机 Docker volume Mountpoint。探测器保存 `data/tasks.sqlite3` 架构快照。自动回退与显式回滚都比较快照；旧表/列/索引/约束被删除或改写、触发器/视图改变、基线缺失或无法读取时停止回滚并标记 `needs_manual_recovery`，保留当前容器与诊断信息，要求人工恢复。仅新增表、带可供旧代码写入的默认值（或允许为空）的列，以及非唯一索引，按向后兼容扩展处理，允许旧镜像回滚；新增唯一索引、既有表约束或外键都需人工判断。这对应现有初始化迁移以 `CREATE TABLE`、`ALTER TABLE ADD COLUMN` 和 `CREATE INDEX` 为主的机制。无法读取架构时不推断兼容。
 - 跨版本回滚验收：CI 以 **v0.2.2 正式发布镜像**为基线（直接 `docker load` 已发布产物，不重新打包），验证「生产 0.2.2 → 新版 → 回滚 0.2.2」全流程及旧版本能在新版本迁移过的数据库上启动；此证据适用于已验证的兼容性扩展，不代表任意破坏性迁移都可回滚。
+
+### OCI 分层交付（可选，默认关闭）
+
+- 能力协商：执行器 `GET /status` 在配置了 `HUB_UPDATE_REGISTRY_REPO` 时返回 `capabilities.oci=true`；Hub 只读取最近一次快照，旧执行器没有该字段时一律按不支持处理，继续使用完整归档。只有明确支持时，`POST /apply` 才会附带 `image`/`digest`。
+- 固定仓库：`HUB_UPDATE_REGISTRY_REPO` 必须是 `ghcr.io/<org>/<repo>`，且只能等于发布清单里的镜像仓库；执行器不接受请求方任意指定镜像、tag 或平台。平台固定为 `linux/amd64`，digest 必须是不可变 `sha256:` 摘要。
+- 执行顺序（OCI 分支）：`docker pull --platform linux/amd64 <repo>@<digest>` → 用 `RepoDigests` 核对摘要、用 `Os/Architecture` 核对平台 → `docker tag` 为 compose 使用的 `<HUB_UPDATE_IMAGE_REPO>:<版本>` → 复用现有切换、健康核对与回滚。拉取失败、摘要不一致或平台不符时记录 `pull failed` 审计，并在同一事务内改用完整归档，不产生第二套状态机。
+- Hub 服务端在 OCI 模式下不下载完整归档（`authorize_update`/`schedule`/`download_status` 整条链路都跳过“等待下载完成”），手动下载请求会被明确拒绝，避免“先下 175 MB 再 docker pull”。
+- 发布：工作流用 `GITHUB_TOKEN`（`packages: write`）把本次已验收镜像推送到固定 GHCR 仓库，并把返回的 digest 写入发布清单 `hub_image.registry`/`digest`。**镜像保持私有，不得擅自改为公开**；清单缺失或字段非法时只忽略 OCI 扩展，完整归档照常发布。
+- 宿主机要求：能访问 `ghcr.io`，并使用具备 `read:packages` 的凭证执行 `docker login ghcr.io`；不可达或未登录时拉取失败会自动回退归档，不阻塞更新。
+- 首次升级：旧执行器没有 `capabilities`，Hub 继续走归档；运维需一次性替换 `hub_updater.py`、配置 `HUB_UPDATE_REGISTRY_REPO` 并重启执行器。之后 Hub 新版本检测到能力后才会启用分层拉取，旧版本客户端与旧执行器行为不变。
 
 ## 本地版本清点（Windows）
 
