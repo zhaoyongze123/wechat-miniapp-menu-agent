@@ -14,6 +14,7 @@
 | 前端设计规格 | [界面设计规格](design-system/ui-design-spec.md) | 现有视觉与交互标准 |
 | 产品需求 | [产品规格](product/README.md) | 逐页面产品设计、功能保真与用户情境验收 |
 | 软件更新 | [更新与版本生命周期](updates/README.md) | Release 清单、发现/下载/安装/回滚、集中更新与清理 |
+| 合格成品目录 | [合格成品目录](delivery/README.md) | 一店一目录、最新整轮覆盖、历史存量初始化与宿主机交付 |
 | 采集合规 | [采集回归台账](governance/menu-capture-regression.md) | 按链路记录的问题与复测证据 |
 | 部署与发布 | [部署指南](../deploy/README.md) | 安装、升级、回滚与手动发布流程 |
 
