@@ -3,7 +3,7 @@ import { appendFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { extractActionPayload, resetRepairFlag, wasRepaired } from './action-repair.mjs';
 import { NoProgressTracker } from './progress-tracker.mjs';
-import { ACTIONS, COORDINATE_SPACE, ShapeError, buildHostParams, fillMissingTextFields, hostMethods, validateArgs } from './action-spec.mjs';
+import { ACTIONS, COORDINATE_SPACE, ShapeError, buildHostParams, extractObservation, fillMissingTextFields, hostMethods, validateArgs } from './action-spec.mjs';
 import { PROMPT_VERSION, buildBasePrompt } from './prompts/base.mjs';
 import { BUSINESS_PROMPT, BUSINESS_PROMPT_VERSION } from './prompts/business.mjs';
 
@@ -93,6 +93,18 @@ function trace(record) {
 
 function redacted(value) {
   return value.replace(/sk-[A-Za-z0-9._-]{12,}/g, '[REDACTED]');
+}
+
+// 附带观察与当前帧绑定后单独上报：它不进入动作参数，也不影响任何执行与终态判定。
+// 上报失败属于附带信息异常，不能阻断主动作，因此这里吞掉协议写入错误。
+function reportObservation(observation) {
+  if (!observation) return;
+  const name = observation.revoke ? '' : observation.name;
+  trace({ type: 'observed_store_name', at: now(), call_id: currentCall?.id ?? null,
+          frame_id: currentFrame, name, revoke: Boolean(observation.revoke) });
+  try {
+    send({ type: 'observed_store_name', frame_id: currentFrame, name });
+  } catch { /* 附带信息不能阻断主动作 */ }
 }
 
 function sha256(buffer) {
@@ -365,8 +377,14 @@ function normalizedArguments(value) {
 }
 
 function parseModelAction(rawArgs) {
-  const args = normalizedArguments(rawArgs);
-  if (!args || typeof args !== 'object' || Array.isArray(args) || typeof args.action !== 'string') throw new Error('invalid_action');
+  const normalized = normalizedArguments(rawArgs);
+  if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)
+      || typeof normalized.action !== 'string') throw new Error('invalid_action');
+  // 先剥离并上报附带观察字段，再做动作字段白名单校验：
+  // 非法或超长的附带值只会被忽略，不会把原本合法的动作判成格式错误。
+  const extracted = extractObservation(normalized);
+  const args = extracted.args;
+  reportObservation(extracted.observation);
   // noop 必须在 schema 查找之前处理：它是“先不动作”的合法出口，schema 里没有对应的宿主方法。
   // 空 arguments 会被 action-repair 归一化成 noop，如果先查 schema 就会误判成 disallowed_action 并直接终止。
   if (args.action === 'noop') {

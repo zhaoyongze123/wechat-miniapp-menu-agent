@@ -65,6 +65,9 @@ _OCR_MIN_CONFIDENCE = .6
 # Adapter 上报的执行计数；格式修正单独计数，便于评估预算占用。
 _METRIC_FIELDS = ("model_calls", "screenshots", "navigation_actions",
                   "format_retries", "tool_rejections", "format_failures", "no_progress_notices")
+# 附带观察的门店名称上限（与 action-schema.json observation.max_chars 一致）。
+# 宿主只做防御性截断，真正的清洗与限长在 adapter 内完成。
+OBSERVED_NAME_MAX_CHARS = 40
 
 
 def _output_contract() -> str:
@@ -72,12 +75,15 @@ def _output_contract() -> str:
     schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
     size = int(schema.get("coordinate_space") or 1000)
     actions = "\n".join(f"- {spec['doc']}" for spec in schema["actions"].values())
+    observation = str((schema.get("observation") or {}).get("doc") or "").strip()
     return (
         "输出契约（固定协议，必须完全遵守；不合规会被拒绝并要求重写）\n"
         '1. 每轮只输出一个 tool_call：<tool_call>{"name":"computer_use","arguments":{...}}</tool_call>。\n'
         "   不要输出多个 tool_call，不要用自然语言描述动作，不要把 action 写成函数调用形式。\n"
-        "2. arguments 只能包含动作表为该动作列出的字段。禁止添加未列出的字段，禁止编造页面信息或坐标。\n"
+        "2. arguments 只能包含动作表为该动作列出的字段（外加第 4 条的可选附带字段）。"
+        "禁止添加其他未列出的字段，禁止编造页面信息或坐标。\n"
         f"3. 坐标统一使用当前截图的 {size}x{size} 归一化空间，左上角为 (0,0)，取值 0..{size - 1}。\n"
+        f"4. {observation}\n"
         "动作表：\n"
         f"{actions}\n"
         "任何字段缺失、类型错误、越界或多余字段都视为格式违规。"
@@ -138,7 +144,8 @@ def trial_model_from_env(configs: ConfigStore | None = None) -> TrialModel:
 def run_navigation(model: TrialModel, _store_name: str, people: int, max_steps: int,
                    *, observe, execute, check_stop, log_path: Path | None = None,
                    trace_path: Path | None = None, trace_meta: dict | None = None,
-                   feedback: str = "") -> tuple[dict, dict | None]:
+                   feedback: str = "", observed_name: str = "",
+                   on_observation=None) -> tuple[dict, dict | None]:
     # 门店名和二维码原图不进入 Agent 上下文：门店名只用于本地执行与日志，
     # 二维码图片只交给本机自动化，模型仅凭当前屏幕截图决策。
     instruction = (
@@ -147,17 +154,25 @@ def run_navigation(model: TrialModel, _store_name: str, people: int, max_steps: 
         "\n业务经验已全部写在系统提示词中，按其中的终态标准判断。"
         "\n输出必须严格符合系统提示中的固定输出契约。"
     )
+    if observed_name:
+        # 跨会话只带简短已观察名称：帮助模型沿用品牌/分店并顺手修正，不当作任务约束。
+        instruction += (
+            "\n此前会话观察到的当前门店名称（可能已过时或不准确，按当前画面核对；"
+            f"确认不对时修正，不再可信则用空字符串撤销）：{observed_name}"
+        )
     if feedback:
         # 宿主退回时只说明已验证的事实（页面滚不动），不替 Agent 指定具体点击位置。
         instruction += f"\n上一轮交接未通过宿主校验：{feedback}\n请继续在当前页面操作，直到真正进入可滚动的菜品菜单再输出 success。"
     return _run_agent(model, instruction, max_steps, observe=observe, execute=execute,
                       check_stop=check_stop, log_path=log_path,
-                      trace_path=trace_path, trace_meta=trace_meta)
+                      trace_path=trace_path, trace_meta=trace_meta,
+                      on_observation=on_observation)
 
 
 def _run_agent(model: TrialModel, instruction: str, max_steps: int,
                *, observe, execute, check_stop, log_path: Path | None = None,
-               trace_path: Path | None = None, trace_meta: dict | None = None) -> tuple[dict, dict | None]:
+               trace_path: Path | None = None, trace_meta: dict | None = None,
+               on_observation=None) -> tuple[dict, dict | None]:
     config = {
         "model": {"baseURL": model.base_url, "apiKey": model.api_key, "model": GUI_PLUS_MODEL},
         "instruction": instruction, "max_steps": max_steps,
@@ -176,7 +191,8 @@ def _run_agent(model: TrialModel, instruction: str, max_steps: int,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         ) as child:
             try:
-                return _exchange(child, config, observe, execute, check_stop)
+                return _exchange(child, config, observe, execute, check_stop,
+                                 on_observation=on_observation)
             finally:
                 if child.poll() is None:
                     child.terminate()
@@ -236,17 +252,34 @@ class _WindowsPipeReader:
         self._stopped.set()
 
 
-def _exchange(child, config, observe, execute, check_stop, *, _windows_pipe=None):
+def _exchange(child, config, observe, execute, check_stop, *, _windows_pipe=None,
+              on_observation=None):
     use_windows_pipe = os.name == "nt" if _windows_pipe is None else _windows_pipe
     pipe_reader = _WindowsPipeReader(child.stdout) if use_windows_pipe else None
     try:
-        return _exchange_protocol(child, config, observe, execute, check_stop, pipe_reader)
+        return _exchange_protocol(child, config, observe, execute, check_stop, pipe_reader,
+                                  on_observation=on_observation)
     finally:
         if pipe_reader is not None:
             pipe_reader.close()
 
 
-def _exchange_protocol(child, config, observe, execute, check_stop, pipe_reader=None):
+def _record_observation(callback, event: dict) -> None:
+    """伴随提取的门店名称：旧协议、非法值或回调异常都不能影响导航主流程。"""
+    if callback is None:
+        return
+    name = event.get("name")
+    if not isinstance(name, str):
+        return
+    frame_id = event.get("frame_id")
+    try:
+        callback(name[:OBSERVED_NAME_MAX_CHARS], frame_id if isinstance(frame_id, str) else "")
+    except Exception:  # noqa: BLE001 - 伴随信息写失败不得改写导航结论
+        pass
+
+
+def _exchange_protocol(child, config, observe, execute, check_stop, pipe_reader=None,
+                       *, on_observation=None):
     def send(payload):
         try:
             child.stdin.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
@@ -294,6 +327,10 @@ def _exchange_protocol(child, config, observe, execute, check_stop, pipe_reader=
             raise TrialProtocolError("GUI Agent 返回无效消息") from None
         if not isinstance(event, dict):
             raise TrialProtocolError("GUI Agent 返回无效消息")
+        if event.get("type") == "observed_store_name":
+            # 附带观察是单向事件：不占用请求/响应编号，也不参与动作执行顺序。
+            _record_observation(on_observation, event)
+            continue
         if event.get("type") == "result":
             return _result(event, frame, frame_id, image_size, action_sent)
         params = event.get("params")

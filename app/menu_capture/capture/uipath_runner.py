@@ -1605,6 +1605,23 @@ class UiPathRunner:
         }
         started_at = time.monotonic()
         self._ipc_commands = 0
+        # GUI Agent 伴随提取的门店名称：启动时恢复本轮已确认值，后续跨会话沿用；
+        # 按轮次 + 任务独立落库，模型显式撤销时写入空值，失败路径同样保留。
+        observed_name = str(self.store.observed_store_name(self.run_id, task["id"]) or "") if self.run_id else ""
+        report["observed_store_name"] = observed_name
+        observed_frames: dict[str, str] = {}
+
+        def record_observed(name: str, frame_id: str) -> None:
+            nonlocal observed_name
+            observed_name = name
+            frame_path = observed_frames.get(frame_id, "")
+            report["observed_store_name"] = name
+            if frame_path:
+                report["observed_store_name_frame"] = frame_path
+            if self.run_id:
+                self.store.record_observed_store_name(
+                    self.run_id, task["id"], name, frame_id=frame_id, frame=frame_path)
+
         navigation_started = capture_started = None
         timing = report["timing_ms"] = {}
         last_frame = None
@@ -1679,6 +1696,8 @@ class UiPathRunner:
                            selector=active["selector"])
                 if sequence == 1:
                     report["initial_frame"] = str(Path(last_frame["path"]).relative_to(output_dir))
+                # 帧号 → 证据相对路径：门店名称到达时据此保存可追溯的帧引用。
+                observed_frames[str(sequence)] = str(Path(last_frame["path"]).relative_to(output_dir))
                 return last_frame
 
             def execute(command, frame_id):
@@ -1701,6 +1720,8 @@ class UiPathRunner:
                         trace_meta={"run_id": self.run_id, "task_id": task["id"],
                                     "batch": self._trace_material.get("material_batch_id", "")},
                         feedback=message,
+                        observed_name=observed_name,
+                        on_observation=record_observed,
                     )
                     timing["navigation"] = round((time.monotonic() - navigation_started) * 1000)
                     for field in ("reason",):

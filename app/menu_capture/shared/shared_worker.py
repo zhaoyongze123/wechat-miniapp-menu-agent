@@ -223,6 +223,10 @@ class SharedWorker:
             manifest.update({key: task.get(key, "") for key in
                              ("stage", "message", "reject_reason", "reject_detail", "error_code")})
             manifest["status"] = "captured" if task["status"] == "captured" else "needs_review"
+            # 可选副产物：随成功/待检查结果一起上行；没有观察结果时省略，旧 Hub 忽略未知字段。
+            observed = str(self.store.observed_store_name(assignment.get("run_id", ""), task["id"]) or "")
+            if observed:
+                manifest["observed_store_name"] = observed
             temporary = path.with_suffix(".tmp")
             try:
                 with ZipFile(temporary, "w", compression=ZIP_STORED) as archive:

@@ -70,6 +70,16 @@ class TaskStore:
                     destination TEXT NOT NULL, backup TEXT NOT NULL, had_previous INTEGER NOT NULL,
                     phase TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
+                -- GUI Agent 伴随提取的门店名称：按采集轮次 + 任务隔离，不占用采集结果字段；
+                -- 空字符串表示模型显式撤销，保留行便于追溯“确认后又撤销”。
+                CREATE TABLE IF NOT EXISTS observed_store_names (
+                    run_id TEXT NOT NULL, task_id TEXT NOT NULL,
+                    store_name TEXT NOT NULL DEFAULT '', frame_id TEXT NOT NULL DEFAULT '',
+                    frame TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+                    PRIMARY KEY(run_id, task_id)
+                );
+                CREATE INDEX IF NOT EXISTS observed_store_names_task
+                    ON observed_store_names(task_id, updated_at);
             """)
 
         with self.connect() as db:
@@ -490,6 +500,46 @@ class TaskStore:
             for row in db.execute(f"SELECT * FROM capture_run_results WHERE run_id IN ({placeholders})", run_ids):
                 indexed.setdefault(row["run_id"], []).append(dict(row))
         return indexed
+
+    def record_observed_store_name(self, run_id: str, task_id: str, name: str,
+                                   *, frame_id: str = "", frame: str = "") -> None:
+        """写入 GUI Agent 伴随提取的门店名称。
+
+        只按本次采集轮次 + 任务隔离：重跑或换素材版本使用新的 run_id，不会误继承旧结果。
+        名称在收到时立即独立落库，后续会话重建、截图失败或任务失败都不清除（空值=显式撤销）。
+        """
+        run_id, task_id = str(run_id or ""), str(task_id or "")
+        if not run_id or not task_id:
+            # 不在采集轮次内的试验/手工导航没有轮次归属，只保留在报告工件里。
+            return
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO observed_store_names(run_id,task_id,store_name,frame_id,frame,updated_at)"
+                " VALUES(?,?,?,?,?,?)"
+                " ON CONFLICT(run_id,task_id) DO UPDATE SET store_name=excluded.store_name,"
+                " frame_id=excluded.frame_id, frame=excluded.frame, updated_at=excluded.updated_at",
+                (run_id, task_id, str(name or ""), str(frame_id or ""), str(frame or ""), now()),
+            )
+
+    def observed_store_name(self, run_id: str, task_id: str) -> str:
+        with self.connect() as db:
+            row = db.execute("SELECT store_name FROM observed_store_names WHERE run_id=? AND task_id=?",
+                             (str(run_id or ""), str(task_id or ""))).fetchone()
+        return str(row["store_name"] or "") if row else ""
+
+    def observed_store_names(self, run_id: str) -> dict[str, str]:
+        """本轮各任务已确认的名称；显式撤销（空值）不出现在结果里。"""
+        with self.connect() as db:
+            rows = db.execute("SELECT task_id,store_name FROM observed_store_names"
+                              " WHERE run_id=? AND store_name!=''", (str(run_id or ""),)).fetchall()
+        return {row["task_id"]: row["store_name"] for row in rows}
+
+    def observed_store_name_latest(self, task_id: str) -> dict:
+        """按原始任务编号查最近一次观察记录，含未采集成功的轮次。"""
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM observed_store_names WHERE task_id=?"
+                             " ORDER BY updated_at DESC, run_id DESC LIMIT 1", (str(task_id or ""),)).fetchone()
+        return dict(row) if row else {}
 
     def material_binding(self, source: str) -> dict | None:
         if not source or not (Path(source) / ".materials-snapshot.json").is_file():
