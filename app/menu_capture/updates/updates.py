@@ -64,7 +64,15 @@ RELEASE_SIZE_CACHE_VERSION = 1
 SCHEDULE_POLL_SECONDS = 5.0
 # 一次授权即可完成的更新方式：immediate 为“立即更新”，idle 为“空闲后更新”。
 UPDATE_MODES = {"immediate", "idle"}
-INSTALL_ACTIVE_STATUSES = {"starting", "installing", "verifying", "restarting", "rolling_back"}
+# Hub 宿主机执行器的中间状态（下载/加载/分层拉取/切换）也属于安装进行中；
+# 缺了它们，界面会在镜像准备阶段误判为“空闲”，允许重复授权甚至取消。
+INSTALL_ACTIVE_STATUSES = {
+    "starting", "downloading", "loading", "pulling", "switching",
+    "installing", "verifying", "restarting", "rolling_back",
+}
+# Hub OCI 分层交付：清单里的可选扩展，只接受固定 GHCR 仓库与不可变摘要。
+OCI_REGISTRY_RE = re.compile(r"^ghcr\.io/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
+OCI_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 # GitHub Release 上附带的更新清单；与安装目录内的运行时 release-manifest.json 区分。
 MANIFEST_ASSET = "update-manifest.json"
@@ -371,6 +379,17 @@ def _safe_asset_url(url: str, tag: str) -> str:
     return str(url)
 
 
+def _normalize_oci(item: dict) -> dict | None:
+    """可选 OCI 交付字段：任一不合法就整体丢弃，不影响完整归档资产可用。"""
+    registry = str(item.get("registry") or "").strip().lower()
+    digest = str(item.get("digest") or "").strip().lower()
+    if not registry and not digest:
+        return None
+    if not OCI_REGISTRY_RE.fullmatch(registry) or not OCI_DIGEST_RE.fullmatch(digest):
+        return None
+    return {"registry": registry, "digest": digest}
+
+
 def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: list[dict]) -> dict:
     if not isinstance(manifest, dict):
         raise ValueError("发布清单格式无效")
@@ -428,10 +447,16 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
         if published.get("browser_download_url") and str(published["browser_download_url"]) != url:
             raise ValueError(f"发布资产地址与 Release 不一致: {name}")
         seen.add(kind)
-        assets.append({
+        asset = {
             "kind": kind, "name": name, "size": size, "sha256": sha, "url": url,
             "platform": platform, "arch": arch,
-        })
+        }
+        # OCI 是 hub_image 的可选加速扩展：只接受 linux/amd64 与合法 GHCR 摘要。
+        if kind == "hub_image" and _normalize_arch(arch) == "x64":
+            oci = _normalize_oci(item)
+            if oci is not None:
+                asset.update(oci)
+        assets.append(asset)
     # 可选 patches 是尽力而为的加速扩展：非法条目丢弃，绝不影响已验证的完整资产。
     target_version = version_text(tag_version, tag)
     patches = _validate_patches(
@@ -523,6 +548,9 @@ class UpdateService:
         self.install_active_provider: Callable[[], bool] | None = None
         # Worker 可由共享后台分发版本元数据；只有 Hub 校验后且未过期的结果才会被采纳。
         self.hub_target_provider: Callable[[], dict | None] | None = None
+        # Hub 专用：宿主执行器是否声明支持 OCI 分层拉取；返回 True 时无需本地落盘完整归档。
+        # 必须只读缓存快照，不得在状态锁内发起网络请求。
+        self.oci_delivery_provider: Callable[[], bool] | None = None
         # Worker 向 Hub 上报安装状态时使用；执行器未接入时留空，不推测。
         self.install_status_provider: Callable[[], str] | None = None
         # 展示统一更新流程时读取执行器完整快照；未接入时流程只依据下载与安排状态。
@@ -1251,6 +1279,9 @@ class UpdateService:
                 current = self.current_version()
                 if not isinstance(latest, dict) or not _update_available(latest, current, self.platform, self.local_arch):
                     raise ValueError("当前没有可下载的更新，请先检查更新并确认平台、架构匹配")
+                if self._oci_delivery(latest) is not None:
+                    # OCI 模式绝不能先下 175 MB 完整归档再 docker pull：产物无需本地落盘。
+                    raise ValueError("当前宿主执行器支持镜像分层拉取，无需下载完整镜像归档")
                 full_asset = _downloadable_asset(latest, self.platform, self.local_arch)
                 if full_asset is None:
                     raise ValueError("发布清单中没有与本机平台和架构匹配的资产")
@@ -1310,6 +1341,33 @@ class UpdateService:
             cancel.set()
         return self.download_status()
 
+    def _oci_delivery(self, latest: dict | None, *, version: str = "") -> dict | None:
+        """返回可用 OCI 资产；只读缓存能力，不做网络请求，可在状态锁内调用。
+
+        只有宿主执行器明确声明能力、清单给出了固定 GHCR 仓库与摘要、
+        且版本匹配时才启用，否则继续走完整归档下载。
+        """
+        if self.oci_delivery_provider is None or self.platform != "linux" or not isinstance(latest, dict):
+            return None
+        if version and str(latest.get("version") or "") != version:
+            return None
+        try:
+            if not self.oci_delivery_provider():
+                return None
+        except Exception:  # noqa: BLE001 - 能力探测失败按不支持处理，不能挡住更新
+            return None
+        asset = next(
+            (item for item in (latest.get("assets") or []) if item.get("kind") == "hub_image"),
+            None,
+        )
+        if not isinstance(asset, dict):
+            return None
+        if not OCI_REGISTRY_RE.fullmatch(str(asset.get("registry") or "")):
+            return None
+        if not OCI_DIGEST_RE.fullmatch(str(asset.get("digest") or "")):
+            return None
+        return asset
+
     def _select_patch(self, latest: dict, current: str) -> dict | None:
         """选择与当前版本匹配的增量补丁；基线不可信或安全开关未开时返回 None。
 
@@ -1359,18 +1417,26 @@ class UpdateService:
         """安排下载完成后在安全空闲时自动安装；不强行结束采集。"""
         if not self._install_capable() or self.schedule_installer is None:
             raise ValueError("当前环境不支持自动安装，无法安排空闲后更新")
+        oci = None
         with self._lock:
             state = dict(self._download_state)
             version = str(state.get("version") or "")
             if state.get("status") != "completed" or not version:
-                raise ValueError("请先下载更新，再安排空闲后安装")
-        if not self._downloaded_artifact_ready(version):
+                # OCI 交付没有本地产物：能力可用且版本可更新时同样允许安排空闲后更新。
+                latest = self._cache.get("latest")
+                oci = self._oci_delivery(latest)
+                if oci is None:
+                    raise ValueError("请先下载更新，再安排空闲后安装")
+                version = str(latest.get("version") or "") if isinstance(latest, dict) else ""
+        if oci is None and not self._downloaded_artifact_ready(version):
             raise ValueError("下载产物不完整或已被清理，请重新下载后再安排")
         with self._lock:
             self._schedule = {
                 "armed": True,
                 "version": version,
                 "mode": "idle",
+                # 记录授权时的交付方式；OCI 能力消失后不能再等一个从未启动的归档下载。
+                "delivery": "oci" if oci is not None else "archive",
                 "requested_at": _utc_now(),
                 "note": "等待采集与人工标注结束",
                 "last_result": "",
@@ -1413,13 +1479,22 @@ class UpdateService:
                 state = dict(self._download_state)
                 if self._downloading and str(state.get("version") or "") not in {"", version}:
                     raise ValueError("已有其他版本正在下载，请稍后再试")
-                ready = self._downloaded_artifact_ready(version)
+                # OCI 模式下产物由宿主机分层拉取，不需要本地完整归档；
+                # 仍沿用同一套“授权 → 空闲等待 → 执行器切换 → 健康核对”状态机。
+                oci = self._oci_delivery(latest)
+                ready = self._downloaded_artifact_ready(version) or oci is not None
+                if oci is not None:
+                    note = "等待空闲，由宿主机分层拉取镜像"
+                else:
+                    note = "等待空闲后安装" if ready else "等待下载完成"
                 self._schedule = {
                     "armed": True,
                     "version": version,
                     "mode": mode,
+                    # OCI 授权不启动归档下载，必须记住交付方式才能在能力消失时安全回退。
+                    "delivery": "oci" if oci is not None else "archive",
                     "requested_at": _utc_now(),
-                    "note": "等待空闲后安装" if ready else "等待下载完成",
+                    "note": note,
                     "last_result": "",
                 }
                 self._write_json(self.schedule_path, self._schedule)
@@ -1535,10 +1610,13 @@ class UpdateService:
             "finished_at": "",
         }
         if bound and status in INSTALL_ACTIVE_STATUSES:
+            # Hub 宿主机执行器的准备阶段（下载/加载/分层拉取/切换）统一归入“安装中”，
+            # 不新增前端状态值，避免与 Windows 执行器形成两套状态机。
+            stage = "installing" if status in {"starting", "downloading", "loading", "pulling", "switching"} else status
             return {
                 **flow,
                 "active": True,
-                "stage": "installing" if status == "starting" else status,
+                "stage": stage,
                 "message": str(install.get("message") or "正在安装并切换版本"),
             }
         if bound and status == "completed":
@@ -1643,42 +1721,68 @@ class UpdateService:
                 if not self._schedule.get("armed") or str(self._schedule.get("version")) != version:
                     return
                 download = dict(self._download_state)
-            if self._downloading:
-                if str(download.get("version") or "") not in {"", version}:
-                    self._disarm_schedule("下载版本已变化，请重新授权更新", version)
-                    return
+                latest = dict(self._cache.get("latest") or {})
+                downloading = self._downloading
+                delivery = str(self._schedule.get("delivery") or "")
+            # OCI 交付没有本地产物：跳过“等待下载完成”，但仍由执行器做最终空闲判断。
+            oci = self._oci_delivery(latest, version=version)
+            if oci is None and delivery == "oci":
+                # 授权后宿主能力消失：归档下载从未启动，不能继续等待一个不存在的下载。
+                # 同一次授权内安全回退一次完整下载；无法回退则明确结束，而不是永久挂起。
                 with self._lock:
-                    self._schedule["note"] = f"正在下载更新包（{_download_percent(download)}%）"
+                    self._schedule["delivery"] = "archive"
+                    self._schedule["note"] = "宿主镜像能力已消失，正在回退完整归档下载"
                     self._write_json(self.schedule_path, self._schedule)
-                continue
-            status = str(download.get("status") or "")
-            if str(download.get("version") or "") != version or status != "completed":
-                if status == "interrupted":
-                    # 进程重启或网络中断后仍保留断点；自动续传一次，失败再如实解除安排。
-                    with self._lock:
-                        attempts = int(self._schedule.get("attempts") or 0)
-                        self._schedule["attempts"] = attempts + 1
-                        self._write_json(self.schedule_path, self._schedule)
-                    if attempts < 1:
-                        try:
-                            self.start_download()
-                        except ValueError as exc:
-                            self._disarm_schedule(f"续传失败：{exc}", version)
-                            return
+                try:
+                    self.start_download()
+                except ValueError as exc:
+                    if self._oci_delivery(latest, version=version) is not None:
+                        # 探测与回退之间能力恢复：回到 OCI 路径，由执行器分层拉取。
+                        with self._lock:
+                            self._schedule["delivery"] = "oci"
+                            self._schedule["note"] = "等待空闲，由宿主机分层拉取镜像"
+                            self._write_json(self.schedule_path, self._schedule)
                         continue
-                    self._disarm_schedule("下载已中断，请重新授权更新", version)
+                    self._disarm_schedule(f"宿主镜像能力已消失，且无法回退完整下载：{exc}", version)
                     return
-                if status in {"failed", "cancelled"}:
-                    self._disarm_schedule(f"下载未完成：{download.get('error') or status}", version)
-                    return
-                if status == "completed":
-                    self._disarm_schedule("已下载的更新包版本不一致，请重新授权", version)
-                    return
-                # 尚未产生下载结果（例如刚授权、下载线程未启动），继续等待。
                 continue
-            if not self._downloaded_artifact_ready(version):
-                self._disarm_schedule("下载产物不完整或已被清理，请重新下载", version)
-                return
+            if oci is None:
+                if downloading:
+                    if str(download.get("version") or "") not in {"", version}:
+                        self._disarm_schedule("下载版本已变化，请重新授权更新", version)
+                        return
+                    with self._lock:
+                        self._schedule["note"] = f"正在下载更新包（{_download_percent(download)}%）"
+                        self._write_json(self.schedule_path, self._schedule)
+                    continue
+                status = str(download.get("status") or "")
+                if str(download.get("version") or "") != version or status != "completed":
+                    if status == "interrupted":
+                        # 进程重启或网络中断后仍保留断点；自动续传一次，失败再如实解除安排。
+                        with self._lock:
+                            attempts = int(self._schedule.get("attempts") or 0)
+                            self._schedule["attempts"] = attempts + 1
+                            self._write_json(self.schedule_path, self._schedule)
+                        if attempts < 1:
+                            try:
+                                self.start_download()
+                            except ValueError as exc:
+                                self._disarm_schedule(f"续传失败：{exc}", version)
+                                return
+                            continue
+                        self._disarm_schedule("下载已中断，请重新授权更新", version)
+                        return
+                    if status in {"failed", "cancelled"}:
+                        self._disarm_schedule(f"下载未完成：{download.get('error') or status}", version)
+                        return
+                    if status == "completed":
+                        self._disarm_schedule("已下载的更新包版本不一致，请重新授权", version)
+                        return
+                    # 尚未产生下载结果（例如刚授权、下载线程未启动），继续等待。
+                    continue
+                if not self._downloaded_artifact_ready(version):
+                    self._disarm_schedule("下载产物不完整或已被清理，请重新下载", version)
+                    return
             installer = self.schedule_installer
             if installer is None:
                 return
@@ -1727,6 +1831,7 @@ class UpdateService:
             "armed": bool(data.get("armed")) and bool(str(data.get("version") or "")),
             "version": str(data.get("version") or ""),
             "mode": str(data.get("mode") or "idle"),
+            "delivery": str(data.get("delivery") or ""),
             "requested_at": str(data.get("requested_at") or ""),
             "note": str(data.get("note") or ""),
             "last_result": str(data.get("last_result") or ""),

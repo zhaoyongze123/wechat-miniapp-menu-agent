@@ -157,6 +157,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             authorization_release=updates.release_install_claim,
         )
         updates.install_capability = lambda: install.supported
+        # 仅当宿主执行器在 /status 明确声明 OCI 能力时，才跳过完整归档下载改走分层拉取。
+        # 读取的是代理缓存的快照，不发起网络请求，可在更新状态锁内安全调用。
+        updates.oci_delivery_provider = lambda: install.oci_supported
         # 手动回滚接口尚未开放；失败时由执行器自动回滚。
         updates.rollback_capability = lambda: False
     else:

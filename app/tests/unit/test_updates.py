@@ -112,6 +112,73 @@ class BlockingFetcher(Fetcher):
         return super().__call__(url, headers, timeout)
 
 
+OCI_REGISTRY = "ghcr.io/zhaoyongze123/wechat-miniapp-menu-agent"
+OCI_DIGEST = "sha256:" + "d" * 64
+
+
+def hub_manifest(version: str = "0.3.0", *, registry: str | None = OCI_REGISTRY,
+                 digest: str | None = OCI_DIGEST) -> dict:
+    asset = {
+        "kind": "hub_image",
+        "name": f"hub-image-{version}.tar.gz",
+        "size": 2048,
+        "sha256": "c" * 64,
+        "url": f"{BASE}/v{version}/hub-image-{version}.tar.gz",
+        "platform": "linux",
+        "arch": "amd64",
+    }
+    if registry is not None or digest is not None:
+        asset["registry"] = registry
+        asset["digest"] = digest
+    return {
+        "version": version,
+        "channel": "stable",
+        "git_commit": "b" * 40,
+        "built_at": "2026-11-24T00:00:00Z",
+        "min_supported_version": "0.1.0",
+        "rollback": "supported",
+        "assets": [asset],
+    }
+
+
+def hub_release(tag: str, body: dict) -> dict:
+    manifest_body = json.dumps(body, ensure_ascii=False).encode()
+    return {
+        "tag_name": tag,
+        "name": tag,
+        "draft": False,
+        "prerelease": False,
+        "html_url": f"https://github.com/{REPO}/releases/tag/{tag}",
+        "published_at": "2026-11-24T00:00:00Z",
+        "body": "",
+        "assets": [
+            {
+                "name": "update-manifest.json",
+                "size": len(manifest_body),
+                "browser_download_url": f"{BASE}/{tag}/update-manifest.json",
+                "digest": "",
+            },
+            {
+                "name": f"hub-image-{body['version']}.tar.gz",
+                "size": 2048,
+                "browser_download_url": f"{BASE}/{tag}/hub-image-{body['version']}.tar.gz",
+                "digest": "sha256:" + "c" * 64,
+            },
+        ],
+    }
+
+
+def make_hub_service(tmp_path: Path, body: dict, *, current: str = "0.2.0") -> UpdateService:
+    tag = "v" + body["version"]
+    service = UpdateService(
+        tmp_path, role="hub", fetcher=Fetcher([hub_release(tag, body)], {tag: body}),
+        platform="linux", machine="x86_64",
+    )
+    service.save_preferences({"channel": "stable"})
+    os.environ["MENU_CAPTURE_VERSION"] = current
+    return service
+
+
 def make_service(tmp_path: Path, releases, manifests, *, current="0.2.0", channel="stable", fetcher=None,
                  machine="AMD64", opener=None, install_root=None):
     service = UpdateService(
@@ -1638,3 +1705,166 @@ def test_cancelled_patch_download_does_not_fall_back(tmp_path, monkeypatch):
     assert state["status"] == "cancelled"
     assert state["asset_kind"] == "windows_patch"
     assert state["fallback_reason"] == ""
+
+
+def test_hub_manifest_accepts_pinned_oci_extension(tmp_path: Path):
+    service = make_hub_service(tmp_path, hub_manifest())
+
+    status = service.check(force=True)
+
+    asset = status["latest"]["assets"][0]
+    assert asset["registry"] == OCI_REGISTRY
+    assert asset["digest"] == OCI_DIGEST
+    assert status["update_available"] is True
+
+
+@pytest.mark.parametrize("registry,digest", [
+    ("docker.io/owner/repo", OCI_DIGEST),
+    (OCI_REGISTRY, "sha256:" + "d" * 63),
+])
+def test_hub_manifest_drops_invalid_oci_without_losing_archive(tmp_path: Path, registry: str, digest: str):
+    service = make_hub_service(tmp_path, hub_manifest(registry=registry, digest=digest))
+
+    status = service.check(force=True)
+
+    asset = status["latest"]["assets"][0]
+    assert "registry" not in asset and "digest" not in asset
+    assert asset["sha256"] == "c" * 64 and asset["size"] == 2048
+    assert status["update_available"] is True
+
+
+def test_oci_mode_refuses_full_archive_download(tmp_path: Path):
+    service = make_hub_service(tmp_path, hub_manifest())
+    service.check(force=True)
+    service.oci_delivery_provider = lambda: True
+
+    with pytest.raises(ValueError, match="无需下载"):
+        service.start_download()
+
+    assert service.download_status()["status"] == "idle"
+
+
+def test_oci_authorize_skips_archive_download_and_starts_installer(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(updates_module, "SCHEDULE_POLL_SECONDS", 0.01)
+    service = make_hub_service(tmp_path, hub_manifest())
+    service.check(force=True)
+    service.install_capability = lambda: True
+    service.oci_delivery_provider = lambda: True
+    calls: list[str] = []
+    service.schedule_installer = lambda version: calls.append(version) or {"status": "starting"}
+
+    flow = service.authorize_update({"mode": "immediate"})
+
+    assert flow["active"] is True
+    assert flow["stage"] == "waiting"
+    assert flow["message"] == "等待空闲，由宿主机分层拉取镜像"
+    deadline = time.monotonic() + 2
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == ["0.3.0"]
+    assert service.download_status()["status"] == "idle"
+    assert not (service.download_dir / "0.3.0").exists()
+
+
+def test_schedule_install_allowed_without_local_artifact_in_oci_mode(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(updates_module, "SCHEDULE_POLL_SECONDS", 0.05)
+    service = make_hub_service(tmp_path, hub_manifest())
+    service.check(force=True)
+    service.install_capability = lambda: True
+    service.oci_delivery_provider = lambda: True
+    service.schedule_installer = lambda version: {"status": "starting"}
+
+    schedule = service.schedule_install()
+
+    assert schedule["armed"] is True
+    assert schedule["version"] == "0.3.0"
+
+
+def test_oci_capability_loss_falls_back_to_archive_download_once(tmp_path: Path, monkeypatch):
+    """授权后宿主能力消失时，同一次授权内回退一次完整下载并继续安装。"""
+    monkeypatch.setattr(updates_module, "SCHEDULE_POLL_SECONDS", 0.01)
+    service = make_hub_service(tmp_path, hub_manifest())
+    service.check(force=True)
+    service.install_capability = lambda: True
+    capable = {"enabled": True}
+    service.oci_delivery_provider = lambda: capable["enabled"]
+    service._downloaded_artifact_ready = lambda version: True
+    started: list[str] = []
+    service.schedule_installer = lambda version: started.append(version) or {"status": "starting"}
+    downloads: list[int] = []
+
+    def fake_start_download():
+        downloads.append(1)
+        with service._lock:
+            service._download_state = {
+                **service._download_state,
+                "status": "completed",
+                "version": "0.3.0",
+                "asset_name": "hub-image-0.3.0.tar.gz",
+                "sha256": "c" * 64,
+                "total": 2048,
+            }
+        return service.download_status()
+
+    service.start_download = fake_start_download
+    flow = service.authorize_update({"mode": "immediate"})
+    assert flow["message"] == "等待空闲，由宿主机分层拉取镜像"
+
+    capable["enabled"] = False
+    deadline = time.monotonic() + 2
+    while not started and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    # 归档下载从未启动，必须回退一次；随后按正常下载完成路径开始安装，而不是永久等待。
+    assert downloads == [1]
+    assert started == ["0.3.0"]
+    assert service.install_schedule()["armed"] is False
+
+
+def test_oci_capability_loss_without_archive_disarms_explicitly(tmp_path: Path, monkeypatch):
+    """无法回退完整下载时必须明确结束，不能无限等待未启动的归档下载。"""
+    monkeypatch.setattr(updates_module, "SCHEDULE_POLL_SECONDS", 0.01)
+    service = make_hub_service(tmp_path, hub_manifest())
+    service.check(force=True)
+    service.install_capability = lambda: True
+    capable = {"enabled": True}
+    service.oci_delivery_provider = lambda: capable["enabled"]
+    started: list[str] = []
+    service.schedule_installer = lambda version: started.append(version) or {"status": "starting"}
+    downloads: list[int] = []
+
+    def fail_download():
+        downloads.append(1)
+        raise ValueError("当前没有可下载的更新")
+
+    service.start_download = fail_download
+    service.authorize_update({"mode": "immediate"})
+
+    capable["enabled"] = False
+    deadline = time.monotonic() + 2
+    while service.install_schedule()["armed"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    schedule = service.install_schedule()
+
+    assert downloads == [1]
+    assert started == []
+    assert schedule["armed"] is False
+    assert "无法回退完整下载" in schedule["last_result"]
+
+
+def test_update_flow_treats_host_executor_pulling_as_installing(tmp_path: Path):
+    service = make_hub_service(tmp_path, hub_manifest())
+    service.check(force=True)
+    service.install_capability = lambda: True
+    service.install_snapshot_provider = lambda: {
+        "status": "pulling", "target_version": "0.3.0", "message": "正在分层拉取镜像",
+    }
+    service._schedule = {**service._schedule, "armed": False, "version": "0.3.0"}
+
+    flow = service.update_flow()
+
+    assert flow["active"] is True
+    assert flow["stage"] == "installing"
+    assert flow["message"] == "正在分层拉取镜像"
+    with pytest.raises(ValueError, match="安装已开始"):
+        service.cancel_update()

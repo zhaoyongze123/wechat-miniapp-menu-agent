@@ -7,6 +7,7 @@ Hub 业务容器只负责授权、组装请求与展示状态；真正的镜像�
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import urllib.request
@@ -16,6 +17,9 @@ from typing import Any, Callable
 APPLY_TIMEOUT_SECONDS = 1800.0
 STATUS_TIMEOUT_SECONDS = 3.0
 STATUS_CACHE_SECONDS = 2.0
+# OCI 分层交付只允许固定 GHCR 仓库与不可变摘要；格式不合法就退回完整归档。
+OCI_REGISTRY_RE = re.compile(r"^ghcr\.io/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
+OCI_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class HubInstallProxy:
@@ -56,6 +60,19 @@ class HubInstallProxy:
         """采集/标注启动前检查的闸门；与 Windows 安装共用同一套调用方式。"""
         return self._lock
 
+    @staticmethod
+    def _oci_capable(snapshot: dict) -> bool:
+        capabilities = (snapshot or {}).get("capabilities")
+        return isinstance(capabilities, dict) and capabilities.get("oci") is True
+
+    @property
+    def oci_supported(self) -> bool:
+        """只读最近一次执行器快照；旧执行器没有 capabilities 字段，一律按不支持处理。
+
+        该属性不得发起网络请求：更新服务可能在状态锁内读取它。
+        """
+        return self._oci_capable(self._cache)
+
     @property
     def reason(self) -> str:
         if self._supported:
@@ -81,6 +98,7 @@ class HubInstallProxy:
                 "supported": False, "reason": self.reason, "active": False,
                 "status": "idle", "target_version": "", "previous_version": "",
                 "message": "", "error": "", "started_at": "", "finished_at": "",
+                "capabilities": {"oci": False},
             }
         with self._lock:
             now = time.monotonic()
@@ -149,8 +167,18 @@ class HubInstallProxy:
         if not payload["sha256"] or payload["size"] <= 0 or not payload["url"]:
             raise ValueError("镜像资产缺少校验信息，已拒绝安装")
         with self._lock:
-            if self.status(force=True).get("active"):
+            # 能力必须以最终刷新结果为准：缓存可能已过期，授权或升级期间宿主能力也可能变化。
+            fresh = self.status(force=True)
+            if fresh.get("active"):
                 raise ValueError("已有更新任务正在执行")
+            # 只有宿主执行器明确声明 OCI 能力时才发送新字段；旧执行器继续只收完整归档。
+            # url/sha256/size 始终保留，作为拉取失败时的归档回退依据。
+            if self._oci_capable(fresh):
+                registry = str(asset.get("registry") or "").strip().lower()
+                digest = str(asset.get("digest") or "").strip().lower()
+                if OCI_REGISTRY_RE.fullmatch(registry) and OCI_DIGEST_RE.fullmatch(digest):
+                    payload["image"] = registry
+                    payload["digest"] = digest
             claimed = False
             if require_authorization and self.authorization_check is not None:
                 if not self.authorization_check(version):
@@ -167,6 +195,8 @@ class HubInstallProxy:
                 "error": "",
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
                 "finished_at": "",
+                # 保留能力声明，避免提交后能力缓存丢失导致调度误判为“仍需下载归档”。
+                "capabilities": self._cache.get("capabilities") or {"oci": False},
             }
             self._cache_at = time.monotonic()
             # 返回提交瞬间的快照：线程可能在返回前就把状态写回缓存。
@@ -199,5 +229,11 @@ class HubInstallProxy:
             }
             self._cache_at = time.monotonic()
             return
-        self._cache = {"supported": True, "reason": "", **data}
+        self._cache = {
+            "supported": True,
+            "reason": "",
+            **data,
+            # 执行器的 /apply 响应不重复能力声明；沿用提交前快照，避免能力缓存丢失。
+            "capabilities": data.get("capabilities") or self._cache.get("capabilities") or {"oci": False},
+        }
         self._cache_at = time.monotonic()
