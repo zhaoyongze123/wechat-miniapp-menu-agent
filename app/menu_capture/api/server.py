@@ -54,12 +54,14 @@ from menu_capture.shared.hub_update import HubInstallProxy
 from menu_capture.annotation.annotation import AnnotationSession, RunnerExecutor
 from menu_capture.core.instance_lock import InstanceLockedError, instance_lock
 from menu_capture.shared.shared import SharedConflict, SharedHub, WorkerUnauthorized
+from menu_capture.shared.delivery import DeliveryService
 from menu_capture.api.shared_routes import register_shared_routes
 from menu_capture.shared.shared_worker import SharedWorker
 from menu_capture.api.workbench_page import workbench_page
 from menu_capture.api.context import ApiContext
 from menu_capture.api.routers import (
     annotation as annotation_routes,
+    delivery as delivery_routes,
     environment as environment_routes,
     model_usage as model_usage_routes,
     rejections as rejection_routes,
@@ -113,6 +115,20 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     materials = MaterialService(root / "data", configs, store)
     hub = SharedHub(store, materials) if role == "hub" else None
     worker = SharedWorker(root, store, runner.output_lock, control_lock) if role == "worker" else None
+    # 合格成品目录只在 Hub 维护：宿主机 bind mount 的交付根由运维显式配置，未配置时只读降级。
+    delivery = None
+    if role == "hub":
+        try:
+            delivery_poll = float(os.environ.get("MENU_CAPTURE_DELIVERY_POLL_SECONDS") or 5)
+        except ValueError:
+            delivery_poll = 5.0
+        delivery = DeliveryService(
+            root / "data",
+            root=str(os.environ.get("MENU_CAPTURE_DELIVERY_ROOT") or "").strip(),
+            host_path=str(os.environ.get("MENU_CAPTURE_DELIVERY_HOST_PATH") or "").strip(),
+            task_provider=materials.effective_capture_tasks,
+            poll_seconds=delivery_poll,
+        )
     if worker:
         runner.assignment_source = worker.source_root
         store.bind_assignments = worker.bind_run
@@ -199,6 +215,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             threading.Thread(target=_warm_local_ocr, name="ocr-warmup", daemon=True).start()
         # 常驻 1s 巡检：心跳回收 + 单通道调度；不依赖任何请求触发。
         materials.start_job_runner()
+        if delivery:
+            delivery.start()
         if worker:
             worker.start()
             if sys.platform == "win32":
@@ -206,6 +224,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         try:
             yield
         finally:
+            if delivery:
+                delivery.stop()
             if worker:
                 worker.close()
             try:
@@ -365,6 +385,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         materials=materials,
         hub=hub,
         worker=worker,
+        delivery=delivery,
         control_lock=control_lock,
         idle=idle,
     )
@@ -374,6 +395,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     rejection_routes.register(app, ctx)
     review_routes.register(app, ctx)
     annotation_routes.register(app, ctx)
+    delivery_routes.register(app, ctx)
 
     # React 是唯一业务前端：入口 HTML 与构建资源都来自 web/react/。
     # 资源只按 Vite manifest 白名单返回，避免把构建目录里的其他文件暴露出去。

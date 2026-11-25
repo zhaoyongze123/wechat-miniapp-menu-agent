@@ -16,6 +16,7 @@ from menu_capture.core.environment import EnvironmentDiagnostics
 from menu_capture.materials.materials import MaterialService
 from menu_capture.materials.rejections import RejectionService
 from menu_capture.shared.hub_update import HubInstallProxy
+from menu_capture.shared.delivery import DeliveryService
 from menu_capture.shared.shared import SharedHub
 from menu_capture.shared.shared_worker import SharedWorker
 from menu_capture.storage.store import TaskStore
@@ -40,6 +41,7 @@ class ApiContext:
     materials: MaterialService
     hub: SharedHub | None
     worker: SharedWorker | None
+    delivery: DeliveryService | None
     control_lock: threading.RLock
     # 采集/标注运行中禁止修改配置、素材与环境的统一闸门，由 create_app 注入。
     idle: Callable[[], None]

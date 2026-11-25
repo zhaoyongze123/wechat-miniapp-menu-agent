@@ -21,7 +21,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 menu-capture \
     && useradd --uid 10001 --gid 10001 --no-create-home menu-capture \
-    && install -d -o 10001 -g 10001 /var/lib/menu-capture
+    && install -d -o 10001 -g 10001 /var/lib/menu-capture \
+    && install -d -o 10001 -g 10001 /var/lib/menu-delivery
 ENV PATH="/opt/menu-venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     MENU_CAPTURE_VERSION=$VERSION \
