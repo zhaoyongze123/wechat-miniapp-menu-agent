@@ -1684,8 +1684,15 @@ class UpdateService:
     def _downloaded_artifact_ready(self, version: str) -> bool:
         state = dict(self._download_state)
         name = str(state.get("asset_name") or "")
-        if state.get("version") != version or Path(name).name != name or not name:
+        if (
+            state.get("status") != "completed" or state.get("version") != version
+            or Path(name).name != name or not name
+        ):
             return False
+        # 补丁落盘后可能损坏或被清理。仍将已完成的补丁记录交给控制器核对身份和路径，
+        # 由独立执行器决定是否在同一授权内回退，无需在后台调度重复下载补丁。
+        if state.get("asset_kind") == PATCH_ASSET_KIND and self.platform == PATCH_PLATFORM:
+            return True
         try:
             target = self.download_dir / version / name
             return target.is_file() and not _is_reparse(target)
