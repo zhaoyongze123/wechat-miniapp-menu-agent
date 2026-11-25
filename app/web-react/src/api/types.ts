@@ -46,6 +46,9 @@ export interface WorkerConnectionStatus {
   history_error?: string
   credential_invalid?: boolean
   pending_uploads?: number
+  /** 重新配对后旧设备身份下无法补传、仍保留在本机的结果数量与提示。 */
+  orphaned_pending?: number
+  notice?: string
   assignments?: WorkerAssignmentRecord[]
 }
 

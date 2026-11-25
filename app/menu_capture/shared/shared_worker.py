@@ -66,6 +66,8 @@ class SharedWorker:
         self._http = client or httpx.Client(timeout=httpx.Timeout(20, connect=5), trust_env=False)
         self._wake = threading.Event()
         self._stop = threading.Event()
+        # 串行化配对请求，避免并发配对把两次成功的凭证互相覆盖。
+        self._pair_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self.online = False
         self._hub_reports_runs = False
@@ -85,7 +87,7 @@ class SharedWorker:
                     snapshot_id TEXT NOT NULL, source_hash TEXT NOT NULL, source_suffix TEXT NOT NULL,
                     status TEXT NOT NULL, run_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
                     disposition TEXT NOT NULL DEFAULT '', shared_state TEXT NOT NULL DEFAULT '',
-                    shared_reject TEXT NOT NULL DEFAULT ''
+                    shared_reject TEXT NOT NULL DEFAULT '', worker_id TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS worker_assignment_task ON worker_assignments(task_id,status);
                 CREATE INDEX IF NOT EXISTS worker_assignment_source ON worker_assignments(source_hash);
@@ -95,7 +97,7 @@ class SharedWorker:
             """)
             # 旧安装包的表没有共享端状态列，按需补齐，保留已有本机任务。
             columns = {row["name"] for row in db.execute("PRAGMA table_info(worker_assignments)")}
-            for name in ("shared_state", "shared_reject"):
+            for name in ("shared_state", "shared_reject", "worker_id"):
                 if name not in columns:
                     db.execute(f"ALTER TABLE worker_assignments ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
 
@@ -123,41 +125,71 @@ class SharedWorker:
 
     def connect(self, url: str, code: str, name: str) -> dict:
         url = hub_url(url)
-        if self.connection:
-            if not self.connection.get("invalid"):
+        with self._pair_lock:
+            if self.connection and not self.connection.get("invalid"):
                 raise ValueError("此采集端已配对")
-            # Hub 侧解除配对不会删除本机凭证文件，失效凭证必须在这里清掉，
-            # 否则采集端会一直认为“已配对”，无法用新配对码重新连接。
-            self.credentials.unlink(missing_ok=True)
-            self.connection = {}
-            self.online = False
+            previous = str(self.connection.get("id") or "")
+            try:
+                response = self._http.post(url + "/api/shared/worker/pair", json={"code": code, "name": name})
+            except httpx.RequestError:
+                raise ValueError("无法连接工作台，请检查地址和内网连接") from None
+            if response.status_code != 200:
+                raise ValueError("工作台拒绝配对，请检查地址和配对码")
+            data = response.json()
+            if (not isinstance(data, dict) or not isinstance(data.get("token"), str)
+                    or not isinstance(data.get("id"), str) or not data.get("token")):
+                raise ValueError("工作台返回了无效的配对结果")
+            connection = {"url": url, "token": data["token"], "name": data.get("name", name), "id": data["id"]}
+            if previous and previous != connection["id"]:
+                # 旧设备身份下的未上传结果无法用新凭证补传，先把数量记在新凭证里供界面提示；
+                # 凭证写入成功后才归档旧分配，避免配对失败破坏原有本机状态。
+                abandoned = self._pending_count(previous)
+                if abandoned:
+                    connection["abandoned_pending"] = abandoned
+            atomic_json(self.credentials, connection)
+            self.connection = connection
+            self.online = True
             self.error = ""
-        try:
-            response = self._http.post(url + "/api/shared/worker/pair", json={"code": code, "name": name})
-        except httpx.RequestError:
-            raise ValueError("无法连接工作台，请检查地址和内网连接") from None
-        if response.status_code != 200:
-            raise ValueError("工作台拒绝配对，请检查地址和配对码")
-        data = response.json()
-        if (not isinstance(data, dict) or not isinstance(data.get("token"), str)
-                or not isinstance(data.get("id"), str) or not data.get("token")):
-            raise ValueError("工作台返回了无效的配对结果")
-        connection = {"url": url, "token": data["token"], "name": data.get("name", name), "id": data["id"]}
-        atomic_json(self.credentials, connection)
-        self.connection = connection
-        self.online = True
-        self.error = ""
-        self._wake.set()
+            if previous and previous != connection["id"]:
+                self._detach_previous(previous)
+            self._wake.set()
         return self.status()
 
-    def _url(self, suffix: str) -> str:
-        return self.connection["url"] + "/api/shared/worker" + suffix
+    def _pending_count(self, worker_id: str) -> int:
+        with self.store.connect() as db:
+            return db.execute(
+                "SELECT COUNT(*) FROM worker_assignments WHERE status='pending_upload'"
+                " AND (worker_id='' OR worker_id=?)", (worker_id,)).fetchone()[0]
+
+    def _detach_previous(self, worker_id: str) -> None:
+        """把旧身份下的本地分配归属到旧 worker_id 并停止重试。
+
+        只记录归属、结束活动状态：任务行、截图与 outbox 压缩包全部保留，
+        不迁移到新身份，也不删除；需要补传时由管理员在旧设备身份下处理。
+        """
+        with self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE worker_assignments SET worker_id=?"
+                       " WHERE worker_id='' AND status IN ('ready','pending_upload')", (worker_id,))
+            db.execute("UPDATE worker_assignments SET status='reclaimed'"
+                       " WHERE worker_id=? AND status IN ('ready','pending_upload')", (worker_id,))
+
+    def _current_worker_id(self) -> str:
+        return str(self.connection.get("id") or "")
+
+    def _url(self, suffix: str, connection: dict | None = None) -> str:
+        return (connection or self.connection)["url"] + "/api/shared/worker" + suffix
+
+    @staticmethod
+    def _auth(connection: dict) -> dict:
+        return {"Authorization": "Bearer " + connection["token"]}
 
     @property
     def _headers(self) -> dict:
-        return {"Authorization": "Bearer " + self.connection["token"]}
+        return self._auth(self.connection)
 
     def status(self) -> dict:
+        abandoned = int(self.connection.get("abandoned_pending") or 0)
         with self.store.connect() as db:
             assignments = [dict(row) for row in db.execute("""
                 SELECT id,task_id,batch_id,batch_name,store,revision,status,disposition FROM worker_assignments
@@ -172,6 +204,10 @@ class SharedWorker:
                 "history_error": self.history_error,
                 "credential_invalid": bool(self.connection.get("invalid")),
                 "pending_uploads": sum(row["status"] == "pending_upload" for row in assignments),
+                # 重新配对后旧身份下无法补传的结果数量与提示；结果文件仍保留在本机。
+                "orphaned_pending": abandoned,
+                "notice": (f"重新配对后，旧设备身份下的 {abandoned} 条未上传结果已保留在本机，"
+                           "无法再用新凭证补传；请在旧设备身份下处理或联系管理员导出。") if abandoned else "",
                 "assignments": assignments}
 
     def tasks(self) -> list[dict]:
@@ -182,12 +218,14 @@ class SharedWorker:
                        a.status AS assignment_status, a.shared_state, a.shared_reject
                 FROM tasks t JOIN worker_assignments a ON a.task_id=t.id
                 WHERE a.status IN ('ready','pending_upload')
+                  -- 重新配对后旧设备身份下的分配不能再被新凭证执行。
+                  AND (a.worker_id='' OR a.worker_id=?)
                   AND a.rowid=(SELECT MAX(b.rowid) FROM worker_assignments b WHERE b.task_id=t.id)
                   -- 只展示所属批次当前发布快照的任务；首次同步前没有记录时保留旧行为。
                   AND a.snapshot_id=COALESCE(
                       (SELECT b.snapshot_id FROM worker_batches b WHERE b.batch_id=a.batch_id), a.snapshot_id)
                 ORDER BY a.rowid
-            """).fetchall()
+            """, (self._current_worker_id(),)).fetchall()
         # 共享端已判定不合格/已采集/已退回的门店不再允许本机重跑。
         blocked = {"rejected", "captured", "returned"}
         return [dict(row) | {"runnable": row["assignment_status"] == "ready"
@@ -261,7 +299,8 @@ class SharedWorker:
         with self.store.connect() as db:
             candidates = [dict(row) for row in db.execute("""
                 SELECT * FROM worker_assignments WHERE status IN ('ready','reclaimed') AND run_id<>''
-            """)]
+                  AND (worker_id='' OR worker_id=?)
+            """, (self._current_worker_id(),))]
         runs = {}
         for assigned in candidates:
             run_id = assigned["run_id"]
@@ -376,10 +415,10 @@ class SharedWorker:
                   "shared:" + assigned["id"], now()))
             db.execute("""
                 INSERT INTO worker_assignments (id,task_id,batch_id,batch_name,store,revision,snapshot_id,
-                    source_hash,source_suffix,status,created_at)
+                    source_hash,source_suffix,status,created_at,worker_id)
                 VALUES (:id,:task_id,:batch_id,:batch_name,:store,:revision,:snapshot_id,
-                    :source_hash,:source_suffix,'ready',:created_at)
-            """, assigned)
+                    :source_hash,:source_suffix,'ready',:created_at,:worker_id)
+            """, {**assigned, "worker_id": self._current_worker_id()})
 
     def _run_summary(self) -> dict | None:
         run = self.store.latest_run()
@@ -391,10 +430,17 @@ class SharedWorker:
             "processed": max(0, min(total, int(run["current_index"]))), "total": total,
         }
 
-    def _heartbeat(self) -> set[str]:
+    def _heartbeat(self, connection: dict | None = None) -> set[str]:
+        connection = connection or self.connection
+        worker_id = str(connection.get("id") or "")
+        headers = self._auth(connection)
         with self.store.connect() as db:
-            ready = [row["id"] for row in db.execute("SELECT id FROM worker_assignments WHERE status='ready'")]
-            pending = db.execute("SELECT COUNT(*) FROM worker_assignments WHERE status='pending_upload'").fetchone()[0]
+            ready = [row["id"] for row in db.execute(
+                "SELECT id FROM worker_assignments WHERE status='ready' AND (worker_id='' OR worker_id=?)",
+                (worker_id,))]
+            pending = db.execute(
+                "SELECT COUNT(*) FROM worker_assignments WHERE status='pending_upload'"
+                " AND (worker_id='' OR worker_id=?)", (worker_id,)).fetchone()[0]
         active = None
         summary = self._run_summary() if self._hub_reports_runs else None
         software = None
@@ -410,16 +456,19 @@ class SharedWorker:
                 payload["run_summary"] = summary
             if start == 0 and software is not None:
                 payload["software"] = software
-            response = self._http.post(self._url("/sync"), headers=self._headers, json=payload)
+            response = self._http.post(self._url("/sync", connection), headers=headers, json=payload)
             # Hub 回滚后可能拒绝新字段。逐步退回旧格式，确保任务下载与补传继续。
             if response.status_code == 400 and "software" in payload:
                 del payload["software"]
                 self._hub_reports_software = False
-                response = self._http.post(self._url("/sync"), headers=self._headers, json=payload)
+                response = self._http.post(self._url("/sync", connection), headers=headers, json=payload)
             if response.status_code == 400 and "run_summary" in payload:
                 del payload["run_summary"]
-                response = self._http.post(self._url("/sync"), headers=self._headers, json=payload)
+                response = self._http.post(self._url("/sync", connection), headers=headers, json=payload)
             response.raise_for_status()
+            # 重新配对会替换 self.connection；旧凭证的迟到成功响应不得写入新连接的任务与状态。
+            if self.connection is not connection:
+                return set()
             sync = response.json()
             self._hub_reports_runs = sync.get("supports_run_summary") is True
             self._hub_reports_software = sync.get("supports_software_status") is True
@@ -435,9 +484,12 @@ class SharedWorker:
             self.prepare_results()
             self._store_shared_state(sync)
             with self.store.connect() as db:
-                local = {row["id"] for row in db.execute("SELECT id FROM worker_assignments")}
+                local = {row["id"] for row in db.execute(
+                    "SELECT id FROM worker_assignments WHERE worker_id='' OR worker_id=?", (worker_id,))}
                 db.executemany("UPDATE worker_assignments SET status='reclaimed' WHERE id=? AND status='ready'",
                                ((row_id,) for row_id in local - active_ids))
+        if self.connection is not connection:
+            return set()
         self.online = True
         for assigned in active:
             try:
@@ -446,7 +498,8 @@ class SharedWorker:
                 self.error = str(exc)[:200]
         return active_ids
 
-    def _sync_run_history(self) -> None:
+    def _sync_run_history(self, connection: dict | None = None) -> None:
+        connection = connection or self.connection
         if not self._hub_supports_history:
             return
         # 轮次同步失败不影响分配下载和截图补传，待下一次轮询继续。
@@ -454,8 +507,11 @@ class SharedWorker:
             report = self.history.pending_report()
             if report is None:
                 return
-            response = self._http.put(self._url("/run-history"), headers=self._headers, json=report, timeout=5)
+            response = self._http.put(self._url("/run-history", connection),
+                                      headers=self._auth(connection), json=report, timeout=5)
             response.raise_for_status()
+            if self.connection is not connection:
+                return
             if response.json().get("acknowledged") != report["generation"]:
                 raise ValueError("接收端未确认轮次")
             self.history.acknowledge(report["run"]["id"], report["generation"])
@@ -514,20 +570,27 @@ class SharedWorker:
                     ((value.get("state", ""), value.get("reject_reason", ""), task_id)
                      for task_id, value in states.items()))
 
-    def _upload_pending(self) -> None:
+    def _upload_pending(self, connection: dict | None = None) -> None:
+        connection = connection or self.connection
+        worker_id = str(connection.get("id") or "")
+        headers = self._auth(connection)
         with self.store.connect() as db:
-            pending = [row["id"] for row in db.execute("SELECT id FROM worker_assignments WHERE status='pending_upload'")]
+            pending = [row["id"] for row in db.execute(
+                "SELECT id FROM worker_assignments WHERE status='pending_upload'"
+                " AND (worker_id='' OR worker_id=?)", (worker_id,))]
         for assignment_id in pending:
-            if self._stop.is_set():
+            if self._stop.is_set() or self.connection is not connection:
                 return
             path = self.outbox / (assignment_id + ".zip")
             try:
                 with path.open("rb") as stream:
-                    response = self._http.put(self._url(f"/assignments/{assignment_id}/result"),
-                                              headers=self._headers | {"Content-Type": "application/zip",
-                                                                      "Content-Length": str(path.stat().st_size)},
+                    response = self._http.put(self._url(f"/assignments/{assignment_id}/result", connection),
+                                              headers=headers | {"Content-Type": "application/zip",
+                                                                 "Content-Length": str(path.stat().st_size)},
                                               content=iter(lambda: stream.read(1024 * 1024), b""))
                 response.raise_for_status()
+                if self.connection is not connection:
+                    return
                 disposition = response.json()["disposition"]
                 if disposition not in {"accepted", "history"}:
                     raise ValueError("后台未确认此结果")
@@ -537,13 +600,21 @@ class SharedWorker:
                     if response.status_code >= 500:
                         raise
                     if response.status_code == 401:
-                        # 凭证失效时保留整个补传队列，避免逐包重复发送。
                         try:
                             detail = response.json().get("detail")
                         except (ValueError, AttributeError):
                             detail = None
+                        # 凭证失效时保留整个补传队列，避免逐包重复发送。
                         if detail in ("采集端凭证无效", "采集电脑已解除配对"):
                             raise
+                        if detail == "分配不属于此采集端":
+                            # 旧设备身份下的结果永远无法用新凭证补传：停止重试并保留压缩包。
+                            with self.store.connect() as db:
+                                db.execute("UPDATE worker_assignments SET status='reclaimed' WHERE id=?",
+                                           (assignment_id,))
+                            self.error = ("有采集结果属于旧设备身份，无法用当前凭证补传；"
+                                          "压缩包已保留在本机，请联系管理员处理")
+                            continue
                 self.error = "有采集结果尚未同步，请检查后台或本机磁盘空间"
                 continue
             with self.store.connect() as db:
@@ -554,16 +625,22 @@ class SharedWorker:
     def poll(self) -> None:
         """先保存本机结果，网络不可用时仍按本机队列执行。"""
         # 记录本次轮询使用的凭证对象：重新配对会替换 self.connection，
-        # 旧凭证请求的 401 不能把刚写入的新凭证再误标为失效。
+        # 旧凭证请求的成功或失败响应都不能改动新连接的凭证、任务与状态。
         connection = self.connection
         try:
             self.error = ""
             with self.control_lock:
                 self.prepare_results()
-            if not self.connection.get("invalid"):
-                self._upload_pending()
-            self._heartbeat()
-            self._sync_run_history()
+            if not connection.get("invalid"):
+                self._upload_pending(connection)
+            if self.connection is not connection:
+                return
+            self._heartbeat(connection)
+            if self.connection is not connection:
+                return
+            self._sync_run_history(connection)
+            if self.connection is not connection:
+                return
             if self.connection.pop("invalid", None):
                 atomic_json(self.credentials, self.connection)
         except (httpx.HTTPError, OSError, ValueError, KeyError) as exc:

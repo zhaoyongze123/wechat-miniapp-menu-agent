@@ -1412,3 +1412,28 @@ def test_chat_image_bubble_located_while_still_loading(tmp_path):
     assert abs(right - 900) <= 2 and abs(bottom - 560) <= 2
     assert match["center_image_px"] == {"x": 750, "y": 490}
     assert match["method"] == "chat_bubble_background_diff"
+
+
+def test_shared_assignment_readiness_reuses_source_checks_without_global_input_dir(tmp_path: Path) -> None:
+    """共享派单只豁免本机全局素材目录，真实配置异常仍由同一套 readiness 校验暴露。"""
+    runner, _, selected, _, profile_path, _ = _setup(tmp_path, mode="automatic")
+    runner.clipboard_preparer = lambda _path: None
+    runner.clipboard_text_preparer = lambda _text: None
+    runner.ocr_reader = None
+    settings = runner.configs.load()
+    object.__setattr__(settings, "input_dir", "")
+    runner.configs.load = lambda: settings
+
+    # 未接入工作台分配来源时，仍按本机配置如实报错。
+    assert any("输入目录" in issue for issue in runner.readiness()["issues"])
+
+    # 接入分配来源后不再要求全局素材目录，任务来源继续走同一套 _validate_source 校验。
+    runner.assignment_source = lambda task_id: str(tmp_path / "inbox") if task_id == selected["id"] else ""
+    status = runner.readiness()
+    assert status["ready"] is True, status["issues"]
+
+    # 桌面配置/自动化参数的真实异常不会被共享模式豁免。
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile.pop("preview_selector")
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    assert any("preview_selector" in issue for issue in runner.readiness()["issues"])

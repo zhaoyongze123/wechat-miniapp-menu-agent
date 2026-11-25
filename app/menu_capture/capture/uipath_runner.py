@@ -346,9 +346,12 @@ class UiPathRunner:
         task_id = profile.get("selected_task_id")
         raw_task_ids = task_ids_override if task_ids_override is not None else profile.get("selected_task_ids", [])
         task_ids: list[str] = []
+        # 空闲未选任务与采集配置异常是两类问题：前者只是还没选门店，诊断里按提示处理。
+        selection_missing = False
         if mode == "automatic":
             if not isinstance(raw_task_ids, list) or not raw_task_ids or any(not isinstance(value, str) or not value.strip() for value in raw_task_ids):
                 issues.append("automatic 模式请按顺序选择至少一个来源任务 ID")
+                selection_missing = True
             else:
                 task_ids = [value.strip() for value in raw_task_ids]
                 if len(set(task_ids)) != len(task_ids):
@@ -356,6 +359,7 @@ class UiPathRunner:
         else:
             if not isinstance(task_id, str) or not task_id.strip():
                 issues.append("请先在任务列表中手动指定一个来源任务 ID")
+                selection_missing = True
             else:
                 task_ids = [task_id.strip()]
         max_tasks = profile.get("max_tasks", 1)
@@ -364,7 +368,11 @@ class UiPathRunner:
 
         try:
             settings = self.configs.load()
-            if (not settings.input_dir and not (trial_batch_sources or trial_source)) or not settings.output_dir:
+            # 共享派单的素材来源由工作台分配，只有本机独立采集才要求全局素材目录；
+            # 输出目录始终是本机落盘要求，不随模式豁免。
+            shared_sources = self.assignment_source is not None
+            missing_input = not settings.input_dir and not (trial_batch_sources or trial_source or shared_sources)
+            if missing_input or not settings.output_dir:
                 issues.append("输入目录或输出目录尚未配置")
         except Exception:
             settings = None
@@ -397,9 +405,18 @@ class UiPathRunner:
                 if waiting_for_materials(selected) or selected["status"] not in {"pending", "needs_review", "needs_retry", "error", "blocked", "captured"}:
                     issues.append(f"任务状态 {selected['status']} 不允许重新接管")
                 if settings is not None:
-                    source_root = trial_batch_sources[selected_id] if trial_batch_sources else trial_source or settings.input_dir
+                    if trial_batch_sources:
+                        source_root = trial_batch_sources[selected_id]
+                    elif trial_source:
+                        source_root = trial_source
+                    elif self.assignment_source is not None:
+                        # 共享派单：用工作台分配并已校验落盘的来源目录，复用同一套来源校验逻辑。
+                        source_root = self.assignment_source(selected_id)
+                    else:
+                        source_root = settings.input_dir
                     self._validate_source(selected, source_root,
-                                          trial_source=bool(trial_batch_sources) or bool(trial_source))
+                                          trial_source=bool(trial_batch_sources) or bool(trial_source)
+                                          or self.assignment_source is not None)
                 selected_tasks.append(selected)
             except Exception as exc:
                 if isinstance(exc, NeedsReview):
@@ -408,7 +425,7 @@ class UiPathRunner:
                     issues.append("指定任务不存在或来源文件已变化")
         if selected_tasks:
             task = selected_tasks[0]
-        if mode == "automatic" and settings is not None and not trial_batch_sources:
+        if mode == "automatic" and settings is not None and not trial_batch_sources and self.assignment_source is None:
             binding = self.store.material_binding(settings.input_dir) or {}
             destinations = [str(self._store_output_dir(settings.output_dir, selected,
                                                        binding.get("batch_id", ""),
@@ -423,6 +440,8 @@ class UiPathRunner:
             "mode": mode,
             "launch_mode": launch_mode,
             "profile": profile,
+            # 供诊断区分“空闲未选门店”和真实的采集配置异常，不改变 ready 判定。
+            "selection_missing": selection_missing,
             "project_dir": str(self.project_dir),
             "selected_task_id": task_id if isinstance(task_id, str) else None,
             "selected_task_ids": task_ids,

@@ -390,7 +390,7 @@ def test_invalid_credential_can_pair_again_while_valid_one_is_rejected(tmp_path)
         assert worker.status()["credential_invalid"]
         assert worker.credentials.exists()
 
-        # Hub 解除配对不会清理本机凭证文件；采集端必须先清掉失效凭证再接受新配对码。
+        # 失效凭证在重新配对成功后才被原子替换；失败时保留原状态便于排查。
         worker.connect(url, hub.pairing_code()["code"], "A 机")
         status = worker.status()
         assert status["paired"] is True and status["credential_invalid"] is False

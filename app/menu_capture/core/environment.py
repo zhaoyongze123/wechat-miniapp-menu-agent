@@ -103,8 +103,7 @@ class EnvironmentDiagnostics:
                 readiness = self.runner.readiness(task_ids_override=task_ids_override)
                 profile_item = self._profile_check(readiness, shared=shared)
                 checks.append(profile_item)
-                blockers = self._blockers(by_id, profile_item, readiness.get("mode", "attached"),
-                                          shared=shared)
+                blockers = self._blockers(by_id, profile_item, readiness.get("mode", "attached"))
             return {
                 "checked_at": cheap["checked_at"],
                 "preflight": {"ready": not blockers, "blockers": blockers},
@@ -428,19 +427,23 @@ class EnvironmentDiagnostics:
     def _profile_check(readiness: dict, *, shared: bool = False) -> dict:
         native = sys.platform == "win32"
         name = "采集任务与 Windows 桌面配置" if native else "采集任务与 UiPath 配置"
-        if shared:
-            return _item("capture_profile", name, "ready", "由工作台下发 / 不适用",
-                         "共享派单模式下门店来源与批次版本由工作台下发，本机无需选择素材目录或发布版本。")
         if readiness.get("ready"):
-            return _item("capture_profile", name, "ready", "当前选择、来源文件和自动化参数通过静态检查",
+            summary = ("共享派单模式下门店来源由工作台下发，桌面配置与自动化参数通过静态检查"
+                       if shared else "当前选择、来源文件和自动化参数通过静态检查")
+            return _item("capture_profile", name, "ready", summary,
                          "开始时仍会重新核对一次任务状态与来源文件。")
-        issues = readiness.get("issues") or ["采集配置未就绪"]
-        # 同一问题可能被多次检查重复收集，展示前按出现顺序去重。
-        unique = list(dict.fromkeys(str(value) for value in issues))
-        return _item("capture_profile", name, "error", "；".join(unique)[:400],
-                     "请检查已选门店和采集设置。" if native else "请检查自动化方式、已选门店、窗口选择器和坐标校准。")
+        cutoff = "（共享派单模式下门店来源由工作台下发，需检查桌面配置、自动化参数与已选门店）" if shared else ""
+        issues = list(dict.fromkeys(str(value) for value in readiness.get("issues") or [])) or ["采集配置未就绪"]
+        # 只有“未选任务”一条问题时按空闲提示处理；存在其他问题说明是真实配置异常。
+        if readiness.get("selection_missing") and len(issues) == 1:
+            return _item("capture_profile", name, "warning", "尚未选择采集任务",
+                         "空闲时不选择门店不影响检查；开始采集前请选择门店"
+                         "（共享派单模式下同步等待工作台派发）后再开跑。")
+        detail = ("请检查已选门店和采集设置。" if native
+                  else "请检查自动化方式、已选门店、窗口选择器和坐标校准。") + cutoff
+        return _item("capture_profile", name, "error", "；".join(issues)[:400], detail)
 
-    def _blockers(self, checks: dict[str, dict], profile: dict, mode: str, *, shared: bool = False) -> list[str]:
+    def _blockers(self, checks: dict[str, dict], profile: dict, mode: str) -> list[str]:
         desktop_checks = (["windows_desktop", "windows_screenshot", "windows_ocr"] if sys.platform == "win32"
                           else ["uipath_accessibility", "uipath_screenshot"])
         required = ["input_directory", "output_directory", "model_service", *desktop_checks, "wechat_login"]
@@ -449,10 +452,6 @@ class EnvironmentDiagnostics:
         elif mode == "attached":
             required.append("attached_miniapp")
         required.append("capture_profile")
-        if shared:
-            # 共享派单模式的门店来源目录与批次版本由工作台下发，这两项不构成本机前置条件。
-            required = [check_id for check_id in required
-                        if check_id not in {"input_directory", "capture_profile"}]
         blockers: list[str] = []
         for check_id in required:
             value = checks.get(check_id) or profile

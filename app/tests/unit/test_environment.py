@@ -182,10 +182,11 @@ def test_preflight_blockers_are_user_readable_strings(tmp_path: Path) -> None:
     assert blockers == ["素材目录读取：目录不可读"]
 
 
-def test_shared_mode_marks_local_input_and_profile_not_applicable(tmp_path: Path) -> None:
+def test_shared_mode_only_exempts_local_input_directory(tmp_path: Path) -> None:
     settings = SimpleNamespace(input_dir="", output_dir=str(tmp_path / "output"),
                                model=SimpleNamespace(base_url="", model=""))
-    readiness = {"ready": False, "issues": ["输入目录或输出目录尚未配置"], "mode": "attached"}
+    readiness = {"ready": True, "issues": [], "mode": "attached",
+                 "selected_task_ids": ["store-1"], "selection_missing": False}
     diagnostics = EnvironmentDiagnostics(
         SimpleNamespace(load=lambda: settings, key=lambda: ""),
         SimpleNamespace(running=False, readiness=lambda **_kwargs: readiness),
@@ -195,18 +196,61 @@ def test_shared_mode_marks_local_input_and_profile_not_applicable(tmp_path: Path
 
     snapshot = diagnostics.snapshot(include_task_checks=True)
     checks = {item["id"]: item for item in snapshot["checks"]}
+    # 共享派单只豁免本机素材目录；采集配置仍以 readiness 的真实结果为准。
     assert checks["input_directory"]["status"] == "ready"
     assert checks["input_directory"]["summary"] == "由工作台下发 / 不适用"
     assert checks["capture_profile"]["status"] == "ready"
-    assert checks["capture_profile"]["summary"] == "由工作台下发 / 不适用"
-    assert all("素材目录读取" not in blocker and "采集任务与" not in blocker
-               for blocker in snapshot["preflight"]["blockers"])
+    assert checks["capture_profile"]["summary"] != "由工作台下发 / 不适用"
 
     # 解除共享配对后同一份本机配置仍应如实报错，避免共享标记掩盖真实问题。
     diagnostics.shared_mode_provider = None
     local = {item["id"]: item for item in diagnostics.snapshot(refresh=True)["checks"]}
     assert local["input_directory"]["status"] == "error"
-    assert local["capture_profile"]["status"] == "error"
+
+
+def test_shared_mode_keeps_real_capture_profile_errors(tmp_path: Path) -> None:
+    settings = SimpleNamespace(input_dir="", output_dir=str(tmp_path / "output"),
+                               model=SimpleNamespace(base_url="", model=""))
+    readiness = {"ready": False, "mode": "automatic", "selected_task_ids": ["store-1"],
+                 "selection_missing": False,
+                 "issues": ["profile 缺少 preview_selector；请在 UiPath 中录制并填写实际 selector"]}
+    diagnostics = EnvironmentDiagnostics(
+        SimpleNamespace(load=lambda: settings, key=lambda: ""),
+        SimpleNamespace(running=False, readiness=lambda **_kwargs: readiness),
+        tmp_path,
+        shared_mode_provider=lambda: True,
+    )
+
+    snapshot = diagnostics.snapshot(include_task_checks=True)
+    checks = {item["id"]: item for item in snapshot["checks"]}
+    # 共享模式不是“整体不适用”：桌面配置、自动化参数与已选任务仍必须通过检查。
+    assert checks["capture_profile"]["status"] == "error"
+    assert "preview_selector" in checks["capture_profile"]["summary"]
+    assert any("采集任务与" in blocker for blocker in snapshot["preflight"]["blockers"])
+
+
+def test_idle_without_selected_task_is_warning_not_error(tmp_path: Path) -> None:
+    readiness = {"ready": False, "mode": "attached", "selected_task_ids": [],
+                 "selection_missing": True,
+                 "issues": ["请先在任务列表中手动指定一个来源任务 ID"]}
+    diagnostics = EnvironmentDiagnostics(
+        SimpleNamespace(load=lambda: SimpleNamespace(input_dir="", output_dir=str(tmp_path / "output"),
+                                                     model=SimpleNamespace(base_url="", model="")),
+                        key=lambda: ""),
+        SimpleNamespace(running=False, readiness=lambda **_kwargs: readiness),
+        tmp_path,
+    )
+
+    checks = {item["id"]: item for item in diagnostics.snapshot(include_task_checks=True)["checks"]}
+    # 空闲未选门店只提示下一步；有其它真实问题时仍按错误处理。
+    assert checks["capture_profile"]["status"] == "warning"
+    assert checks["capture_profile"]["summary"] == "尚未选择采集任务"
+
+    readiness = {**readiness, "issues": [*readiness["issues"], "automatic 模式缺少已录制的 send_key"]}
+    diagnostics.invalidate()
+    checks = {item["id"]: item for item in diagnostics.snapshot(refresh=True)["checks"]}
+    assert checks["capture_profile"]["status"] == "error"
+    assert "send_key" in checks["capture_profile"]["summary"]
 
 
 def test_profile_issues_are_deduplicated() -> None:

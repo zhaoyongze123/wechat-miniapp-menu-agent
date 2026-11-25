@@ -85,7 +85,7 @@ function summaryText(role: ReturnType<typeof useRole>): string {
     }
     return `已连接共享后台${status.name ? ` · ${status.name}` : ''}${
       status.pending_uploads ? `，${status.pending_uploads} 个结果待补传` : ''
-    }。`
+    }。${status.notice ? ` ${status.notice}` : ''}`
   }
   return ''
 }
