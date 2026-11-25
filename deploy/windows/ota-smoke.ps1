@@ -167,11 +167,12 @@ try {
     $token = (Invoke-RestMethod "$base/api/session" -UseBasicParsing -TimeoutSec 5).token
     $authorized = Invoke-RestMethod -Method Post -Uri "$base/api/updates/update" -Headers @{ 'X-Capture-Token' = $token } `
         -Body (@{ mode = 'immediate' } | ConvertTo-Json) -ContentType 'application/json' -TimeoutSec 15
-    if ($authorized.flow.version -ne $Version) {
-        throw "Authorization targeted $($authorized.flow.version), expected $Version."
+    # 授权接口直接返回统一进度对象；/api/updates/status 才把它放在 flow 字段下。
+    if ($authorized.version -ne $Version) {
+        throw "Authorization targeted $($authorized.version), expected $Version."
     }
-    if ($authorized.flow.stage -notin @('downloading', 'waiting', 'installing', 'completed')) {
-        throw "Authorization did not start the update flow: $($authorized.flow.stage) $($authorized.flow.error)"
+    if ($authorized.stage -notin @('downloading', 'waiting', 'installing', 'completed')) {
+        throw "Authorization did not start the update flow: $($authorized.stage) $($authorized.error)"
     }
     $terminal = Wait-OtaFlow
     if ($terminal.stage -ne 'completed') {
