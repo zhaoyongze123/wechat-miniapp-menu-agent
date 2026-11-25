@@ -1072,6 +1072,8 @@ def test_fast_window_capture_rejects_stale_rect_and_wrong_size(tmp_path):
 def test_screenshot_reuses_confirmed_rect_for_same_window(tmp_path):
     runner = object.__new__(UiPathRunner)
     runner._fast_capture_enabled = True
+    # 非主窗口重拍逻辑会读取 profile 判断配置的微信 selector；没有配置即直接返回。
+    runner.profile_path = tmp_path / "profile.json"
     runner.transport = FileRobotTransport(tmp_path / "ipc")
     runner.transport._window_origin = (10, 20)
     runner.transport._window_bounds = (240, 800)

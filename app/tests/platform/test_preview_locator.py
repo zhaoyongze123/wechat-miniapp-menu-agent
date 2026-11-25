@@ -1,3 +1,12 @@
+"""预览工具栏二维码识别图标的定位测试。
+
+可合成部分只用仓库内已提交的图标模板在 tmp_path 造图；两处真实 Windows 采集
+截图（近重复样本、工作区外验收截图、二维码正文反例）与用户提供的圆底图标
+必须显式 opt-in，默认跳过并在 reason 里注明所需数据。
+"""
+from __future__ import annotations
+
+import os
 from pathlib import Path
 
 import cv2
@@ -7,12 +16,29 @@ import pytest
 from menu_capture.desktop.preview_locator import PreviewIconNotFound, locate_preview_recognize
 
 
-ROOT = Path(__file__).resolve().parents[2]
-REAL_A = ROOT / "data/verification/wechat-9c322e80/preview.png"
-REAL_B = ROOT / "data/verification/wechat-65f3c68c/preview.png"
-REAL_MOVED = ROOT / "../../outputs/预览扫码视觉验收-20261105/evidence/image-preview.png"
-TEMPLATE = cv2.imread(str(ROOT / "menu_capture/assets/preview-recognize.png"))
-USER_ICON = Path("/var/folders/tc/hc_d1yl565ndynds7qtdxjjh0000gp/T/codex-clipboard-36e64d40-2f3c-460d-b645-89584600d8a4.png")
+APP_ROOT = Path(__file__).resolve().parents[2]
+TEMPLATE = cv2.imread(str(APP_ROOT / "menu_capture/assets/preview-recognize.png"))
+
+REAL_ROOT = Path(os.environ.get("MENU_CAPTURE_REAL_DATA_DIR", APP_ROOT / "data"))
+REAL_A = REAL_ROOT / "verification/wechat-9c322e80/preview.png"
+REAL_B = REAL_ROOT / "verification/wechat-65f3c68c/preview.png"
+REAL_MOVED = REAL_ROOT / "outputs/预览扫码视觉验收-20261105/evidence/image-preview.png"
+USER_ICON_ENV = "MENU_CAPTURE_USER_ICON"
+
+needs_real_capture = pytest.mark.skipif(
+    os.environ.get("MENU_CAPTURE_REAL_DATA") != "1",
+    reason="需要真实 Windows 采集截图（app/data/verification/*/preview.png）；"
+           "设置 MENU_CAPTURE_REAL_DATA=1 后运行",
+)
+needs_user_icon = pytest.mark.skipif(
+    not os.environ.get(USER_ICON_ENV),
+    reason=f"需要用户提供的圆底二维码图标截图；设置 {USER_ICON_ENV}=<png 路径> 后运行",
+)
+
+
+def _require_real(path: Path) -> None:
+    if not path.is_file():
+        pytest.skip(f"真实采集截图未提供：{path}（设置 MENU_CAPTURE_REAL_DATA_DIR 指向归档目录）")
 
 
 def _write(tmp_path: Path, name: str, image: np.ndarray) -> Path:
@@ -21,15 +47,23 @@ def _write(tmp_path: Path, name: str, image: np.ndarray) -> Path:
     return path
 
 
+def _synthetic_preview(*, size: tuple[int, int] = (825, 760), toolbar_h: int = 41,
+                       icon_xy: tuple[int, int] | None = (526, 7)) -> np.ndarray:
+    """用仓库内图标模板合成一张最小预览截图，替代真实采集帧。"""
+    width, height = size
+    image = np.full((height, width, 3), 245, dtype=np.uint8)
+    # 工具栏与正文保留足够亮度差，重采样（尤其是 2x CUBIC）后才能被分隔线检测识别。
+    image[:toolbar_h] = (210, 210, 210)
+    if icon_xy is not None:
+        x, y = icon_xy
+        image[y:y + TEMPLATE.shape[0], x:x + TEMPLATE.shape[1]] = TEMPLATE
+    return image
+
+
 def _rearranged_toolbar(*, icon_x: int | None, scale: float = 1.0,
                         second_x: int | None = None) -> np.ndarray:
-    """保留真实预览图片主体，重绘工具栏以独立改变图标横向位置和缩放。"""
-    source = cv2.imread(str(REAL_A))
-    h, w = source.shape[:2]
-    toolbar_h = 64
-    result = np.full_like(source, 245)
-    result[toolbar_h:] = source[toolbar_h:]
-    result[:toolbar_h] = (238, 238, 238)
+    """保留合成预览主体，重绘工具栏以独立改变图标横向位置和缩放。"""
+    result = _synthetic_preview(toolbar_h=64, icon_xy=None)
     icon = cv2.resize(TEMPLATE, None, fx=scale, fy=scale,
                       interpolation=cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA)
     ih, iw = icon.shape[:2]
@@ -39,7 +73,10 @@ def _rearranged_toolbar(*, icon_x: int | None, scale: float = 1.0,
     return result
 
 
+@needs_real_capture
 def test_locates_both_real_preview_captures():
+    _require_real(REAL_A)
+    _require_real(REAL_B)
     # 两张图仅有少量像素差异，作为近重复采集覆盖，不视为独立样本。
     a, b = cv2.imread(str(REAL_A)), cv2.imread(str(REAL_B))
     assert a.shape == b.shape
@@ -52,8 +89,9 @@ def test_locates_both_real_preview_captures():
         assert found["image_size"] == {"width": 825, "height": 760}
 
 
-@pytest.mark.skipif(not REAL_MOVED.is_file(), reason="当前工作区外的验收截图未提供")
+@needs_real_capture
 def test_locates_actual_preview_with_toolbar_shift():
+    _require_real(REAL_MOVED)
     found = locate_preview_recognize(REAL_MOVED)
     assert found["image_size"] == {"width": 825, "height": 500}
     assert abs(found["center_image_px"]["x"] - 459) <= 2
@@ -81,7 +119,7 @@ def test_locates_icon_in_differently_sized_capture(tmp_path):
 
 
 def test_locates_two_x_icon_in_short_cropped_hidpi_capture(tmp_path):
-    doubled = cv2.resize(cv2.imread(str(REAL_A)), None, fx=2, fy=2,
+    doubled = cv2.resize(_synthetic_preview(toolbar_h=41), None, fx=2, fy=2,
                          interpolation=cv2.INTER_CUBIC)
     # 2x 截图在 300px 高处裁短；工具栏结束在约 82px，图标底边约 68px。
     cropped = doubled[:300]
@@ -104,9 +142,11 @@ def test_width_and_height_can_vary_independently(tmp_path, width, height, icon_x
     assert abs(found["center_image_px"]["y"] - 41) <= 3
 
 
-@pytest.mark.skipif(not USER_ICON.is_file(), reason="仅当前会话提供用户圆底图标附件")
+@needs_user_icon
 def test_matches_user_icon_with_circular_background(tmp_path):
-    supplied = cv2.imread(str(USER_ICON), cv2.IMREAD_UNCHANGED)
+    supplied = cv2.imread(os.environ[USER_ICON_ENV], cv2.IMREAD_UNCHANGED)
+    if supplied is None:
+        pytest.skip(f"无法读取用户圆底图标截图：{os.environ[USER_ICON_ENV]}")
     crop = supplied[34:91, 33:129]
     alpha = crop[:, :, 3:4].astype(np.float32) / 255
     circular_icon = (crop[:, :, :3] * alpha + 238 * (1 - alpha)).astype(np.uint8)
@@ -137,7 +177,9 @@ def test_duplicate_icons_fail_as_ambiguous(tmp_path):
     assert exc.value.diagnostics["runner_up_score"] is not None
 
 
+@needs_real_capture
 def test_qr_content_in_preview_body_is_not_a_candidate(tmp_path):
+    _require_real(REAL_A)
     image = cv2.imread(str(REAL_A))
     image[7:34, 526:552] = (238, 238, 238)
     with pytest.raises(PreviewIconNotFound):

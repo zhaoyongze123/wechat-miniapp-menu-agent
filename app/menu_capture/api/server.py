@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -57,11 +57,18 @@ from menu_capture.shared.shared import SharedConflict, SharedHub, WorkerUnauthor
 from menu_capture.api.shared_routes import register_shared_routes
 from menu_capture.shared.shared_worker import SharedWorker
 from menu_capture.api.workbench_page import workbench_page
+from menu_capture.api.context import ApiContext
+from menu_capture.api.routers import (
+    annotation as annotation_routes,
+    environment as environment_routes,
+    model_usage as model_usage_routes,
+    rejections as rejection_routes,
+    reviews as review_routes,
+    updates as update_routes,
+)
+from menu_capture.api.routers.reviews import REVIEW_RERUN_LIMIT
 
 logger = logging.getLogger(__name__)
-
-# 跨批次待检查重跑的上限：仅用于一次人工批量操作，超过这个量级应拆成多轮。
-REVIEW_RERUN_LIMIT = 300
 
 
 def _rejection_store_code(text: str) -> str:
@@ -153,6 +160,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     )
     # 安装状态上报给 Hub；执行器未接入时返回空，不推测状态。
     updates.install_status_provider = lambda: str(install.status().get("status") or "")
+    # “空闲后更新”：执行器自行校验空闲与闸门，监控只负责在安全时机尝试启动。
+    updates.schedule_installer = lambda version: install.start(version, version)
+    updates.resume_schedule()
     if hub is not None:
         # Hub 集中检查 GitHub 后向 Worker 分发元数据，避免每台设备重复请求。
         hub.update_metadata = updates.release_target
@@ -339,90 +349,29 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         if annotations.active:
             raise HTTPException(409, "人工标注进行中，请先结束标注再修改配置")
 
-    def review_queue(batch_ids: str, query: str) -> dict:
-        """待检查清单：跨批次读取任务状态，同一门店只保留最新一条。"""
-        # 与批次管理、工作台保持同一口径：只取未删除批次的最新发布快照任务，
-        # 旧版本遗留的失败任务不进入清单，避免同一门店重复计数或被重跑旧素材。
-        current_tasks = {row["id"]: row for row in materials.effective_capture_tasks()
-                         if capture_outcome(row) == "review"}
-        candidates = current_tasks.values()
-        # 待检查入口只展示批次名和阶段。版本差异、素材计数留给批次管理页。
-        with store.connect() as db:
-            batches = [dict(row) for row in db.execute(
-                "SELECT id,name,capture_rounds,manual_stage,approved_at FROM material_batches WHERE deleted_at=''"
-            )]
-        workflow = {batch["id"]: materials.workflow_stage(batch) for batch in batches}
-        names = {batch["id"]: batch["name"] or batch["id"] for batch in batches}
-        # 历史记录需要真实轮次身份：取每个任务最近一次动作所属轮次，避免前端按门店名猜。
-        with store.connect() as db:
-            run_by_task = {
-                row["id"]: row["run_id"]
-                for row in db.execute(
-                    "SELECT t.id, a.run_id FROM tasks t LEFT JOIN run_actions a ON a.id="
-                    "(SELECT MAX(latest.id) FROM run_actions latest WHERE latest.task_id=t.id)"
-                )
-                if row["run_id"]
-            }
-        selected = set()
-        if batch_ids and batch_ids != "all":
-            selected = {value.strip() for value in batch_ids.split(",") if value.strip()}
-        normalized = query.strip().casefold()
-        records = []
-        for task in candidates:
-            batch_id = current_tasks[task["id"]]["batch_id"]
-            if selected and batch_id not in selected:
-                continue
-            if normalized and normalized not in (task.get("source_name") or "").casefold():
-                continue
-            failure = describe_failure(task.get("error_code", ""), task.get("stage", ""),
-                                       task.get("message", ""))
-            # 与打回接口共用同一判定，避免列表显示可操作但实际被拒。
-            blocker = rejections.return_blocker(task["id"], current=True)
-            records.append({
-                "task_id": task["id"],
-                "store_name": task["source_name"],
-                "status": task["status"],
-                "stage": task["stage"],
-                "message": task["message"],
-                "error_code": task.get("error_code", ""),
-                "group": failure["group"],
-                "label": failure["label"],
-                "bucket": failure["bucket"],
-                "bucket_label": failure["bucket_label"],
-                "source_path": task["source_path"],
-                "output_dir": task["output_dir"],
-                "reject_reason": task.get("reject_reason", ""),
-                "reject_detail": task.get("reject_detail", ""),
-                "updated_at": task.get("updated_at", ""),
-                "run_id": run_by_task.get(task["id"], ""),
-                "batch_id": batch_id,
-                "batch_name": task.get("material_batch_name") or names.get(batch_id, ""),
-                "workflow": workflow.get(batch_id, {}),
-                "can_return_to_materials": not blocker,
-                "return_to_materials_disabled_reason": blocker,
-            })
-        # 有效任务清单已按原批次和门店归属取最新版，保留显示编号相近的各条任务。
-        records.sort(key=lambda row: (row["updated_at"], row["store_name"]), reverse=True)
-        options = {}
-        for record in records:
-            if record["batch_id"]:
-                options[record["batch_id"]] = {
-                    "id": record["batch_id"],
-                    "name": record["batch_name"] or record["batch_id"],
-                    "workflow": record["workflow"],
-                }
-        return {
-            "records": records,
-            "batches": sorted(options.values(), key=lambda item: (item["name"], item["id"])),
-            "summary": {
-                "stores": len(records),
-                "batches": len(options),
-                "needs_review": sum(row["status"] == "needs_review" for row in records),
-                # 清单里的门店都已落定，可以直接批量重跑；单独保留该字段方便前端展示。
-                "retryable": len(records),
-            },
-        }
-
+    # 各业务域通过 ApiContext 注入依赖后自行注册路由，server.py 不再持有这些 handler。
+    ctx = ApiContext(
+        updates=updates,
+        install=install,
+        model_usage=model_usage,
+        environment=environment,
+        connections=connections,
+        runner=runner,
+        annotations=annotations,
+        rejections=rejections,
+        store=store,
+        materials=materials,
+        hub=hub,
+        worker=worker,
+        control_lock=control_lock,
+        idle=idle,
+    )
+    update_routes.register(app, ctx)
+    model_usage_routes.register(app, ctx)
+    environment_routes.register(app, ctx)
+    rejection_routes.register(app, ctx)
+    review_routes.register(app, ctx)
+    annotation_routes.register(app, ctx)
 
     # React 是唯一业务前端：入口 HTML 与构建资源都来自 web/react/。
     # 资源只按 Vite manifest 白名单返回，避免把构建目录里的其他文件暴露出去。
@@ -523,68 +472,6 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 version = str(release.get("version") or version)
             commit = str(release.get("git_commit") or "")
         return {"version": version, "frontend": frontend, "commit": commit}
-
-    @app.get("/api/updates/status")
-    def updates_status():
-        return updates.status()
-
-    @app.post("/api/updates/check")
-    def updates_check():
-        return updates.check(force=True)
-
-    @app.put("/api/updates/preferences")
-    def updates_preferences(payload: dict):
-        return updates.save_preferences(payload)
-
-    @app.get("/api/updates/history")
-    def updates_history(limit: Annotated[int, Query(ge=1, le=200)] = 50):
-        return updates.history(limit)
-
-    @app.post("/api/updates/download")
-    def updates_download():
-        try:
-            return updates.start_download()
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
-
-    @app.post("/api/updates/download/cancel")
-    def updates_download_cancel():
-        return updates.cancel_download()
-
-    @app.get("/api/updates/cleanup")
-    def updates_cleanup_preview():
-        # 只读预览：不删除任何文件，供界面展示可释放空间与保护原因。
-        return updates.storage_preview()
-
-    @app.post("/api/updates/cleanup")
-    def updates_cleanup(payload: dict):
-        # 破坏性操作必须提交 confirm；安装/下载进行中由服务端闸门拒绝。
-        try:
-            return updates.cleanup(payload)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
-
-    @app.get("/api/updates/install")
-    def updates_install_status():
-        return install.status()
-
-    @app.post("/api/updates/install")
-    def updates_install_start(payload: dict):
-        # confirm 必须等于目标版本，避免误触把生产采集端切到非预期版本。
-        try:
-            return install.start(str(payload.get("version") or ""), str(payload.get("confirm") or ""))
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
-
-    @app.get("/api/model-usage")
-    def model_usage_report(date_from: str | None = None, date_to: str | None = None,
-                           group_by: str = "day", source: str = "all", run_id: str = "",
-                           task_id: str = "", provider: str = "", model: str = "",
-                           page: int = 1, page_size: int = 30):
-        # 统计查询只读本地计量表，绝不触发模型、环境检测或微信操作。
-        return model_usage.query(date_from=date_from, date_to=date_to, group_by=group_by,
-                                 source=source, run_id=run_id, task_id=task_id,
-                                 provider=provider, model=model, page=page, page_size=page_size)
 
     @app.get("/api/config")
     def configuration():
@@ -1381,63 +1268,6 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             runner.invalidate_readiness()
             return result
 
-    @app.get("/api/doctor")
-    def doctor():
-        return environment.snapshot()
-
-    @app.get("/api/environment")
-    def environment_status():
-        return environment.snapshot()
-
-    @app.get("/api/connections")
-    def connection_status():
-        return connections.snapshot()
-
-    @app.post("/api/connections/connect")
-    def connection_start(payload: dict):
-        if not isinstance(payload.get("force", False), bool):
-            raise ValueError("force 必须是布尔值")
-        if runner.running:
-            raise HTTPException(409, "采集运行中，暂不能执行环境检测。")
-        connections.connect(force=payload.get("force", True), wait=True)
-        return connections.snapshot()
-
-    @app.post("/api/environment/check")
-    def environment_check():
-        return environment.check()
-
-    @app.post("/api/environment/test")
-    def environment_test(payload: dict):
-        with control_lock:
-            idle()
-            check_id = payload.get("id")
-            if not isinstance(check_id, str):
-                raise ValueError("测试项 ID 无效")
-            try:
-                return environment.run_test(check_id)
-            except RuntimeError as exc:
-                raise HTTPException(409, str(exc)) from None
-
-    @app.post("/api/environment/settings")
-    def environment_open_settings(payload: dict):
-        with control_lock:
-            idle()
-            pane = payload.get("pane")
-            if not isinstance(pane, str):
-                raise ValueError("系统设置项目无效")
-            try:
-                return environment.open_settings(pane)
-            except RuntimeError as exc:
-                raise HTTPException(400, str(exc)) from None
-
-    @app.post("/api/test-model")
-    def test_model():
-        with control_lock:
-            idle()
-            snapshot = environment.run_test("model_service")
-            check = next(item for item in snapshot["checks"] if item["id"] == "model_service")
-            return {"ok": check["status"] == "ready", "message": check["summary"], "checked_at": check["checked_at"]}
-
     @app.post("/api/scan")
     def scan():
         with control_lock:
@@ -1464,6 +1294,11 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     def start():
         with control_lock:
             idle()
+            # 接口层先做运行前检查，避免环境未就绪时返回 200 后才在后台失败。
+            preflight = environment.snapshot().get("preflight") or {}
+            if preflight and not preflight.get("ready", True):
+                blockers = "；".join(preflight.get("blockers") or []) or "运行环境未就绪"
+                raise HTTPException(409, blockers)
             run = store.latest_run()
             if run and run["status"] in {"paused", "blocked", "interrupted"}:
                 raise HTTPException(409, "请先继续或终止当前批次")
@@ -1754,133 +1589,6 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             idle()
             return debug_log.clear()
 
-    @app.get("/api/rejections")
-    def list_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all",
-                        reviewed: str = "all"):
-        return rejections.list(source, reason, q, batch_id, reviewed)
-
-    @app.get("/api/rejections/export.xlsx")
-    def export_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all",
-                          reviewed: str = "all"):
-        content = rejections.export_xlsx(source, reason, q, batch_id, reviewed)
-        filename = "不合格门店清单.xlsx"
-        return Response(
-            content,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f"attachment; filename=unqualified-stores.xlsx; filename*=UTF-8''{quote(filename)}"},
-        )
-
-    @app.post("/api/rejections/review")
-    def review_rejection(payload: dict):
-        """人工复核不合格：只切换确认标记，不改变任务状态与原因。"""
-        if set(payload) - {"source_type", "task_id", "batch_id", "store_id", "reviewed"}:
-            raise ValueError("人工确认参数无效")
-        if payload.get("source_type") not in {"capture", "materials"} or not isinstance(payload.get("reviewed"), bool):
-            raise ValueError("人工确认参数无效")
-        with control_lock:
-            return rejections.mark_reviewed(
-                payload["source_type"], task_id=str(payload.get("task_id") or ""),
-                batch_id=str(payload.get("batch_id") or ""), store_id=str(payload.get("store_id") or ""),
-                reviewed=payload["reviewed"],
-            )
-
-    @app.post("/api/rejections/undo-batch")
-    def undo_rejections_batch(payload: dict):
-        items = payload.get("items") if isinstance(payload, dict) else None
-        if not isinstance(payload, dict) or set(payload) != {"items"}:
-            raise ValueError("批量撤销参数无效")
-        with control_lock:
-            idle()
-            return rejections.undo_many(items, protect_task=hub.protect_task if hub else None)
-
-    @app.post("/api/tasks/{task_id}/reject")
-    def reject_task(task_id: str, payload: dict):
-        if set(payload) - {"reason", "detail"} or "reason" not in payload:
-            raise ValueError("不合格原因参数无效")
-        with control_lock:
-            idle()
-            if hub:
-                hub.protect_task(task_id)
-            return {"ok": True, "task": rejections.mark_task(task_id, payload["reason"], payload.get("detail", ""))}
-
-    @app.post("/api/tasks/{task_id}/rejection/undo")
-    def undo_task_rejection(task_id: str):
-        with control_lock:
-            idle()
-            if hub:
-                hub.protect_task(task_id)
-            return {"ok": True, "task": rejections.undo_task(task_id)}
-
-    @app.post("/api/rejections/tasks/{task_id}/return-to-materials")
-    def return_rejection_to_materials(task_id: str):
-        """打回当前门店，保留此前执行与迟到结果供回查。"""
-        with control_lock:
-            idle()
-            # 采集电脑仍占用该门店时先阻塞，避免打回后迟到结果无处落地。
-            if hub and hub.active_task_ids([task_id]):
-                raise ValueError("该门店仍在采集电脑任务中，请等待完成或先收回后再打回")
-            result = rejections.return_to_materials(task_id)
-            if hub:
-                hub.reconcile_assignments()
-            return result
-
-    @app.get("/api/rejections/tasks/{task_id}/evidence")
-    def rejection_evidence(task_id: str):
-        task = store.get(task_id)
-        name = str(task.get("reject_evidence") or "")
-        if hub and Path(name).is_absolute():
-            path = Path(name).resolve()
-            if hub.root.resolve() not in path.parents or path.name != "evidence.png" or not path.is_file():
-                raise HTTPException(404, "不合格证据不存在")
-            return FileResponse(path, headers={"Cache-Control": "no-store"})
-        if not re.fullmatch(r"[0-9a-f]{20}\.png", name):
-            raise HTTPException(404)
-        path = store.path.parent / "rejection-evidence" / name
-        if not path.is_file():
-            raise HTTPException(404)
-        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
-
-    @app.get("/api/reviews/pending")
-    def pending_reviews(batch_ids: str = "all", q: str = ""):
-        return review_queue(batch_ids, q)
-
-    @app.post("/api/reviews/pending/rerun")
-    def rerun_pending_reviews(payload: dict):
-        task_ids = payload.get("task_ids")
-        if (not isinstance(task_ids, list) or not task_ids or len(task_ids) > REVIEW_RERUN_LIMIT
-                or any(not isinstance(value, str) or not value.strip() for value in task_ids)):
-            raise ValueError(f"请选择 1 到 {REVIEW_RERUN_LIMIT} 个待检查任务")
-        selected = [value.strip() for value in task_ids]
-        if len(set(selected)) != len(selected):
-            raise ValueError("待检查任务列表不能包含重复项")
-        name = payload.get("name", "")
-        if not isinstance(name, str) or len(name.strip()) > 80:
-            raise ValueError("任务名称无效")
-        with control_lock:
-            idle()
-            result = runner.start(ui_tars_trial=True, trial_task_ids=selected, cross_batch=True,
-                                  capture_mode="auto", run_name=name.strip())
-            # 启动成功后才累加轮次，避免校验失败也把批次标成“已重跑”。
-            materials.register_capture_round(selected)
-            return result
-
-    @app.post("/api/reviews/approve")
-    def approve_reviews(payload: dict):
-        """最终按原批次审核通过；一次可提交多个批次，批次号与归属不变。"""
-        batch_ids = payload.get("batch_ids") if isinstance(payload, dict) else None
-        if (not isinstance(batch_ids, list) or not 1 <= len(batch_ids) <= 100
-                or any(not isinstance(value, str) or not value.strip() for value in batch_ids)):
-            raise ValueError("请选择 1 到 100 个原批次")
-        results = []
-        with control_lock:
-            selected = list(dict.fromkeys(value.strip() for value in batch_ids))
-            if hub:
-                for batch_id in selected:
-                    hub.require_unassigned(batch_id)
-            for batch_id in selected:
-                results.append(materials.set_approved(batch_id, True))
-        return {"ok": True, "batches": results}
-
     @app.post("/api/materials/batches/{batch_id}/stage")
     def set_material_batch_stage(batch_id: str, payload: dict):
         with control_lock:
@@ -1897,15 +1605,6 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     def unapprove_material_batch(batch_id: str):
         with control_lock:
             return materials.set_approved(batch_id, False)
-
-    @app.post("/api/rejections/materials/{batch_id}/{store_id}/undo")
-    def undo_material_rejection(batch_id: str, store_id: str):
-        with control_lock:
-            idle()
-            current = materials.get_store(batch_id, store_id)
-            if current["decision"] != "skipped":
-                raise ValueError("该门店当前没有不合格标记")
-            return materials.decide_store(batch_id, store_id, "pending")
 
     @app.get("/api/action-evidence/{name}")
     def action_evidence(name: str):
@@ -2002,133 +1701,6 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 raise HTTPException(404, "输出文件不存在")
             # 在同一锁内读取，避免流式响应延迟打开时目录已被另一个素材版本替换。
             return Response(path.read_bytes(), media_type="image/png" if path.suffix.lower() == ".png" else "application/json")
-
-    @app.get("/api/annotation/state")
-    def annotation_state():
-        return annotations.state()
-
-    @app.get("/api/annotation/history")
-    def annotation_history(task_id: str):
-        try:
-            return annotations.history(task_id)
-        except ValueError as exc:
-            raise HTTPException(404, str(exc)) from None
-
-    @app.post("/api/annotation/start")
-    def annotation_start(payload: dict):
-        if set(payload) - {"task_ids"} or not isinstance(payload.get("task_ids"), list):
-            raise ValueError("请选择要标注的门店")
-        task_ids = payload["task_ids"]
-        if not all(isinstance(item, str) for item in task_ids):
-            raise ValueError("门店编号无效")
-        with control_lock:
-            if runner.running:
-                raise HTTPException(409, "自动采集运行中，请先暂停或终止后再进入人工标注")
-            if worker:
-                worker.check_start(task_ids)
-            return annotations.start(task_ids)
-
-    @app.post("/api/annotation/pause")
-    def annotation_pause(payload: dict | None = None):
-        if payload:
-            raise ValueError("暂停不需要参数")
-        with control_lock:
-            return annotations.pause()
-
-    @app.post("/api/annotation/resume")
-    def annotation_resume(payload: dict | None = None):
-        if payload:
-            raise ValueError("继续不需要参数")
-        with control_lock:
-            return annotations.resume()
-
-    @app.post("/api/annotation/decide")
-    def annotation_decide(payload: dict | None = None):
-        if payload:
-            raise ValueError("生成建议不需要参数")
-        with control_lock:
-            return annotations.decide()
-
-    @app.post("/api/annotation/click")
-    def annotation_click(payload: dict):
-        allowed = {"box", "category", "layout", "page_state", "target", "hard_negative", "note"}
-        if set(payload) - allowed or "box" not in payload:
-            raise ValueError("点击参数无效")
-        with control_lock:
-            return annotations.click(
-                payload["box"], str(payload.get("category", "")), str(payload.get("page_state", "")),
-                str(payload.get("target", "")), payload.get("hard_negative", False),
-                str(payload.get("note", "")), str(payload.get("layout", "")),
-            )
-
-    @app.post("/api/annotation/step")
-    def annotation_step(payload: dict):
-        allowed = {"step_index", "category", "layout", "page_state", "target", "hard_negative", "note"}
-        if set(payload) - allowed:
-            raise ValueError("样本参数无效")
-        with control_lock:
-            return annotations.mark_step(
-                payload.get("step_index"), payload.get("category"), payload.get("page_state"),
-                payload.get("target"), payload.get("hard_negative"), payload.get("note"),
-                payload.get("layout"),
-            )
-
-    @app.post("/api/annotation/complete")
-    def annotation_complete(payload: dict | None = None):
-        if payload:
-            raise ValueError("完成标注不需要参数")
-        with control_lock:
-            return annotations.complete()
-
-    @app.post("/api/annotation/skip")
-    def annotation_skip(payload: dict | None = None):
-        reason = ""
-        if payload:
-            if set(payload) - {"reason"}:
-                raise ValueError("跳过参数无效")
-            reason = str(payload.get("reason", ""))
-        with control_lock:
-            return annotations.skip(reason)
-
-    @app.post("/api/annotation/reject")
-    def annotation_reject(payload: dict):
-        if set(payload) - {"reason", "detail"} or not isinstance(payload.get("reason"), str):
-            raise ValueError("不合格原因无效")
-        with control_lock:
-            current = annotations.current_task
-            result = annotations.reject(payload["reason"], str(payload.get("detail", "")))
-            if worker and current:
-                worker.record_annotation(current["id"])
-            return result
-
-    @app.post("/api/annotation/retry")
-    def annotation_retry(payload: dict | None = None):
-        if payload:
-            raise ValueError("重试不需要参数")
-        with control_lock:
-            return annotations.retry()
-
-    @app.post("/api/annotation/refresh")
-    def annotation_refresh(payload: dict | None = None):
-        if payload:
-            raise ValueError("刷新画面不需要参数")
-        with control_lock:
-            return annotations.refresh()
-
-    @app.post("/api/annotation/stop")
-    def annotation_stop(payload: dict | None = None):
-        if payload:
-            raise ValueError("结束标注不需要参数")
-        with control_lock:
-            return annotations.stop()
-
-    @app.get("/api/annotation/frame")
-    def annotation_frame(session: str, name: str):
-        try:
-            path = annotations.frame_path(session, name)
-        except FileNotFoundError:
-            raise HTTPException(404, "标注截图不存在") from None
-        return FileResponse(path, media_type="image/png")
 
     return app
 
