@@ -22,9 +22,16 @@ function Write-RollbackLog {
 }
 
 $release = Join-Path $PSScriptRoot "releases\$Version"
+# 0.2.x 及更早版本的后端只提供 menu_capture.server，回滚校验按目标版本自身布局进行。
+$serverEntry = @('app\menu_capture\api\server.py', 'app\menu_capture\server.py') |
+    Where-Object { Test-Path -LiteralPath (Join-Path $release $_) -PathType Leaf } |
+    Select-Object -First 1
+if (-not $serverEntry) {
+    throw "版本 $Version 未完整安装，缺少: $(Join-Path $release 'app\menu_capture\api\server.py')"
+}
 $required = @(
     (Join-Path $release 'python\python.exe'),
-    (Join-Path $release 'app\menu_capture\api\server.py')
+    (Join-Path $release $serverEntry)
 )
 foreach ($path in $required) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
