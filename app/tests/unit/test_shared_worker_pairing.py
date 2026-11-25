@@ -1,7 +1,9 @@
 """共享采集端重新配对：凭证原子替换、旧结果保护与旧轮询响应隔离。"""
 from __future__ import annotations
 
+import hashlib
 import json
+import threading
 from base64 import b64encode
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -161,3 +163,93 @@ def test_result_rejected_for_old_identity_stops_retry_and_keeps_zip(tmp_path):
         assert _row(worker, "as-foreign")["status"] == "reclaimed"
         assert (worker.outbox / "as-foreign.zip").exists()
         assert "旧设备身份" in worker.error
+
+
+class _SourceStream:
+    """最小替身：记录下载请求的凭证，并返回已校验的二维码字节。"""
+
+    def __init__(self, recorder: dict, content: bytes):
+        self.recorder = recorder
+        self.content = content
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    def iter_bytes(self):
+        yield self.content
+
+
+def _assignment(content: bytes, *, assignment_id: str = "a" * 32) -> dict:
+    return {"id": assignment_id, "task_id": "task-" + assignment_id, "batch_id": "batch-1",
+            "batch_name": "批次一", "store": "甲门店", "revision": "v1", "snapshot_id": "c" * 64,
+            "source_hash": hashlib.sha256(content).hexdigest(), "source_suffix": ".png",
+            "created_at": STAMP}
+
+
+def test_late_download_uses_original_credential_and_keeps_ownership(tmp_path):
+    with _hub_and_worker(tmp_path) as (hub, worker, _calls):
+        worker.connect(URL, hub.pairing_code()["code"], "A 机")
+        old_connection = dict(worker.connection)
+        # 模拟轮询途中已完成重新配对：新连接已在位，旧轮询仍在处理旧分配。
+        worker.connection = {"url": URL, "token": "new-token", "name": "B 机", "id": "b" * 32}
+
+        content = b"qr-old"
+        seen: dict = {}
+
+        def stream(_method, url, *, headers=None, **_kwargs):
+            seen["url"] = url
+            seen["authorization"] = (headers or {}).get("Authorization")
+            return _SourceStream(seen, content)
+
+        worker._http = SimpleNamespace(stream=stream)
+        assigned = _assignment(content)
+        worker._download(assigned, old_connection)
+
+        # 素材必须用旧凭证下载，且分配的归属仍是旧设备身份。
+        assert seen["authorization"] == "Bearer " + old_connection["token"]
+        assert _row(worker, assigned["id"])["worker_id"] == old_connection["id"]
+        assert worker.tasks() == []
+
+
+def test_late_source_registration_does_not_hand_old_assignment_to_new_device(tmp_path):
+    with _hub_and_worker(tmp_path) as (hub, worker, _calls):
+        worker.connect(URL, hub.pairing_code()["code"], "A 机")
+        old_connection = dict(worker.connection)
+        content = b"qr-reclaimed"
+        assigned = _assignment(content, assignment_id="e" * 32)
+        _seed(worker, assignment_id=assigned["id"], status="reclaimed", worker_id=old_connection["id"])
+        worker.connection = {"url": URL, "token": "new-token", "name": "B 机", "id": "b" * 32}
+        worker._http = SimpleNamespace(stream=lambda *_a, **_k: _SourceStream({}, content))
+
+        # 旧轮询迟到的心跳：不能把旧身份残留的素材路径写到新设备任务上。
+        worker._ensure_source(assigned, old_connection)
+
+        assert _row(worker, assigned["id"])["worker_id"] == old_connection["id"]
+
+
+def test_startup_finishes_detach_interrupted_between_credential_write(tmp_path):
+    from menu_capture.shared.shared_worker import SharedWorker
+    from menu_capture.storage.store import TaskStore
+
+    root = tmp_path / "worker"
+    store = TaskStore(root / "data/tasks.sqlite3")
+    first = SharedWorker(root, store, threading.Lock(), threading.RLock())
+    _seed(first, assignment_id="f" * 32, status="pending_upload", worker_id="", with_zip=True)
+    # 模拟“新凭证已落盘、旧分配尚未归档”时进程退出。
+    (root / "shared-worker.local.json").write_text(json.dumps({
+        "url": URL, "token": "new-token", "name": "B 机", "id": "b" * 32, "detach_from": "a" * 32,
+    }), encoding="utf-8")
+
+    recovered = SharedWorker(root, store, threading.Lock(), threading.RLock())
+
+    row = _row(recovered, "f" * 32)
+    assert row["worker_id"] == "a" * 32
+    assert row["status"] == "reclaimed"
+    assert (recovered.outbox / ("f" * 32 + ".zip")).exists()
+    assert "detach_from" not in recovered.connection

@@ -133,7 +133,7 @@ def test_cached_source_without_assignment_is_registered_again(tmp_path):
         with worker.store.connect() as db:
             db.execute("DELETE FROM worker_assignments WHERE id=?", (assigned["id"],))
 
-        worker._ensure_source(assigned)
+        worker._ensure_source(assigned, worker.connection)
 
         with worker.store.connect() as db:
             local = db.execute(

@@ -68,6 +68,8 @@ class SharedWorker:
         self._stop = threading.Event()
         # 串行化配对请求，避免并发配对把两次成功的凭证互相覆盖。
         self._pair_lock = threading.Lock()
+        # 保护 self.connection 的替换与最终状态写入：身份判定和落库之间不允许被配对打断。
+        self._state_lock = threading.RLock()
         self._thread: threading.Thread | None = None
         self.online = False
         self._hub_reports_runs = False
@@ -101,6 +103,14 @@ class SharedWorker:
                 if name not in columns:
                     db.execute(f"ALTER TABLE worker_assignments ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
 
+        # 上次重新配对若在“凭证已替换、旧分配尚未归档”之间退出，这里补做归档，
+        # 避免旧身份的任务被当成当前设备可执行/可上传分配。
+        pending_detach = str(self.connection.get("detach_from") or "")
+        if pending_detach:
+            self._detach_previous(pending_detach)
+            self.connection.pop("detach_from", None)
+            self._persist_connection()
+
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="shared-worker", daemon=True)
         self._thread.start()
@@ -126,9 +136,10 @@ class SharedWorker:
     def connect(self, url: str, code: str, name: str) -> dict:
         url = hub_url(url)
         with self._pair_lock:
-            if self.connection and not self.connection.get("invalid"):
-                raise ValueError("此采集端已配对")
-            previous = str(self.connection.get("id") or "")
+            with self._state_lock:
+                if self.connection and not self.connection.get("invalid"):
+                    raise ValueError("此采集端已配对")
+                previous = str(self.connection.get("id") or "")
             try:
                 response = self._http.post(url + "/api/shared/worker/pair", json={"code": code, "name": name})
             except httpx.RequestError:
@@ -141,19 +152,32 @@ class SharedWorker:
                 raise ValueError("工作台返回了无效的配对结果")
             connection = {"url": url, "token": data["token"], "name": data.get("name", name), "id": data["id"]}
             if previous and previous != connection["id"]:
-                # 旧设备身份下的未上传结果无法用新凭证补传，先把数量记在新凭证里供界面提示；
-                # 凭证写入成功后才归档旧分配，避免配对失败破坏原有本机状态。
+                # 归档标记与凭证一起原子落盘：归档前异常退出时，下次启动会补做。
+                connection["detach_from"] = previous
                 abandoned = self._pending_count(previous)
                 if abandoned:
                     connection["abandoned_pending"] = abandoned
-            atomic_json(self.credentials, connection)
-            self.connection = connection
-            self.online = True
-            self.error = ""
-            if previous and previous != connection["id"]:
-                self._detach_previous(previous)
+            with self._state_lock:
+                atomic_json(self.credentials, connection)
+                self.connection = connection
+                self.online = True
+                self.error = ""
+            if connection.get("detach_from"):
+                self._detach_previous(connection["detach_from"])
+                with self._state_lock:
+                    self.connection.pop("detach_from", None)
+                    if not self._persist_connection():
+                        self.error = "配对成功，但本机无法更新凭证文件，请检查磁盘权限"
             self._wake.set()
         return self.status()
+
+    def _persist_connection(self) -> bool:
+        """尽力把当前连接状态写回本机；失败只影响下次启动的恢复提示。"""
+        try:
+            atomic_json(self.credentials, self.connection)
+        except OSError:
+            return False
+        return True
 
     def _pending_count(self, worker_id: str) -> int:
         with self.store.connect() as db:
@@ -353,7 +377,7 @@ class SharedWorker:
             os.fsync(stream.fileno())
         return True
 
-    def _cache_source(self, assigned: dict, path: Path) -> None:
+    def _cache_source(self, assigned: dict, path: Path, connection: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, filename = tempfile.mkstemp(dir=path.parent)
         os.close(fd)
@@ -370,8 +394,9 @@ class SharedWorker:
                 if valid:
                     temporary.replace(path)
                     return
-            with self._http.stream("GET", self._url(f"/assignments/{assigned['id']}/source"),
-                                   headers=self._headers) as response:
+            # 使用本次轮询的原始凭证下载，重新配对后的新凭证不会替旧身份取素材。
+            with self._http.stream("GET", self._url(f"/assignments/{assigned['id']}/source", connection),
+                                   headers=self._auth(connection)) as response:
                 response.raise_for_status()
                 if not self._copy_source(response.iter_bytes(), temporary, assigned["source_hash"]):
                     raise ValueError("二维码内容不完整或超过缓存大小限制，稍后重试")
@@ -379,22 +404,24 @@ class SharedWorker:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _download(self, assigned: dict) -> None:
+    def _download(self, assigned: dict, connection: dict) -> None:
         for key in ("id", "source_hash"):
             if not re.fullmatch(r"[0-9a-f]{32}" if key == "id" else r"[0-9a-f]{64}", str(assigned.get(key, ""))):
                 raise ValueError("后台返回了无效的分配标识")
         if assigned.get("source_suffix") not in IMAGE_SUFFIXES:
             raise ValueError("后台返回了不支持的二维码文件")
+        worker_id = str(connection.get("id") or "")
         path = self._source_path(assigned)
-        self._cache_source(assigned, path)
+        self._cache_source(assigned, path, connection)
         with self.control_lock, self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute("SELECT status FROM worker_assignments WHERE id=?",
                                   (assigned["id"],)).fetchone()
             if existing:
-                # 同一分配补下载：只恢复可采集状态，不重置已有任务结果。
-                db.execute("UPDATE worker_assignments SET status='ready' WHERE id=? AND status='reclaimed'",
-                           (assigned["id"],))
+                # 同一分配补下载：只恢复可采集状态，不重置已有任务结果；
+                # 旧设备身份下的分配不会因为迟到的同步响应被新设备接管。
+                db.execute("UPDATE worker_assignments SET status='ready' WHERE id=? AND status='reclaimed'"
+                           " AND (worker_id='' OR worker_id=?)", (assigned["id"], worker_id))
                 return
             busy = db.execute("""
                 SELECT run_id FROM worker_assignments WHERE task_id=? AND id<>?
@@ -418,7 +445,7 @@ class SharedWorker:
                     source_hash,source_suffix,status,created_at,worker_id)
                 VALUES (:id,:task_id,:batch_id,:batch_name,:store,:revision,:snapshot_id,
                     :source_hash,:source_suffix,'ready',:created_at,:worker_id)
-            """, {**assigned, "worker_id": self._current_worker_id()})
+            """, {**assigned, "worker_id": worker_id})
 
     def _run_summary(self) -> dict | None:
         run = self.store.latest_run()
@@ -478,22 +505,29 @@ class SharedWorker:
             active = sync["assignments"]
             name = sync.get("worker_name")
             if isinstance(name, str) and name:
-                self.connection["name"] = name
+                with self._state_lock:
+                    if self.connection is connection:
+                        self.connection["name"] = name
         active_ids = {row["id"] for row in active}
-        with self.control_lock:
-            self.prepare_results()
-            self._store_shared_state(sync)
-            with self.store.connect() as db:
-                local = {row["id"] for row in db.execute(
-                    "SELECT id FROM worker_assignments WHERE worker_id='' OR worker_id=?", (worker_id,))}
-                db.executemany("UPDATE worker_assignments SET status='reclaimed' WHERE id=? AND status='ready'",
-                               ((row_id,) for row_id in local - active_ids))
-        if self.connection is not connection:
-            return set()
-        self.online = True
+        # 身份判定与最终落库在同一把锁内完成：重新配对不能插在“确认仍是本次凭证”
+        # 与“写入任务/状态”之间，否则旧响应会把任务与状态写进新连接。
+        with self._state_lock:
+            if self.connection is not connection:
+                return set()
+            with self.control_lock:
+                self.prepare_results()
+                self._store_shared_state(sync)
+                with self.store.connect() as db:
+                    local = {row["id"] for row in db.execute(
+                        "SELECT id FROM worker_assignments WHERE worker_id='' OR worker_id=?", (worker_id,))}
+                    db.executemany("UPDATE worker_assignments SET status='reclaimed' WHERE id=? AND status='ready'",
+                                   ((row_id,) for row_id in local - active_ids))
+            self.online = True
         for assigned in active:
+            if self.connection is not connection:
+                break
             try:
-                self._ensure_source(assigned)
+                self._ensure_source(assigned, connection)
             except (httpx.HTTPError, OSError, ValueError, KeyError) as exc:
                 self.error = str(exc)[:200]
         return active_ids
@@ -519,8 +553,9 @@ class SharedWorker:
         except (httpx.HTTPError, OSError, ValueError, KeyError):
             self.history_error = "采集轮次历史尚未同步，稍后自动重试"
 
-    def _ensure_source(self, assigned: dict) -> None:
+    def _ensure_source(self, assigned: dict, connection: dict) -> None:
         """保证活动分配在本机有二维码文件，并把任务来源路径纠正到本分配缓存目录。"""
+        worker_id = str(connection.get("id") or "")
         path = self._source_path(assigned)
         with self.store.connect() as db:
             local = db.execute(
@@ -537,17 +572,19 @@ class SharedWorker:
         if needs_registration:
             # 缓存文件可能在上次同步时先落盘，后续因同店旧运行占用而推迟登记。
             # 是否存在文件不能代表分配已登记，必须重新经过 _download 的登记流程。
-            self._download(assigned)
+            self._download(assigned, connection)
         if needs_path_repair:
             # _download 遇到同店仍在执行的旧轮次会暂缓登记。此时保持旧任务来源不变。
-            # 同时要求这仍是最新的 ready assignment，避免迟到心跳覆盖新分配的路径。
-            with self.store.connect() as db:
+            # 同时要求这仍是最新的 ready assignment，且归属本次凭证的设备，
+            # 避免旧身份的迟到心跳改写新设备任务的来源路径。
+            with self.control_lock, self.store.connect() as db:
                 db.execute(
                     "UPDATE tasks SET source_path=? WHERE id=? AND EXISTS ("
                     "SELECT 1 FROM worker_assignments a WHERE a.id=? AND a.task_id=tasks.id "
-                    "AND a.status='ready' AND a.rowid=(SELECT MAX(b.rowid) "
+                    "AND a.status='ready' AND (a.worker_id='' OR a.worker_id=?) "
+                    "AND a.rowid=(SELECT MAX(b.rowid) "
                     "FROM worker_assignments b WHERE b.task_id=a.task_id))",
-                    (str(path), assigned["task_id"], assigned["id"]),
+                    (str(path), assigned["task_id"], assigned["id"], worker_id),
                 )
 
     def _store_shared_state(self, sync: dict) -> None:
@@ -641,24 +678,30 @@ class SharedWorker:
             self._sync_run_history(connection)
             if self.connection is not connection:
                 return
-            if self.connection.pop("invalid", None):
-                atomic_json(self.credentials, self.connection)
-        except (httpx.HTTPError, OSError, ValueError, KeyError) as exc:
-            if self.connection is not connection:
-                return
-            self.online = False
-            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
-                if not self.connection.get("invalid"):
-                    self.connection["invalid"] = True
+            with self._state_lock:
+                if self.connection is connection and self.connection.pop("invalid", None):
                     try:
                         atomic_json(self.credentials, self.connection)
                     except OSError:
-                        self.error = "配对已失效，本机无法保存连接状态。请联系管理员。"
-                        return
-                self.error = "采集电脑的配对已失效，本机结果仍保留。请联系管理员。"
-            elif self.connection.get("invalid"):
-                self.error = "采集电脑的配对已失效，本机结果仍保留。请联系管理员。"
-            elif isinstance(exc, (httpx.HTTPError, KeyError)):
-                self.error = "共享工作台暂不可达，已下载门店可继续采集"
-            else:
-                self.error = str(exc)[:200]
+                        pass
+        except (httpx.HTTPError, OSError, ValueError, KeyError) as exc:
+            # 失败路径同样要确认凭证未被替换，旧凭证的 401 不能把新连接标记为失效。
+            with self._state_lock:
+                if self.connection is not connection:
+                    return
+                self.online = False
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
+                    if not self.connection.get("invalid"):
+                        self.connection["invalid"] = True
+                        try:
+                            atomic_json(self.credentials, self.connection)
+                        except OSError:
+                            self.error = "配对已失效，本机无法保存连接状态。请联系管理员。"
+                            return
+                    self.error = "采集电脑的配对已失效，本机结果仍保留。请联系管理员。"
+                elif self.connection.get("invalid"):
+                    self.error = "采集电脑的配对已失效，本机结果仍保留。请联系管理员。"
+                elif isinstance(exc, (httpx.HTTPError, KeyError)):
+                    self.error = "共享工作台暂不可达，已下载门店可继续采集"
+                else:
+                    self.error = str(exc)[:200]
