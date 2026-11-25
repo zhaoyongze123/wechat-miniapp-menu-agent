@@ -24,6 +24,7 @@ import { formatStore, formatTime } from '../hub/format'
 import { useHubSharedStatus } from '../hub/hooks'
 import type { HubSelectedTask } from '../hub/types'
 import { useBatchOptions } from '../materials/hooks'
+import { QualifiedPanel } from '../delivery/QualifiedPanel'
 import { statusOf } from '../task-center/format'
 import { REASON_OPTIONS, downloadRejections } from './api'
 import {
@@ -49,7 +50,7 @@ import { adjacentVisibleKey, useContinuityPreference, nextVisibleKey } from '../
 import { RejectionDetailDrawer } from './RejectionDetailDrawer'
 import type { PendingReviewRecord, RejectionRecord, ReviewBucket } from './types'
 
-type QualityView = 'rejections' | 'review'
+type QualityView = 'rejections' | 'review' | 'qualified'
 type SourceFilter = 'all' | 'materials' | 'capture'
 type ReviewStateFilter = 'all' | 'reviewed' | 'pending'
 /** 打回确认只需要门店与批次信息，不合格与待检查记录都可复用同一确认流程。 */
@@ -64,9 +65,12 @@ export function QualityPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [view, setView] = useState<QualityView>(() =>
-    searchParams.get('view') === 'review' ? 'review' : 'rejections',
-  )
+  const [view, setView] = useState<QualityView>(() => {
+    const current = searchParams.get('view')
+    if (current === 'review') return 'review'
+    if (current === 'qualified') return 'qualified'
+    return 'rejections'
+  })
 
   // 不合格清单
   const [batchId, setBatchId] = useState('all')
@@ -263,8 +267,9 @@ export function QualityPage() {
     setSearchParams(
       (current) => {
         const params = new URLSearchParams(current)
-        if (next === 'review') params.set('view', 'review')
-        else params.delete('view')
+        // 默认视图（不合格）不占用 URL，便于分享时保持简洁。
+        if (next === 'rejections') params.delete('view')
+        else params.set('view', next)
         return params
       },
       { replace: true },
@@ -788,6 +793,7 @@ export function QualityPage() {
       <SegmentedControl<QualityView> value={view} onChange={changeView} aria-label="质量审核视图">
         <SegmentedControl.Option value="rejections">不合格门店</SegmentedControl.Option>
         <SegmentedControl.Option value="review">待检查门店</SegmentedControl.Option>
+        <SegmentedControl.Option value="qualified">合格清单</SegmentedControl.Option>
       </SegmentedControl>
 
       {view === 'rejections' ? (
@@ -951,6 +957,8 @@ export function QualityPage() {
             )}
           </section>
         </>
+      ) : view === 'qualified' ? (
+        <QualifiedPanel />
       ) : (
         <>
           <section className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="待检查统计">
