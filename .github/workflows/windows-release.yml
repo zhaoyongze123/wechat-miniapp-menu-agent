@@ -488,7 +488,8 @@ jobs:
           # 推送与摘要属于可选 OCI 交付，任何失败都必须继续完整归档交付。
           registry="ghcr.io"
           repo="${GITHUB_REPOSITORY,,}"
-          remote="$registry/$repo:$MENU_CAPTURE_VERSION"
+          repository="$registry/$repo"
+          remote="$repository:$MENU_CAPTURE_VERSION"
           # 先确认标签状态：已存在说明该版本已正式发布过，禁止用重新构建的镜像覆盖其摘要。
           token=$(curl -fsS -u "$GITHUB_ACTOR:$GHCR_TOKEN" \
             "https://$registry/token?service=$registry&scope=repository:$repo:pull" \
@@ -522,13 +523,13 @@ jobs:
           fi
           # 只采用本仓库固定地址下的 RepoDigest，避免多仓库镜像取到无关摘要。
           digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$MENU_CAPTURE_IMAGE" \
-            | grep -F "$remote@" | head -n 1 | sed 's/.*@//' || true)
+            | awk -v prefix="$repository@" 'index($0, prefix) == 1 && !found {print substr($0, length(prefix) + 1); found = 1}' || true)
           if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "::warning::无法获取镜像摘要，跳过 OCI 交付，继续归档交付。"
             exit 0
           fi
           mkdir -p hub-artifacts
-          jq -nc --arg registry "$registry/$repo" --arg digest "$digest" \
+          jq -nc --arg registry "$repository" --arg digest "$digest" \
             '{registry:$registry,digest:$digest}' > hub-artifacts/hub-image-digest.json
       - name: 归档共享后台镜像和校验值
         if: github.event_name == 'workflow_dispatch'
