@@ -147,8 +147,11 @@ def scope_fingerprint(root: Path, files: dict[str, str]) -> str:
         if _is_restricted(name):
             entries.append(f"{name}\0{sha}")
     for name in ROOT_ONLY_FILES:
-        candidate = Path(root) / name
-        if candidate.is_file() and not _is_reparse(candidate):
+        candidate = next(
+            (path for path in Path(root).iterdir() if path.name.lower() == name),
+            None,
+        )
+        if candidate is not None and candidate.is_file() and not _is_reparse(candidate):
             entries.append(f"{name}\0{file_sha256(candidate)}")
     digest = hashlib.sha256()
     for item in sorted(entries):
