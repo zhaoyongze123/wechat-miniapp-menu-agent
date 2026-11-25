@@ -59,6 +59,8 @@ def make_artifact(tmp_path: Path, version: str = "0.3.0", body: bytes = b"instal
 def make_install_root(tmp_path: Path, previous: str = "0.2.2") -> Path:
     root = tmp_path / "install"
     make_release(root, previous)
+    # 根级启动/回滚脚本是既有安装布局的一部分，补丁登记版本也依赖 Launch.ps1。
+    (root / "Launch.ps1").write_text("launch", encoding="utf-8")
     (root / "rollback.ps1").write_text("rollback", encoding="utf-8")
     (root / "current-version").write_text(previous, encoding="utf-8")
     return root
@@ -883,3 +885,212 @@ def test_concurrent_status_and_install_start_complete_without_deadlock(tmp_path)
 
     assert not stuck, "并发更新状态与安装启动发生死锁"
     assert not errors
+
+
+# ---------- 增量补丁模式 ----------
+
+import shutil  # noqa: E402
+
+from menu_capture.updates import update_patch  # noqa: E402
+
+
+def make_target_tree(root: Path, version: str = "0.3.0") -> Path:
+    target = root / "target-tree"
+    shutil.copytree(root / "releases" / "0.2.2", target)
+    (target / "app/web/react/assets/index.js").unlink()
+    (target / "app/web/react/assets/index-new.js").write_bytes(b"frontend")
+    (target / "release-manifest.json").write_text(json.dumps({
+        "version": version,
+        "frontend_entry": "assets/index-new.js",
+        "frontend_sha256": hashlib.sha256(b"frontend").hexdigest(),
+    }), encoding="utf-8")
+    return target
+
+
+def make_patch_job(tmp_path: Path, root: Path, *, fallback_body: bytes | None = None) -> dict:
+    target = make_target_tree(root)
+    download_dir = tmp_path / "download"
+    patch_path = download_dir / "0.3.0" / "MenuCapture-0.2.2-to-0.3.0.patch.zip"
+    patch_path.parent.mkdir(parents=True, exist_ok=True)
+    update_patch.make_patch(
+        root / "releases" / "0.2.2", target,
+        from_version="0.2.2", to_version="0.3.0", output=patch_path,
+    )
+    body = fallback_body if fallback_body is not None else b"installer-bytes"
+    fallback = download_dir / "0.3.0" / "MenuCapture-v0.3.0.exe"
+    fallback.write_bytes(body)
+    return {
+        "schema": 2,
+        "asset_kind": "windows_patch",
+        "patch_path": str(patch_path),
+        "patch_asset_name": patch_path.name,
+        "patch_sha256": update_patch.file_sha256(patch_path),
+        "patch_size": patch_path.stat().st_size,
+        "base_version": "0.2.2",
+        "base_commit": "",
+        "target_commit": "",
+        "patch_catalog": "",
+        "fallback_name": fallback.name,
+        "fallback_sha256": hashlib.sha256(body).hexdigest(),
+        "fallback_size": len(body),
+        "fallback_url": f"https://github.com/x/y/releases/download/v0.3.0/{fallback.name}",
+        "download_dir": str(download_dir),
+        "data_dir": str(tmp_path / "data"),
+        "target_version": "0.3.0",
+        "previous_version": "0.2.2",
+        "install_root": str(root),
+        "port": 8765,
+    }
+
+
+def patch_orchestrator(tmp_path: Path, root: Path, job: dict, run_command, probe,
+                       *, catalog=None, publisher=None):
+    clock = FakeClock()
+
+    def sleep(seconds: float) -> None:
+        clock.now += seconds
+
+    path = tmp_path / "data" / "update-install.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return InstallOrchestrator(
+        job=job, journal_path=path, run_command=run_command, probe_version=probe,
+        verify_publisher=publisher or (lambda artifact: {"status": "valid"}),
+        verify_catalog=catalog or (lambda patch, cat: {"status": "valid"}),
+        sleep=sleep, clock=clock, health_timeout=0.05,
+    )
+
+
+def test_patch_mode_rebuilds_and_registers(tmp_path, monkeypatch):
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE", "1")
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
+    root = make_install_root(tmp_path)
+    job = make_patch_job(tmp_path, root)
+
+    def run(args, timeout):
+        assert "-File" in args and "Launch.ps1" in " ".join(args)
+        (root / "current-version").write_text("0.3.0", encoding="utf-8")
+        return 0, ""
+
+    orchestrator = patch_orchestrator(tmp_path, root, job, run, lambda port: "0.3.0")
+    journal = orchestrator.execute()
+
+    assert journal["status"] == "completed"
+    target = root / "releases" / "0.3.0"
+    assert (target / "app/web/react/assets/index-new.js").is_file()
+    assert not (target / "app/web/react/assets/index.js").exists()
+    assert not (root / "releases" / ".0.3.0.patch-tmp").exists()
+
+
+def test_patch_requires_opt_in_and_falls_back_to_full(tmp_path, monkeypatch):
+    # 未启用增量：补丁被拒绝，改用同一授权内的完整安装包。
+    monkeypatch.delenv("MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE", raising=False)
+    root = make_install_root(tmp_path)
+    job = make_patch_job(tmp_path, root)
+    installed: list[str] = []
+
+    def run(args, timeout):
+        installed.append(args[0])
+        make_release(root, "0.3.0")
+        (root / "current-version").write_text("0.3.0", encoding="utf-8")
+        return 0, ""
+
+    orchestrator = patch_orchestrator(tmp_path, root, job, run, lambda port: "0.3.0")
+    journal = orchestrator.execute()
+
+    assert journal["status"] == "completed"
+    assert installed and installed[0].endswith("MenuCapture-v0.3.0.exe")
+
+
+def test_patch_baseline_mismatch_falls_back_and_cleans_target(tmp_path, monkeypatch):
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE", "1")
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
+    root = make_install_root(tmp_path)
+    job = make_patch_job(tmp_path, root)
+    # 补丁生成后基线被篡改：必须拒绝增量并回退全量。
+    (root / "releases/0.2.2/app/menu_capture/api/server.py").write_text("tampered", encoding="utf-8")
+
+    def run(args, timeout):
+        make_release(root, "0.3.0")
+        (root / "current-version").write_text("0.3.0", encoding="utf-8")
+        return 0, ""
+
+    orchestrator = patch_orchestrator(tmp_path, root, job, run, lambda port: "0.3.0")
+    journal = orchestrator.execute()
+
+    assert journal["status"] == "completed"
+    assert (root / "releases/0.3.0/release-manifest.json").is_file()
+    assert not (root / "releases" / ".0.3.0.patch-tmp").exists()
+
+
+def test_patch_rejects_existing_target_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE", "1")
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
+    root = make_install_root(tmp_path)
+    job = make_patch_job(tmp_path, root)
+    make_release(root, "0.3.0")
+    calls: list[list[str]] = []
+
+    def run(args, timeout):
+        calls.append(args)
+        return 0, ""
+
+    orchestrator = patch_orchestrator(tmp_path, root, job, run, lambda port: "0.2.2")
+    journal = orchestrator.execute()
+
+    assert journal["status"] == "failed"
+    assert "目标版本目录已存在" in journal["error"]
+    assert calls == []
+
+
+def test_patch_failure_without_fallback_reports_failed(tmp_path, monkeypatch):
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE", "1")
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
+    root = make_install_root(tmp_path)
+    job = make_patch_job(tmp_path, root)
+    # 基线在补丁生成后被篡改，补丁必然应用失败；同时移走完整安装包且不提供网络，
+    # 回退不可用时应如实失败，而不是留下残缺目标目录。
+    (root / "releases/0.2.2/app/menu_capture/api/server.py").write_text("tampered", encoding="utf-8")
+    Path(job["download_dir"], "0.3.0", job["fallback_name"]).unlink()
+    job["fallback_url"] = ""
+
+    orchestrator = patch_orchestrator(tmp_path, root, job, lambda args, timeout: (0, ""), lambda port: "0.2.2")
+    journal = orchestrator.execute()
+
+    assert journal["status"] == "failed"
+    assert "完整安装包" in journal["error"]
+    assert not (root / "releases" / "0.3.0").exists()
+
+
+def test_schema_one_full_job_still_supported(tmp_path):
+    root = make_install_root(tmp_path)
+    state = make_artifact(tmp_path)
+    job = {
+        "schema": 1,
+        "artifact_path": state["path"],
+        "asset_name": state["asset_name"],
+        "asset_kind": state["asset_kind"],
+        "sha256": state["sha256"],
+        "size": state["total"],
+        "download_dir": str(tmp_path / "download"),
+        "data_dir": str(tmp_path / "data"),
+        "target_version": "0.3.0",
+        "previous_version": "0.2.2",
+        "install_root": str(root),
+        "port": 8765,
+    }
+    clock = FakeClock()
+
+    def run(args, timeout):
+        make_release(root, "0.3.0")
+        (root / "current-version").write_text("0.3.0", encoding="utf-8")
+        return 0, ""
+
+    path = tmp_path / "data" / "update-install.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    orchestrator = InstallOrchestrator(
+        job=job, journal_path=path, run_command=run, probe_version=lambda port: "0.3.0",
+        verify_publisher=lambda artifact: {"status": "valid"},
+        sleep=lambda seconds: None, clock=clock, health_timeout=0.05,
+    )
+
+    assert orchestrator.execute()["status"] == "completed"

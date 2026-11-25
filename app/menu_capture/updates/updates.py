@@ -29,6 +29,13 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 DEFAULT_REPOSITORY = "zhaoyongze123/wechat-miniapp-menu-agent"
 CHANNELS = {"stable", "preview"}
 ASSET_KINDS = {"windows_installer", "hub_image"}
+# 文件级增量补丁：作为 Release 的普通资产发布，仅在清单可选 patches 中登记。
+PATCH_ASSET_KIND = "windows_patch"
+PATCH_FORMAT = "zip-sha256-v1"
+PATCH_PLATFORM = "windows"
+# 生产默认关闭增量；未设置时行为与全量更新完全一致。
+INCREMENTAL_ENV = "MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE"
+UNSIGNED_ENV = "MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE"
 ALLOWED_ASSET_HOSTS = {
     "github.com",
     "objects.githubusercontent.com",
@@ -183,6 +190,117 @@ def _has_asset_for_platform(latest: dict, platform: str, arch: str) -> bool:
     return _downloadable_asset(latest, platform, arch) is not None
 
 
+def _normalize_patch(
+    item: Any,
+    *,
+    target_version: str,
+    tag: str,
+    windows_arch: str,
+    known: dict[str, dict] | None = None,
+) -> dict | None:
+    """把清单中的一条补丁收敛成可信结构；任何字段不合法就丢弃该条。
+
+    补丁是可选加速手段：单条非法只影响该条，不能让合法的完整安装资产不可用。
+    """
+    if not isinstance(item, dict) or not windows_arch:
+        return None
+    name = str(item.get("name") or "")
+    if not name or Path(name).name != name:
+        return None
+    from_text = str(item.get("from") or "").strip()
+    try:
+        from_version = Version.parse(from_text)
+        if from_version >= Version.parse(target_version):
+            return None
+    except ValueError:
+        return None
+    if str(item.get("format") or "") != PATCH_FORMAT:
+        return None
+    if str(item.get("platform") or "") != PATCH_PLATFORM:
+        return None
+    if _normalize_arch(item.get("arch")) != windows_arch:
+        return None
+    size = item.get("size")
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        return None
+    sha = str(item.get("sha256") or "").lower()
+    if not _SHA256_RE.fullmatch(sha):
+        return None
+    try:
+        url = _safe_asset_url(str(item.get("url") or ""), tag)
+    except ValueError:
+        return None
+    if known is not None:
+        published = known.get(name)
+        if published is None:
+            return None
+        if published.get("size") is not None and int(published["size"]) != size:
+            return None
+        digest = str(published.get("digest") or "")
+        if digest.startswith("sha256:") and digest.split(":", 1)[1].lower() != sha:
+            return None
+        if published.get("browser_download_url") and str(published["browser_download_url"]) != url:
+            return None
+    patch = {
+        "kind": PATCH_ASSET_KIND,
+        "from": from_text.lstrip("v"),
+        "name": name,
+        "size": size,
+        "sha256": sha,
+        "url": url,
+        "platform": PATCH_PLATFORM,
+        "arch": windows_arch,
+        "format": PATCH_FORMAT,
+    }
+    catalog = str(item.get("catalog") or "")
+    # catalog 必须是同一 Release 里的普通资产；缺失时仍允许按 unsigned 放行口径使用补丁。
+    if catalog and Path(catalog).name == catalog and (known is None or catalog in known):
+        patch["catalog"] = catalog
+    return patch
+
+
+def _validate_patches(
+    raw: Any,
+    *,
+    target_version: str,
+    tag: str,
+    assets: list[dict],
+    known: dict[str, dict],
+) -> list[dict]:
+    """逐条校验可选 patches；非法条目丢弃，整体类型错误视为没有补丁。"""
+    if not isinstance(raw, list):
+        return []
+    windows = next((item for item in assets if item.get("kind") == "windows_installer"), None)
+    if windows is None:
+        return []
+    windows_arch = _normalize_arch(windows.get("arch"))
+    patches: list[dict] = []
+    seen: set[str] = set()
+    for item in raw:
+        patch = _normalize_patch(
+            item, target_version=target_version, tag=tag,
+            windows_arch=windows_arch, known=known,
+        )
+        if patch is None or patch["from"] in seen:
+            continue
+        seen.add(patch["from"])
+        patches.append(patch)
+    return patches
+
+
+def _incremental_enabled(patch: dict) -> bool:
+    """增量默认关闭；未满足等价可信条件时一律回退全量。
+
+    有签名 catalog 时由执行器验证签名；没有 catalog 时必须沿用既有 unsigned 放行开关，
+    不新增任何放宽。
+    """
+    if os.environ.get(INCREMENTAL_ENV) != "1":
+        return False
+    if patch.get("catalog"):
+        return True
+    return os.environ.get(UNSIGNED_ENV) == "1"
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -314,6 +432,12 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
             "kind": kind, "name": name, "size": size, "sha256": sha, "url": url,
             "platform": platform, "arch": arch,
         })
+    # 可选 patches 是尽力而为的加速扩展：非法条目丢弃，绝不影响已验证的完整资产。
+    target_version = version_text(tag_version, tag)
+    patches = _validate_patches(
+        manifest.get("patches"), target_version=target_version, tag=tag,
+        assets=assets, known=known,
+    )
     return {
         "version": version,
         "channel": manifest_channel,
@@ -322,6 +446,7 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
         "min_supported_version": str(manifest.get("min_supported_version") or ""),
         "rollback": str(manifest.get("rollback") or ""),
         "assets": assets,
+        "patches": patches,
     }
 
 
@@ -562,6 +687,7 @@ class UpdateService:
         if not isinstance(assets, list) or not assets:
             return None
         seen: set[str] = set()
+        windows_arch = ""
         for asset in assets:
             if not isinstance(asset, dict):
                 return None
@@ -573,6 +699,8 @@ class UpdateService:
             expected = "windows" if kind == "windows_installer" else "linux"
             if asset.get("platform") != expected or not _normalize_arch(asset.get("arch")):
                 return None
+            if kind == "windows_installer":
+                windows_arch = _normalize_arch(asset.get("arch"))
             size = asset.get("size")
             if not isinstance(size, int) or size <= 0:
                 return None
@@ -582,7 +710,18 @@ class UpdateService:
                 _safe_asset_url(str(asset.get("url") or ""), tag)
             except ValueError:
                 return None
-        return latest, checked_at
+        # 跨端数据仍需重新收敛补丁结构：只采纳字段完整、平台/架构匹配的条目。
+        raw_patches = latest.get("patches")
+        patches: list[dict] = []
+        if isinstance(raw_patches, list) and windows_arch:
+            for item in raw_patches:
+                patch = _normalize_patch(
+                    item, target_version=str(latest.get("version") or ""),
+                    tag=tag, windows_arch=windows_arch,
+                )
+                if patch is not None:
+                    patches.append(patch)
+        return {**latest, "patches": patches}, checked_at
 
     def save_preferences(self, payload: dict) -> dict:
         if not isinstance(payload, dict) or set(payload) - {"auto_check", "channel", "auto_download", "keep_versions"}:
@@ -1112,10 +1251,19 @@ class UpdateService:
                 current = self.current_version()
                 if not isinstance(latest, dict) or not _update_available(latest, current, self.platform, self.local_arch):
                     raise ValueError("当前没有可下载的更新，请先检查更新并确认平台、架构匹配")
-                asset = _downloadable_asset(latest, self.platform, self.local_arch)
-                if asset is None:
+                full_asset = _downloadable_asset(latest, self.platform, self.local_arch)
+                if full_asset is None:
                     raise ValueError("发布清单中没有与本机平台和架构匹配的资产")
                 version = str(latest.get("version") or "")
+            # 基线清单读取与安全开关判定放在状态锁外；只持文件系统锁，避免与清理竞态。
+            patch = self._select_patch(latest, current)
+            with self._lock:
+                if self._downloading:
+                    raise ValueError("已有下载任务正在运行")
+                current_latest = self._cache.get("latest")
+                if not isinstance(current_latest, dict) or str(current_latest.get("version") or "") != version:
+                    raise ValueError("更新清单已变化，请重新检查更新")
+                asset = patch or full_asset
                 previous = dict(self._download_state)
                 # 同一版本、同一资产续传时保留 ETag/Last-Modified，用于 If-Range 防止拼接已变化的资源。
                 same_asset = (
@@ -1136,6 +1284,9 @@ class UpdateService:
                     "arch": str(asset.get("arch") or ""),
                     # 记录资产身份，安装前与后续版本绑定判断都以它为准，不能只看 completed。
                     "sha256": str(asset.get("sha256") or ""),
+                    # 补丁模式记录基线版本；回退全量时保留原因，便于审计。
+                    "from_version": current if patch is not None else "",
+                    "fallback_reason": "",
                     "etag": str(previous.get("etag") or "") if same_asset else "",
                     "last_modified": str(previous.get("last_modified") or "") if same_asset else "",
                     "total": int(asset.get("size") or 0),
@@ -1158,6 +1309,38 @@ class UpdateService:
         if cancel is not None:
             cancel.set()
         return self.download_status()
+
+    def _select_patch(self, latest: dict, current: str) -> dict | None:
+        """选择与当前版本匹配的增量补丁；基线不可信或安全开关未开时返回 None。
+
+        该方法只做少量清单读取，必须在状态锁外调用；最终仍由执行器再次校验基线哈希。
+        """
+        if self.platform != PATCH_PLATFORM or not current:
+            return None
+        root = self._install_root()
+        if root is None:
+            return None
+        releases = root / "releases"
+        base = releases / current
+        if not base.is_dir() or base.is_symlink() or _is_reparse(base):
+            return None
+        manifest = self._read_json(base / "release-manifest.json", {})
+        if not isinstance(manifest, dict) or str(manifest.get("version") or "") != current:
+            return None
+        for patch in latest.get("patches") or []:
+            if not isinstance(patch, dict):
+                continue
+            if str(patch.get("from") or "") != current:
+                continue
+            if _normalize_arch(patch.get("arch")) != self.local_arch:
+                continue
+            if not _incremental_enabled(patch):
+                continue
+            name = str(patch.get("name") or "")
+            if not name or Path(name).name != name:
+                continue
+            return patch
+        return None
 
     # ---------- 空闲后更新（安排 / 取消） ----------
 
@@ -1543,7 +1726,9 @@ class UpdateService:
             "attempts": int(data.get("attempts") or 0),
         }
 
-    def _run_download(self, asset: dict, version: str, cancel: threading.Event) -> None:
+    def _run_download(
+        self, asset: dict, version: str, cancel: threading.Event, *, allow_fallback: bool = True
+    ) -> None:
         name = str(asset.get("name") or "")
         size = int(asset.get("size") or 0)
         sha = str(asset.get("sha256") or "")
@@ -1648,12 +1833,62 @@ class UpdateService:
             os.replace(part, final)
             self._finish_download("completed", path=str(final), downloaded=size)
         except Exception as exc:
-            # 未完成的 .part 原样保留，下一次开始下载会按 Range 续传。
-            self._finish_download("failed", error=str(exc) or "下载失败")
+            message = str(exc) or "下载失败"
+            # 用户取消绝不触发兜底；补丁失败才在同一授权下自动改下完整包一次。
+            if cancel.is_set():
+                self._finish_download("cancelled", error="下载已取消，已保留断点")
+            elif (
+                allow_fallback
+                and str(asset.get("kind") or "") == PATCH_ASSET_KIND
+            ):
+                full = self._fallback_to_full(version, message)
+                if full is not None:
+                    self._run_download(full, version, cancel, allow_fallback=False)
+                    return
+                self._finish_download("failed", error=message)
+            else:
+                # 未完成的 .part 原样保留，下一次开始下载会按 Range 续传。
+                self._finish_download("failed", error=message)
         finally:
             with self._lock:
                 self._downloading = False
                 self._download_cancel = None
+
+    def _fallback_to_full(self, version: str, reason: str) -> dict | None:
+        """补丁不可用时切换到同一版本的完整包；只在锁内改状态，文件清理放在锁外。"""
+        with self._lock:
+            latest = self._cache.get("latest")
+            full = _downloadable_asset(latest, self.platform, self.local_arch) if isinstance(latest, dict) else None
+            if full is None or str((latest or {}).get("version") or "") != version:
+                return None
+            state = dict(self._download_state)
+            patch_name = str(state.get("asset_name") or "")
+            if patch_name == str(full.get("name") or ""):
+                return None
+            state.update({
+                "status": "downloading",
+                "active": True,
+                "asset_kind": str(full.get("kind") or ""),
+                "asset_name": str(full.get("name") or ""),
+                "sha256": str(full.get("sha256") or ""),
+                "total": int(full.get("size") or 0),
+                "downloaded": 0,
+                "error": "",
+                "path": "",
+                "etag": "",
+                "last_modified": "",
+                "fallback_reason": reason,
+            })
+            self._download_state = state
+            self._download_persisted = 0
+            self._write_download_state()
+            self._append_history("download", "ok", f"增量补丁不可用，已回退全量包：{reason}", version)
+        if patch_name and Path(patch_name).name == patch_name:
+            try:
+                self._part_path(version, patch_name).unlink(missing_ok=True)
+            except OSError:
+                pass
+        return dict(full)
 
     def _set_download_meta(self, headers: dict[str, str]) -> None:
         etag = _header_value(headers, "etag")
@@ -2012,6 +2247,8 @@ def _empty_download_state() -> dict:
         "asset_name": "",
         "arch": "",
         "sha256": "",
+        "from_version": "",
+        "fallback_reason": "",
         "etag": "",
         "last_modified": "",
         "downloaded": 0,

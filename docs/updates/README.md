@@ -81,6 +81,18 @@ Issue #32 最新正文已把产品形态收敛为「一次授权完成更新」�
 
 SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Release 语义；后续如引入签名/发布证明，必须在此文档与实现中显式升级，不能把摘要当作唯一真实性依据。
 
+### 可选增量补丁（`patches`）
+
+发布清单可带可选顶层 `patches` 数组；旧客户端忽略该字段，只使用 `assets` 中的完整资产。
+
+- 每条补丁字段：`from`、`name`、`size`、`sha256`、`url`、`platform`（固定 `windows`）、`arch`、`format`（固定 `zip-sha256-v1`），可选 `catalog`（同一 Release 内的签名目录资产）。
+- 服务端逐条尽力校验：`from` 必须低于目标版本、格式/平台/架构匹配、URL 归属正确、名称/大小/SHA-256 与同一 Release 资产一致；任一不合法只丢弃该条，**不影响**完整安装包仍可更新。
+- 补丁本体为 ZIP，内含 `patch-manifest.json` 与 `files/<路径>`；清单携带基线/目标的完整受管文件清单、版本、`from_commit`/`to_commit`、平台、架构与受限区域指纹。
+- 安全开关：只有 `MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE=1` 时才考虑增量（默认关闭）。没有签名 `catalog` 时仍必须沿用既有 `MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE=1`，不新增任何放宽；有 `catalog` 时执行器用 `Test-FileCatalog` + Authenticode 双重校验，任一不通过即拒绝增量。
+- 只允许应用层变化：运行环境（`python/`、`node/`、`tesseract/`、`vcruntime/`）、依赖锁（`requirements*.txt`、`package-lock.json` 等）、安装器与根级 `Launch.ps1`/`rollback.ps1`/`setup.iss` 指纹变化时，该版本不生成补丁，客户端也只走全量。
+- 不引入补丁链：跨多个版本升级只有在存在 `from == 当前版本` 的补丁时才使用，否则直接全量。
+- 生成工具：`deploy/windows/make_patch.py`（纯标准库）比较两棵完整构建树后输出 ZIP 与同名 `.json`；`build.ps1 -BundleOutput <dir>` 可另存同一次正式构建的 staging bundle，避免为生成补丁重复完整构建。条件不满足时输出 `status: skipped`，不产出补丁，也不阻断完整安装包发布。
+
 ## 受控下载
 
 - 通过 `POST /api/updates/download` 启动，`POST /api/updates/download/cancel` 取消；进度随 `GET /api/updates/status` 的 `download` 字段返回。
@@ -98,6 +110,10 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 仅 Windows Worker、能定位安装根，且运维设置 `MENU_CAPTURE_ALLOW_SELF_UPDATE=1` 时，能力接口才把 `install`/`rollback` 上报为可用；未完成真实 Windows 升级/回滚验收前不默认开启。
 - `POST /api/updates/install` 启动安装，必须提交与目标版本一致的 `confirm`；`GET /api/updates/install` 返回安装日志与当前状态。
 - 控制器与执行器共用 `build_job()` 生成的安装任务契约（`schema`、`artifact_path`、`asset_name`、`sha256`、`size`、`download_dir`、`data_dir`、`install_root`、目标/上一版本、端口），字段只定义一次；契约不匹配直接拒绝，不再出现"写入 `path`、读取 `artifact_path`"这类跨模块断裂。
+- 增量任务使用 schema 2，并在同一任务里携带补丁与同版本完整安装包身份（名称/大小/SHA-256/URL）；执行器校验补丁大小与 SHA-256、`from` 与当前版本一致、基线 `release-manifest.json` 版本与 commit、平台/架构，以及可选签名目录。
+- 补丁应用先按基线清单复制未变化文件，再写入修改文件，最终受管文件集合与哈希必须与补丁目标清单完全一致；只写 `releases/.<版本>.patch-tmp`，完成后原子改名为目标目录，绝不原地修改当前版本。
+- 回退（同一次用户授权内最多一次）：补丁下载失败、切换版本前的基线校验失败、补丁应用失败都会改用同版本完整安装包并重新走 Authenticode 校验；用户取消不触发兜底；切换后的健康失败仍按既有回滚规则处理。
+- 失败或回滚后清理未被 `current-version` 指向的目标目录，避免 `setup.iss` 的 `onlyifdoesntexist` 让残缺目录挡住下一次完整安装。
 - 安装前重新校验：版本语义化、平台/架构、资产名、大小、SHA-256、`download_dir/<version>/<asset>` 路径归属，且与当前发布清单的资产哈希/名称/大小一致；不信任历史 `completed` 状态。
 - 路径安全：先校验路径片段、逐级拒绝符号链接/重解析点，再解析并确认仍在下载目录内；安装根同样拒绝链接、文件系统根与非 `releases` 目录。
 - 可信发布证明：固定仓库正式 Release + 清单 SHA-256 + 安装包 Authenticode 签名状态。签名有效才通过；未签名需显式设置 `MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE=1`；签名无效一律拒绝并记录到安装日志。
@@ -223,6 +239,7 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 受控下载：资产匹配、磁盘预检、断点续传、进度展示、取消、SHA-256 校验与下载审计。
 - Windows 安装执行器：安装前重校验、路径与签名校验、空闲闸门、独立进程静默安装（显式 `/DIR`）、目标版本文件/清单/前端哈希与角色核对、事务异常恢复、迁移感知回滚；需显式启用。
 - Windows OTA 隔离验收已覆盖应用内安装及回滚。前端安装入口须由服务端显式启用。 [隔离验收记录](https://github.com/zhaoyongze123/wechat-miniapp-menu-agent/actions/runs/45438329640)
+- Windows 文件级增量更新（Phase 1）：`deploy/windows/make_patch.py` 在正式构建 bundle 上生成补丁，发布清单可选 `patches`；执行器 schema 2 重建目标版本，失败在同一授权内回退一次完整安装包；默认关闭。
 - 存储治理：`GET/POST /api/updates/cleanup` 提供只读预览与确认后删除；按配置保留当前/运行中/最近多个
   版本并保护待安装下载包，安装/下载期间拒绝清理；设置中心提供存储治理面板。
 - Hub 镜像/归档保留脚本 `deploy/hub-update/hub_retention.py`：默认 dry-run，确认后按版本保留策略
@@ -263,6 +280,9 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - Hub 保留策略尚未接入定时任务或管理界面，当前由运维在宿主机手动执行（按最新范围暂缓接入）。
 - 多设备批量安装（远程触发）不在范围内；分批推广只控制目标版本的分发范围，安装仍由设备本地确认。
 - Windows 真实设备（隔离机）升级/回滚仍待维护者安排；自动化验收已由 `ota-smoke.ps1` 覆盖。本轮“一次授权”只完成单测与组件测试，真实浏览器 + 隔离环境的 OTA 全流程证据需在解冻后按 Issue #32 验收条件单独产出，不能以单测通过代替。
+- 增量补丁默认关闭；发布流水线尚未配置签名目录（`catalog`）证书，生产启用前需要等价可信的签名载体，否则只能沿用既有 unsigned 放行口径。
+- 补丁生成复用 `ota_base_version` 的源构建作为基线；跨正式 Release 的补丁需要保留上一版本的正式构建 bundle，当前未纳入发布资产，未匹配时以完整安装包兜底。
+- 补丁链、二进制差分、文件块级分发与 P2P 下载不在范围；不新增第二套更新状态机。
 
 ## 运维建议
 

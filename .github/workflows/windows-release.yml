@@ -161,10 +161,16 @@ jobs:
         shell: pwsh
         env:
           BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
+          OTA_BASE_VERSION: ${{ inputs.ota_base_version }}
         run: |
           $version = $env:BUILD_VERSION
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
-          ./deploy/windows/build.ps1 -Version $version
+          # 需要生成增量补丁时，把本次正式构建的 staging bundle 另存一份复用，不重复完整构建。
+          $bundleArgs = @{}
+          if ($env:OTA_BASE_VERSION) {
+            $bundleArgs.BundleOutput = Join-Path $env:RUNNER_TEMP 'mc-bundle-target'
+          }
+          ./deploy/windows/build.ps1 -Version $version @bundleArgs
       - name: 验证安装与进程恢复
         shell: pwsh
         env:
@@ -186,7 +192,34 @@ jobs:
         if: inputs.ota_base_version != ''
         shell: pwsh
         run: |
-          ./deploy/windows/build.ps1 -Version '${{ inputs.ota_base_version }}' -Output (Join-Path $env:RUNNER_TEMP 'ota-base')
+          ./deploy/windows/build.ps1 -Version '${{ inputs.ota_base_version }}' `
+            -Output (Join-Path $env:RUNNER_TEMP 'ota-base') `
+            -BundleOutput (Join-Path $env:RUNNER_TEMP 'mc-bundle-base')
+      - name: 生成增量补丁（可选，失败不阻断全量发布）
+        if: inputs.ota_base_version != ''
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
+          OTA_BASE_VERSION: ${{ inputs.ota_base_version }}
+        run: |
+          $version = $env:BUILD_VERSION
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
+          $patch = Join-Path 'deploy/artifacts' "MenuCapture-$($env:OTA_BASE_VERSION)-to-$version.patch.zip"
+          # 只比较本次两次正式构建的 staging bundle：目标版本不重新构建，基线版本复用已有构建。
+          uv run --frozen --project app python deploy/windows/make_patch.py `
+            --from-dir (Join-Path $env:RUNNER_TEMP 'mc-bundle-base') `
+            --to-dir (Join-Path $env:RUNNER_TEMP 'mc-bundle-target') `
+            --from-version $env:OTA_BASE_VERSION `
+            --to-version $version `
+            --output $patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # skipped 表示运行环境/依赖/安装器变化，不产出补丁，继续发布完整安装包。
+          if (Test-Path -LiteralPath $patch) {
+            $hash = (Get-FileHash -LiteralPath $patch -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content -LiteralPath "$patch.sha256" -Value "$hash  $(Split-Path -Leaf $patch)" -Encoding ASCII
+          } else {
+            Write-Host 'Incremental patch skipped; full installer remains the only update asset.'
+          }
       - name: 验收应用内更新接口
         if: inputs.ota_base_version != ''
         shell: pwsh
@@ -418,10 +451,20 @@ jobs:
           hub_sha=$(cut -d' ' -f1 < "$hub.sha256")
           exe_size=$(stat -c%s "$exe")
           hub_size=$(stat -c%s "$hub")
+          # 增量补丁是可选扩展：缺失或非法时只影响 patches 字段，完整安装包照常发布。
+          patch=$(find release-assets -maxdepth 1 -name 'MenuCapture-*-to-*.patch.zip' -print -quit || true)
+          patch_name=""; patch_size=""; patch_sha=""
+          if [ -n "$patch" ] && [ -s "$patch.sha256" ]; then
+            patch_name=$(basename "$patch")
+            patch_size=$(stat -c%s "$patch")
+            patch_sha=$(cut -d' ' -f1 < "$patch.sha256")
+          fi
           python3 - "$tag" "$channel" "$GITHUB_SHA" "$MIN_SUPPORTED" \
-            "$exe_name" "$exe_size" "$exe_sha" "$hub_name" "$hub_size" "$hub_sha" <<'PY'
+            "$exe_name" "$exe_size" "$exe_sha" "$hub_name" "$hub_size" "$hub_sha" \
+            "$patch_name" "${{ inputs.ota_base_version }}" "$patch_size" "$patch_sha" <<'PY'
           import json, os, sys
-          tag, channel, commit, min_version, exe_name, exe_size, exe_sha, hub_name, hub_size, hub_sha = sys.argv[1:11]
+          (tag, channel, commit, min_version, exe_name, exe_size, exe_sha,
+           hub_name, hub_size, hub_sha, patch_name, patch_from, patch_size, patch_sha) = sys.argv[1:15]
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}"
           manifest = {
               "version": tag.lstrip("v"),
@@ -439,6 +482,18 @@ jobs:
                    "platform": "linux", "arch": "amd64"},
               ],
           }
+          if patch_name and patch_from and patch_size and patch_sha:
+              # 可选顶层扩展；旧客户端忽略该字段，只使用完整安装资产。
+              manifest["patches"] = [{
+                  "from": patch_from,
+                  "name": patch_name,
+                  "size": int(patch_size),
+                  "sha256": patch_sha,
+                  "url": f"{base}/{patch_name}",
+                  "platform": "windows",
+                  "arch": "x64",
+                  "format": "zip-sha256-v1",
+              }]
           with open("release-assets/update-manifest.json", "w", encoding="utf-8") as handle:
               json.dump(manifest, handle, ensure_ascii=False, indent=2)
           PY
