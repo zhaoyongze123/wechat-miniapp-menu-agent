@@ -13,7 +13,7 @@ from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from menu_capture.materials.materials import REJECTION_REASONS, MaterialService
 from menu_capture.storage.store import TaskStore, now
-from menu_capture.capture.capture_results import capture_outcome
+from menu_capture.capture.capture_results import STORE_STATE_LABELS, capture_outcome, store_state
 
 
 class RejectionService:
@@ -28,11 +28,14 @@ class RejectionService:
         self.observed_names = observed_names
 
     def _observed_name(self, task_id: str) -> str:
-        """附带信息读取失败只返回空值，不影响不合格清单与导出主流程。"""
+        """附带信息读取失败只返回空值，不影响不合格清单与导出主流程。
+
+        Hub 走已同步结果归属；Worker/单机按任务当前采集轮次读取，绝不跨轮次回退到历史名称。
+        """
         try:
             if self.observed_names is not None:
                 return str(self.observed_names(task_id) or "")
-            return str(self.tasks.observed_store_name_latest(task_id).get("store_name") or "")
+            return str(self.tasks.observed_store_name_current(str(task_id)) or "")
         except Exception:  # noqa: BLE001 - 附带信息异常不得阻断清单与导出
             return ""
 
@@ -369,6 +372,58 @@ class RejectionService:
                 cells.append(cell)
             sheet.append(cells)
         for column, width in zip("ABCDEFGHIJKL", (34, 14, 22, 28, 18, 24, 42, 18, 24, 22, 14, 28)):
+            sheet.column_dimensions[column].width = width
+        output = BytesIO()
+        workbook.save(output)
+        return output.getvalue()
+
+    def store_name_rows(self) -> list[dict]:
+        """全量门店名称清单：名称提取独立于采集结果，覆盖成功、待检查与不合格。
+
+        以全部未归档任务为范围；原始任务编号与原始门店名称来自任务本身，
+        实际观察名称按当前有效结果归属（Hub）或当前采集轮次（Worker/单机）读取，
+        不跨轮次回退，避免历史名称掩盖本轮撤销或换版。
+        """
+        rows: list[dict] = []
+        for task in self.tasks.tasks():
+            if task.get("archived_at"):
+                continue
+            task_id = str(task["id"])
+            rows.append({
+                "task_id": task_id,
+                "store_name": str(task.get("source_name") or ""),
+                "observed_store_name": self._observed_name(task_id),
+                "state": STORE_STATE_LABELS.get(store_state(task), ""),
+            })
+        return rows
+
+    def export_store_names(self) -> bytes:
+        """导出全量门店名称与采集状态，供人工核对名称提取覆盖率。"""
+        rows = self.store_name_rows()
+        workbook = Workbook(write_only=True)
+        sheet = workbook.create_sheet("全量门店名称")
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = f"A1:D{max(1, len(rows) + 1)}"
+        headers = ["原始任务编号", "原始门店名称", "实际观察门店名称", "采集状态"]
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill("solid", fgColor="167A70")
+        header_cells = []
+        for value in headers:
+            cell = WriteOnlyCell(sheet, value=value)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(vertical="center")
+            header_cells.append(cell)
+        sheet.append(header_cells)
+        # 外部文本统一写成字符串，避免以 = 开头的门店名被 Excel 当作公式执行。
+        for row in rows:
+            cells = []
+            for value in (row["task_id"], row["store_name"], row["observed_store_name"], row["state"]):
+                cell = WriteOnlyCell(sheet, value=str(value or ""))
+                cell.data_type = "s"
+                cells.append(cell)
+            sheet.append(cells)
+        for column, width in zip("ABCD", (40, 30, 30, 18)):
             sheet.column_dimensions[column].width = width
         output = BytesIO()
         workbook.save(output)

@@ -14,8 +14,10 @@ from PIL import Image
 
 from menu_capture.agent.ui_tars_trial import _record_observation
 from menu_capture.api.server import create_app
+from menu_capture.core.config import ConfigStore
+from menu_capture.materials.materials import MaterialService
 from menu_capture.materials.rejections import RejectionService
-from menu_capture.shared.shared import _observed_store_name
+from menu_capture.shared.shared import SharedHub, _observed_store_name
 from menu_capture.shared.shared_worker import SharedWorker
 from menu_capture.storage.store import TaskStore
 
@@ -122,6 +124,7 @@ def _rejected_task(app) -> dict:
 def test_rejections_export_carries_observed_name_for_failed_capture(tmp_path: Path) -> None:
     app = create_app(tmp_path)
     task = _rejected_task(app)
+    app.state.store.create_run("run-1", "auto", [task["id"]])
     app.state.store.record_observed_store_name("run-1", task["id"], "实际观察店名")
     client = TestClient(app, base_url="http://127.0.0.1")
 
@@ -156,4 +159,79 @@ def test_observed_name_read_failure_does_not_block_export(tmp_path: Path) -> Non
     assert records[0]["task_id"] == task["id"]
     assert records[0]["observed_store_name"] == ""
     assert service.export_xlsx("capture")[:2] == b"PK"  # 名称读取失败不影响导出本身
+
+
+def _hub(tmp_path: Path) -> SharedHub:
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    configs = ConfigStore(tmp_path / "config")
+    configs.root.mkdir(parents=True, exist_ok=True)
+    return SharedHub(store, MaterialService(tmp_path / "materials", configs, store))
+
+
+def _seed_task(hub: SharedHub, task_id: str, *, inherited_from: str = "") -> None:
+    with hub.store.connect() as db:
+        db.execute(
+            "INSERT INTO tasks(id,source_name,source_path,source_hash,updated_at,inherited_from)"
+            " VALUES(?,?,?,?,?,?)",
+            (task_id, task_id, f"/inbox/{task_id}.png", "hash", "2026-01-01T00:00:00+00:00", inherited_from),
+        )
+
+
+def _seed_result(hub: SharedHub, assignment_id: str, task_id: str, disposition: str,
+                 observed: str, received_at: str) -> None:
+    with hub.store.connect() as db:
+        db.execute(
+            "INSERT INTO shared_assignments VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (assignment_id, task_id, "w" * 32, "b" * 32, "批次", task_id, "v1", "snap", "hash",
+             ".png", "completed", "2026-01-01T00:00:00+00:00"),
+        )
+        db.execute(
+            "INSERT INTO shared_results(assignment_id,digest,disposition,status,message,"
+            "received_at,observed_store_name) VALUES(?,?,?,?,?,?,?)",
+            (assignment_id, "d" * 64, disposition, "captured", "", received_at, observed),
+        )
+
+
+def test_hub_name_uses_current_accepted_result_only(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    _seed_task(hub, "task-1")
+    # 历史（迟到/换版作废）结果带名称，当前没有 accepted 结果时不得回退到它。
+    _seed_result(hub, "a" * 32, "task-1", "history", "历史旧名", "2026-01-02T00:00:00+00:00")
+    assert hub.observed_store_name("task-1") == ""
+
+    _seed_result(hub, "b" * 32, "task-1", "accepted", "当前有效店名", "2026-01-01T00:00:00+00:00")
+    assert hub.observed_store_name("task-1") == "当前有效店名"
+
+    # 采集端显式撤销：当前 accepted 结果名称为空，必须原样返回空，不能回退到更早的有效名称。
+    _seed_result(hub, "c" * 32, "task-1", "accepted", "", "2026-01-03T00:00:00+00:00")
+    assert hub.observed_store_name("task-1") == ""
+
+
+def test_hub_name_follows_inherited_ownership(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    _seed_task(hub, "task-old")
+    _seed_task(hub, "task-new", inherited_from="task-old")
+    _seed_result(hub, "a" * 32, "task-old", "accepted", "换版继承店名", "2026-01-01T00:00:00+00:00")
+
+    # 换版复用的结果落在原任务上，新任务通过 inherited_from 继承同一份有效名称。
+    assert hub.observed_store_name("task-new") == "换版继承店名"
+    assert hub.observed_store_name("missing") == ""
+
+
+def test_store_names_export_covers_all_states_and_current_round(tmp_path: Path) -> None:
+    app = create_app(tmp_path)
+    task = _rejected_task(app)
+    app.state.store.create_run("run-0", "auto", [task["id"]])
+    app.state.store.record_observed_store_name("run-0", task["id"], "历史轮次店名")
+    app.state.store.create_run("run-1", "auto", [task["id"]])
+    app.state.store.record_observed_store_name("run-1", task["id"], "本轮观察店名")
+
+    client = TestClient(app, base_url="http://127.0.0.1")
+    exported = client.get("/api/rejections/export-store-names.xlsx")
+
+    assert exported.status_code == 200
+    rows = list(load_workbook(BytesIO(exported.content), read_only=True).active.iter_rows(values_only=True))
+    assert rows[0] == ("原始任务编号", "原始门店名称", "实际观察门店名称", "采集状态")
+    by_id = {row[0]: row for row in rows[1:]}
+    assert by_id[task["id"]] == (task["id"], task["source_name"], "本轮观察店名", "不合格")
 

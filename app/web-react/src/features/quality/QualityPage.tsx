@@ -26,7 +26,7 @@ import type { HubSelectedTask } from '../hub/types'
 import { useBatchOptions } from '../materials/hooks'
 import { QualifiedPanel } from '../delivery/QualifiedPanel'
 import { statusOf } from '../task-center/format'
-import { REASON_OPTIONS, downloadRejections } from './api'
+import { REASON_OPTIONS, downloadRejections, downloadStoreNames } from './api'
 import {
   REVIEW_BUCKETS,
   REVIEW_STATE_OPTIONS,
@@ -85,6 +85,7 @@ export function QualityPage() {
   const [drawerSnapshot, setDrawerSnapshot] = useState<RejectionRecord | null>(null)
   const rejectionOrderRef = useRef<string[]>([])
   const [exporting, setExporting] = useState(false)
+  const [exportingNames, setExportingNames] = useState(false)
   const [selectedRejections, setSelectedRejections] = useState<Set<string>>(new Set())
   const [undoBatchOpen, setUndoBatchOpen] = useState(false)
   const [undoBatchResult, setUndoBatchResult] = useState<{ succeeded: number; failures: string[] } | null>(null)
@@ -421,6 +422,18 @@ export function QualityPage() {
       toast.push(errorMessage(error), 'danger')
     } finally {
       setExporting(false)
+    }
+  }
+
+  const exportStoreNames = async () => {
+    setExportingNames(true)
+    try {
+      await downloadStoreNames()
+      toast.push('已导出全量门店名称与采集状态', 'success')
+    } catch (error) {
+      toast.push(errorMessage(error), 'danger')
+    } finally {
+      setExportingNames(false)
     }
   }
 
@@ -815,6 +828,9 @@ export function QualityPage() {
                 </Button>
                 <Button color="secondary" variant="outline" size="sm" disabled={exporting} onClick={() => void exportExcel()}>
                   {exporting ? '导出中…' : '导出 Excel'}
+                </Button>
+                <Button color="secondary" variant="outline" size="sm" disabled={exportingNames} onClick={() => void exportStoreNames()}>
+                  {exportingNames ? '导出中…' : '导出全量门店名称'}
                 </Button>
               </div>
             </div>

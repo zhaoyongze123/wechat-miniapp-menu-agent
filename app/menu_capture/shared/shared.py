@@ -426,15 +426,35 @@ class SharedHub:
         return {"records": records, "total": total, "page": page, "pages": pages}
 
     def observed_store_name(self, task_id: str) -> str:
-        """按原始任务编号取 Hub 已同步的最近一次观察名称，供导出等既有消费方复用。"""
+        """按原始任务编号取当前有效采集结果伴随的门店名称。
+
+        只认当前有效结果的归属：任务自身或其 inherited_from 链上的原任务，且 disposition='accepted'
+        的同步结果。空字符串表示采集端显式撤销，必须原样返回，不能回退到任何历史名称；
+        history（迟到/换版/重采后作废）结果不参与，避免名称与当前结果错配。
+        """
+        task_id = str(task_id or "")
+        if not task_id:
+            return ""
         with self.store.connect() as db:
+            owners: list[str] = []
+            current = task_id
+            # inherited_from 只在换版复用结果时写入，正常情况下不超过一级；带环保护防脏数据死循环。
+            for _ in range(5):
+                if not current or current in owners:
+                    break
+                owners.append(current)
+                row = db.execute("SELECT inherited_from FROM tasks WHERE id=?", (current,)).fetchone()
+                current = str(row["inherited_from"] or "") if row else ""
+            if not owners:
+                return ""
+            placeholders = ",".join("?" * len(owners))
             row = db.execute(
                 "SELECT r.observed_store_name FROM shared_results r"
                 " JOIN shared_assignments a ON a.id=r.assignment_id"
-                " WHERE a.task_id=? AND r.observed_store_name<>''"
+                f" WHERE a.task_id IN ({placeholders}) AND r.disposition='accepted'"
                 " ORDER BY r.received_at DESC, r.assignment_id DESC LIMIT 1",
-                (str(task_id or ""),)).fetchone()
-        return str(row["observed_store_name"]) if row else ""
+                tuple(owners)).fetchone()
+        return str(row["observed_store_name"] or "") if row else ""
 
     def reclaim_many(self, assignment_ids: list[str]) -> dict:
         if (not isinstance(assignment_ids, list) or not 1 <= len(assignment_ids) <= 300

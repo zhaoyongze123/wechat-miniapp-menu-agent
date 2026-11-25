@@ -527,6 +527,24 @@ class TaskStore:
                              (str(run_id or ""), str(task_id or ""))).fetchone()
         return str(row["store_name"] or "") if row else ""
 
+    def observed_store_name_current(self, task_id: str) -> str:
+        """按任务当前采集轮次读取名称，绝不回退到历史轮次。
+
+        任务行不保存 run_id，当前轮次以最近一次包含该任务的运行为准（runs.updated_at）。
+        当前轮次没有观察结果时返回空，避免历史或迟到名称掩盖本轮的显式撤销与换版。
+        """
+        task_id = str(task_id or "")
+        if not task_id:
+            return ""
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT o.store_name FROM capture_run_results c"
+                " JOIN runs r ON r.id=c.run_id"
+                " LEFT JOIN observed_store_names o ON o.run_id=c.run_id AND o.task_id=c.task_id"
+                " WHERE c.task_id=? ORDER BY r.updated_at DESC, r.rowid DESC LIMIT 1",
+                (task_id,)).fetchone()
+        return str(row["store_name"] or "") if row else ""
+
     def observed_store_name_record(self, run_id: str, task_id: str) -> dict:
         """按轮次 + 任务取完整观察记录，供跨会话恢复名称时带出同一帧引用。"""
         with self.connect() as db:

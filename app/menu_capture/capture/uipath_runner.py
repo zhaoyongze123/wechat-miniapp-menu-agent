@@ -1736,6 +1736,9 @@ class UiPathRunner:
             def navigate(message: str = "") -> tuple[dict, dict | None]:
                 """跑一轮 Agent 导航；message 只在宿主把结果退回重试时携带。"""
                 nonlocal last_frame, navigation_started, raw_decision, agent_terminal
+                # 每个新会话的帧号都从 1 重新计数；清空上一会话的帧映射，避免旧帧引用被新名称误用。
+                # 已持久化的名称与证据文件不受影响，跨会话仍按轮次 + 任务恢复。
+                observed_frames.clear()
                 navigation_started = time.monotonic()
                 timing["startup"] = round((navigation_started - started_at) * 1000)
                 with self._trace("ui_tars_navigation", model=GUI_PLUS_MODEL) as trace:

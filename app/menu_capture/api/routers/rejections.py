@@ -31,6 +31,17 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             headers={"Content-Disposition": f"attachment; filename=unqualified-stores.xlsx; filename*=UTF-8''{quote(filename)}"},
         )
 
+    @app.get("/api/rejections/export-store-names.xlsx")
+    def export_store_names():
+        """全量门店名称导出：名称提取独立于采集结果，覆盖成功、待检查与不合格。"""
+        content = rejections.export_store_names()
+        filename = "全量门店名称.xlsx"
+        return Response(
+            content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename=store-names.xlsx; filename*=UTF-8''{quote(filename)}"},
+        )
+
     @app.post("/api/rejections/review")
     def review_rejection(payload: dict):
         """人工复核不合格：只切换确认标记，不改变任务状态与原因。"""
