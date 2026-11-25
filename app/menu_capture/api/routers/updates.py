@@ -38,6 +38,21 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def updates_download_cancel():
         return updates.cancel_download()
 
+    @app.post("/api/updates/update")
+    def updates_update(payload: dict | None = None):
+        # 一次授权：自动下载、等待空闲、安装、重启与健康检查，不再要求二次确认。
+        try:
+            return updates.authorize_update(payload or {})
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.post("/api/updates/update/cancel")
+    def updates_update_cancel():
+        try:
+            return updates.cancel_update()
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
     @app.get("/api/updates/cleanup")
     def updates_cleanup_preview():
         # 只读预览：不删除任何文件，供界面展示可释放空间与保护原因。

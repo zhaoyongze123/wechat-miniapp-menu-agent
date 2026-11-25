@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  authorizeUpdate,
   cancelUpdateDownload,
+  cancelUpdateFlow,
   cancelUpdateInstallSchedule,
   checkUpdates,
   fetchUpdateCleanup,
@@ -21,14 +23,16 @@ export const updateKeys = {
   cleanup: ['updates', 'cleanup'] as const,
 }
 
-/** 服务端按小时缓存；下载进行中才加密轮询，其余情况不为每台机器引入高频请求。 */
+/** 一次授权更新期间保持短间隔轮询；服务重启导致读取失败时也继续重试直到恢复。 */
 export function useUpdateStatus(enabled = true) {
   return useQuery({
     queryKey: updateKeys.status,
     queryFn: ({ signal }) => fetchUpdateStatus(signal),
     enabled,
-    staleTime: 30_000,
-    refetchInterval: (query) => (query.state.data?.download.active ? 2_000 : 5 * 60_000),
+    staleTime: 5_000,
+    refetchInterval: (query) =>
+      query.state.data?.flow.active || query.state.data?.download.active ? 2_000 : 5 * 60_000,
+    retry: 1,
   })
 }
 
@@ -74,6 +78,8 @@ export function useUpdateActions() {
     download: useMutation({ mutationFn: startUpdateDownload, onSuccess: refresh }),
     cancelDownload: useMutation({ mutationFn: cancelUpdateDownload, onSuccess: refresh }),
     install: useMutation({ mutationFn: startUpdateInstall, onSuccess: refresh }),
+    update: useMutation({ mutationFn: authorizeUpdate, onSuccess: refresh }),
+    cancelUpdate: useMutation({ mutationFn: cancelUpdateFlow, onSuccess: refresh }),
     scheduleInstall: useMutation({ mutationFn: scheduleUpdateInstall, onSuccess: refresh }),
     cancelSchedule: useMutation({ mutationFn: cancelUpdateInstallSchedule, onSuccess: refresh }),
     cleanup: useMutation({ mutationFn: runUpdateCleanup, onSuccess: refresh }),

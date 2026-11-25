@@ -2,7 +2,7 @@ import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
 import { CopyButton } from '../../components/CopyButton'
 import { SettingRow, SettingSection } from '../../components/SettingsLayout'
@@ -13,7 +13,7 @@ import { errorMessage } from '../../api/client'
 import { formatTime } from '../hub/format'
 import { formatBytes } from '../settings/format'
 import { useUpdateActions, useUpdateCleanup, useUpdateHistory, useUpdateInstall, useUpdateStatus } from './hooks'
-import type { UpdateHistoryRow } from './types'
+import type { UpdateFlowStage, UpdateHistoryRow, UpdateMode } from './types'
 
 const PLATFORM_LABEL: Record<string, string> = {
   windows: 'Windows 采集端',
@@ -26,6 +26,8 @@ const ACTION_LABEL: Record<string, string> = {
   preferences: '保存偏好',
   download: '下载更新包',
   install: '安装更新',
+  schedule: '空闲后更新',
+  update: '一次授权更新',
   cleanup: '清理存储',
 }
 
@@ -41,11 +43,33 @@ const INSTALL_STATUS_LABEL: Record<string, string> = {
   rolled_back: '已回滚到上一版本',
 }
 
+const FLOW_STAGE_LABEL: Record<UpdateFlowStage, string> = {
+  idle: '',
+  downloading: '正在下载并校验更新包',
+  waiting: '等待采集任务结束后安装',
+  installing: '正在安装更新',
+  verifying: '正在核对新版本文件',
+  restarting: '正在重启服务',
+  rolling_back: '安装失败，正在回滚',
+  completed: '更新完成',
+  failed: '更新失败',
+  rolled_back: '已回滚到上一版本',
+}
+
 function historyLabel(row: UpdateHistoryRow): string {
   return ACTION_LABEL[row.action] ?? row.action
 }
 
-/** 设置中心软件更新：只展示服务端真实状态，不伪造安装或回滚能力。 */
+/** 只保留少量更新说明用于首屏，完整内容仍在下方“更新说明”中。 */
+function shortNotes(notes: string): string {
+  const text = notes.trim()
+  if (!text) return ''
+  const lines = text.split(/\r?\n/).filter((line) => line.trim())
+  const joined = lines.slice(0, 4).join('\n')
+  return joined.length > 320 ? `${joined.slice(0, 320)}…` : joined
+}
+
+/** 设置中心软件更新：一次授权完成下载、等待空闲、安装、重启与重连。 */
 export function UpdatesPanel() {
   const toast = useToast()
   const statusQuery = useUpdateStatus()
@@ -53,13 +77,37 @@ export function UpdatesPanel() {
   const historyQuery = useUpdateHistory()
   const cleanupQuery = useUpdateCleanup(statusQuery.data?.capabilities.cleanup ?? false)
   const actions = useUpdateActions()
-  const [confirmInstall, setConfirmInstall] = useState(false)
   const [confirmCleanup, setConfirmCleanup] = useState(false)
+  const initialVersion = useRef('')
 
-  if (statusQuery.isPending) {
+  const status = statusQuery.data
+  const currentVersion = status?.current_version ?? ''
+  useEffect(() => {
+    if (!initialVersion.current && currentVersion) initialVersion.current = currentVersion
+  }, [currentVersion])
+
+  const flow = status?.flow
+  const flowStage = flow?.stage ?? 'idle'
+  const flowVersion = flow?.version ?? ''
+  // 服务重启后先让页面重连，确认运行版本已是目标版本再加载新版前端；只自动刷新一次。
+  useEffect(() => {
+    if (flowStage !== 'completed' || !flowVersion) return
+    if (currentVersion !== flowVersion) return
+    if (!initialVersion.current || initialVersion.current === currentVersion) return
+    try {
+      const key = 'menu-capture-update-reloaded'
+      if (window.sessionStorage.getItem(key) === flowVersion) return
+      window.sessionStorage.setItem(key, flowVersion)
+      window.setTimeout(() => window.location.reload(), 800)
+    } catch {
+      // 存储不可用时只展示完成状态，不强制刷新。
+    }
+  }, [flowStage, flowVersion, currentVersion])
+
+  if (statusQuery.isPending && !status) {
     return <StatePanel variant="loading" title="正在读取更新状态…" />
   }
-  if (statusQuery.isError || !statusQuery.data) {
+  if (!status) {
     return (
       <StatePanel
         variant="error"
@@ -74,10 +122,11 @@ export function UpdatesPanel() {
     )
   }
 
-  const status = statusQuery.data
   const latest = status.latest
   const preferences = status.preferences
   const download = status.download
+  const schedule = status.schedule
+  const install = installQuery.data
   const preferenceBusy = actions.savePreferences.isPending
   const checkBusy = actions.check.isPending
   const downloadBusy = actions.download.isPending || actions.cancelDownload.isPending
@@ -90,16 +139,9 @@ export function UpdatesPanel() {
     && latest != null
     && download.version === latest.version
     && (!latestAsset || latestAsset.name === download.asset_name)
-  // 已下载当前最新版本时不再提供下载入口；安装由独立执行器完成，需要下载产物与能力同时满足。
   const canDownload = status.capabilities.download && status.update_available
     && !download.active && !downloadedCurrent
   const showProgress = download.active || downloadedCurrent
-  const install = installQuery.data
-  const installActive = Boolean(install?.active)
-  const installBusy = actions.install.isPending || installActive
-  const canInstall = status.capabilities.install && downloadedCurrent && latest != null
-    && !download.active && !installActive
-  // 安装状态读取失败时只提示刷新，不把网络失败当成安装失败。
   const installReadError = installQuery.isError ? errorMessage(installQuery.error) : ''
   const storage = cleanupQuery.data
   const cleanupBusy = actions.cleanup.isPending
@@ -113,24 +155,40 @@ export function UpdatesPanel() {
   const cleanupItemCount = storageScopes.reduce((total, row) => total + row.scope.items.length, 0)
   const canCleanup = storage != null && !storage.blocked && cleanupItemCount > 0 && !cleanupBusy
 
-  const schedule = status.schedule
+  const flowActive = flow?.active ?? false
+  const flowFailed = flowStage === 'failed' || flowStage === 'rolled_back'
+  const justUpdated = flowStage === 'completed'
+    && flowVersion !== ''
+    && flowVersion === status.current_version
+    && initialVersion.current !== ''
+    && initialVersion.current !== status.current_version
+  const canAuthorize = status.capabilities.install && status.update_available && !flowActive
+  const headlineVersion = (flowActive || flowFailed || justUpdated) && flowVersion
+    ? flowVersion
+    : status.update_available
+      ? latest?.version || flowVersion || status.current_version
+      : status.current_version
+
+  const authorize = (mode: UpdateMode) => {
+    actions.update.mutate(mode, {
+      onSuccess: () => toast.push(
+        mode === 'immediate' ? '已开始更新，后台会自动完成安装与重启' : '已安排空闲后更新，采集结束会自动开始',
+        'info',
+      ),
+      onError: (error) => toast.push(errorMessage(error), 'danger'),
+    })
+  }
+
+  const cancelUpdate = () => {
+    actions.cancelUpdate.mutate(undefined, {
+      onSuccess: () => toast.push('已取消本次更新，已下载部分会保留', 'info'),
+      onError: (error) => toast.push(errorMessage(error), 'danger'),
+    })
+  }
+
   const savePreferences = (partial: { auto_check?: boolean; auto_download?: boolean; keep_versions?: number; channel?: 'stable' | 'preview' }) => {
     actions.savePreferences.mutate(partial, {
       onSuccess: () => toast.push('更新偏好已保存', 'success'),
-      onError: (error) => toast.push(errorMessage(error), 'danger'),
-    })
-  }
-
-  const scheduleInstall = () => {
-    actions.scheduleInstall.mutate(undefined, {
-      onSuccess: () => toast.push('已安排在采集与人工标注结束后安装', 'success'),
-      onError: (error) => toast.push(errorMessage(error), 'danger'),
-    })
-  }
-
-  const cancelSchedule = () => {
-    actions.cancelSchedule.mutate(undefined, {
-      onSuccess: () => toast.push('已取消空闲后更新安排', 'info'),
       onError: (error) => toast.push(errorMessage(error), 'danger'),
     })
   }
@@ -178,270 +236,302 @@ export function UpdatesPanel() {
     })
   }
 
-  const startInstall = () => {
-    if (!latest) return
-    actions.install.mutate(latest.version, {
-      onSuccess: (state) => {
-        setConfirmInstall(false)
-        toast.push(
-          state.active ? `已提交安装 ${latest.version}，切换期间页面会短暂断开` : '安装任务已提交',
-          'info',
-        )
-      },
-      onError: (error) => toast.push(errorMessage(error), 'danger'),
-    })
-  }
-
   return (
     <div className="space-y-6">
       <SettingSection
         id="updates-software"
         title="软件更新"
-        description="从固定 GitHub 正式 Release 发现版本，校验通过后下载更新包；Windows 采集端可在空闲时由独立执行器完成安装与回滚。"
+        description="一次授权完成下载、校验、等待空闲、安装与重启；技术细节收在高级设置中。"
       >
-        <Alert
-          color="warning"
-          variant="soft"
-          title="下载与安装都以服务端真实能力为准"
-          description="下载只写入数据目录并校验 SHA-256；安装仅在 Windows 采集端显式启用且采集/标注空闲时可用，切换后服务会自动重启并核对版本与健康状态。"
-        />
-
-        <div className="grid gap-3 sm:grid-cols-3">
-          <SummaryCard label="当前运行版本" value={status.current_version || '未知'} hint={PLATFORM_LABEL[status.platform] ?? status.platform} />
-          <SummaryCard
-            label="最新可用版本"
-            value={latest?.version || '尚未检查'}
-            hint={
-              latest && !latest.eligible
-                ? `不可用：${latest.reason}`
-                : status.update_available
-                  ? '发现可更新版本'
-                  : latest?.eligible && latest.min_supported_version && latest.version !== status.current_version
-                    ? `当前版本低于最低兼容版本 ${latest.min_supported_version}，需传统升级`
-                    : '当前渠道没有更高版本'
-            }
-            tone={status.update_available ? 'success' : latest && !latest.eligible ? 'warning' : 'secondary'}
+        {statusQuery.isError ? (
+          <Alert
+            color="warning"
+            variant="soft"
+            title="暂时无法连接更新服务"
+            description="服务可能正在重启，页面会自动重连；无需重复操作。"
           />
-          <SummaryCard
-            label="最近检查时间"
-            value={status.last_checked ? formatTime(status.last_checked) : '尚未检查'}
-            hint={status.stale ? (status.checking ? '正在后台检查，可稍后刷新' : '信息已过期，可手动刷新') : '缓存信息在有效期内'}
-            tone={status.stale ? 'warning' : 'secondary'}
-          />
-        </div>
-
+        ) : null}
         {status.error ? (
           <Alert color="danger" variant="soft" title="最近一次检查失败" description={status.error} />
         ) : null}
 
-        {status.capabilities.download && (status.update_available || download.status !== 'idle') ? (
-          <div className="space-y-2 rounded-lg border border-subtle px-3 py-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="min-w-0">
-                <p className="text-sm text-default">更新包下载</p>
-                <p className="text-2xs text-tertiary">
-                  {downloadedCurrent
-                    ? `已下载 ${download.asset_name} 并通过 SHA-256 校验；安装执行器尚未启用。`
-                    : download.active
-                      ? `正在${download.status === 'verifying' ? '校验' : '下载'} ${download.asset_name}`
-                      : download.status === 'completed' && download.version
-                        ? `已下载 ${download.version}；当前最新为 ${latest?.version ?? '未知'}，可下载新版本。`
-                        : '下载只写入数据目录，支持断点续传，完成后校验 SHA-256；不会自动安装。'}
-                </p>
+        <div className="rounded-xl border border-subtle bg-surface px-5 py-4">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0 flex-1 space-y-2">
+              <p className="text-xs text-secondary">软件更新</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="heading-lg text-default">{headlineVersion || '未知版本'}</span>
+                {flowActive ? (
+                  <StatusBadge tone="warning">正在更新</StatusBadge>
+                ) : justUpdated ? (
+                  <StatusBadge tone="success">已更新</StatusBadge>
+                ) : flowStage === 'rolled_back' ? (
+                  <StatusBadge tone="warning">已回滚</StatusBadge>
+                ) : flowFailed ? (
+                  <StatusBadge tone="danger">更新失败</StatusBadge>
+                ) : status.update_available ? (
+                  <StatusBadge tone="info">有新版本可用</StatusBadge>
+                ) : (
+                  <StatusBadge tone="secondary">已是最新</StatusBadge>
+                )}
               </div>
-              <div className="flex items-center gap-2">
-                {download.active ? (
-                  <Button color="secondary" variant="outline" size="sm" disabled={downloadBusy} onClick={cancelDownload}>
-                    取消下载
-                  </Button>
-                ) : canDownload ? (
-                  <Button color="primary" size="sm" disabled={downloadBusy} onClick={startDownload}>
-                    {download.resumable ? '继续下载' : '下载更新包'}
-                  </Button>
-                ) : null}
-              </div>
+              <p className="text-sm text-secondary">
+                {flowActive
+                  ? [FLOW_STAGE_LABEL[flowStage], flow?.message].filter(Boolean).join(' · ')
+                  : justUpdated
+                    ? `已更新至 ${flowVersion}，当前运行版本 ${status.current_version}`
+                    : flowFailed
+                      ? flow?.error || flow?.message || '更新未完成，可重试'
+                      : status.update_available
+                        ? `当前版本 ${status.current_version}，可更新至 ${latest?.version || flowVersion}`
+                        : `当前版本 ${status.current_version}，已是最新版本`}
+              </p>
+              {latest && status.update_available && shortNotes(latest.notes) ? (
+                <div className="max-h-24 overflow-y-auto whitespace-pre-wrap rounded-lg border border-subtle px-3 py-2 text-xs leading-relaxed text-secondary">
+                  {shortNotes(latest.notes)}
+                </div>
+              ) : null}
+              <p className="text-2xs text-tertiary">
+                更新不会中断正在进行的采集任务；安装期间服务会短暂重启，完成后页面会自动重连。
+              </p>
             </div>
-            {showProgress ? (
+            <div className="flex flex-col items-stretch gap-2 sm:min-w-44">
+              {flowActive ? (
+                flowStage === 'downloading' || flowStage === 'waiting' ? (
+                  <Button color="secondary" variant="outline" size="sm" disabled={actions.cancelUpdate.isPending} onClick={cancelUpdate}>
+                    {actions.cancelUpdate.isPending ? '正在取消…' : '取消更新'}
+                  </Button>
+                ) : (
+                  <p className="text-2xs text-tertiary">安装已开始，无法取消；请保持服务运行。</p>
+                )
+              ) : justUpdated ? (
+                <Button color="secondary" variant="outline" size="sm" disabled={checkBusy} onClick={checkNow}>
+                  检查更新
+                </Button>
+              ) : flowFailed ? (
+                <>
+                  <Button color="primary" size="sm" disabled={actions.update.isPending} onClick={() => authorize('immediate')}>
+                    重试更新
+                  </Button>
+                  <Button color="secondary" variant="outline" size="sm" disabled={checkBusy} onClick={checkNow}>
+                    检查更新
+                  </Button>
+                </>
+              ) : canAuthorize ? (
+                <>
+                  <Button color="primary" size="sm" disabled={actions.update.isPending} onClick={() => authorize('immediate')}>
+                    {actions.update.isPending ? '正在启动…' : '立即更新'}
+                  </Button>
+                  <Button color="secondary" variant="outline" size="sm" disabled={actions.update.isPending} onClick={() => authorize('idle')}>
+                    空闲后更新
+                  </Button>
+                </>
+              ) : status.update_available ? (
+                <p className="text-2xs text-tertiary">当前环境不支持应用内安装，请使用安装包升级。</p>
+              ) : (
+                <Button color="secondary" variant="outline" size="sm" disabled={checkBusy} onClick={checkNow}>
+                  {checkBusy ? '检查中…' : '检查更新'}
+                </Button>
+              )}
+            </div>
+          </div>
+          {flowActive && flowStage === 'downloading' ? (
+            <div className="mt-3 space-y-1">
               <div
                 className="h-2 w-full overflow-hidden rounded-full bg-secondary-soft"
                 role="progressbar"
                 aria-label="更新包下载进度"
                 aria-valuemin={0}
                 aria-valuemax={100}
-                aria-valuenow={downloadedCurrent ? 100 : downloadPercent}
+                aria-valuenow={flow?.progress ?? downloadPercent}
               >
-                <div
-                  className="h-full rounded-full bg-primary-solid transition-all"
-                  style={{ width: `${downloadedCurrent ? 100 : downloadPercent}%` }}
-                />
+                <div className="h-full rounded-full bg-primary-solid transition-all" style={{ width: `${flow?.progress ?? downloadPercent}%` }} />
               </div>
-            ) : null}
-            {download.active ? (
               <p className="text-2xs text-secondary">
-                {formatBytes(download.downloaded)} / {formatBytes(download.total)} · {downloadPercent}%
+                {formatBytes(download.downloaded)} / {formatBytes(download.total)} · {flow?.progress ?? downloadPercent}%
               </p>
-            ) : null}
-            {downloadedCurrent ? (
-              <p className="text-2xs text-tertiary">
-                {formatBytes(download.downloaded)} · {download.asset_name}
-              </p>
-            ) : null}
-            {download.error ? (
-              <Alert color="danger" variant="soft" title="下载未完成" description={download.error} />
-            ) : null}
-          </div>
-        ) : null}
-
-        {downloadedCurrent || installActive || (install != null && install.status !== 'idle') ? (
-          <div className="space-y-2 rounded-lg border border-subtle px-3 py-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="min-w-0">
-                <p className="text-sm text-default">安装与切换</p>
-                <p className="text-2xs text-tertiary">
-                  {install && install.supported
-                    ? INSTALL_STATUS_LABEL[install.status] ?? install.status
-                    : '安装执行器未启用'}
-                  {install?.target_version ? ` · 目标 ${install.target_version}` : ''}
-                  {install?.previous_version ? ` · 上一版本 ${install.previous_version}` : ''}
-                </p>
-              </div>
-              {canInstall ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button color="secondary" variant="outline" size="sm" disabled={installBusy} onClick={scheduleInstall}>
-                    {schedule.armed ? '已安排空闲后更新' : '空闲后更新'}
-                  </Button>
-                  <Button color="primary" size="sm" disabled={installBusy} onClick={() => setConfirmInstall(true)}>
-                    立即安装并重启
-                  </Button>
-                </div>
-              ) : null}
             </div>
-            {schedule.armed ? (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-surface-secondary px-3 py-2">
-                <p className="text-2xs text-secondary">
-                  已安排 {schedule.version || '待安装版本'}：{schedule.note || '等待采集与人工标注结束'}
-                </p>
-                <Button color="secondary" variant="ghost" size="sm" disabled={actions.cancelSchedule.isPending} onClick={cancelSchedule}>
-                  取消安排
-                </Button>
-              </div>
-            ) : schedule.last_result === 'started' ? (
-              <p className="text-2xs text-secondary">已在空闲时启动安装，进度见上方安装状态。</p>
-            ) : schedule.last_result ? (
-              <p className="text-2xs text-danger">空闲后更新未执行：{schedule.last_result}</p>
-            ) : null}
-            {install?.message ? <p className="text-2xs text-secondary">{install.message}</p> : null}
-            {install && (install.status === 'failed' || install.status === 'rolled_back') && install.error ? (
-              <Alert color="danger" variant="soft" title="安装未完成" description={install.error} />
-            ) : null}
-            {!status.capabilities.install ? (
-              <p className="text-2xs text-tertiary">
-                {install?.reason || '安装执行器需在 Windows 采集端并显式启用后才能使用。'}
-              </p>
-            ) : downloadedCurrent && !canInstall ? (
-              <p className="text-2xs text-tertiary">安装需在下载完成且没有其他任务占用时进行。</p>
-            ) : null}
-            {installReadError ? <p className="text-2xs text-danger">安装状态读取失败：{installReadError}</p> : null}
-          </div>
-        ) : null}
-
-        <SettingRow label="发布渠道" description="默认只接收正式稳定版；预览渠道仅用于明确授权的验证。">
-          <Select
-            aria-label="发布渠道"
-            value={preferences.channel}
-            disabled={preferenceBusy}
-            options={[
-              { value: 'stable', label: '正式版（stable）' },
-              { value: 'preview', label: '预览版（preview）' },
-            ]}
-            onChange={(option) => savePreferences({ channel: option.value as 'stable' | 'preview' })}
-          />
-        </SettingRow>
-
-        <SettingRow label="自动检查" description="服务端按小时缓存检查结果，不会让每台设备高频轮询 GitHub。">
-          <Checkbox
-            label="自动检查正式发布"
-            checked={preferences.auto_check}
-            disabled={preferenceBusy}
-            onCheckedChange={(checked) => savePreferences({ auto_check: checked })}
-          />
-        </SettingRow>
-
-        <SettingRow label="自动下载" description="发现新版本后只在后台下载并校验，不会自动安装或打断采集。">
-          <Checkbox
-            label="自动下载更新包"
-            checked={preferences.auto_download}
-            disabled={preferenceBusy}
-            onCheckedChange={(checked) => savePreferences({ auto_download: checked })}
-          />
-        </SettingRow>
-
-        <SettingRow
-          label="已安装程序保留数量"
-          description="包含当前版本；运行中、待安装与回滚目标始终受保护，清理前仍需确认。"
-        >
-          <Select
-            aria-label="已安装程序保留数量"
-            value={String(preferences.keep_versions)}
-            disabled={preferenceBusy}
-            options={[2, 3, 4, 5].map((value) => ({ value: String(value), label: `${value} 个版本` }))}
-            onChange={(option) => savePreferences({ keep_versions: Number(option.value) })}
-          />
-        </SettingRow>
-
-        <div className="flex flex-wrap items-center gap-2 border-t border-subtle pt-3">
-          <Button color="primary" size="sm" disabled={checkBusy} onClick={checkNow}>
-            {checkBusy ? '检查中…' : '手动检查更新'}
-          </Button>
-          {latest?.html_url ? (
-            <a
-              className="rounded-md border border-subtle px-3 py-1.5 text-sm text-default hover:bg-secondary-ghost-hover"
-              href={latest.html_url}
-              target="_blank"
-              rel="noreferrer"
-            >
-              查看 Release
-            </a>
           ) : null}
-          <Button color="secondary" variant="ghost" size="sm" onClick={() => void historyQuery.refetch()}>
-            刷新记录
-          </Button>
+          {flowActive ? (
+            <p className="mt-2 text-2xs text-tertiary">可以关闭页面，后台会继续完成更新。</p>
+          ) : null}
         </div>
 
-        {latest ? (
-          <details className="rounded-lg border border-subtle px-3 py-2" open={status.update_available}>
-            <summary className="cursor-pointer text-sm text-default">
-              更新说明 · {latest.name || latest.version}
-              {status.update_available ? <span className="ml-2 text-xs text-warning">有新版本</span> : null}
-            </summary>
-            <div className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-secondary">
-              {latest.notes || '该 Release 没有提供更新说明。'}
-            </div>
-            {latest.git_commit ? (
-              <p className="mt-2 text-2xs text-tertiary">源码提交 {latest.git_commit.slice(0, 12)}</p>
-            ) : null}
-          </details>
-        ) : null}
-
-        {latest?.assets?.length ? (
-          <div className="space-y-2">
-            <h3 className="text-sm text-default">发布资产与完整性校验</h3>
-            <ul className="divide-y divide-subtle rounded-lg border border-subtle">
-              {latest.assets.map((asset) => (
-                <li key={asset.kind} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs">
-                  <span className="min-w-0">
-                    <span className="block truncate text-default" title={asset.name}>{asset.name}</span>
-                    <span className="text-tertiary">{formatBytes(asset.size)} · SHA-256 {asset.sha256.slice(0, 12)}…</span>
-                  </span>
-                  <CopyButton value={asset.sha256} label={`${asset.kind} SHA-256`} />
-                </li>
-              ))}
-            </ul>
+        <details className="rounded-lg border border-subtle px-3 py-2">
+          <summary className="cursor-pointer text-sm text-default">高级设置与诊断</summary>
+          <div className="mt-3 space-y-3">
             <p className="text-2xs text-tertiary">
-              SHA-256 只证明资产完整性；发布者真实性依赖固定仓库的正式 Release 语义。
+              以下为发布渠道、自动下载偏好、版本保留与校验信息；日常更新不需要修改。
             </p>
+            <SettingRow label="发布渠道" description="默认只接收正式稳定版；预览渠道仅用于明确授权的验证。">
+              <Select
+                aria-label="发布渠道"
+                value={preferences.channel}
+                disabled={preferenceBusy}
+                options={[
+                  { value: 'stable', label: '正式版（stable）' },
+                  { value: 'preview', label: '预览版（preview）' },
+                ]}
+                onChange={(option) => savePreferences({ channel: option.value as 'stable' | 'preview' })}
+              />
+            </SettingRow>
+
+            <SettingRow label="自动检查" description="服务端按小时缓存检查结果，不会让每台设备高频轮询 GitHub。">
+              <Checkbox
+                label="自动检查正式发布"
+                checked={preferences.auto_check}
+                disabled={preferenceBusy}
+                onCheckedChange={(checked) => savePreferences({ auto_check: checked })}
+              />
+            </SettingRow>
+
+            <SettingRow label="自动下载" description="发现新版本后只在后台下载并校验，不会自动安装或打断采集。">
+              <Checkbox
+                label="自动下载更新包"
+                checked={preferences.auto_download}
+                disabled={preferenceBusy}
+                onCheckedChange={(checked) => savePreferences({ auto_download: checked })}
+              />
+            </SettingRow>
+
+            <SettingRow
+              label="已安装程序保留数量"
+              description="包含当前版本；运行中、待安装与回滚目标始终受保护，清理前仍需确认。"
+            >
+              <Select
+                aria-label="已安装程序保留数量"
+                value={String(preferences.keep_versions)}
+                disabled={preferenceBusy}
+                options={[2, 3, 4, 5].map((value) => ({ value: String(value), label: `${value} 个版本` }))}
+                onChange={(option) => savePreferences({ keep_versions: Number(option.value) })}
+              />
+            </SettingRow>
+
+            <div className="flex flex-wrap items-center gap-2 border-t border-subtle pt-3">
+              <Button color="secondary" variant="outline" size="sm" disabled={checkBusy} onClick={checkNow}>
+                {checkBusy ? '检查中…' : '手动检查更新'}
+              </Button>
+              {latest?.html_url ? (
+                <a
+                  className="rounded-md border border-subtle px-3 py-1.5 text-sm text-default hover:bg-secondary-ghost-hover"
+                  href={latest.html_url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  查看 Release
+                </a>
+              ) : null}
+              <Button color="secondary" variant="ghost" size="sm" onClick={() => void historyQuery.refetch()}>
+                刷新记录
+              </Button>
+              <span className="text-2xs text-tertiary">
+                {PLATFORM_LABEL[status.platform] ?? status.platform} · 当前 {status.current_version || '未知'} · 检查于{' '}
+                {status.last_checked ? formatTime(status.last_checked) : '尚未检查'}
+                {status.stale ? '（已过期）' : ''}
+              </span>
+            </div>
+
+            {status.capabilities.download && (status.update_available || download.status !== 'idle') ? (
+              <div className="space-y-2 rounded-lg border border-subtle px-3 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm text-default">更新包下载</p>
+                    <p className="text-2xs text-tertiary">
+                      {downloadedCurrent
+                        ? `已下载 ${download.asset_name} 并通过 SHA-256 校验。`
+                        : download.active
+                          ? `正在${download.status === 'verifying' ? '校验' : '下载'} ${download.asset_name}`
+                          : download.status === 'completed' && download.version
+                            ? `已下载 ${download.version}；当前最新为 ${latest?.version ?? '未知'}。`
+                            : '下载只写入数据目录，支持断点续传，完成后校验 SHA-256。'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {download.active ? (
+                      <Button color="secondary" variant="outline" size="sm" disabled={downloadBusy} onClick={cancelDownload}>
+                        取消下载
+                      </Button>
+                    ) : canDownload ? (
+                      <Button color="secondary" variant="outline" size="sm" disabled={downloadBusy} onClick={startDownload}>
+                        {download.resumable ? '继续下载' : '仅下载更新包'}
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+                {showProgress ? (
+                  <div
+                    className="h-2 w-full overflow-hidden rounded-full bg-secondary-soft"
+                    role="progressbar"
+                    aria-label="更新包下载进度"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={downloadedCurrent ? 100 : downloadPercent}
+                  >
+                    <div className="h-full rounded-full bg-primary-solid transition-all" style={{ width: `${downloadedCurrent ? 100 : downloadPercent}%` }} />
+                  </div>
+                ) : null}
+                {download.error ? (
+                  <Alert color="danger" variant="soft" title="下载未完成" description={download.error} />
+                ) : null}
+              </div>
+            ) : null}
+
+            {install != null && (install.supported || install.status !== 'idle' || install.reason) ? (
+              <div className="space-y-2 rounded-lg border border-subtle px-3 py-3">
+                <p className="text-sm text-default">安装与切换</p>
+                <p className="text-2xs text-tertiary">
+                  {install.supported ? INSTALL_STATUS_LABEL[install.status] ?? install.status : install.reason || '安装执行器未启用'}
+                  {install.target_version ? ` · 目标 ${install.target_version}` : ''}
+                  {install.previous_version ? ` · 上一版本 ${install.previous_version}` : ''}
+                </p>
+                {install.message ? <p className="text-2xs text-secondary">{install.message}</p> : null}
+                {install.error ? (
+                  <Alert color="danger" variant="soft" title="安装未完成" description={install.error} />
+                ) : null}
+                {installReadError ? <p className="text-2xs text-danger">安装状态读取失败：{installReadError}</p> : null}
+                {schedule.armed ? <p className="text-2xs text-secondary">当前安排：{schedule.note || '等待空闲'}</p> : null}
+                {schedule.last_result && schedule.last_result !== 'started' ? (
+                  <p className="text-2xs text-danger">安排未执行：{schedule.last_result}</p>
+                ) : null}
+              </div>
+            ) : null}
+
+            {latest ? (
+              <details className="rounded-lg border border-subtle px-3 py-2" open={status.update_available}>
+                <summary className="cursor-pointer text-sm text-default">
+                  更新说明 · {latest.name || latest.version}
+                  {status.update_available ? <span className="ml-2 text-xs text-warning">有新版本</span> : null}
+                </summary>
+                <div className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-secondary">
+                  {latest.notes || '该 Release 没有提供更新说明。'}
+                </div>
+                {latest.git_commit ? (
+                  <p className="mt-2 text-2xs text-tertiary">源码提交 {latest.git_commit.slice(0, 12)}</p>
+                ) : null}
+              </details>
+            ) : null}
+
+            {latest?.assets?.length ? (
+              <div className="space-y-2">
+                <h3 className="text-sm text-default">发布资产与完整性校验</h3>
+                <ul className="divide-y divide-subtle rounded-lg border border-subtle">
+                  {latest.assets.map((asset) => (
+                    <li key={asset.kind} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs">
+                      <span className="min-w-0">
+                        <span className="block truncate text-default" title={asset.name}>{asset.name}</span>
+                        <span className="text-tertiary">{formatBytes(asset.size)} · SHA-256 {asset.sha256.slice(0, 12)}…</span>
+                      </span>
+                      <CopyButton value={asset.sha256} label={`${asset.kind} SHA-256`} />
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-2xs text-tertiary">
+                  SHA-256 只证明资产完整性；发布者真实性依赖固定仓库的正式 Release 语义。
+                </p>
+              </div>
+            ) : null}
           </div>
-        ) : null}
+        </details>
       </SettingSection>
 
       <SettingSection
@@ -552,7 +642,7 @@ export function UpdatesPanel() {
         )}
       </SettingSection>
 
-      <SettingSection id="updates-history" title="更新记录" description="检查与偏好变更会持久化记录；不包含业务采集结果。">
+      <SettingSection id="updates-history" title="更新记录" description="检查、授权与偏好变更会持久化记录；不包含业务采集结果。">
         {historyQuery.isError ? (
           <p className="text-xs text-danger">{errorMessage(historyQuery.error)}</p>
         ) : historyQuery.data?.length ? (
@@ -573,23 +663,6 @@ export function UpdatesPanel() {
       </SettingSection>
 
       <ConfirmActionDialog
-        open={confirmInstall}
-        title={`安装 ${latest?.version ?? ''} 并重启采集端`}
-        description={
-          <div className="space-y-2">
-            <p>安装由独立进程静默完成，随后采集端会自动重启并核对运行版本、前端入口与健康状态。</p>
-            <p>安装期间新的采集与人工标注会被拒绝；失败时执行器会尝试回滚到上一版本，如数据库已迁移则停在人工确认。</p>
-            <p>请确认当前没有正在执行的采集或标注任务。</p>
-          </div>
-        }
-        confirmLabel="确认安装并重启"
-        tone="danger"
-        busy={actions.install.isPending}
-        onConfirm={startInstall}
-        onOpenChange={setConfirmInstall}
-      />
-
-      <ConfirmActionDialog
         open={confirmCleanup}
         title="清理历史版本与缓存"
         description={
@@ -608,29 +681,6 @@ export function UpdatesPanel() {
         onConfirm={startCleanup}
         onOpenChange={setConfirmCleanup}
       />
-    </div>
-  )
-}
-
-function SummaryCard({
-  label,
-  value,
-  hint,
-  tone = 'secondary',
-}: {
-  label: string
-  value: string
-  hint: string
-  tone?: 'success' | 'warning' | 'secondary' | 'info'
-}) {
-  return (
-    <div className="rounded-xl border border-subtle bg-surface px-4 py-3">
-      <span className="block text-xs text-secondary">{label}</span>
-      <div className="mt-1 flex flex-wrap items-center gap-2">
-        <span className="heading-sm text-default">{value}</span>
-        {tone !== 'secondary' ? <StatusBadge tone={tone}>{tone === 'success' ? '可更新' : tone === 'warning' ? '需处理' : '信息'}</StatusBadge> : null}
-      </div>
-      <p className="mt-1 text-2xs text-tertiary">{hint}</p>
     </div>
   )
 }

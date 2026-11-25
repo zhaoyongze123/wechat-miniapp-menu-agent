@@ -52,7 +52,10 @@ DEFAULT_KEEP_VERSIONS = 3
 MIN_KEEP_VERSIONS = 2
 MAX_KEEP_VERSIONS = 5
 # “空闲后更新”监控轮询；发现不空闲时只记录原因，不打断采集。
-SCHEDULE_POLL_SECONDS = 20.0
+SCHEDULE_POLL_SECONDS = 5.0
+# 一次授权即可完成的更新方式：immediate 为“立即更新”，idle 为“空闲后更新”。
+UPDATE_MODES = {"immediate", "idle"}
+INSTALL_ACTIVE_STATUSES = {"starting", "installing", "verifying", "restarting", "rolling_back"}
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 # GitHub Release 上附带的更新清单；与安装目录内的运行时 release-manifest.json 区分。
 MANIFEST_ASSET = "update-manifest.json"
@@ -148,6 +151,14 @@ def _update_available(latest: dict | None, current: str, platform: str, arch: st
 
 def _asset_kind_for_platform(platform: str) -> str:
     return {"windows": "windows_installer", "linux": "hub_image"}.get(platform, "")
+
+
+def _download_percent(state: dict) -> int:
+    total = int(state.get("total") or 0)
+    done = int(state.get("downloaded") or 0)
+    if total <= 0:
+        return 0
+    return max(0, min(100, int(done * 100 / total)))
 
 
 def _downloadable_asset(latest: dict, platform: str, arch: str) -> dict | None:
@@ -374,6 +385,8 @@ class UpdateService:
         self.hub_target_provider: Callable[[], dict | None] | None = None
         # Worker 向 Hub 上报安装状态时使用；执行器未接入时留空，不推测。
         self.install_status_provider: Callable[[], str] | None = None
+        # 展示统一更新流程时读取执行器完整快照；未接入时流程只依据下载与安排状态。
+        self.install_snapshot_provider: Callable[[], dict] | None = None
         # “空闲后更新”：监控线程在安全条件满足时调用执行器启动安装，自身不判断业务空闲。
         self.schedule_installer: Callable[[str], dict] | None = None
         self._schedule = self._read_schedule()
@@ -444,6 +457,9 @@ class UpdateService:
             "checking": checking,
             "download": self.download_status(),
             "schedule": self.install_schedule(),
+            # 一次授权后的统一进度：前端只读这个字段展示“下载 → 等待空闲 → 安装 → 重启 → 完成”，
+            # 不自行拼接多个状态源，避免页面与服务端判断不一致。
+            "flow": self.update_flow(),
             "capabilities": {
                 "check": True,
                 # 本阶段提供受控下载（临时文件 + 断点续传 + SHA-256 校验）；
@@ -1047,6 +1063,7 @@ class UpdateService:
             self._schedule = {
                 "armed": True,
                 "version": version,
+                "mode": "idle",
                 "requested_at": _utc_now(),
                 "note": "等待采集与人工标注结束",
                 "last_result": "",
@@ -1056,6 +1073,162 @@ class UpdateService:
             schedule = dict(self._schedule)
         self._arm_schedule_monitor()
         return schedule
+
+    def authorize_update(self, payload: dict | None = None) -> dict:
+        """一次授权完成整个更新：缺包先下载，随后等待空闲、安装、重启与健康检查。"""
+        mode = str((payload or {}).get("mode") or "immediate")
+        if mode not in UPDATE_MODES:
+            raise ValueError("更新方式无效")
+        if not self._install_capable() or self.schedule_installer is None:
+            raise ValueError("当前环境不支持应用内安装")
+        with self._lock:
+            install = self._install_snapshot()
+            if str(install.get("status") or "") in INSTALL_ACTIVE_STATUSES:
+                # 安装已在进行：重复点击只返回真实进度，不创建第二个事务。
+                return self.update_flow()
+            latest = self._cache.get("latest")
+            current = self.current_version()
+            if not isinstance(latest, dict) or not _update_available(latest, current, self.platform, self.local_arch):
+                raise ValueError("当前没有可用的新版本")
+            version = str(latest.get("version") or "")
+            if not version:
+                raise ValueError("最新版本缺少版本号，已拒绝更新")
+            existing = dict(self._schedule)
+            if existing.get("armed"):
+                if str(existing.get("version") or "") != version:
+                    raise ValueError("已有其他版本的更新安排，请先取消")
+                # 同一版本的重复授权是幂等的，不重置已下载进度或等待状态。
+                self._schedule["mode"] = mode
+                self._write_json(self.schedule_path, self._schedule)
+                start_download = False
+            else:
+                state = dict(self._download_state)
+                if self._downloading and str(state.get("version") or "") not in {"", version}:
+                    raise ValueError("已有其他版本正在下载，请稍后再试")
+                ready = self._downloaded_artifact_ready(version)
+                self._schedule = {
+                    "armed": True,
+                    "version": version,
+                    "mode": mode,
+                    "requested_at": _utc_now(),
+                    "note": "等待空闲后安装" if ready else "等待下载完成",
+                    "last_result": "",
+                }
+                self._write_json(self.schedule_path, self._schedule)
+                self._append_history("update", "ok", "已授权一次完成下载与安装", version)
+                start_download = not ready and not self._downloading
+                flow_version = version
+        if start_download:
+            try:
+                self.start_download()
+            except ValueError as exc:
+                # 授权后清单或资产发生变化时必须解除安排，不能让界面永久停在等待。
+                with self._lock:
+                    self._schedule.update({"armed": False, "last_result": str(exc), "note": str(exc)})
+                    self._write_json(self.schedule_path, self._schedule)
+                    self._append_history("update", "failed", str(exc), flow_version)
+                raise
+        self._arm_schedule_monitor()
+        return self.update_flow()
+
+    def cancel_update(self) -> dict:
+        """取消尚未开始切换的更新；安装一旦启动就只能等待执行器收尾。"""
+        with self._lock:
+            install = self._install_snapshot()
+            if str(install.get("status") or "") in INSTALL_ACTIVE_STATUSES:
+                raise ValueError("安装已开始，无法取消")
+            schedule = dict(self._schedule)
+            version = str(schedule.get("version") or "")
+            if str(install.get("status") or "") == "completed" and version and version == self.current_version():
+                raise ValueError("更新已完成，无法取消")
+            download = dict(self._download_state)
+            cancel = None
+            if self._downloading and str(download.get("version") or "") == version:
+                cancel = self._download_cancel
+            self._schedule = {
+                **self._schedule,
+                "armed": False,
+                "note": "已取消更新",
+                "cancelled_at": _utc_now(),
+                "last_result": "",
+            }
+            self._write_json(self.schedule_path, self._schedule)
+            self._append_history("update", "ok", "已取消更新", version)
+        if cancel is not None:
+            cancel.set()
+        return self.update_flow()
+
+    def update_flow(self) -> dict:
+        """把下载、等待、安装与执行器状态归并成单一流程，供界面直接展示。"""
+        with self._lock:
+            schedule = dict(self._schedule)
+            download = self.download_status()
+            install = self._install_snapshot()
+        version = str(schedule.get("version") or download.get("version") or "")
+        mode = str(schedule.get("mode") or "immediate")
+        status = str(install.get("status") or "")
+        target = str(install.get("target_version") or "")
+        # 执行器状态必须与本次授权版本一致，否则会把上一次安装的结果套在新版本上。
+        bound = bool(version) and (not target or target == version)
+        flow = {
+            "active": False,
+            "stage": "idle",
+            "version": version,
+            "mode": mode,
+            "message": "",
+            "error": "",
+            "progress": 0,
+            "authorized_at": str(schedule.get("requested_at") or ""),
+            "finished_at": "",
+        }
+        if bound and status in INSTALL_ACTIVE_STATUSES:
+            return {
+                **flow,
+                "active": True,
+                "stage": "installing" if status == "starting" else status,
+                "message": str(install.get("message") or "正在安装并切换版本"),
+            }
+        if bound and status == "completed":
+            return {
+                **flow,
+                "stage": "completed",
+                "message": str(install.get("message") or "更新完成，已通过健康检查"),
+                "finished_at": str(install.get("finished_at") or ""),
+            }
+        if bound and status in {"failed", "rolled_back"}:
+            return {
+                **flow,
+                "stage": status,
+                "message": str(install.get("message") or ""),
+                "error": str(install.get("error") or ""),
+                "finished_at": str(install.get("finished_at") or ""),
+            }
+        if schedule.get("armed"):
+            if download.get("active"):
+                return {**flow, "active": True, "stage": "downloading",
+                        "message": "正在下载并校验更新包", "progress": _download_percent(download)}
+            if str(schedule.get("last_result") or "") == "started":
+                # 执行器已被要求启动，但状态快照尚未刷新；如实显示“正在启动安装”。
+                return {**flow, "active": True, "stage": "installing", "message": "正在启动安装"}
+            return {**flow, "active": True, "stage": "waiting",
+                    "message": str(schedule.get("note") or "等待空闲后安装")}
+        if download.get("active"):
+            return {**flow, "active": True, "stage": "downloading",
+                    "message": "正在下载并校验更新包", "progress": _download_percent(download)}
+        # 后台已解除授权但留下真实失败原因时，界面必须能看到“更新失败”，不能只回到“有新版本可用”。
+        last_result = str(schedule.get("last_result") or "")
+        if version and last_result and last_result != "started":
+            return {**flow, "stage": "failed", "message": last_result, "error": last_result}
+        return flow
+
+    def _install_snapshot(self) -> dict:
+        if self.install_snapshot_provider is None:
+            return {}
+        try:
+            data = self.install_snapshot_provider()
+        except Exception:  # noqa: BLE001 - 状态探测失败不能拖垮更新状态接口
+            return {}
+        return dict(data) if isinstance(data, dict) else {}
 
     def cancel_install_schedule(self) -> dict:
         with self._lock:
@@ -1101,11 +1274,48 @@ class UpdateService:
             self._schedule_thread.start()
 
     def _schedule_loop(self, cancel: threading.Event, version: str) -> None:
-        """后台等待安全时机；执行器负责最终的空闲判断与闸门，避免检查后竞态。"""
+        """后台等待下载完成与安全时机；执行器负责最终的空闲判断与闸门。"""
         while not cancel.wait(SCHEDULE_POLL_SECONDS):
             with self._lock:
                 if not self._schedule.get("armed") or str(self._schedule.get("version")) != version:
                     return
+                download = dict(self._download_state)
+            if self._downloading:
+                if str(download.get("version") or "") not in {"", version}:
+                    self._disarm_schedule("下载版本已变化，请重新授权更新", version)
+                    return
+                with self._lock:
+                    self._schedule["note"] = f"正在下载更新包（{_download_percent(download)}%）"
+                    self._write_json(self.schedule_path, self._schedule)
+                continue
+            status = str(download.get("status") or "")
+            if str(download.get("version") or "") != version or status != "completed":
+                if status == "interrupted":
+                    # 进程重启或网络中断后仍保留断点；自动续传一次，失败再如实解除安排。
+                    with self._lock:
+                        attempts = int(self._schedule.get("attempts") or 0)
+                        self._schedule["attempts"] = attempts + 1
+                        self._write_json(self.schedule_path, self._schedule)
+                    if attempts < 1:
+                        try:
+                            self.start_download()
+                        except ValueError as exc:
+                            self._disarm_schedule(f"续传失败：{exc}", version)
+                            return
+                        continue
+                    self._disarm_schedule("下载已中断，请重新授权更新", version)
+                    return
+                if status in {"failed", "cancelled"}:
+                    self._disarm_schedule(f"下载未完成：{download.get('error') or status}", version)
+                    return
+                if status == "completed":
+                    self._disarm_schedule("已下载的更新包版本不一致，请重新授权", version)
+                    return
+                # 尚未产生下载结果（例如刚授权、下载线程未启动），继续等待。
+                continue
+            if not self._downloaded_artifact_ready(version):
+                self._disarm_schedule("下载产物不完整或已被清理，请重新下载", version)
+                return
             installer = self.schedule_installer
             if installer is None:
                 return
@@ -1140,6 +1350,12 @@ class UpdateService:
                 self._append_history("schedule", "ok", "已在空闲时启动安装", version)
             return
 
+    def _disarm_schedule(self, message: str, version: str) -> None:
+        with self._lock:
+            self._schedule.update({"armed": False, "last_result": message, "note": message})
+            self._write_json(self.schedule_path, self._schedule)
+            self._append_history("schedule", "failed", message, version)
+
     def _read_schedule(self) -> dict:
         data = self._read_json(self.schedule_path, {})
         if not isinstance(data, dict):
@@ -1147,9 +1363,11 @@ class UpdateService:
         return {
             "armed": bool(data.get("armed")) and bool(str(data.get("version") or "")),
             "version": str(data.get("version") or ""),
+            "mode": str(data.get("mode") or "idle"),
             "requested_at": str(data.get("requested_at") or ""),
             "note": str(data.get("note") or ""),
             "last_result": str(data.get("last_result") or ""),
+            "attempts": int(data.get("attempts") or 0),
         }
 
     def _run_download(self, asset: dict, version: str, cancel: threading.Event) -> None:

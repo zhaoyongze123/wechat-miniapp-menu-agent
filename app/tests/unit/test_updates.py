@@ -1107,3 +1107,146 @@ def test_schedule_monitor_disarms_on_permanent_error(tmp_path, monkeypatch):
     schedule = service.install_schedule()
     assert schedule["armed"] is False
     assert "不一致" in schedule["last_result"]
+
+
+# ---------- 一次授权完成下载、等待、安装与重连（Issue #32 收敛后） ----------
+
+def _flow_service(tmp_path: Path) -> UpdateService:
+    body = b"flow" * 400
+    service = prepared_service(tmp_path, body, FakeOpener(body))
+    service.install_capability = lambda: True
+    return service
+
+
+def _wait_until(predicate, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("条件未在超时内满足")
+
+
+def test_authorize_update_downloads_then_installs_without_extra_confirm(tmp_path, monkeypatch):
+    import menu_capture.updates.updates as updates_module
+
+    service = _flow_service(tmp_path)
+    calls: list[str] = []
+    service.schedule_installer = lambda version: calls.append(version) or {"status": "starting"}
+    monkeypatch.setattr(updates_module, "SCHEDULE_POLL_SECONDS", 0.01)
+
+    flow = service.authorize_update({"mode": "immediate"})
+
+    assert flow["version"] == "0.3.0"
+    assert flow["active"] is True
+    thread = service._schedule_thread
+    assert thread is not None
+    thread.join(timeout=5)
+    assert calls == ["0.3.0"]
+    assert service.download_status()["status"] == "completed"
+    schedule = service.install_schedule()
+    assert schedule["armed"] is False
+    assert schedule["last_result"] == "started"
+
+
+def test_authorize_update_joins_existing_schedule_idempotently(tmp_path):
+    service = _flow_service(tmp_path)
+    service.schedule_installer = lambda version: {"status": "starting"}
+
+    service.start_download()
+    assert wait_download(service)["status"] == "completed"
+    first = service.authorize_update({"mode": "idle"})
+    requested_at = service.install_schedule()["requested_at"]
+    second = service.authorize_update({"mode": "idle"})
+
+    assert first["version"] == second["version"] == "0.3.0"
+    assert service.install_schedule()["requested_at"] == requested_at
+
+
+def test_authorize_update_requires_install_capability(tmp_path):
+    service = prepared_service(tmp_path, b"cap" * 300, FakeOpener(b"cap" * 300))
+
+    with pytest.raises(ValueError, match="不支持应用内安装"):
+        service.authorize_update({"mode": "immediate"})
+    assert service.install_schedule()["armed"] is False
+
+
+def test_authorize_update_rejects_unknown_mode(tmp_path):
+    service = _flow_service(tmp_path)
+    service.schedule_installer = lambda version: {"status": "starting"}
+
+    with pytest.raises(ValueError, match="更新方式无效"):
+        service.authorize_update({"mode": "later"})
+
+
+def test_cancel_update_disarms_and_stops_download(tmp_path):
+    service = _flow_service(tmp_path)
+    service.schedule_installer = lambda version: {"status": "starting"}
+    # 模拟同版本下载已在进行，避免真实网络线程让用例变慢。
+    service._downloading = True
+    service._download_state = {**service._download_state, "version": "0.3.0", "active": True}
+    service._download_cancel = threading.Event()
+
+    service.authorize_update({"mode": "idle"})
+    flow = service.cancel_update()
+
+    assert flow["stage"] != "installing"
+    assert service.install_schedule()["armed"] is False
+    assert service._download_cancel.is_set()
+
+
+def test_cancel_update_rejected_after_install_started(tmp_path):
+    service = _flow_service(tmp_path)
+    service.install_snapshot_provider = lambda: {
+        "status": "installing", "target_version": "0.3.0", "active": True,
+    }
+
+    with pytest.raises(ValueError, match="无法取消"):
+        service.cancel_update()
+
+
+def test_update_flow_reports_completed_only_for_authorized_version(tmp_path):
+    service = _flow_service(tmp_path)
+    service._schedule = {**service._schedule, "version": "0.3.0", "mode": "immediate", "armed": False}
+    service.install_snapshot_provider = lambda: {
+        "status": "completed", "target_version": "0.3.0", "active": False,
+        "message": "安装完成，健康检查通过", "finished_at": "2026-11-25T00:00:00+00:00",
+    }
+
+    flow = service.update_flow()
+
+    assert flow["stage"] == "completed"
+    assert flow["active"] is False
+    # 其他版本的旧结果不能套在当前授权上。
+    service.install_snapshot_provider = lambda: {"status": "completed", "target_version": "0.2.9"}
+    assert service.update_flow()["stage"] == "idle"
+
+
+def test_update_flow_reports_waiting_reason_while_busy(tmp_path):
+    service = _flow_service(tmp_path)
+    service._schedule = {
+        **service._schedule, "armed": True, "version": "0.3.0", "mode": "idle",
+        "note": "采集或人工标注正在执行，请先结束或暂停后再安装",
+    }
+
+    flow = service.update_flow()
+
+    assert flow["stage"] == "waiting"
+    assert flow["active"] is True
+    assert "采集" in flow["message"]
+
+
+def test_update_flow_surfaces_failure_after_background_disarms(tmp_path):
+    service = _flow_service(tmp_path)
+    service._schedule = {
+        **service._schedule, "armed": False, "version": "0.3.0", "mode": "immediate",
+        "last_result": "下载未完成：网络中断",
+    }
+
+    flow = service.update_flow()
+
+    assert flow["stage"] == "failed"
+    assert flow["error"] == "下载未完成：网络中断"
+    # 用户取消后不应显示为失败。
+    service._schedule = {**service._schedule, "last_result": "", "note": "已取消更新"}
+    assert service.update_flow()["stage"] == "idle"
