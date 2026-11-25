@@ -28,6 +28,8 @@ const mocks = vi.hoisted(() => ({
     download: { mutate: vi.fn(), isPending: false },
     cancelDownload: { mutate: vi.fn(), isPending: false },
     install: { mutate: vi.fn(), isPending: false },
+    scheduleInstall: { mutate: vi.fn(), isPending: false },
+    cancelSchedule: { mutate: vi.fn(), isPending: false },
     cleanup: { mutate: vi.fn(), isPending: false },
   },
 }))
@@ -80,7 +82,7 @@ function status(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
     arch: 'x64',
     current_version: '0.2.2',
     channel: 'stable',
-    preferences: { auto_check: true, channel: 'stable' },
+    preferences: { auto_check: true, auto_download: false, keep_versions: 3, channel: 'stable' },
     latest: {
       version: '0.3.0',
       tag: 'v0.3.0',
@@ -105,7 +107,8 @@ function status(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
     error: '',
     checking: false,
     download: downloadState(),
-    capabilities: { check: true, download: true, install: false, rollback: false, inventory: true, cleanup: true },
+    schedule: { armed: false, version: '', requested_at: '', note: '', last_result: '' },
+    capabilities: { check: true, download: true, install: false, schedule: false, rollback: false, inventory: true, cleanup: true },
     inventory: {
       supported: true,
       install_root: 'D:\\menu-agent',
@@ -284,7 +287,7 @@ describe('UpdatesPanel', () => {
 
   it('下载完成且安装能力可用时，确认后才提交真实安装请求', () => {
     mocks.status.data = status({
-      capabilities: { check: true, download: true, install: true, rollback: true, inventory: true, cleanup: true },
+      capabilities: { check: true, download: true, install: true, schedule: true, rollback: true, inventory: true, cleanup: true },
       download: downloadState({
         status: 'completed',
         version: '0.3.0',
@@ -298,12 +301,55 @@ describe('UpdatesPanel', () => {
     mocks.install.data = installState({ supported: true, reason: '' })
     renderPanel()
 
-    fireEvent.click(screen.getByRole('button', { name: '安装并重启' }))
+    fireEvent.click(screen.getByRole('button', { name: '立即安装并重启' }))
     expect(mocks.actions.install.mutate).not.toHaveBeenCalled()
     expect(screen.getByText(/安装由独立进程静默完成/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '确认安装并重启' }))
     expect(mocks.actions.install.mutate).toHaveBeenCalledWith('0.3.0', expect.anything())
+  })
+
+  it('可安排空闲后更新并随时取消，不强行结束采集', () => {
+    mocks.status.data = status({
+      capabilities: { check: true, download: true, install: true, schedule: true, rollback: true, inventory: true, cleanup: true },
+      download: downloadState({
+        status: 'completed',
+        version: '0.3.0',
+        asset_kind: 'windows_installer',
+        asset_name: 'MenuCapture-0.3.0.exe',
+        downloaded: 1024,
+        total: 1024,
+        path: 'D:\\menu-agent\\runtime\\data\\updates\\0.3.0\\MenuCapture-0.3.0.exe',
+      }),
+      schedule: { armed: false, version: '', requested_at: '', note: '', last_result: '' },
+    })
+    mocks.install.data = installState({ supported: true, reason: '' })
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('button', { name: '空闲后更新' }))
+    expect(mocks.actions.scheduleInstall.mutate).toHaveBeenCalled()
+  })
+
+  it('已安排的空闲后更新显示等待原因并允许取消', () => {
+    mocks.status.data = status({
+      capabilities: { check: true, download: true, install: true, schedule: true, rollback: true, inventory: true, cleanup: true },
+      download: downloadState({
+        status: 'completed',
+        version: '0.3.0',
+        asset_kind: 'windows_installer',
+        asset_name: 'MenuCapture-0.3.0.exe',
+        downloaded: 1024,
+        total: 1024,
+        path: 'D:\\menu-agent\\runtime\\data\\updates\\0.3.0\\MenuCapture-0.3.0.exe',
+      }),
+      schedule: { armed: true, version: '0.3.0', requested_at: '', note: '采集或人工标注正在执行', last_result: '' },
+    })
+    mocks.install.data = installState({ supported: true, reason: '' })
+    renderPanel()
+
+    expect(screen.getByText(/采集或人工标注正在执行/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取消安排' }))
+    expect(mocks.actions.cancelSchedule.mutate).toHaveBeenCalled()
   })
 
   it('安装能力未启用时只说明原因，不提供安装按钮', () => {
@@ -328,7 +374,7 @@ describe('UpdatesPanel', () => {
 
   it('安装进行中展示真实阶段并禁用重复提交', () => {
     mocks.status.data = status({
-      capabilities: { check: true, download: true, install: true, rollback: true, inventory: true, cleanup: true },
+      capabilities: { check: true, download: true, install: true, schedule: true, rollback: true, inventory: true, cleanup: true },
       download: downloadState({
         status: 'completed',
         version: '0.3.0',

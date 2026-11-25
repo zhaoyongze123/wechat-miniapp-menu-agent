@@ -31,7 +31,20 @@ export interface UpdateRelease {
 
 export interface UpdatePreferences {
   auto_check: boolean
+  /** 自动下载只下载并校验，安装仍需用户手动触发或安排空闲后更新。 */
+  auto_download: boolean
+  /** 已安装程序保留数量（含当前版本），2-5，默认 3。 */
+  keep_versions: number
   channel: UpdateChannel
+}
+
+/** 空闲后更新安排：由后台在采集/标注结束后尝试安装，可随时取消。 */
+export interface UpdateSchedule {
+  armed: boolean
+  version: string
+  requested_at: string
+  note: string
+  last_result: string
 }
 
 export interface UpdateInventoryRelease {
@@ -60,6 +73,8 @@ export interface UpdateCapabilities {
   check: boolean
   download: boolean
   install: boolean
+  /** 是否支持安排空闲后自动安装。 */
+  schedule: boolean
   rollback: boolean
   inventory: boolean
   cleanup: boolean
@@ -146,6 +161,7 @@ export interface UpdateStatus {
   error: string
   checking: boolean
   download: UpdateDownloadState
+  schedule: UpdateSchedule
   capabilities: UpdateCapabilities
   inventory: UpdateInventory
 }

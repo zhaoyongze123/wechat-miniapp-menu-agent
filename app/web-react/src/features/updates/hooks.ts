@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   cancelUpdateDownload,
+  cancelUpdateInstallSchedule,
   checkUpdates,
   fetchUpdateCleanup,
   fetchUpdateHistory,
@@ -8,6 +9,7 @@ import {
   fetchUpdateStatus,
   runUpdateCleanup,
   saveUpdatePreferences,
+  scheduleUpdateInstall,
   startUpdateDownload,
   startUpdateInstall,
 } from './api'
@@ -72,6 +74,8 @@ export function useUpdateActions() {
     download: useMutation({ mutationFn: startUpdateDownload, onSuccess: refresh }),
     cancelDownload: useMutation({ mutationFn: cancelUpdateDownload, onSuccess: refresh }),
     install: useMutation({ mutationFn: startUpdateInstall, onSuccess: refresh }),
+    scheduleInstall: useMutation({ mutationFn: scheduleUpdateInstall, onSuccess: refresh }),
+    cancelSchedule: useMutation({ mutationFn: cancelUpdateInstallSchedule, onSuccess: refresh }),
     cleanup: useMutation({ mutationFn: runUpdateCleanup, onSuccess: refresh }),
   }
 }

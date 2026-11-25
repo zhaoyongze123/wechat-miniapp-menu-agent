@@ -113,9 +113,24 @@ export function UpdatesPanel() {
   const cleanupItemCount = storageScopes.reduce((total, row) => total + row.scope.items.length, 0)
   const canCleanup = storage != null && !storage.blocked && cleanupItemCount > 0 && !cleanupBusy
 
-  const savePreferences = (partial: { auto_check?: boolean; channel?: 'stable' | 'preview' }) => {
+  const schedule = status.schedule
+  const savePreferences = (partial: { auto_check?: boolean; auto_download?: boolean; keep_versions?: number; channel?: 'stable' | 'preview' }) => {
     actions.savePreferences.mutate(partial, {
       onSuccess: () => toast.push('更新偏好已保存', 'success'),
+      onError: (error) => toast.push(errorMessage(error), 'danger'),
+    })
+  }
+
+  const scheduleInstall = () => {
+    actions.scheduleInstall.mutate(undefined, {
+      onSuccess: () => toast.push('已安排在采集与人工标注结束后安装', 'success'),
+      onError: (error) => toast.push(errorMessage(error), 'danger'),
+    })
+  }
+
+  const cancelSchedule = () => {
+    actions.cancelSchedule.mutate(undefined, {
+      onSuccess: () => toast.push('已取消空闲后更新安排', 'info'),
       onError: (error) => toast.push(errorMessage(error), 'danger'),
     })
   }
@@ -291,11 +306,30 @@ export function UpdatesPanel() {
                 </p>
               </div>
               {canInstall ? (
-                <Button color="primary" size="sm" disabled={installBusy} onClick={() => setConfirmInstall(true)}>
-                  安装并重启
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button color="secondary" variant="outline" size="sm" disabled={installBusy} onClick={scheduleInstall}>
+                    {schedule.armed ? '已安排空闲后更新' : '空闲后更新'}
+                  </Button>
+                  <Button color="primary" size="sm" disabled={installBusy} onClick={() => setConfirmInstall(true)}>
+                    立即安装并重启
+                  </Button>
+                </div>
               ) : null}
             </div>
+            {schedule.armed ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-surface-secondary px-3 py-2">
+                <p className="text-2xs text-secondary">
+                  已安排 {schedule.version || '待安装版本'}：{schedule.note || '等待采集与人工标注结束'}
+                </p>
+                <Button color="secondary" variant="ghost" size="sm" disabled={actions.cancelSchedule.isPending} onClick={cancelSchedule}>
+                  取消安排
+                </Button>
+              </div>
+            ) : schedule.last_result === 'started' ? (
+              <p className="text-2xs text-secondary">已在空闲时启动安装，进度见上方安装状态。</p>
+            ) : schedule.last_result ? (
+              <p className="text-2xs text-danger">空闲后更新未执行：{schedule.last_result}</p>
+            ) : null}
             {install?.message ? <p className="text-2xs text-secondary">{install.message}</p> : null}
             {install && (install.status === 'failed' || install.status === 'rolled_back') && install.error ? (
               <Alert color="danger" variant="soft" title="安装未完成" description={install.error} />
@@ -330,6 +364,28 @@ export function UpdatesPanel() {
             checked={preferences.auto_check}
             disabled={preferenceBusy}
             onCheckedChange={(checked) => savePreferences({ auto_check: checked })}
+          />
+        </SettingRow>
+
+        <SettingRow label="自动下载" description="发现新版本后只在后台下载并校验，不会自动安装或打断采集。">
+          <Checkbox
+            label="自动下载更新包"
+            checked={preferences.auto_download}
+            disabled={preferenceBusy}
+            onCheckedChange={(checked) => savePreferences({ auto_download: checked })}
+          />
+        </SettingRow>
+
+        <SettingRow
+          label="已安装程序保留数量"
+          description="包含当前版本；运行中、待安装与回滚目标始终受保护，清理前仍需确认。"
+        >
+          <Select
+            aria-label="已安装程序保留数量"
+            value={String(preferences.keep_versions)}
+            disabled={preferenceBusy}
+            options={[2, 3, 4, 5].map((value) => ({ value: String(value), label: `${value} 个版本` }))}
+            onChange={(option) => savePreferences({ keep_versions: Number(option.value) })}
           />
         </SettingRow>
 
