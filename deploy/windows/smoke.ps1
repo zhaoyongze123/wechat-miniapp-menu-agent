@@ -97,6 +97,13 @@ function Stop-TestSupervisor {
     Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
         Where-Object { $_.CommandLine -and $_.CommandLine.Contains($target) -and $_.CommandLine.Contains('Supervise') } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    # 守护进程用本机互斥量防止重复启动；必须等旧进程真正退出，否则新实例会直接放弃。
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        $alive = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
+            Where-Object { $_.CommandLine -and $_.CommandLine.Contains($target) -and $_.CommandLine.Contains('Supervise') }
+        if (-not $alive) { break }
+        Start-Sleep -Milliseconds 500
+    }
     Find-TestWorker | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
@@ -211,6 +218,13 @@ try {
         Stop-Process -Id $third.ProcessId -Force
         $fourth = Assert-WorkerHealthy -PreviousProcessId $third.ProcessId -ExpectedVersion $Version
         Write-Host "Upgrade restarted worker $($third.ProcessId) as $($fourth.ProcessId)."
+
+        # 模拟下次登录：用新版启动器重启守护进程，回滚时要验证的是新启动器能否启动旧版本布局。
+        Stop-TestSupervisor
+        Remove-Item -LiteralPath (Join-Path $homePath 'stop-supervisor') -Force -ErrorAction SilentlyContinue
+        Start-TestSupervisor
+        $fourth = Assert-WorkerHealthy -ExpectedVersion $Version
+        Write-Host "Relaunched supervisor started worker $($fourth.ProcessId) on $Version."
 
         # 回滚验收：版本登记切回安装前版本，守护进程应在空闲时重启旧实例。
         $rollback = Join-Path $install 'rollback.ps1'

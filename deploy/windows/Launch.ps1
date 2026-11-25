@@ -67,10 +67,16 @@ function Start-Worker {
     $env:PATH = "$(Join-Path $release 'node');$(Join-Path $release 'python');$basePath"
     $stdout = Join-Path $logPath 'service.stdout.log'
     $stderr = Join-Path $logPath 'service.stderr.log'
+    # 0.2.x 及更早版本的后端只有 menu_capture.server；回滚到旧版本时按目标目录自身布局选择入口。
+    $module = if (Test-Path -LiteralPath (Join-Path $app 'menu_capture\api\server.py')) {
+        'menu_capture.api.server'
+    } else {
+        'menu_capture.server'
+    }
     foreach ($file in $stdout, $stderr) {
         if (Test-Path -LiteralPath $file) { Move-Item -LiteralPath $file -Destination "$file.previous" -Force }
     }
-    $worker = Start-Process -FilePath $exe -ArgumentList '-X utf8 -E -s -B -m menu_capture.api.server' -WorkingDirectory $app `
+    $worker = Start-Process -FilePath $exe -ArgumentList "-X utf8 -E -s -B -m $module" -WorkingDirectory $app `
         -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
     Write-LauncherLog "采集端 $ActiveVersion 已启动，PID $($worker.Id)。"
     return $worker
