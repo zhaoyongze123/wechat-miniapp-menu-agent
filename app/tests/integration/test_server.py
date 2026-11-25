@@ -224,6 +224,31 @@ def test_materials_history_detail_counts_match_list(tmp_path: Path) -> None:
     assert listed[0]["counts"] == detail["counts"]
 
 
+def test_history_detail_and_task_route_expose_observed_store_name(tmp_path: Path) -> None:
+    """伴随提取的门店名称：逐店明细带出，且可按原始任务编号直接查询（含未采集成功）。"""
+    app = create_app(tmp_path)
+    source = tmp_path / "inbox" / "Menu" / "qr.png"
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (10, 10), "white").save(source)
+    app.state.configs.save(config_payload(tmp_path, "test-key"))
+    store = app.state.store
+    store.scan(tmp_path / "inbox")
+    task = store.tasks()[0]
+    store.create_run("run-name", "automatic", [task["id"]])
+    store.update(task["id"], status="needs_review", error_code="agent_needs_review")
+    store.update_run("run-name", status="completed", current_index=1)
+    store.record_observed_store_name("run-name", task["id"], "老王饭店（二店）",
+                                     frame_id="4", frame="ui-tars-004.png")
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    detail = client.get("/api/tasks/history/capture/run-name").json()
+    assert detail["tasks"][0]["observed_store_name"] == "老王饭店（二店）"
+    record = client.get(f"/api/tasks/observed-store-name/{task['id']}").json()
+    assert record["store_name"] == "老王饭店（二店）"
+    assert record["run_id"] == "run-name" and record["frame"] == "ui-tars-004.png"
+    assert client.get("/api/tasks/observed-store-name/missing").status_code == 404
+
+
 def test_remote_manual_control_is_scoped_and_rejects_stale_commands(tmp_path):
     from base64 import b64encode
 
