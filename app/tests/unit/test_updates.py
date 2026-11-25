@@ -1780,6 +1780,78 @@ def test_schedule_install_allowed_without_local_artifact_in_oci_mode(tmp_path: P
     assert schedule["version"] == "0.3.0"
 
 
+def test_oci_capability_loss_falls_back_to_archive_download_once(tmp_path: Path, monkeypatch):
+    """授权后宿主能力消失时，同一次授权内回退一次完整下载并继续安装。"""
+    monkeypatch.setattr(updates_module, "SCHEDULE_POLL_SECONDS", 0.01)
+    service = make_hub_service(tmp_path, hub_manifest())
+    service.check(force=True)
+    service.install_capability = lambda: True
+    capable = {"enabled": True}
+    service.oci_delivery_provider = lambda: capable["enabled"]
+    service._downloaded_artifact_ready = lambda version: True
+    started: list[str] = []
+    service.schedule_installer = lambda version: started.append(version) or {"status": "starting"}
+    downloads: list[int] = []
+
+    def fake_start_download():
+        downloads.append(1)
+        with service._lock:
+            service._download_state = {
+                **service._download_state,
+                "status": "completed",
+                "version": "0.3.0",
+                "asset_name": "hub-image-0.3.0.tar.gz",
+                "sha256": "c" * 64,
+                "total": 2048,
+            }
+        return service.download_status()
+
+    service.start_download = fake_start_download
+    flow = service.authorize_update({"mode": "immediate"})
+    assert flow["message"] == "等待空闲，由宿主机分层拉取镜像"
+
+    capable["enabled"] = False
+    deadline = time.monotonic() + 2
+    while not started and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    # 归档下载从未启动，必须回退一次；随后按正常下载完成路径开始安装，而不是永久等待。
+    assert downloads == [1]
+    assert started == ["0.3.0"]
+    assert service.install_schedule()["armed"] is False
+
+
+def test_oci_capability_loss_without_archive_disarms_explicitly(tmp_path: Path, monkeypatch):
+    """无法回退完整下载时必须明确结束，不能无限等待未启动的归档下载。"""
+    monkeypatch.setattr(updates_module, "SCHEDULE_POLL_SECONDS", 0.01)
+    service = make_hub_service(tmp_path, hub_manifest())
+    service.check(force=True)
+    service.install_capability = lambda: True
+    capable = {"enabled": True}
+    service.oci_delivery_provider = lambda: capable["enabled"]
+    started: list[str] = []
+    service.schedule_installer = lambda version: started.append(version) or {"status": "starting"}
+    downloads: list[int] = []
+
+    def fail_download():
+        downloads.append(1)
+        raise ValueError("当前没有可下载的更新")
+
+    service.start_download = fail_download
+    service.authorize_update({"mode": "immediate"})
+
+    capable["enabled"] = False
+    deadline = time.monotonic() + 2
+    while service.install_schedule()["armed"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    schedule = service.install_schedule()
+
+    assert downloads == [1]
+    assert started == []
+    assert schedule["armed"] is False
+    assert "无法回退完整下载" in schedule["last_result"]
+
+
 def test_update_flow_treats_host_executor_pulling_as_installing(tmp_path: Path):
     service = make_hub_service(tmp_path, hub_manifest())
     service.check(force=True)

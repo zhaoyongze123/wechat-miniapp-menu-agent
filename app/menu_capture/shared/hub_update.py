@@ -60,14 +60,18 @@ class HubInstallProxy:
         """采集/标注启动前检查的闸门；与 Windows 安装共用同一套调用方式。"""
         return self._lock
 
+    @staticmethod
+    def _oci_capable(snapshot: dict) -> bool:
+        capabilities = (snapshot or {}).get("capabilities")
+        return isinstance(capabilities, dict) and capabilities.get("oci") is True
+
     @property
     def oci_supported(self) -> bool:
         """只读最近一次执行器快照；旧执行器没有 capabilities 字段，一律按不支持处理。
 
         该属性不得发起网络请求：更新服务可能在状态锁内读取它。
         """
-        capabilities = self._cache.get("capabilities")
-        return isinstance(capabilities, dict) and capabilities.get("oci") is True
+        return self._oci_capable(self._cache)
 
     @property
     def reason(self) -> str:
@@ -162,17 +166,19 @@ class HubInstallProxy:
         }
         if not payload["sha256"] or payload["size"] <= 0 or not payload["url"]:
             raise ValueError("镜像资产缺少校验信息，已拒绝安装")
-        # 只有宿主执行器明确声明 OCI 能力时才发送新字段；旧执行器继续只收完整归档。
-        # url/sha256/size 始终保留，作为拉取失败时的归档回退依据。
-        if self.oci_supported:
-            registry = str(asset.get("registry") or "").strip().lower()
-            digest = str(asset.get("digest") or "").strip().lower()
-            if OCI_REGISTRY_RE.fullmatch(registry) and OCI_DIGEST_RE.fullmatch(digest):
-                payload["image"] = registry
-                payload["digest"] = digest
         with self._lock:
-            if self.status(force=True).get("active"):
+            # 能力必须以最终刷新结果为准：缓存可能已过期，授权或升级期间宿主能力也可能变化。
+            fresh = self.status(force=True)
+            if fresh.get("active"):
                 raise ValueError("已有更新任务正在执行")
+            # 只有宿主执行器明确声明 OCI 能力时才发送新字段；旧执行器继续只收完整归档。
+            # url/sha256/size 始终保留，作为拉取失败时的归档回退依据。
+            if self._oci_capable(fresh):
+                registry = str(asset.get("registry") or "").strip().lower()
+                digest = str(asset.get("digest") or "").strip().lower()
+                if OCI_REGISTRY_RE.fullmatch(registry) and OCI_DIGEST_RE.fullmatch(digest):
+                    payload["image"] = registry
+                    payload["digest"] = digest
             claimed = False
             if require_authorization and self.authorization_check is not None:
                 if not self.authorization_check(version):

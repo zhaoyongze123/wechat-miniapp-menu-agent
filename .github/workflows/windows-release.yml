@@ -478,28 +478,62 @@ jobs:
             -d "$rollback" http://127.0.0.1:18767/rollback)
           test "$code" = 401
           "${compose[@]}" down -v
-      - name: 推送共享后台镜像到 GHCR 并记录摘要
-        if: github.event_name == 'workflow_dispatch'
+      - name: 推送共享后台镜像到 GHCR 并记录摘要（仅正式发布授权）
+        if: github.event_name == 'workflow_dispatch' && inputs.create_release
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: |
-          # OCI 分层交付：把本次已验收镜像按 commit 版本推到固定 GHCR 仓库，
-          # 记录不可变 digest 供发布清单使用；镜像保持私有，不在此步骤改可见性。
+          set -uo pipefail
+          # 只有正式发布授权才允许推送：单纯集成验收不得产生可被客户端拉取的镜像。
+          # 推送与摘要属于可选 OCI 交付，任何失败都必须继续完整归档交付。
           registry="ghcr.io"
           repo="${GITHUB_REPOSITORY,,}"
           remote="$registry/$repo:$MENU_CAPTURE_VERSION"
-          echo "$GHCR_TOKEN" | docker login "$registry" -u "${{ github.actor }}" --password-stdin
-          docker tag "$MENU_CAPTURE_IMAGE" "$remote"
-          docker push "$remote"
-          digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$remote" | sed 's/.*@//')
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          # 先确认标签状态：已存在说明该版本已正式发布过，禁止用重新构建的镜像覆盖其摘要。
+          token=$(curl -fsS -u "$GITHUB_ACTOR:$GHCR_TOKEN" \
+            "https://$registry/token?service=$registry&scope=repository:$repo:pull" \
+            | jq -r '.token // empty' || true)
+          if [ -z "$token" ]; then
+            echo "::warning::无法获取 GHCR 只读令牌，跳过 OCI 推送，继续归档交付。"
+            exit 0
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $token" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://$registry/v2/$repo/manifests/$MENU_CAPTURE_VERSION")
+          case "$code" in
+            200)
+              echo "::warning::GHCR 已存在 $remote，保留已发布镜像，跳过推送。"
+              exit 0
+              ;;
+            404) ;;
+            *)
+              echo "::warning::无法确认 GHCR 标签状态（HTTP $code），为避免覆盖已发布镜像跳过推送，继续归档交付。"
+              exit 0
+              ;;
+          esac
+          if ! echo "$GHCR_TOKEN" | docker login "$registry" -u "$GITHUB_ACTOR" --password-stdin; then
+            echo "::warning::GHCR 登录失败，跳过 OCI 推送，继续归档交付。"
+            exit 0
+          fi
+          if ! docker tag "$MENU_CAPTURE_IMAGE" "$remote" || ! docker push "$remote"; then
+            echo "::warning::GHCR 推送失败，跳过 OCI 摘要，继续归档交付。"
+            exit 0
+          fi
+          # 只采用本仓库固定地址下的 RepoDigest，避免多仓库镜像取到无关摘要。
+          digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$MENU_CAPTURE_IMAGE" \
+            | grep -F "$remote@" | head -n 1 | sed 's/.*@//' || true)
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::warning::无法获取镜像摘要，跳过 OCI 交付，继续归档交付。"
+            exit 0
+          fi
           mkdir -p hub-artifacts
           jq -nc --arg registry "$registry/$repo" --arg digest "$digest" \
             '{registry:$registry,digest:$digest}' > hub-artifacts/hub-image-digest.json
       - name: 归档共享后台镜像和校验值
         if: github.event_name == 'workflow_dispatch'
         run: |
-          mkdir hub-artifacts
+          mkdir -p hub-artifacts
           archive="menu-capture-hub-$MENU_CAPTURE_VERSION-linux-amd64.tar.gz"
           docker image save "$MENU_CAPTURE_IMAGE" | gzip -c > "hub-artifacts/$archive"
           (cd hub-artifacts && sha256sum "$archive" > "$archive.sha256")

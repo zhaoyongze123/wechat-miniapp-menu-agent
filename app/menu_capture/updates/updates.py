@@ -1435,6 +1435,8 @@ class UpdateService:
                 "armed": True,
                 "version": version,
                 "mode": "idle",
+                # 记录授权时的交付方式；OCI 能力消失后不能再等一个从未启动的归档下载。
+                "delivery": "oci" if oci is not None else "archive",
                 "requested_at": _utc_now(),
                 "note": "等待采集与人工标注结束",
                 "last_result": "",
@@ -1489,6 +1491,8 @@ class UpdateService:
                     "armed": True,
                     "version": version,
                     "mode": mode,
+                    # OCI 授权不启动归档下载，必须记住交付方式才能在能力消失时安全回退。
+                    "delivery": "oci" if oci is not None else "archive",
                     "requested_at": _utc_now(),
                     "note": note,
                     "last_result": "",
@@ -1712,8 +1716,29 @@ class UpdateService:
                 download = dict(self._download_state)
                 latest = dict(self._cache.get("latest") or {})
                 downloading = self._downloading
+                delivery = str(self._schedule.get("delivery") or "")
             # OCI 交付没有本地产物：跳过“等待下载完成”，但仍由执行器做最终空闲判断。
             oci = self._oci_delivery(latest, version=version)
+            if oci is None and delivery == "oci":
+                # 授权后宿主能力消失：归档下载从未启动，不能继续等待一个不存在的下载。
+                # 同一次授权内安全回退一次完整下载；无法回退则明确结束，而不是永久挂起。
+                with self._lock:
+                    self._schedule["delivery"] = "archive"
+                    self._schedule["note"] = "宿主镜像能力已消失，正在回退完整归档下载"
+                    self._write_json(self.schedule_path, self._schedule)
+                try:
+                    self.start_download()
+                except ValueError as exc:
+                    if self._oci_delivery(latest, version=version) is not None:
+                        # 探测与回退之间能力恢复：回到 OCI 路径，由执行器分层拉取。
+                        with self._lock:
+                            self._schedule["delivery"] = "oci"
+                            self._schedule["note"] = "等待空闲，由宿主机分层拉取镜像"
+                            self._write_json(self.schedule_path, self._schedule)
+                        continue
+                    self._disarm_schedule(f"宿主镜像能力已消失，且无法回退完整下载：{exc}", version)
+                    return
+                continue
             if oci is None:
                 if downloading:
                     if str(download.get("version") or "") not in {"", version}:
@@ -1799,6 +1824,7 @@ class UpdateService:
             "armed": bool(data.get("armed")) and bool(str(data.get("version") or "")),
             "version": str(data.get("version") or ""),
             "mode": str(data.get("mode") or "idle"),
+            "delivery": str(data.get("delivery") or ""),
             "requested_at": str(data.get("requested_at") or ""),
             "note": str(data.get("note") or ""),
             "last_result": str(data.get("last_result") or ""),

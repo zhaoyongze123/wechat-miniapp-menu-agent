@@ -102,6 +102,32 @@ def test_invalid_registry_extension_is_ignored_without_blocking_update() -> None
     assert payload["version"] == "0.3.2"
 
 
+def test_stale_capability_cache_does_not_send_oci_fields() -> None:
+    """缓存显示支持 OCI 但执行器已降级时，start() 必须按刷新后的能力生成请求。"""
+    executor = FakeExecutor(capabilities={"oci": True})
+    proxy = make_proxy(executor)
+    proxy.status(force=True)
+    executor.capabilities = {}
+
+    payload = submit(proxy, executor)
+
+    assert "image" not in payload and "digest" not in payload
+    assert payload["url"].startswith("https://github.com/")
+    assert proxy.oci_supported is False
+
+
+def test_refreshed_capability_enables_oci_fields() -> None:
+    """缓存尚未刷新到 OCI 能力时，start() 内部强刷后应按最新能力发送 image/digest。"""
+    executor = FakeExecutor(capabilities=None)
+    proxy = make_proxy(executor)
+    executor.capabilities = {"oci": True}
+
+    payload = submit(proxy, executor)
+
+    assert payload["image"] == REGISTRY
+    assert payload["digest"] == DIGEST
+
+
 def test_capability_snapshot_survives_submission() -> None:
     executor = FakeExecutor(capabilities={"oci": True})
     proxy = make_proxy(executor)

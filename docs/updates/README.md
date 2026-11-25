@@ -147,7 +147,8 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 固定仓库：`HUB_UPDATE_REGISTRY_REPO` 必须是 `ghcr.io/<org>/<repo>`，且只能等于发布清单里的镜像仓库；执行器不接受请求方任意指定镜像、tag 或平台。平台固定为 `linux/amd64`，digest 必须是不可变 `sha256:` 摘要。
 - 执行顺序（OCI 分支）：`docker pull --platform linux/amd64 <repo>@<digest>` → 用 `RepoDigests` 核对摘要、用 `Os/Architecture` 核对平台 → `docker tag` 为 compose 使用的 `<HUB_UPDATE_IMAGE_REPO>:<版本>` → 复用现有切换、健康核对与回滚。拉取失败、摘要不一致或平台不符时记录 `pull failed` 审计，并在同一事务内改用完整归档，不产生第二套状态机。
 - Hub 服务端在 OCI 模式下不下载完整归档（`authorize_update`/`schedule`/`download_status` 整条链路都跳过“等待下载完成”），手动下载请求会被明确拒绝，避免“先下 175 MB 再 docker pull”。
-- 发布：工作流用 `GITHUB_TOKEN`（`packages: write`）把本次已验收镜像推送到固定 GHCR 仓库，并把返回的 digest 写入发布清单 `hub_image.registry`/`digest`。**镜像保持私有，不得擅自改为公开**；清单缺失或字段非法时只忽略 OCI 扩展，完整归档照常发布。
+- 发布：仅在**正式发布授权**（`create_release`）下，工作流才用 `GITHUB_TOKEN`（`packages: write`）把本次已验收镜像推送到固定 GHCR 仓库；推送前先确认该版本标签不存在，已存在则保留既有已发布镜像、不覆盖其 digest。推送、登录或摘要获取失败只跳过 OCI 扩展，完整归档照常交付。**镜像保持私有，不得擅自改为公开**；清单缺失或字段非法时只忽略 OCI 扩展。
+- 能力变化：授权后若宿主执行器丢失 `capabilities.oci`（降级或回滚），Hub 不会空等一个从未启动的归档下载，而是在同一次授权内回退一次完整归档下载；回退失败则明确解除安排并记录原因，不会永久停在等待状态。
 - 宿主机要求：能访问 `ghcr.io`，并使用具备 `read:packages` 的凭证执行 `docker login ghcr.io`；不可达或未登录时拉取失败会自动回退归档，不阻塞更新。
 - 首次升级：旧执行器没有 `capabilities`，Hub 继续走归档；运维需一次性替换 `hub_updater.py`、配置 `HUB_UPDATE_REGISTRY_REPO` 并重启执行器。之后 Hub 新版本检测到能力后才会启用分层拉取，旧版本客户端与旧执行器行为不变。
 
