@@ -465,6 +465,9 @@ class InstallOrchestrator:
         self.artifact: Path | None = None
         self.expected_commit = ""
         self.schema_before: list = []
+        # 失败清理只允许触达本次事务确实创建的目录；绝不按版本号猜测并删除既有目录。
+        self._stage_owned = False
+        self._target_created = False
 
     def execute(self) -> dict:
         self._write("installing", "正在校验安装包")
@@ -504,18 +507,26 @@ class InstallOrchestrator:
                         f"{message}；回滚失败：{rollback_message or '服务未恢复'}",
                     )
             else:
+                # 安装器未切换版本指针就失败时不会触发回滚；本次事务创建的目标目录必须清掉，
+                # 否则残缺目录会让下一次安装因“目标版本目录已存在”永久失败。
+                self._cleanup_target_best_effort()
                 self._write("failed", message)
             return self.journal()
 
     def _install_full(self) -> None:
         publisher = _check_publisher(self.verify_publisher(self.artifact))
         self._write("installing", f"安装包校验通过（签名状态：{publisher.get('status')}），正在运行安装程序")
+        # 任务校验时目标目录必须不存在；此后由安装器创建的内容都属于本次事务。
+        self._target_created = True
         self._run_installer()
 
     def _install_with_patch(self) -> None:
         """先尝试增量；补丁在切换版本前失败时，同一授权内回退一次完整安装包。"""
         try:
             self._verify_patch_trust()
+            # 补丁与本机基线是否匹配属于“增量不可用”，必须放在回退范围内；
+            # 任务本身的路径/身份校验仍在 _validate_job 中直接拒绝。
+            self._verify_patch_applicability()
             self._apply_patch()
         except Exception as exc:
             self._cleanup_stage()
@@ -556,7 +567,7 @@ class InstallOrchestrator:
         if self.patch_mode:
             if int(self.job.get("schema") or 0) != 2:
                 raise ValueError("增量任务必须使用 schema 2")
-            self._validate_patch_job(Path(download_dir), releases)
+            self._validate_patch_job(Path(download_dir))
         else:
             artifact = _safe_join(Path(download_dir), self.target, str(self.job.get("asset_name") or ""))
             recorded = str(self.job.get("artifact_path") or "")
@@ -575,24 +586,71 @@ class InstallOrchestrator:
             if self.data_dir is not None:
                 self.schema_before = _schema_fingerprint(self.data_dir)
 
-    def _validate_patch_job(self, download_dir: Path, releases: Path) -> None:
-        patch = _safe_join(
+    def _validate_patch_job(self, download_dir: Path) -> None:
+        """只校验任务身份与路径安全；补丁适用性延后到可回退的阶段判断。
+
+        补丁文件缺失、大小/哈希不符、基线版本或 commit 不匹配都只说明“增量不可用”，
+        必须能改走同一授权内的完整安装包；而路径越界、名称非法、回退身份缺失属于
+        整个安装任务不可信，直接拒绝，避免带着不可兜底的任务继续执行。
+        """
+        patch = _prepare_path(
             download_dir, self.target, str(self.job.get("patch_asset_name") or "")
         )
         recorded = str(self.job.get("patch_path") or "")
-        if not recorded or Path(recorded).resolve() != patch:
+        if not recorded or Path(recorded).resolve() != patch.resolve():
             raise ValueError("安装任务中的补丁路径与下载目录不一致")
         expected_sha = str(self.job.get("patch_sha256") or "").lower()
         if not _SHA256_RE.fullmatch(expected_sha):
             raise ValueError("补丁 SHA-256 无效")
-        if patch.stat().st_size != int(self.job.get("patch_size") or 0):
+        try:
+            expected_size = int(self.job.get("patch_size") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("补丁大小无效") from exc
+        if expected_size <= 0:
+            raise ValueError("补丁大小无效")
+        self._validate_fallback_job()
+        self.patch = patch
+        self._patch_sha256 = expected_sha
+        self._patch_size = expected_size
+        self.expected_commit = str(self.job.get("target_commit") or "")
+        if self.data_dir is not None:
+            self.schema_before = _schema_fingerprint(self.data_dir)
+
+    def _validate_fallback_job(self) -> None:
+        """回退安装包身份必须一开始就合法，否则无法保证同一次授权内可以兜底。"""
+        name = str(self.job.get("fallback_name") or "")
+        if not name or Path(name).name != name:
+            raise ValueError("回退安装包名称无效")
+        sha = str(self.job.get("fallback_sha256") or "").lower()
+        if not _SHA256_RE.fullmatch(sha):
+            raise ValueError("回退安装包 SHA-256 无效")
+        try:
+            size = int(self.job.get("fallback_size") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("回退安装包大小无效") from exc
+        if size <= 0:
+            raise ValueError("回退安装包大小无效")
+        url = str(self.job.get("fallback_url") or "")
+        if not url:
+            raise ValueError("缺少完整安装包回退地址，无法保证同一次授权内兜底")
+        parsed = urlsplit(url)
+        if parsed.scheme != "https" or (parsed.hostname or "").lower() not in ALLOWED_ASSET_HOSTS:
+            raise ValueError("回退安装包地址不在允许的发布域名内")
+
+    def _verify_patch_applicability(self) -> None:
+        """增量是否适用于本机基线；失败只影响补丁，调用方会回退完整安装包。"""
+        assert self.patch is not None
+        patch = self.patch
+        if not patch.is_file() or patch.is_symlink() or _is_reparse(patch):
+            raise ValueError("补丁文件不存在或不可用")
+        if patch.stat().st_size != self._patch_size:
             raise ValueError("补丁大小与安装任务不一致")
-        if _file_sha256(patch) != expected_sha:
+        if _file_sha256(patch) != self._patch_sha256:
             raise ValueError("补丁 SHA-256 校验失败")
         base_version = str(self.job.get("base_version") or "")
         if base_version != self.previous:
             raise ValueError("增量补丁的基线版本与当前版本不一致")
-        base_dir = releases / base_version
+        base_dir = self.install_root / "releases" / base_version
         if not base_dir.is_dir() or base_dir.is_symlink() or _is_reparse(base_dir):
             raise ValueError("本地基线版本目录不可用")
         base_manifest = _read_json(base_dir / "release-manifest.json", {})
@@ -601,11 +659,7 @@ class InstallOrchestrator:
         self.base_commit = str(self.job.get("base_commit") or "")
         if self.base_commit and str(base_manifest.get("git_commit") or "") != self.base_commit:
             raise ValueError("本地基线的构建提交与补丁不一致")
-        self.patch = patch
         self.patch_base_dir = base_dir
-        self.expected_commit = str(self.job.get("target_commit") or "")
-        if self.data_dir is not None:
-            self.schema_before = _schema_fingerprint(self.data_dir)
 
     def _verify_patch_trust(self) -> None:
         """与完整安装包同级的可信校验：签名目录，或沿用既有 unsigned 放行口径。"""
@@ -633,6 +687,10 @@ class InstallOrchestrator:
         if target_dir.exists():
             raise ValueError("目标版本目录已存在，已拒绝增量重建")
         stage = releases / f".{self.target}.patch-tmp"
+        if stage.exists() or stage.is_symlink():
+            # 无法确认这个暂存目录属于本次事务，宁可拒绝增量也不能删除别人的数据。
+            raise ValueError("发现未清理的补丁暂存目录，已拒绝增量重建")
+        self._stage_owned = True
         try:
             result = update_patch.apply(
                 self.patch_base_dir,
@@ -649,8 +707,11 @@ class InstallOrchestrator:
             raise ValueError(f"增量补丁不可用：{exc}") from exc
         if target_dir.exists():
             shutil.rmtree(stage, ignore_errors=True)
+            self._stage_owned = False
             raise ValueError("目标版本目录在重建期间被创建，已拒绝覆盖")
         os.replace(stage, target_dir)
+        self._stage_owned = False
+        self._target_created = True
         self._write(
             "installing",
             f"增量重建完成（修改 {result['changed']} 个、删除 {result['deleted']} 个），正在登记版本",
@@ -717,18 +778,31 @@ class InstallOrchestrator:
         return target
 
     def _cleanup_stage(self) -> None:
+        """只删除本次事务创建且可确认归属的补丁暂存目录。"""
+        if not self._stage_owned:
+            return
         stage = self.install_root / "releases" / f".{self.target}.patch-tmp"
+        if stage.is_symlink():
+            return
         shutil.rmtree(stage, ignore_errors=True)
+        self._stage_owned = False
 
     def _cleanup_target_best_effort(self) -> None:
-        """仅在版本指针不指向目标时删除补丁目标目录，避免删掉正在运行的版本。"""
+        """只清理本次事务创建的目标版本目录，且绝不动正在运行或既有完整版本。"""
+        if not self._target_created:
+            return
+        target = self.install_root / "releases" / self.target
+        if not target.is_dir() or target.is_symlink() or _is_reparse(target):
+            return
         try:
             registered = (self.install_root / "current-version").read_text(encoding="utf-8").strip()
         except OSError:
             registered = ""
-        if registered == self.target:
+        # 运行指针仍指向目标，或目标恰是上一版本时，必须保留现场交给既有回滚/人工处理。
+        if registered == self.target or self.target in {self.previous, registered}:
             return
-        shutil.rmtree(self.install_root / "releases" / self.target, ignore_errors=True)
+        shutil.rmtree(target, ignore_errors=True)
+        self._target_created = False
 
     def _run_installer(self) -> None:
         assert self.artifact is not None

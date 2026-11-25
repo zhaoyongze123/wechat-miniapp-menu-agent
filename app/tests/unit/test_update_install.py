@@ -1061,6 +1061,134 @@ def test_patch_failure_without_fallback_reports_failed(tmp_path, monkeypatch):
     assert not (root / "releases" / "0.3.0").exists()
 
 
+@pytest.mark.parametrize("field", ["patch_size", "patch_sha256"])
+def test_patch_identity_mismatch_falls_back_to_full_once(tmp_path, monkeypatch, field):
+    """补丁身份不符只说明增量不可用：同一次授权内回退一次完整安装包，不重复安装。"""
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE", "1")
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
+    root = make_install_root(tmp_path)
+    job = make_patch_job(tmp_path, root)
+    if field == "patch_size":
+        job[field] += 1
+    else:
+        job[field] = "0" * 64
+    installs: list[str] = []
+
+    def run(args, timeout):
+        installs.append(args[0])
+        make_release(root, "0.3.0")
+        (root / "current-version").write_text("0.3.0", encoding="utf-8")
+        return 0, ""
+
+    orchestrator = patch_orchestrator(tmp_path, root, job, run, lambda port: "0.3.0")
+    journal = orchestrator.execute()
+
+    assert journal["status"] == "completed"
+    assert len(installs) == 1
+    assert installs[0].endswith("MenuCapture-v0.3.0.exe")
+    assert not (root / "releases" / ".0.3.0.patch-tmp").exists()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("base_version", "0.2.1"),
+    ("base_commit", "b" * 40),
+])
+def test_patch_baseline_identity_mismatch_falls_back_to_full(tmp_path, monkeypatch, field, value):
+    """基线版本/提交与本地实际基线不一致时，补丁不可用但不影响完整安装。"""
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE", "1")
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
+    root = make_install_root(tmp_path)
+    job = make_patch_job(tmp_path, root)
+    job[field] = value
+    installs: list[str] = []
+
+    def run(args, timeout):
+        installs.append(args[0])
+        make_release(root, "0.3.0")
+        (root / "current-version").write_text("0.3.0", encoding="utf-8")
+        return 0, ""
+
+    orchestrator = patch_orchestrator(tmp_path, root, job, run, lambda port: "0.3.0")
+    journal = orchestrator.execute()
+
+    assert journal["status"] == "completed"
+    assert len(installs) == 1
+
+
+def test_patch_leftover_stage_is_never_deleted(tmp_path, monkeypatch):
+    """无法确认归属的暂存目录必须保留现场，只允许回退完整安装。"""
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE", "1")
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
+    root = make_install_root(tmp_path)
+    job = make_patch_job(tmp_path, root)
+    stage = root / "releases" / ".0.3.0.patch-tmp"
+    stage.mkdir()
+    sentinel = stage / "foreign.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    def run(args, timeout):
+        make_release(root, "0.3.0")
+        (root / "current-version").write_text("0.3.0", encoding="utf-8")
+        return 0, ""
+
+    orchestrator = patch_orchestrator(tmp_path, root, job, run, lambda port: "0.3.0")
+    journal = orchestrator.execute()
+
+    assert journal["status"] == "completed"
+    assert sentinel.is_file()
+
+
+def test_cleanup_target_preserves_registered_version(tmp_path):
+    """运行指针仍指向目标目录时，即使目录由本次事务创建也不能删除。"""
+    root = make_install_root(tmp_path)
+    job = make_patch_job(tmp_path, root)
+    orchestrator = patch_orchestrator(
+        tmp_path, root, job, lambda args, timeout: (0, ""), lambda port: "0.3.0"
+    )
+    make_release(root, "0.3.0")
+    (root / "current-version").write_text("0.3.0", encoding="utf-8")
+    orchestrator._target_created = True
+
+    orchestrator._cleanup_target_best_effort()
+
+    assert (root / "releases" / "0.3.0").is_dir()
+    assert orchestrator._target_created is True
+
+
+def test_cleanup_target_removes_only_owned_unregistered_version(tmp_path):
+    """只清理本次事务创建、且未登记的目标目录，既有版本不受影响。"""
+    root = make_install_root(tmp_path)
+    job = make_patch_job(tmp_path, root)
+    orchestrator = patch_orchestrator(
+        tmp_path, root, job, lambda args, timeout: (0, ""), lambda port: "0.2.2"
+    )
+    make_release(root, "0.3.0")
+    orchestrator._target_created = True
+
+    orchestrator._cleanup_target_best_effort()
+
+    assert not (root / "releases" / "0.3.0").exists()
+    assert (root / "releases" / "0.2.2").is_dir()
+    assert orchestrator._target_created is False
+
+
+def test_full_install_failure_cleans_transaction_target(tmp_path):
+    """安装器失败但未切换版本指针时，必须清掉残缺目标目录，避免阻塞下次安装。"""
+    root = make_install_root(tmp_path)
+
+    def run(args, timeout):
+        make_release(root, "0.3.0")
+        return 1, "setup failed"
+
+    orchestrator, _, _ = make_orchestrator(tmp_path, run_command=run, probe=lambda port: "0.2.2")
+    journal = orchestrator.execute()
+
+    assert journal["status"] == "failed"
+    assert not (root / "releases" / "0.3.0").exists()
+    assert (root / "releases" / "0.2.2").is_dir()
+    assert (root / "current-version").read_text(encoding="utf-8") == "0.2.2"
+
+
 def test_schema_one_full_job_still_supported(tmp_path):
     root = make_install_root(tmp_path)
     state = make_artifact(tmp_path)

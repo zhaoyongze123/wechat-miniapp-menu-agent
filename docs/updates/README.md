@@ -91,7 +91,7 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 安全开关：只有 `MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE=1` 时才考虑增量（默认关闭）。没有签名 `catalog` 时仍必须沿用既有 `MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE=1`，不新增任何放宽；有 `catalog` 时执行器用 `Test-FileCatalog` + Authenticode 双重校验，任一不通过即拒绝增量。
 - 只允许应用层变化：运行环境（`python/`、`node/`、`tesseract/`、`vcruntime/`）、依赖锁（`requirements*.txt`、`package-lock.json` 等）、安装器与根级 `Launch.ps1`/`rollback.ps1`/`setup.iss` 指纹变化时，该版本不生成补丁，客户端也只走全量。
 - 不引入补丁链：跨多个版本升级只有在存在 `from == 当前版本` 的补丁时才使用，否则直接全量。
-- 生成工具：`deploy/windows/make_patch.py`（纯标准库）比较两棵完整构建树后输出 ZIP 与同名 `.json`；`build.ps1 -BundleOutput <dir>` 可另存同一次正式构建的 staging bundle，避免为生成补丁重复完整构建。条件不满足时输出 `status: skipped`，不产出补丁，也不阻断完整安装包发布。
+- 生成工具：`deploy/windows/make_patch.py`（纯标准库）比较两棵完整构建树后输出 ZIP 与同名 `.json`；`build.ps1 -BundleOutput <dir>` 另存本次正式构建的 staging bundle，发布时打包为 `MenuCapture-<版本>-bundle.zip` 随 Release 归档。历史基线只能下载该正式归档并校验版本与 commit，缺失或校验不一致时跳过补丁，仅发布完整安装包；条件不满足时输出 `status: skipped`，同样不阻断完整安装包发布。
 
 ## 受控下载
 
@@ -281,7 +281,7 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 多设备批量安装（远程触发）不在范围内；分批推广只控制目标版本的分发范围，安装仍由设备本地确认。
 - Windows 真实设备（隔离机）升级/回滚仍待维护者安排；自动化验收已由 `ota-smoke.ps1` 覆盖。本轮“一次授权”只完成单测与组件测试，真实浏览器 + 隔离环境的 OTA 全流程证据需在解冻后按 Issue #32 验收条件单独产出，不能以单测通过代替。
 - 增量补丁默认关闭；发布流水线尚未配置签名目录（`catalog`）证书，生产启用前需要等价可信的签名载体，否则只能沿用既有 unsigned 放行口径。
-- 补丁生成复用 `ota_base_version` 的源构建作为基线；跨正式 Release 的补丁需要保留上一版本的正式构建 bundle，当前未纳入发布资产，未匹配时以完整安装包兜底。
+- 跨正式 Release 的补丁以 `ota_base_version` 对应 Release 中归档的 `MenuCapture-<版本>-bundle.zip` 为唯一基线，并核对 bundle 内 `release-manifest.json` 与正式 `update-manifest.json` 的版本、commit 和 bundle 校验值；历史归档缺失时不得用当前 HEAD 改版本号重建，直接跳过补丁并以完整安装包兜底。
 - 补丁链、二进制差分、文件块级分发与 P2P 下载不在范围；不新增第二套更新状态机。
 
 ## 运维建议
