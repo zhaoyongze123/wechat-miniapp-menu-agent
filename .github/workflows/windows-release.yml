@@ -347,6 +347,11 @@ jobs:
           echo "MENU_CAPTURE_VERSION=$version" >> "$GITHUB_ENV"
           echo "MENU_CAPTURE_IMAGE=menu-capture-hub:$version" >> "$GITHUB_ENV"
       - name: 验证共享后台容器、前端产物和数据卷
+        # 有效包写权限、登录和图层上传均成功；失败后 GHCR 只留下 SLSA in-toto attestation，目标镜像 manifest/index 不存在。
+        # 当前 OTA 不验证 BuildKit 默认 provenance，而校验固定仓库、Release 清单和镜像 digest；仅关闭这项未消费的隐式元数据。
+        # 保留 packages:write 最小权限、固定仓库、版本标签预检及 digest 校验。
+        env:
+          BUILDX_NO_DEFAULT_ATTESTATIONS: '1'
         run: |
           # Bind Mount 由宿主机创建；Linux 运行器需授予容器用户 10001 写权限。
           mkdir -p deploy/hub/delivery && chmod 777 deploy/hub/delivery
