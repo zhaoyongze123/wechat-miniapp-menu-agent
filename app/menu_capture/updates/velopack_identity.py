@@ -1,7 +1,6 @@
 """Release and SDK identity checks, distinct from publisher signature verification."""
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import zipfile
@@ -104,12 +103,28 @@ def sdk_asset_identity(asset):
 
 
 def require_target(actual, target):
+    """远程发布资产：必须与已签名清单的版本、文件名、摘要和大小完全一致。"""
     full = target["full"]
     expected = {"version": target["version"], "pack_id": target["pack_id"],
                 "type": "Full", "file_name": full["name"],
                 "sha256": full["sha256"], "size": full["size"]}
     if not isinstance(actual, dict) or any(actual.get(key) != value for key, value in expected.items()):
         raise ValueError("SDK 目标包与正式发布身份不一致")
+
+
+def require_local_asset(actual, target):
+    """本地待安装/恢复包的身份形状校验。
+
+    SDK 对本地资产返回空摘要、Size 为实际文件大小，因此这里不能与发布 sha256/size 比对；
+    实际摘要必须由调用方对照已验证产物身份记录另行核验，本函数不授予任何信任。
+    """
+    full = target["full"]
+    expected = {"version": target["version"], "pack_id": target["pack_id"],
+                "type": "Full", "file_name": full["name"]}
+    if not isinstance(actual, dict) or any(actual.get(key) != value for key, value in expected.items()):
+        raise ValueError("SDK 本地包与正式发布身份不一致")
+    if type(actual.get("size")) is not int or actual["size"] <= 0:
+        raise ValueError("SDK 本地包大小无效")
 
 
 def validate_local_asset(asset, *, version, commit):
@@ -135,6 +150,15 @@ def validate_local_asset(asset, *, version, commit):
     return asset
 
 
+def require_inner_manifest(nupkg: Path, *, version: str, commit: str) -> dict:
+    """包内清单只作附加一致性检查；调用方必须另行核验实际摘要来源，不能据此授予信任。"""
+    manifest = inner_release_manifest(nupkg)
+    if (str(manifest.get("version") or "") != str(version)
+            or str(manifest.get("git_commit") or "") != str(commit)):
+        raise ValueError("包内部发布清单与目标身份不一致")
+    return manifest
+
+
 def inner_release_manifest(nupkg: Path) -> dict:
     """读取 nupkg 内的 release-manifest.json，验证包内容确实对应目标构建。"""
     try:
@@ -156,20 +180,3 @@ def inner_release_manifest(nupkg: Path) -> dict:
         raise ValueError("恢复包内部发布清单格式无效")
     return manifest
 
-
-def require_full_file(root: Path, target):
-    """Hash actual bytes, not merely SDK metadata; reject reparse points."""
-    full = target["full"]
-    name = full["name"]
-    if not name or any(c in name for c in "/\\:") or name in {".", ".."}:
-        raise ValueError("完整包名称无效")
-    path = root / name
-    for item in (root, path):
-        if item.is_symlink() or getattr(item.lstat(), "st_file_attributes", 0) & 0x400:
-            raise ValueError("完整包路径包含重解析点")
-    if not path.is_file() or path.stat().st_size != full["size"]:
-        raise ValueError("完整包大小不一致")
-    with path.open("rb") as stream:
-        if hashlib.file_digest(stream, "sha256").hexdigest() != full["sha256"]:
-            raise ValueError("完整包 SHA-256 不一致")
-    return path

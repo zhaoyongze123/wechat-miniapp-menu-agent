@@ -18,10 +18,20 @@ on:
         description: Force full integration (no release for docs/test-only changes)
         type: boolean
         default: false
+      full_only:
+        description: 一次性全量过渡：跳过历史包下载并使用 vpk --delta None，本次不生成 Delta
+        default: false
+        required: true
+        type: boolean
       min_supported_version:
         description: 更新清单中的最低兼容版本（低于该版本不提供应用内更新）
         default: '0.2.0'
         required: true
+        type: string
+      source_run_id:
+        description: 复用已验收候选 run 的产物（仅出发布草稿，不重新构建；留空则本次构建）
+        default: ''
+        required: false
         type: string
 
 permissions:
@@ -76,6 +86,8 @@ jobs:
 
   checks:
     needs: changes
+    # 复用候选 run 的产物时不再重跑源码门禁，改由 verify-source 核验源 run 与其产物摘要。
+    if: ${{ inputs.source_run_id == '' }}
     uses: ./.github/workflows/source-checks.yml
     with:
       frontend: ${{ needs.changes.outputs.frontend == 'true' }}
@@ -87,7 +99,8 @@ jobs:
   windows:
     # 安装包使用仓库中已提交的前端产物，无需等待门禁；发布仍由 draft 统一等待全部门禁。
     needs: [changes]
-    if: ${{ needs.changes.outputs.build == 'true' }}
+    # 复用候选 run 产物时不重新打包，直接下载该 run 的已校验安装包。
+    if: ${{ inputs.source_run_id == '' && needs.changes.outputs.build == 'true' }}
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -141,12 +154,14 @@ jobs:
           MC_RUNTIME_CACHE: ${{ runner.temp }}\mc-runtime-downloads
           MC_RUNTIME_ENV_CACHE: ${{ runner.temp }}\mc-runtime-env
           MC_LAUNCHER_CACHE: ${{ runner.temp }}\mc-launcher-cache
+          FULL_ONLY: ${{ inputs.full_only }}
         run: |
           $version = $env:BUILD_VERSION
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
           # 产物只包含本次版本：Setup、full/delta nupkg 与对应渠道的 releases JSON；
           # 历史包仅用于生成 delta，由构建脚本在临时目录下载，不进入发布资产。
-          ./deploy/windows/build.ps1 -Version $version
+          $fullOnly = $env:FULL_ONLY -eq 'true'
+          ./deploy/windows/build.ps1 -Version $version -FullOnly:$fullOnly
       - uses: actions/upload-artifact@v4
         with:
           name: menu-capture-windows-x64
@@ -159,7 +174,8 @@ jobs:
   hub:
     # Registry publication follows successful source gates; Windows packing remains parallel.
     needs: [changes, checks]
-    if: ${{ needs.changes.outputs.build == 'true' }}
+    # 复用候选 run 产物时不重建镜像，GHCR 由 verify-source 从已归档镜像推送。
+    if: ${{ inputs.source_run_id == '' && needs.changes.outputs.build == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # 仅向 GHCR 推送本仓库镜像；不授予无关写权限。
@@ -523,28 +539,206 @@ jobs:
         if: failure()
         run: docker compose -f deploy/hub/compose.yaml logs
 
-  draft:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_release && needs.changes.outputs.release_needed == 'true' }}
-    # 发布草稿必须依赖全部质量门禁，任一检查失败都不生成发布准备。
-    needs: [changes, checks, windows, hub]
+  # 只复用已验收候选 run 的产物：不重新构建、不重跑源码门禁，
+  # 但必须核验源 run 的成功状态、仓库、工作流、版本、commit 与产物摘要。
+  verify-source:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_release && inputs.source_run_id != '' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
-      contents: write
+      contents: read
+      actions: read
+      packages: write
+    outputs:
+      commit: ${{ steps.inspect.outputs.commit }}
     steps:
+      - name: 核验源 run 身份与结论
+        id: inspect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID")
+          jq -e --arg repo "$GITHUB_REPOSITORY" '
+            .repository.full_name == $repo
+            and .path == ".github/workflows/windows-release.yml"
+            and .event == "workflow_dispatch"
+            and .status == "completed"
+            and .conclusion == "success"
+            and (.head_sha | test("^[0-9a-f]{40}$"))
+          ' <<<"$run"
+          commit=$(jq -r .head_sha <<<"$run")
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "源 run $RUN_ID 校验通过，commit=$commit"
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.inspect.outputs.commit }}
       - uses: actions/download-artifact@v4
         with:
           name: menu-capture-windows-x64
           path: release-assets
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
         with:
           name: menu-capture-hub-linux-amd64
+          path: release-assets
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - name: 核验产物摘要、版本、commit 与 FullOnly 契约
+        env:
+          VERSION: ${{ inputs.version }}
+          FULL_ONLY: ${{ inputs.full_only }}
+          COMMIT: ${{ steps.inspect.outputs.commit }}
+        run: |
+          set -euo pipefail
+          (cd release-assets && sha256sum -c ./*.sha256)
+          python3 - "$VERSION" "$FULL_ONLY" "$COMMIT" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "app")
+          sys.path.insert(0, "deploy/windows")
+          from menu_capture.updates.velopack_identity import inner_release_manifest
+          from velopack_assets import release_assets
+          version, full_only_raw, commit = sys.argv[1:4]
+          full_only = full_only_raw == "true"
+          root = Path("release-assets")
+          setup, full, *rest = release_assets(root, version, full_only=full_only)
+          index_name = rest.pop()
+          if full_only and rest:
+              raise SystemExit(f"FullOnly 源产物包含本次版本 Delta：{rest}")
+          stray = sorted(item.name for item in root.glob("*-delta.nupkg"))
+          if full_only and stray:
+              raise SystemExit(f"FullOnly 源产物目录残留 Delta 文件：{stray}")
+          inner = inner_release_manifest(root / full)
+          if inner.get("version") != version:
+              raise SystemExit(f"包内版本 {inner.get('version')} 与目标版本 {version} 不一致")
+          if inner.get("git_commit") != commit:
+              raise SystemExit(f"包内 commit {inner.get('git_commit')} 与源 run {commit} 不一致")
+          print(f"产物核验通过：{setup} / {full} / {index_name}，Delta 数量 {len(rest)}")
+          PY
+      - name: 从归档镜像准备 GHCR（不重新构建）
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -uo pipefail
+          # 只做官方 docker load/tag/push，镜像内容来自源 run 的已归档产物。
+          archive=$(find release-assets -maxdepth 1 -name 'menu-capture-hub-*-linux-amd64.tar.gz' -print -quit)
+          test -n "$archive"
+          (cd release-assets && sha256sum -c "$(basename "$archive").sha256")
+          docker load -i "$archive" || exit 1
+          image="menu-capture-hub:$VERSION"
+          docker image inspect "$image" > /dev/null || exit 1
+          registry="ghcr.io"
+          repo="${GITHUB_REPOSITORY,,}"
+          repository="$registry/$repo"
+          remote="$repository:$VERSION"
+          token=$(curl -fsS -u "$GITHUB_ACTOR:$GHCR_TOKEN" \
+            "https://$registry/token?service=$registry&scope=repository:$repo:pull" \
+            | jq -r '.token // empty' || true)
+          if [ -z "$token" ]; then
+            echo "::warning::无法获取 GHCR 令牌，跳过 OCI 推送，草稿仅含归档镜像。"
+            exit 0
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $token" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://$registry/v2/$repo/manifests/$VERSION")
+          case "$code" in
+            200)
+              echo "::warning::GHCR 已存在 $remote，保留已发布镜像，跳过推送。"
+              exit 0
+              ;;
+            404) ;;
+            *)
+              echo "::warning::无法确认 GHCR 标签状态（HTTP $code），跳过推送。"
+              exit 0
+              ;;
+          esac
+          if ! echo "$GHCR_TOKEN" | docker login "$registry" -u "$GITHUB_ACTOR" --password-stdin; then
+            echo "::warning::GHCR 登录失败，跳过 OCI 推送。"
+            exit 0
+          fi
+          if ! docker tag "$image" "$remote" || ! docker push "$remote"; then
+            echo "::warning::GHCR 推送失败，跳过 OCI 摘要。"
+            exit 0
+          fi
+          digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" \
+            | awk -v prefix="$repository@" 'index($0, prefix) == 1 && !found {print substr($0, length(prefix) + 1); found = 1}' || true)
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::warning::无法获取镜像摘要，跳过 OCI 交付。"
+            exit 0
+          fi
+          mkdir -p hub-oci
+          jq -nc --arg registry "$repository" --arg digest "$digest" \
+            '{registry:$registry,digest:$digest}' > hub-oci/hub-image-digest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: menu-capture-hub-oci
+          path: hub-oci/
+          if-no-files-found: warn
+          retention-days: 14
+
+  draft:
+    if: >-
+      ${{ always() && inputs.create_release && needs.changes.outputs.release_needed == 'true' && (
+        (inputs.source_run_id != '' && needs.verify-source.result == 'success') ||
+        (inputs.source_run_id == '' && needs.checks.result == 'success'
+         && needs.windows.result == 'success' && needs.hub.result == 'success')
+      ) }}
+    # 发布草稿必须依赖全部质量门禁，任一检查失败都不生成发布准备。
+    needs: [changes, verify-source, checks, windows, hub]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      # 复用模式下按产物 commit 检出，确保清单由同版本代码生成。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify-source.outputs.commit || github.sha }}
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.source_run_id == '' }}
+        with:
+          name: menu-capture-windows-x64
+          path: release-assets
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.source_run_id == '' }}
+        with:
+          name: menu-capture-hub-linux-amd64
+          path: release-assets
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.source_run_id != '' }}
+        with:
+          name: menu-capture-windows-x64
+          path: release-assets
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.source_run_id != '' }}
+        with:
+          name: menu-capture-hub-linux-amd64
+          path: release-assets
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        # OCI 摘要由本次 verify-source 生成；推送被跳过时不存在，允许缺失。
+        if: ${{ inputs.source_run_id != '' }}
+        continue-on-error: true
+        with:
+          name: menu-capture-hub-oci
           path: release-assets
       - name: 生成更新清单（update-manifest.json）
         env:
           VERSION: ${{ inputs.version }}
           MIN_SUPPORTED: ${{ inputs.min_supported_version }}
+          FULL_ONLY: ${{ inputs.full_only }}
+          # 签名清单必须绑定产物的真实构建 commit，而不是本次发布工作流的 commit。
+          SOURCE_COMMIT: ${{ needs.verify-source.outputs.commit || github.sha }}
           MENU_CAPTURE_RELEASE_SIGNING_KEY: ${{ secrets.MENU_CAPTURE_RELEASE_SIGNING_KEY }}
         run: |
           tag="v$VERSION"
@@ -559,7 +753,7 @@ jobs:
           hub_sha=$(cut -d' ' -f1 < "$hub.sha256")
           hub_size=$(stat -c%s "$hub")
           (cd release-assets && sha256sum -c "$hub_name.sha256")
-          "$RUNNER_TEMP/manifest-signing/bin/python" - "$tag" "$channel" "$GITHUB_SHA" "$MIN_SUPPORTED" \
+          "$RUNNER_TEMP/manifest-signing/bin/python" - "$tag" "$channel" "$SOURCE_COMMIT" "$MIN_SUPPORTED" \
             "$hub_name" "$hub_size" "$hub_sha" <<'PY'
           import hashlib, json, os, sys
           from pathlib import Path
@@ -573,11 +767,14 @@ jobs:
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}"
           root = Path("release-assets")
           version = tag.lstrip("v")
-          setup_name, full_name, *rest = release_assets(root, version)
+          setup_name, full_name, *rest = release_assets(
+              root, version, full_only=os.environ.get("FULL_ONLY") == "true")
           index_name = rest.pop()
           inner = inner_release_manifest(root / full_name)
           if inner.get('version') != version or inner.get('git_commit') != commit:
               raise ValueError('Windows candidate version/commit mismatch')
+          if os.environ.get("FULL_ONLY") == "true" and rest:
+              raise SystemExit(f"FullOnly 发布不得包含 Delta：{rest}")
           def vp_asset(name):
               path = root / name
               with path.open("rb") as stream:
@@ -623,10 +820,28 @@ jobs:
               json.dump(manifest, handle, ensure_ascii=False, indent=2)
           PY
           test -s release-assets/update-manifest.json
+      - name: 校验 FullOnly 发布不包含本次 Delta
+        if: ${{ inputs.full_only }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if find release-assets -maxdepth 1 -name '*-delta.nupkg' | grep -q .; then
+            echo "FullOnly 发布不得包含 Delta 资产"
+            find release-assets -maxdepth 1 -name '*-delta.nupkg' -print
+            exit 1
+          fi
+          jq -e '(.velopack.deltas | length) == 0' release-assets/update-manifest.json
+          case "$VERSION" in *-*) channel="preview" ;; *) channel="stable" ;; esac
+          jq -e --arg v "$VERSION" \
+            '[.Assets[] | select(.Version == $v and .Type == "Delta")] | length == 0' \
+            "release-assets/releases.win-x64-$channel.json"
       - name: 创建或更新发布草稿（复用本次已验收产物）
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
+          # 草稿标签指向产物真实构建 commit，避免复用模式下指向发布工作流自身。
+          SOURCE_COMMIT: ${{ needs.verify-source.outputs.commit || github.sha }}
         run: |
           tag="v$VERSION"
           prerelease=false
@@ -638,10 +853,10 @@ jobs:
               exit 1
             fi
             gh release upload "$tag" release-assets/* --clobber
-            gh release edit "$tag" --title "MenuCapture $VERSION" --target "$GITHUB_SHA" --prerelease="$prerelease"
+            gh release edit "$tag" --title "MenuCapture $VERSION" --target "$SOURCE_COMMIT" --prerelease="$prerelease"
           else
             gh release create "$tag" release-assets/* \
-              --target "$GITHUB_SHA" \
+              --target "$SOURCE_COMMIT" \
               --draft \
               --prerelease="$prerelease" \
               --title "MenuCapture $VERSION" \

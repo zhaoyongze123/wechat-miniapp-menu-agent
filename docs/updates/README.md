@@ -87,6 +87,8 @@ SHA-256 只证明完整性。Windows Velopack 发布还要求 Ed25519 发布者�
 Windows 的差分、重建与安装已交给 Velopack，不再由本项目生成 `patches`。
 
 - 构建期用 `vpk pack` 生成 `Setup.exe`、full/delta `.nupkg` 与 `releases.win-x64-<channel>.json`；有历史正式包时由 `vpk download github` 取回并由 vpk 自动生成增量。
+- 一次性全量过渡可传 `-FullOnly`（工作流输入 `full_only=true`）：跳过历史包下载，并使用 Velopack 原生 `vpk pack --delta None`；构建、索引与签名清单三层都会校验本次版本不包含 Delta。
+- 发布草稿可传 `source_run_id` 复用已验收候选 run 的产物：用原生 `download-artifact` 跨 run 取值，核验源 run 的成功状态、仓库、工作流、版本、commit、`full_only` 与资产摘要；签名清单的 `git_commit` 与 Release 目标取自产物 commit，GHCR 只从归档镜像 `docker load/tag/push`，不重新构建。
 - 客户端用 Velopack Python SDK 的 `UpdateManager` 发现、下载与应用更新；SDK 负责版本选择、差分计算、包重建与全量兜底。
 - 新发布清单的 `assets` 保留 `hub_image`，顶层 `velopack` 扩展记录 setup/full/deltas/index 的实际名称、大小、SHA-256、URL、pack ID、版本、commit、tag 与渠道，并由完整清单签名绑定。禁止将 Velopack Setup 声明为旧 `windows_installer`。下载前后核对 SDK 资产身份及实际完整包摘要；仅由 Velopack 官方 SDK 选择 delta 或 full 并执行重建，不实现自制补丁应用。
 - 渠道固定为 `win-x64-stable` / `win-x64-preview`，平台与架构编码在通道名中，避免跨平台误装。
