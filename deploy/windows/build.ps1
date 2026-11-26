@@ -6,7 +6,10 @@ param(
     [string]$Output = (Join-Path $PSScriptRoot '..\artifacts'),
     # 可选：把本次构建的 staging bundle 另存一份，供诊断与人工排查。
     # 增量更新已由 Velopack 基于 nupkg 生成，不再复用这里的 bundle。目录必须不存在，防止旧产物被误当本次构建。
-    [string]$BundleOutput = ''
+    [string]$BundleOutput = '',
+    # 一次性全量过渡：跳过历史包下载，并使用 Velopack 原生 --delta None，只产 Full 与 Setup。
+    [Alias('full_only')]
+    [switch]$FullOnly
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -714,27 +717,32 @@ try {
     # 历史包只用于生成 delta，放在临时目录，避免旧版本 nupkg 混入本次发布产物。
     $packDir = Join-Path $stage 'velopack'
     $null = New-Item -ItemType Directory -Path $packDir
-    $token = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { '' }
-    $downloadArgs = @(
-        'download', 'github',
-        '--repoUrl', 'https://github.com/zhaoyongze123/wechat-miniapp-menu-agent',
-        '--channel', $channel,
-        '--outputDir', $packDir
-    )
-    if ($channel -eq 'win-x64-preview') { $downloadArgs += '--pre' }
-    if ($token) { $downloadArgs += @('--token', $token) }
-    & $vpk @downloadArgs
-    if ($LASTEXITCODE -ne 0) {
-        # SDK 失败可能是首次发布，也可能是网络/认证错误；不把失败当作已确认无历史包。
-        Write-Warning "历史包获取失败（channel=$channel，vpk download 退出码 $LASTEXITCODE）；本次仅保证生成完整包，请检查上方日志。"
-        Remove-Item -LiteralPath $packDir -Recurse -Force
-        $null = New-Item -ItemType Directory -Path $packDir
+    if ($FullOnly) {
+        # 全量过渡不生成 Delta，也就不需要下载任何历史包。
+        Write-Host '[build.ps1] FullOnly：跳过历史包下载，本次只生成 Full 与 Setup。'
+    } else {
+        $token = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { '' }
+        $downloadArgs = @(
+            'download', 'github',
+            '--repoUrl', 'https://github.com/zhaoyongze123/wechat-miniapp-menu-agent',
+            '--channel', $channel,
+            '--outputDir', $packDir
+        )
+        if ($channel -eq 'win-x64-preview') { $downloadArgs += '--pre' }
+        if ($token) { $downloadArgs += @('--token', $token) }
+        & $vpk @downloadArgs
+        if ($LASTEXITCODE -ne 0) {
+            # SDK 失败可能是首次发布，也可能是网络/认证错误；不把失败当作已确认无历史包。
+            Write-Warning "历史包获取失败（channel=$channel，vpk download 退出码 $LASTEXITCODE）；本次仅保证生成完整包，请检查上方日志。"
+            Remove-Item -LiteralPath $packDir -Recurse -Force
+            $null = New-Item -ItemType Directory -Path $packDir
+        }
     }
     Write-StageTiming 'vpk_download' $vpkDownloadStopwatch
 
     # ---------- 阶段 5：Velopack 打包与资产摘要输出 ----------
     $vpkPackStopwatch = [Diagnostics.Stopwatch]::StartNew()
-    Invoke-Checked $vpk @(
+    $packArgs = @(
         'pack',
         '-u', 'Yipu.MenuCapture',
         '-v', $Version,
@@ -746,14 +754,22 @@ try {
         '-c', $channel,
         '--outputDir', $packDir
     )
+    if ($FullOnly) { $packArgs += @('--delta', 'None') }
+    Invoke-Checked $vpk $packArgs
     Write-StageTiming 'vpk_pack' $vpkPackStopwatch
 
     $artifactStopwatch = [Diagnostics.Stopwatch]::StartNew()
     # 复用同一索引解析器选择本次资产；不依赖 vpk 文件名的通道后缀。
-    $assetJson = Invoke-Checked $python @(
-        '-B', (Join-Path $PSScriptRoot 'velopack_assets.py'), $packDir, $Version
-    )
+    $assetArgs = @('-B', (Join-Path $PSScriptRoot 'velopack_assets.py'), $packDir, $Version)
+    if ($FullOnly) { $assetArgs += '--full-only' }
+    $assetJson = Invoke-Checked $python $assetArgs
     $products = @($assetJson | ConvertFrom-Json)
+    if ($FullOnly) {
+        $deltaArtifacts = @($products | Where-Object { $_ -like '*-delta.nupkg' })
+        if ($deltaArtifacts.Count -gt 0) {
+            throw "FullOnly 构建仍产出 Delta：$($deltaArtifacts -join ', ')"
+        }
+    }
     foreach ($name in $products) {
         $source = Join-Path $packDir $name
         $target = Join-Path $Output $name

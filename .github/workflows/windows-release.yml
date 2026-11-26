@@ -14,6 +14,11 @@ on:
         default: false
         required: true
         type: boolean
+      full_only:
+        description: 一次性全量过渡：跳过历史包下载并使用 vpk --delta None，本次不生成 Delta
+        default: false
+        required: true
+        type: boolean
       min_supported_version:
         description: 更新清单中的最低兼容版本（低于该版本不提供应用内更新）
         default: '0.2.0'
@@ -316,12 +321,14 @@ jobs:
           MC_RUNTIME_CACHE: ${{ runner.temp }}\mc-runtime-downloads
           MC_RUNTIME_ENV_CACHE: ${{ runner.temp }}\mc-runtime-env
           MC_LAUNCHER_CACHE: ${{ runner.temp }}\mc-launcher-cache
+          FULL_ONLY: ${{ inputs.full_only }}
         run: |
           $version = $env:BUILD_VERSION
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
           # 产物只包含本次版本：Setup、full/delta nupkg 与对应渠道的 releases JSON；
           # 历史包仅用于生成 delta，由构建脚本在临时目录下载，不进入发布资产。
-          ./deploy/windows/build.ps1 -Version $version
+          $fullOnly = $env:FULL_ONLY -eq 'true'
+          ./deploy/windows/build.ps1 -Version $version -FullOnly:$fullOnly
       - uses: actions/upload-artifact@v4
         with:
           name: menu-capture-windows-x64
@@ -717,6 +724,7 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
           MIN_SUPPORTED: ${{ inputs.min_supported_version }}
+          FULL_ONLY: ${{ inputs.full_only }}
           MENU_CAPTURE_RELEASE_SIGNING_KEY: ${{ secrets.MENU_CAPTURE_RELEASE_SIGNING_KEY }}
         run: |
           tag="v$VERSION"
@@ -743,8 +751,11 @@ jobs:
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}"
           root = Path("release-assets")
           version = tag.lstrip("v")
-          setup_name, full_name, *rest = release_assets(root, version)
+          setup_name, full_name, *rest = release_assets(
+              root, version, full_only=os.environ.get("FULL_ONLY") == "true")
           index_name = rest.pop()
+          if os.environ.get("FULL_ONLY") == "true" and rest:
+              raise SystemExit(f"FullOnly 发布不得包含 Delta：{rest}")
           def vp_asset(name):
               path = root / name
               with path.open("rb") as stream:
@@ -790,6 +801,22 @@ jobs:
               json.dump(manifest, handle, ensure_ascii=False, indent=2)
           PY
           test -s release-assets/update-manifest.json
+      - name: 校验 FullOnly 发布不包含本次 Delta
+        if: ${{ inputs.full_only }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if find release-assets -maxdepth 1 -name '*-delta.nupkg' | grep -q .; then
+            echo "FullOnly 发布不得包含 Delta 资产"
+            find release-assets -maxdepth 1 -name '*-delta.nupkg' -print
+            exit 1
+          fi
+          jq -e '(.velopack.deltas | length) == 0' release-assets/update-manifest.json
+          case "$VERSION" in *-*) channel="preview" ;; *) channel="stable" ;; esac
+          jq -e --arg v "$VERSION" \
+            '[.Assets[] | select(.Version == $v and .Type == "Delta")] | length == 0' \
+            "release-assets/releases.win-x64-$channel.json"
       - name: 创建或更新发布草稿（复用本次已验收产物）
         env:
           GH_TOKEN: ${{ github.token }}
