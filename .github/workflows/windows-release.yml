@@ -253,8 +253,8 @@ jobs:
           uv run --frozen pytest -q tests/unit tests/integration tests/contract
 
   windows:
-    # 后端门禁与前端门禁都通过后才开始昂贵的平台构建与验收。
-    needs: [backend-check, react-web]
+    # 安装包使用仓库中已提交的前端产物，无需等待门禁；发布仍由 draft 统一等待全部门禁。
+    needs: [changes]
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -294,25 +294,18 @@ jobs:
         with:
           path: ${{ runner.temp }}\mc-launcher-cache
           key: ${{ runner.os }}-mc-launcher-v1-${{ hashFiles('deploy/windows/MenuCaptureLauncher.py', 'app/uv.lock', 'deploy/windows/runtimes.json') }}
-      - name: 锁定 Velopack CLI 1.2.161
+      - name: 校验 Velopack CLI 1.2.161
         shell: pwsh
         run: |
-          # vpk 与 Python SDK 必须同为 1.2.161，避免安装包与更新元数据由不同版本生成。
+          # vpk 与 Python SDK 必须同为 1.2.161。actions/cache 的 key 已固定版本，
+          # 命中时只校验可执行文件，避免重复的 dotnet tool list 检查。
           $vpk = Join-Path $env:USERPROFILE '.dotnet\tools\vpk.exe'
-          $toolList = (& dotnet tool list -g | Out-String)
-          if (-not (Test-Path -LiteralPath $vpk) -or $toolList -notmatch '(?m)^\s*vpk\s+1\.2\.161\b') {
+          if (-not (Test-Path -LiteralPath $vpk -PathType Leaf)) {
             dotnet tool install -g vpk --version 1.2.161
-            if ($LASTEXITCODE -ne 0) {
-              dotnet tool update -g vpk --version 1.2.161 --allow-downgrade
-              if ($LASTEXITCODE -ne 0) { throw 'vpk 1.2.161 安装失败。' }
-            }
-            $toolList = (& dotnet tool list -g | Out-String)
-          } else {
-            Write-Host '命中 vpk 1.2.161 工具缓存，跳过重复安装。'
+            if ($LASTEXITCODE -ne 0) { dotnet tool update -g vpk --version 1.2.161 --allow-downgrade }
+            if ($LASTEXITCODE -ne 0) { throw 'vpk 1.2.161 安装失败。' }
           }
-          if (-not (Test-Path -LiteralPath $vpk)) { throw 'vpk 未安装到预期位置。' }
-          Write-Host $toolList
-          if ($toolList -notmatch '(?m)^\s*vpk\s+1\.2\.161\b') { throw "vpk 版本不是 1.2.161" }
+          if (-not (Test-Path -LiteralPath $vpk -PathType Leaf)) { throw 'vpk 未安装到预期位置。' }
           # 后续脚本按 PATH 解析 vpk；同一作业内保持一致。
           "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
       - name: 构建 Windows x64 安装包（Velopack）
@@ -337,7 +330,7 @@ jobs:
           retention-days: 14
 
   hub:
-    needs: backend-check
+    needs: [backend-check, changes]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # 仅向 GHCR 推送本仓库镜像；不授予无关写权限。
@@ -389,11 +382,13 @@ jobs:
           docker compose -f deploy/hub/compose.yaml exec -T hub test -s /var/lib/menu-capture/data/tasks.sqlite3
       - name: 验证合格成品目录隔离初始化
         run: |
-          # 交付目录必须落在宿主机 Bind Mount，且服务在空库下也能正常初始化而不是报不可写。
+          # 交付根就是 Bind Mount 本身；项目目录由服务按 项目/<code>/合格 生成。
+          # 同时断言旧的扁平 合格/ 结构不会被重新创建。
           auth="admin:$MENU_CAPTURE_ADMIN_PASSWORD"
           status=$(curl --silent --fail -u "$auth" http://127.0.0.1:8766/api/delivery/status)
-          jq -e '.configured == true and .state != "error"' <<< "$status"
-          test -d deploy/hub/delivery/合格
+          jq -e '.configured == true and .state != "error" and .container_root == "/var/lib/menu-delivery" and .host_path == "./delivery"' <<< "$status"
+          test -d deploy/hub/delivery
+          test ! -e deploy/hub/delivery/合格
       - name: 归档共享后台镜像和校验值（单次归档，供执行器验收与发布复用）
         if: github.event_name == 'workflow_dispatch'
         run: |
@@ -402,7 +397,8 @@ jobs:
           docker image save "$MENU_CAPTURE_IMAGE" | gzip -c > "hub-artifacts/$archive"
           (cd hub-artifacts && sha256sum "$archive" > "$archive.sha256")
       - name: 加载官方基线镜像（v0.2.2，供升级与执行器验收复用）
-        if: github.event_name == 'workflow_dispatch'
+        # 风险分级：仅当后端、运行时依赖或 Hub 部署变化时才做历史跨版本验收。
+        if: ${{ github.event_name == 'workflow_dispatch' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.hub_deploy == 'true' || needs.changes.outputs.runtime_deps == 'true') }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -415,7 +411,7 @@ jobs:
           docker load -i "$baseline_dir/menu-capture-hub-$base_version-linux-amd64.tar.gz"
           docker image inspect "menu-capture-hub:$base_version" > /dev/null
       - name: 验证共享后台原地升级（v0.2.2 → 候选版本）
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ github.event_name == 'workflow_dispatch' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.hub_deploy == 'true' || needs.changes.outputs.runtime_deps == 'true') }}
         env:
           MENU_CAPTURE_HOST_PORT: '18777'
         run: |
@@ -448,7 +444,7 @@ jobs:
           "$RUNNER_TEMP/updater-venv/bin/pip" install --quiet pytest
           "$RUNNER_TEMP/updater-venv/bin/python" -m pytest -q deploy/hub-update/test_hub_updater.py
       - name: 验收 Hub 宿主机更新执行器（隔离 Compose）
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ github.event_name == 'workflow_dispatch' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.hub_deploy == 'true' || needs.changes.outputs.runtime_deps == 'true') }}
         run: |
           set -euo pipefail
           # 复用已归档的唯一镜像包（无二次 docker image save），通过 HUB_UPDATE_ARCHIVE_DIR 直接指向 hub-artifacts。
