@@ -16,9 +16,33 @@ $ErrorActionPreference = 'Stop'
 $Setup = (Resolve-Path $Setup).Path
 if ($PreviousSetup) { $PreviousSetup = (Resolve-Path $PreviousSetup).Path }
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$existingStartup = Join-Path ([Environment]::GetFolderPath('Startup')) '菜单采集后台.lnk'
-if ((Test-Path -LiteralPath $existingStartup) -or
-    (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)) {
+# 新建账号首次经 SSH 登录时 shell 文件夹可能尚未初始化，退回 APPDATA 标准路径。
+$startupDir = [Environment]::GetFolderPath('Startup')
+if (-not $startupDir) { $startupDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup' }
+# 新建账号的启动目录可能尚未生成；启动器只在目录存在时创建快捷方式，这里先补齐。
+$null = New-Item -ItemType Directory -Path $startupDir -Force
+$startupLink = Join-Path $startupDir '菜单采集后台.lnk'
+# 普通账号下 CIM 网络查询可能被拒绝，改用 .NET 套接字探测端口占用。
+function Test-PortListening {
+    param([int]$TcpPort)
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        return $client.ConnectAsync('127.0.0.1', $TcpPort).Wait(500) -and $client.Connected
+    } catch {
+        return $false
+    } finally {
+        $client.Dispose()
+    }
+}
+
+function Get-WorkerProcesses {
+    param([string]$Prefix)
+    return @(Get-Process -Name python -ErrorAction SilentlyContinue | Where-Object {
+        try { $_.Path -and $_.Path.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase) } catch { $false }
+    })
+}
+
+if ((Test-Path -LiteralPath $startupLink) -or (Test-PortListening -Port $Port)) {
     throw '已有登录启动项或端口监听。请在独立 Windows 账号或临时运行环境执行安装验收。'
 }
 
@@ -79,9 +103,18 @@ function Assert-Layout {
 function Assert-Database {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { throw "缺少数据库：$Path" }
-    # 使用安装包自带运行时只读校验，避免依赖本机 sqlite3。
+    # 使用安装包自带运行时只读校验，避免依赖本机 sqlite3；脚本落盘以防 PowerShell 5.1 丢失内嵌引号。
     $python = Join-Path $installRoot 'current\python\python.exe'
-    $result = & $python -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute("pragma integrity_check").fetchone()[0]); print(len(c.execute("select name from sqlite_master where type=''table''").fetchall()))' $Path
+    $probe = Join-Path $testRoot 'db-probe.py'
+    if (-not (Test-Path -LiteralPath $probe)) {
+        Set-Content -LiteralPath $probe -Encoding ASCII -Value @'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+print(con.execute("pragma integrity_check").fetchone()[0])
+print(len(con.execute("select name from sqlite_master where type='table'").fetchall()))
+'@
+    }
+    $result = & $python $probe $Path
     if ($LASTEXITCODE -ne 0) { throw '数据库校验脚本执行失败。' }
     $lines = @($result)
     if ($lines[0] -ne 'ok') { throw "数据库完整性检查失败：$($lines[0])" }
@@ -95,10 +128,8 @@ function Stop-TestWorker {
     if ($stop.ExitCode -ne 0) { throw "Launcher refused a verified graceful stop (exit $($stop.ExitCode))." }
     $prefix = "$installRoot\current\"
     for ($i = 0; $i -lt 120; $i++) {
-        $alive = @(Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
-            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
-        $listening = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
-        if ($alive.Count -eq 0 -and $listening.Count -eq 0) { return }
+        $alive = @(Get-WorkerProcesses -Prefix $prefix)
+        if ($alive.Count -eq 0 -and -not (Test-PortListening -Port $Port)) { return }
         Start-Sleep -Seconds 1
     }
     throw 'Launcher did not prove that its Worker process tree and port had stopped; refusing force termination.'
@@ -133,13 +164,10 @@ try {
     $launcherExe = Join-Path $installRoot 'current\MenuCapture.exe'
     Start-Process -FilePath $launcherExe -WindowStyle Hidden
     $info = Invoke-Health -Expected $Version -ExpectedCommit $Commit
-    $worker = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
-        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$installRoot\current\", [StringComparison]::OrdinalIgnoreCase) } |
-        Select-Object -First 1
+    $worker = Get-WorkerProcesses -Prefix "$installRoot\current\" | Select-Object -First 1
     if (-not $worker) { throw 'Worker 不是从 current 目录启动。' }
-    $startup = Join-Path ([Environment]::GetFolderPath('Startup')) '菜单采集后台.lnk'
-    if (-not (Test-Path -LiteralPath $startup)) { throw '首次运行未创建登录启动快捷方式。' }
-    Write-Host "版本 $($info.version)（commit $($info.commit)）启动通过，Worker PID $($worker.ProcessId)。"
+    if (-not (Test-Path -LiteralPath $startupLink)) { throw '首次运行未创建登录启动快捷方式。' }
+    Write-Host "版本 $($info.version)（commit $($info.commit)）启动通过，Worker PID $($worker.Id)。"
 
     if ($PreviousSetup) {
         $deviceAfter = Get-DeviceId
