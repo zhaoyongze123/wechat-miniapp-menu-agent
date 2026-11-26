@@ -73,6 +73,17 @@ ma-workspace/
 - 独有业务数据、配置、测试证据；
 - 是否被运行中的进程、计划任务、启动项引用。
 
+上述项目可先用只读脚本盘点：
+
+```bash
+python3 deploy/tools/workspace_audit.py --repo <主仓路径>        # 表格
+python3 deploy/tools/workspace_audit.py --repo <主仓路径> --json # 机器可读
+```
+
+`状态` 列区分 `missing`（目录已删）、`locked`、`prunable`（Git 判定失效）与 `inaccessible`（目录存在但 Git 读取失败）；`merged` 表示是否已进 `origin/main`，`pushed` 表示 HEAD 是否已存在于任一远端分支，`unique` 为不在任何远端引用中的提交数。Git 命令失败时输出 `-`/`?` 并把原因写入“盘点异常”，不会显示为干净。
+
+脚本只读，结果只是判断依据：`ignored` 内容、运行进程与计划任务引用仍需人工核实，盘点通过不等于可以删除。
+
 回收使用 `git worktree remove`；不以 `--force`、`reset --hard`、`clean -fdx` 绕过保护。需要保留但暂不活跃的 Worktree，用 `git worktree move` 迁入 `development/worktrees`。
 
 ## 5. 跨设备交接与单分支写入
