@@ -65,3 +65,7 @@ app/web/frames/
 *.orig
 *.rej
 *.tmp
+
+# 本地运行与发布产物（#105）
+/artifacts/
+/work/

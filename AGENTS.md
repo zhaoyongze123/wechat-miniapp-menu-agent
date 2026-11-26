@@ -60,3 +60,12 @@
 - 软件更新与版本生命周期见 [docs/updates/README.md](docs/updates/README.md)：Release 清单契约、发现/校验边界、版本保留与后续执行器计划。
 - 新功能（包括 #32 软件更新、备份恢复、健康监控、设备管理）默认先选择现有模式与公共组件，禁止另起一套表格、弹窗、设置布局或反馈机制。
 - 产品需求放 `docs/product/`；发布说明记录在 [CHANGELOG.md](CHANGELOG.md)。
+
+## 工作区与存储治理（强制）
+
+- 源码只放 `D:\menu-agent`；新 Worktree 只用 `D:\ma-workspace\development\worktrees\issue-<编号>-<简名>`，禁止在盘根新建 clone。
+- 开发与测试产物不得长期写入主仓；生产数据只放受管数据根，由 `MENU_CAPTURE_HOME` 指向。
+- 回收工作区前先 `git fetch`，确认无脏文件、无未跟踪文件、无独有提交；独有提交先推送或 `git bundle`，未提交修改先导出 patch。
+- 只用 `git worktree remove`；禁止 `--force`、`reset --hard`、`clean -fdx`。
+- 清理前先跑 `python ops/storage_inventory.py` 的 dry-run，默认只读；生产数据、唯一文件、未知目录需审批。
+- 不新增存储管理平台、UI、常驻服务、业务数据库；目录契约与保留周期见 [docs/workspace-governance.md](docs/workspace-governance.md)。
