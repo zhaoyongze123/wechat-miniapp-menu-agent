@@ -308,7 +308,12 @@ try {
         '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--name', 'MenuCapture',
         '--distpath', $launcherDist,
         '--workpath', (Join-Path $stage 'launcher-build'),
-        '--specpath', $stage
+        '--specpath', $stage,
+        '--collect-all', 'velopack',
+        '--collect-all', 'cryptography',
+        '--hidden-import', 'sqlite3',
+        '--hidden-import', 'urllib.request',
+        '--hidden-import', 'urllib.error'
     )
     foreach ($module in $launcherExcludes) { $pyInstallerArgs += @('--exclude-module', $module) }
     $pyInstallerArgs += $launcherSource

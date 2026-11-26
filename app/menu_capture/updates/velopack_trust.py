@@ -11,9 +11,11 @@ import json
 import os
 from typing import Any
 
-# 正式发布信任根。空白名单为 fail-closed 状态；配置正式公钥前不能验证/发布可用的签名版本。
+# 正式发布信任根。配置正式公钥后方可验证/发布签名版本；
 # 轮换时只追加新 key_id，不删除仍在使用的旧公钥。
-PUBLISHER_KEYS: dict[str, str] = {}
+PUBLISHER_KEYS: dict[str, str] = {
+    "4a5db37517bc5ae3": "1ZMCqx0hQBmpN2Tfp455USDipSVgtzXwGprBO8UBFxQ=",
+}
 
 DOMAIN = b"menu-capture-release-v1\x00"
 SIGNATURE_SCHEMA = 1

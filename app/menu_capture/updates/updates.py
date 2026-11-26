@@ -749,15 +749,18 @@ class UpdateService:
         return self._install_root()
 
     def install_supported(self) -> bool:
-        """自动安装必须同时满足：Windows 采集端、可交付安装布局、运维显式启用。
-
-        Velopack 布局下不再要求自研 releases 目录；未在真实 Windows 升级验收前不默认开启。
-        """
-        if self.role != "worker" or os.environ.get("MENU_CAPTURE_ALLOW_SELF_UPDATE") != "1":
+        """自动安装必须同时满足：Windows 采集端、Velopack 布局可用、固定信任根已配置、显式启用。"""
+        if (
+            self.role != "worker"
+            or self.platform != "windows"
+            or os.environ.get("MENU_CAPTURE_ALLOW_SELF_UPDATE") != "1"
+        ):
             return False
-        # Fail closed until the external recovery coordinator can verify and restore the actual build.
-        # The local integration task must replace this guard with a real capability probe.
-        return False
+        from menu_capture.updates.velopack_trust import PUBLISHER_KEYS
+
+        if not PUBLISHER_KEYS:
+            return False
+        return self.backend is not None and bool(self.backend.available())
 
     def _install_capable(self) -> bool:
         if self.install_capability is not None:

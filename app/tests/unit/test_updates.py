@@ -916,6 +916,17 @@ def test_install_supported_requires_windows_worker_and_opt_in(tmp_path, monkeypa
     hub = UpdateService(tmp_path / "hub", role="hub", app_root=app, machine="AMD64")
     assert hub.install_supported() is False
 
+    # Velopack 后端可用且信任根已配置时才开放自动安装。
+    class ReadyBackend:
+        def available(self) -> bool:
+            return True
+
+    velopack_service = UpdateService(
+        tmp_path / "runtime-vp", role="worker", app_root=app, machine="AMD64", backend=ReadyBackend(),
+    )
+    assert velopack_service.install_supported() is True
+    assert velopack_service.status_no_check()["capabilities"]["install"] is True
+
 
 
 def _win_install(tmp_path: Path, monkeypatch, versions: list[str]) -> tuple[Path, Path]:

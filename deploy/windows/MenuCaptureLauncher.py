@@ -263,6 +263,9 @@ def _worker_env(data_root: Path, token: str, version: str, *, home: Path, verify
     })
     if verify:
         env["MENU_CAPTURE_UPDATE_VERIFY"] = "1"
+        env["MENU_CAPTURE_ALLOW_SELF_UPDATE"] = "0"
+    else:
+        env.setdefault("MENU_CAPTURE_ALLOW_SELF_UPDATE", "1")
     if stop_nonce:
         env["MENU_CAPTURE_LAUNCHER_STOP_NONCE"] = stop_nonce
     env["PATH"] = os.pathsep.join([
