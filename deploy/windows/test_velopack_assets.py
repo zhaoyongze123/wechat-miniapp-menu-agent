@@ -70,3 +70,14 @@ def test_sha1_only_index_is_supported(tmp_path):
     entries[0]["SHA1"] = hashlib.sha1((tmp_path / names[1]).read_bytes()).hexdigest().upper()
     index.write_text(json.dumps({"Assets": entries}), encoding="utf-8")
     assert release_assets(tmp_path, "0.4.0") == names
+
+
+def test_full_only_accepts_full_assets(tmp_path):
+    expected, _, _ = fixture(tmp_path, delta=False)
+    assert release_assets(tmp_path, "0.4.0", full_only=True) == expected
+
+
+def test_full_only_rejects_delta(tmp_path):
+    fixture(tmp_path, delta=True)
+    with pytest.raises(ValueError, match="不得包含本次版本 Delta"):
+        release_assets(tmp_path, "0.4.0", full_only=True)

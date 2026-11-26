@@ -41,7 +41,7 @@ def _verify_index_asset(path: Path, asset: dict) -> None:
         raise ValueError(f"索引资产摘要不一致: {path.name}")
 
 
-def release_assets(root: Path, version: str) -> list[str]:
+def release_assets(root: Path, version: str, *, full_only: bool = False) -> list[str]:
     root = Path(root)
     index_name = f"releases.{release_channel(version)}.json"
     index = _asset_path(root, index_name)
@@ -67,6 +67,9 @@ def release_assets(root: Path, version: str) -> list[str]:
         (full if asset["Type"] == "Full" else deltas).append(name)
     if len(full) != 1:
         raise ValueError("索引必须包含唯一的本次版本 Full 包")
+    if full_only and deltas:
+        # 一次性全量过渡必须由索引层面确认没有本次版本 Delta，而不是只看文件名。
+        raise ValueError("FullOnly 构建不得包含本次版本 Delta")
     setups = sorted(root.glob("*-Setup.exe"))
     if len(setups) != 1 or _asset_path(root, setups[0].name).stat().st_size <= 0:
         raise ValueError("必须存在唯一且非空的 Setup.exe")
@@ -74,6 +77,9 @@ def release_assets(root: Path, version: str) -> list[str]:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: velopack_assets.py RELEASE_DIR VERSION")
-    print(json.dumps(release_assets(Path(sys.argv[1]), sys.argv[2])))
+    args = sys.argv[1:]
+    full_only = '--full-only' in args
+    args = [arg for arg in args if arg != '--full-only']
+    if len(args) != 2:
+        raise SystemExit("usage: velopack_assets.py RELEASE_DIR VERSION [--full-only]")
+    print(json.dumps(release_assets(Path(args[0]), args[1], full_only=full_only)))
