@@ -1881,7 +1881,7 @@ class MaterialService:
 
     def publish_snapshot(self, batch_id: str, description: str = "", *, name: str | None = None,
                          version: str | None = None, activate: bool = True,
-                         store_ids: list[str] | None = None) -> dict:
+                         store_ids: list[str] | None = None, project_id: str | None = None) -> dict:
         if not isinstance(description, str) or len(description.strip()) > 200:
             raise ValueError("发布说明最多 200 字")
         description = description.strip()
@@ -1890,6 +1890,9 @@ class MaterialService:
             if batch["status"] != "completed":
                 raise ValueError("只有分析完成的批次可以发布")
             with self.task_store.connect() as db:
+                if project_id is not None:
+                    assert_batch_scope(db, project_id, batch_id)
+                    assert_writable(db, project_id)
                 rows = [dict(row) for row in db.execute("SELECT * FROM material_decisions WHERE batch_id=? AND decision='confirmed' ORDER BY source_folder,store_id", (batch_id,))]
                 decision_names = {row["store_id"]: row["source_name"] for row in db.execute(
                     "SELECT store_id,source_name FROM material_decisions WHERE batch_id=?", (batch_id,))}
@@ -2007,62 +2010,72 @@ class MaterialService:
 
             self._validate_snapshot_marker(snapshot, fingerprint, expected_artifact_paths)
 
-            previous = self.configs.load().model_dump()
-            previous_input = previous["input_dir"]
+            previous = self.configs.load().model_dump() if project_id is None else None
             try:
-                updated = dict(previous)
-                updated["input_dir"] = str(snapshot)
-                if activate:
-                    self.configs.save(updated)
+                if previous is not None and activate:
+                    self.configs.save({**previous, "input_dir": str(snapshot)})
                 reuse_roots = [self.published_root / row["snapshot_id"] for row in existing]
                 task_scan = self.task_store.scan(snapshot, reuse_sources=reuse_roots)
                 store_records = self.store_versions.prepare(batch_id, snapshot, fingerprint_items,
                                                             existing[0] if existing else None)
                 with self.task_store.connect() as db:
+                    if project_id is not None:
+                        db.execute("BEGIN IMMEDIATE")
                     release_id = self.versions.remember(db, batch_id, name.strip(), version, fingerprint, description,
-                                                        len(fingerprint_items), activate=activate)
+                                                        len(fingerprint_items), activate=activate, project_id=project_id)
                     store_updates = self.store_versions.remember(db, batch_id, release_id, store_records,
                                                                   {row["store_id"] for row in selected_items})
                     if any(row["changed"] or row["unblocked"] for row in store_updates):
                         db.execute("UPDATE material_batches SET manual_stage='',approved_at='' "
                                    "WHERE id=? AND (manual_stage='approved' OR approved_at<>'')", (batch_id,))
             except Exception:
-                try:
-                    previous["input_dir"] = previous_input
-                    self.configs.save(previous)
-                except Exception:
-                    pass
+                if previous is not None:
+                    try:
+                        self.configs.save(previous)
+                    except Exception:
+                        pass
                 raise
+            root = snapshot if project_id is not None else Path(self.configs.load().input_dir).expanduser().resolve()
             return {
                 "snapshot_id": fingerprint,
-                "release": next(item for item in self.versions.list(batch_id, Path(self.configs.load().input_dir).expanduser().resolve()) if item["version"] == version),
+                "release": next(item for item in self.versions.list(batch_id, root, project_id=project_id)
+                                if item["version"] == version),
                 "input_dir": str(snapshot),
                 "task_scan": task_scan,
                 "store_updates": store_updates,
                 "already_published": already_published or task_scan.get("added", 0) == 0,
             }
 
-    def activate_version(self, batch_id: str, version: str) -> dict:
+    def activate_version(self, batch_id: str, version: str, *, project_id: str | None = None) -> dict:
         with self._publish_lock, self._lock:
+            if project_id is not None:
+                with self.task_store.connect() as db:
+                    assert_batch_scope(db, project_id, batch_id)
+                    assert_writable(db, project_id)
             release = self.versions.find(batch_id, version)
             if release is None:
                 raise ValueError("发布版本不存在")
             snapshot = self.published_root / release["snapshot_id"]
             manifest = json.loads((snapshot / ".materials-snapshot.json").read_text(encoding="utf-8"))
             self._validate_snapshot_marker(snapshot, release["snapshot_id"], {row["path"] for row in manifest["artifacts"]})
-            previous = self.configs.load().model_dump()
-            updated = {**previous, "input_dir": str(snapshot)}
+            previous = self.configs.load().model_dump() if project_id is None else None
             try:
-                self.configs.save(updated)
+                if previous is not None:
+                    self.configs.save({**previous, "input_dir": str(snapshot)})
                 scan = self.task_store.scan(snapshot, reuse_sources=[self.published_root / row["snapshot_id"]
                                                                    for row in self.versions.records(batch_id)])
                 with self.task_store.connect() as db:
-                    db.execute("INSERT INTO material_selection VALUES(1,?) ON CONFLICT(singleton) DO UPDATE SET version_id=excluded.version_id",
-                               (release["id"],))
+                    if project_id is not None:
+                        db.execute("BEGIN IMMEDIATE")
+                        select_version(db, project_id, release["id"])
+                    else:
+                        db.execute("INSERT INTO material_selection VALUES(1,?) ON CONFLICT(singleton) DO UPDATE SET version_id=excluded.version_id",
+                                   (release["id"],))
             except Exception:
-                self.configs.save(previous)
+                if previous is not None:
+                    self.configs.save(previous)
                 raise
-            return {"release": self.active_release(snapshot), "task_scan": scan}
+            return {"release": self.active_release(snapshot, project_id=project_id), "task_scan": scan}
 
     def _insert_batch(self, batch_id: str, kind: str, source: Path, status: str, *, total: int = 0,
                       name: str, description: str, project_id: str | None = None) -> dict:
