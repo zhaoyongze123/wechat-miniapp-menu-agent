@@ -4,17 +4,22 @@ import base64
 from fastapi.testclient import TestClient
 
 from menu_capture.api.server import create_app
+from menu_capture.projects.service import LEGACY_ID, ensure_legacy_project
 
 
 def test_shared_overview_pages_without_resolving_task_paths(tmp_path, monkeypatch):
     app = create_app(tmp_path, role="hub", admin_password="isolated-test")
+    with app.state.store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        ensure_legacy_project(db)
     materials = app.state.materials
     source = tmp_path / "published-fixture"
     source.mkdir()
     monkeypatch.setattr(app.state.configs, "load", lambda: type("Config", (), {
         "input_dir": str(source), "output_dir": "",
     })())
-    monkeypatch.setattr(materials, "active_release", lambda _root: {"snapshot_id": "latest-a", "batch_id": "a"})
+    monkeypatch.setattr(materials, "active_release", lambda _root, **_kwargs:
+                        {"snapshot_id": "latest-a", "batch_id": "a"})
     rows = [
         dict(id=f"task-{n:03}", source_name=f"门店 {n:03}", source_path=f"/fake/input/qr-{n:03}.png",
              snapshot_id="latest-a" if n < 60 else "latest-b", updated_at=f"2026-11-20T12:00:{n % 60:02}",
@@ -22,7 +27,7 @@ def test_shared_overview_pages_without_resolving_task_paths(tmp_path, monkeypatc
              runnable=True)
         for n in range(125)
     ]
-    monkeypatch.setattr(materials, "effective_capture_tasks", lambda: rows)
+    monkeypatch.setattr(materials, "effective_capture_tasks", lambda **_kwargs: rows)
     # 任何旧任务路径扫描都会抛错。旧 API 的历史运行分支仍可读取任务表。
     def legacy_tasks():
         return [{"id": "legacy", "source_path": object()}]
@@ -53,17 +58,25 @@ def test_shared_overview_pages_without_resolving_task_paths(tmp_path, monkeypatc
 def test_closed_assignment_history_can_be_omitted(tmp_path):
     app = create_app(tmp_path, role="hub", admin_password="isolated-test")
     with app.state.store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        ensure_legacy_project(db)
         db.execute("INSERT INTO shared_workers VALUES(?,?,?,?,?)", ("a", "A 机", "fake-hash", "", 0))
-        db.execute("INSERT INTO shared_assignments VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                   ("old", "task", "a", "batch", "测试批次", "门店", "v1", "snap", "hash", ".png", "completed", ""))
+        db.execute("INSERT INTO shared_assignments(id,task_id,worker_id,batch_id,batch_name,store,revision,snapshot_id,"
+                   "source_hash,source_suffix,status,created_at,project_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   ("old", "task", "a", "batch", "测试批次", "门店", "v1", "snap", "hash", ".png", "completed", "",
+                    LEGACY_ID))
     auth = {"Authorization": "Basic " + base64.b64encode(b"admin:isolated-test").decode()}
     with TestClient(app, base_url="http://127.0.0.1", headers=auth) as client:
         assert client.get("/api/shared/status?include_history=false").json()["assignments"] == []
-        assert [item["id"] for item in client.get("/api/shared/status").json()["assignments"]] == ["old"]
+        assert [item["id"] for item in client.get("/api/shared/status", params={"project_id": LEGACY_ID})
+                .json()["assignments"]] == ["old"]
 
 
 def test_hub_active_tasks_ignores_migrated_desktop_run(tmp_path, monkeypatch):
     app = create_app(tmp_path, role="hub", admin_password="isolated-test")
+    with app.state.store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        ensure_legacy_project(db)
     store = app.state.store
     store.create_run("legacy-run", "full", ["old-task"])
     store.update_run("legacy-run", status="blocked")
@@ -84,12 +97,15 @@ def test_material_batch_options_preserve_active_selection_and_stage(tmp_path, mo
     active_root = materials.published_root / "snap-a"
     stamp = "2026-11-20T12:00:00+08:00"
     with app.state.store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        ensure_legacy_project(db)
         for batch_id, deleted_at in [("a", ""), ("trash", stamp)]:
             db.execute("INSERT INTO material_batches(id,name,source_kind,source_root,status,created_at,updated_at,"
-                       "deleted_at,capture_rounds) VALUES(?,?,?,?,?,?,?,?,?)",
-                       (batch_id, "验收批次", "local", str(tmp_path), "completed", stamp, stamp, deleted_at, 2))
+                       "deleted_at,capture_rounds,project_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                       (batch_id, "验收批次", "local", str(tmp_path), "completed", stamp, stamp, deleted_at, 2,
+                        LEGACY_ID))
         db.execute("INSERT INTO material_versions VALUES(?,?,?,?,?,?,?)", ("v1", "a", "首版", "snap-a", "", stamp, 3))
-        db.execute("INSERT INTO material_selection VALUES(1,'v1')")
+        db.execute("INSERT INTO project_material_selection VALUES(?, 'v1')", (LEGACY_ID,))
     monkeypatch.setattr(app.state.configs, "load", lambda: type("Config", (), {"input_dir": str(active_root)})())
 
     def unexpected_summary(_row):

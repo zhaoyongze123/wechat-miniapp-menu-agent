@@ -57,6 +57,7 @@ from menu_capture.shared.shared import SharedConflict, SharedHub, WorkerUnauthor
 from menu_capture.shared.delivery import DeliveryService
 from menu_capture.api.shared_routes import register_shared_routes
 from menu_capture.shared.shared_worker import SharedWorker
+from menu_capture.projects.service import LEGACY_ID, ProjectNotFound, get_project, resolve_batch_project, resolve_task_project
 from menu_capture.api.workbench_page import workbench_page
 from menu_capture.api.context import ApiContext
 from menu_capture.api.routers import (
@@ -64,6 +65,7 @@ from menu_capture.api.routers import (
     delivery as delivery_routes,
     environment as environment_routes,
     model_usage as model_usage_routes,
+    projects as project_routes,
     rejections as rejection_routes,
     reviews as review_routes,
     updates as update_routes,
@@ -78,6 +80,11 @@ def _rejection_store_code(text: str) -> str:
     name = Path(text or "").name
     match = re.match(r"^([A-Za-z]{1,4}\d+)", name)
     return (match.group(1) if match else name).upper()
+
+
+def _project_record(store: TaskStore, project_id: str) -> dict:
+    with store.connect() as db:
+        return get_project(db, project_id)
 
 
 def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
@@ -112,7 +119,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     # 服务重启后不能沿用“运行中”状态，更不能自动重放上一次的桌面动作。
     store.recover()
     control_lock = threading.RLock()
-    materials = MaterialService(root / "data", configs, store)
+    materials = MaterialService(root / "data", configs, store, role=role)
     hub = SharedHub(store, materials) if role == "hub" else None
     worker = SharedWorker(root, store, runner.output_lock, control_lock) if role == "worker" else None
     # 合格成品目录只在 Hub 维护：宿主机 bind mount 的交付根由运维显式配置，未配置时只读降级。
@@ -127,10 +134,12 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             root=str(os.environ.get("MENU_CAPTURE_DELIVERY_ROOT") or "").strip(),
             host_path=str(os.environ.get("MENU_CAPTURE_DELIVERY_HOST_PATH") or "").strip(),
             task_provider=materials.effective_capture_tasks,
+            project_provider=lambda project_id: _project_record(store, project_id),
             poll_seconds=delivery_poll,
         )
     if worker:
         runner.assignment_source = worker.source_root
+        runner.project_binding_provider = worker.output_binding
         store.bind_assignments = worker.bind_run
     # Hub 的名称来自已同步的 shared_results，Worker/单机来自本地观察表；导出与清单复用同一入口。
     rejections = RejectionService(store, materials, current_only=role == "hub",
@@ -393,6 +402,124 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         if annotations.active:
             raise HTTPException(409, "人工标注进行中，请先结束标注再修改配置")
 
+    def project_scope(project_id: str | None = None, *, write: bool = False) -> str:
+        """把 UI scope 与当前角色的可证明项目集合对齐。"""
+        if role == "hub" and write and not project_id:
+            raise HTTPException(400, "请选择项目")
+        if role == "worker":
+            if project_id is None:
+                raise HTTPException(400, "请选择项目")
+            project = next((item for item in (worker.projects() if worker else [])
+                            if item.get("id") == project_id), None)
+            if project is None:
+                raise HTTPException(404, "项目不存在或该采集端没有分配记录")
+            if write and project.get("archived_at"):
+                raise HTTPException(409, "项目已归档，不能执行采集")
+            return project_id
+        project_id = project_id or LEGACY_ID
+        try:
+            with store.connect() as db:
+                project = get_project(db, project_id)
+                if write and project["archived_at"]:
+                    raise HTTPException(409, "项目已归档，不能写入")
+        except ProjectNotFound:
+            raise HTTPException(404, "项目不存在") from None
+        if role == "standalone" and project_id != LEGACY_ID:
+            raise HTTPException(404, "本机模式只支持历史兼容项目")
+        return project_id
+
+    def batch_scope(batch_id: str, project_id: str | None = None, *, write: bool = False,
+                    include_deleted: bool = False) -> str:
+        """资源路由可省略 scope 以兼容旧链接，但必须从批次 ID 反查真实归属。"""
+        if role == "worker":
+            if not project_id:
+                raise HTTPException(400, "请选择项目")
+            actual = False
+            if worker:
+                with store.connect() as db:
+                    actual = bool(db.execute(
+                        "SELECT 1 FROM worker_assignments WHERE batch_id=? AND project_id=? "
+                        "AND worker_id=? LIMIT 1", (batch_id, project_id, worker._current_worker_id())
+                    ).fetchone())
+            if not actual:
+                raise HTTPException(404, "素材批次不属于当前项目")
+            return project_id
+        try:
+            with store.connect() as db:
+                owner = resolve_batch_project(db, batch_id, include_deleted=include_deleted)
+                if project_id and owner["id"] != project_id:
+                    raise HTTPException(404, "素材批次不属于当前项目")
+                if write and owner["archived_at"]:
+                    raise HTTPException(409, "项目已归档，不能写入")
+                if role == "standalone" and owner["id"] != LEGACY_ID:
+                    raise HTTPException(404, "本机模式只支持历史兼容项目")
+                return owner["id"]
+        except ProjectNotFound:
+            raise HTTPException(404, "素材批次不存在") from None
+
+    def task_scope(task_id: str, project_id: str | None = None, *, write: bool = False) -> str:
+        """只允许访问能由批次、轮次或当前设备分配事实证明归属的任务。"""
+        scope = project_scope(project_id, write=write)
+        if role == "worker":
+            with store.connect() as db:
+                if worker and worker._hub_supports_project_scope:
+                    owned = db.execute(
+                        "SELECT 1 FROM worker_assignments WHERE task_id=? AND project_id=? AND worker_id=? LIMIT 1",
+                        (task_id, scope, worker._current_worker_id()),
+                    ).fetchone()
+                else:
+                    owned = db.execute(
+                        "SELECT 1 FROM worker_assignments WHERE task_id=? AND (worker_id='' OR worker_id=?) LIMIT 1",
+                        (task_id, worker._current_worker_id() if worker else ""),
+                    ).fetchone()
+            if not owned:
+                raise HTTPException(404, "任务不属于当前项目或采集端")
+            return scope
+        with store.connect() as db:
+            owner = resolve_task_project(db, task_id)
+            if owner and owner["id"] == scope:
+                return scope
+        if role == "standalone":
+            task = store.get(task_id)
+            active_root = Path(configs.load().input_dir).expanduser().resolve() if configs.load().input_dir else None
+            source = Path(task.get("source_path") or "").expanduser().resolve()
+            if active_root and (source == active_root or active_root in source.parents):
+                return scope
+        raise HTTPException(404, "任务不属于当前项目或归属待核验")
+
+    def task_project_id(task_id: str) -> str | None:
+        if worker:
+            with store.connect() as db:
+                rows = db.execute(
+                    "SELECT DISTINCT project_id FROM worker_assignments WHERE task_id=? AND worker_id=?",
+                    (task_id, worker._current_worker_id()),
+                ).fetchall()
+            projects = {str(row[0] or "") for row in rows}
+            if worker._hub_supports_project_scope:
+                return next(iter(projects)) if len(projects) == 1 and "" not in projects else None
+            return LEGACY_ID if rows else None
+        with store.connect() as db:
+            owner = resolve_task_project(db, task_id)
+        return owner["id"] if owner else None
+
+    def run_project_matches(run: dict | None, project_id: str) -> bool:
+        if not run:
+            return False
+        owner = str(run.get("project_id") or "")
+        if owner:
+            return owner == project_id
+        return bool(run.get("task_ids")) and {task_project_id(task_id) for task_id in run["task_ids"]} == {project_id}
+
+    def require_run_scope(project_id: str) -> dict:
+        run = store.latest_run()
+        if not run_project_matches(run, project_id):
+            raise HTTPException(404, "采集轮次不属于当前项目或归属待核验")
+        return run
+
+    rejections.task_project_provider = task_project_id
+    if hub:
+        rejections.observed_names = hub.observed_store_name
+
     # 各业务域通过 ApiContext 注入依赖后自行注册路由，server.py 不再持有这些 handler。
     ctx = ApiContext(
         updates=updates,
@@ -410,6 +537,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         delivery=delivery,
         control_lock=control_lock,
         idle=idle,
+        project_scope=project_scope,
+        batch_scope=batch_scope,
+        task_scope=task_scope,
+        role=role,
     )
     update_routes.register(app, ctx)
     model_usage_routes.register(app, ctx)
@@ -418,6 +549,74 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     review_routes.register(app, ctx)
     annotation_routes.register(app, ctx)
     delivery_routes.register(app, ctx)
+
+    def project_archive_blockers(db, project_id: str) -> list[str]:
+        """在项目归档写事务内读取全部仍可继续推进的业务记录。"""
+        reasons = []
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        active_run_statuses = tuple(sorted(ACTIVE_RUN_STATUSES))
+        if "material_batches" in tables:
+            if db.execute("SELECT 1 FROM material_batches WHERE project_id=? AND status='uploading' AND deleted_at='' LIMIT 1",
+                          (project_id,)).fetchone():
+                reasons.append("存在未完成的素材上传")
+            if "material_jobs" in tables and db.execute(
+                "SELECT 1 FROM material_jobs j JOIN material_batches b ON b.id=j.batch_id "
+                "WHERE b.project_id=? AND j.status IN ('queued','running','pause_requested','paused','interrupted') LIMIT 1",
+                (project_id,),
+            ).fetchone():
+                reasons.append("存在未结束的素材分析任务")
+        if "runs" in tables:
+            marks = ",".join("?" for _ in active_run_statuses)
+            run_owner = "r.project_id=?" if "project_id" in {row[1] for row in db.execute("PRAGMA table_info(runs)")} else "0"
+            predicates = [run_owner]
+            params: list[object] = [project_id] if run_owner != "0" else []
+            if "material_batches" in tables and "material_batch_id" in {row[1] for row in db.execute("PRAGMA table_info(runs)")}:
+                predicates.append("EXISTS (SELECT 1 FROM material_batches b WHERE b.id=r.material_batch_id AND b.project_id=?)")
+                params.append(project_id)
+            if "capture_run_results" in tables:
+                result_columns = {row[1] for row in db.execute("PRAGMA table_info(capture_run_results)")}
+                if "project_id" in result_columns:
+                    predicates.append("EXISTS (SELECT 1 FROM capture_run_results c WHERE c.run_id=r.id AND c.project_id=?)")
+                    params.append(project_id)
+                if "batch_id" in result_columns and "material_batches" in tables:
+                    predicates.append("EXISTS (SELECT 1 FROM capture_run_results c JOIN material_batches b "
+                                      "ON b.id=c.batch_id WHERE c.run_id=r.id AND b.project_id=?)")
+                    params.append(project_id)
+            sql = f"SELECT 1 FROM runs r WHERE r.status IN ({marks}) AND ({' OR '.join(predicates)}) LIMIT 1"
+            if db.execute(sql, (*active_run_statuses, *params)).fetchone():
+                reasons.append("存在运行中或可恢复的采集轮次")
+        if "shared_assignments" in tables:
+            assignment_cols = {row[1] for row in db.execute("PRAGMA table_info(shared_assignments)")}
+            project_clause = "a.project_id=?" if "project_id" in assignment_cols else "0"
+            assignment_params: list[object] = [project_id] if project_clause != "0" else []
+            if "material_batches" in tables:
+                project_clause += " OR EXISTS (SELECT 1 FROM material_batches b WHERE b.id=a.batch_id AND b.project_id=?)"
+                assignment_params.append(project_id)
+            active_assignment = db.execute(
+                "SELECT 1 FROM shared_assignments a WHERE a.status IN ('assigned','ready') "
+                f"AND ({project_clause}) LIMIT 1", assignment_params,
+            ).fetchone()
+            if active_assignment:
+                reasons.append("存在尚未结束的采集端分配")
+            if "shared_workers" in tables and db.execute(
+                "SELECT 1 FROM shared_workers w WHERE w.pending_uploads>0 AND "
+                "(EXISTS (SELECT 1 FROM shared_assignments a WHERE a.worker_id=w.id AND a.status IN ('assigned','ready') "
+                f"AND ({project_clause})) OR EXISTS (SELECT 1 FROM shared_assignments a WHERE a.worker_id=w.id "
+                "AND a.status IN ('assigned','ready') AND COALESCE(a.project_id,'')='')) LIMIT 1",
+                assignment_params,
+            ).fetchone():
+                reasons.append("存在未确认归属的采集端待上传结果")
+        if runner.running:
+            current = store.get_run(str(getattr(runner, "run_id", "") or ""))
+            if not current or not current.get("project_id") or current.get("project_id") == project_id:
+                reasons.append("采集执行器仍处于运行状态")
+        if annotations.active:
+            # 标注会话尚未保存项目快照，故暂时阻止任何项目归档。
+            reasons.append("存在项目归属尚未固定的人工标注会话")
+        return list(dict.fromkeys(reasons))
+
+    project_routes.register(app, store=store, role=role, archive_blockers=project_archive_blockers,
+                            control_lock=control_lock, worker=worker)
 
     # React 是唯一业务前端：入口 HTML 与构建资源都来自 web/react/。
     # 资源只按 Vite manifest 白名单返回，避免把构建目录里的其他文件暴露出去。
@@ -621,27 +820,39 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                queue_filter: Literal["all", "pending", "running", "captured", "rejected", "review", "returned"] = "all",
                queue_sort: Literal["source", "recent", "status"] = "source",
                selected: Annotated[str, Query(max_length=9000)] = "",
-               include_events: bool = True):
+               include_events: bool = True, project_id: str | None = None):
         # 任务表保留历史；更换成清洗后的目录时，只展示当前素材集，避免旧照片继续可选。
         settings = configs.load()
+        scope = project_scope(project_id)
+        if queue_batch and queue_batch != "all":
+            batch_scope(queue_batch, scope)
         input_dir = settings.input_dir
         current_root = Path(input_dir).expanduser().resolve() if input_dir else None
-        release = materials.active_release(current_root) if current_root else None
+        release = materials.active_release(current_root or Path(), project_id=scope)
         paged = hub is not None and queue_page is not None
-        all_tasks = [] if paged else store.tasks()
         if hub:
             # 共享模式按各批次最新发布版本取数，不需要逐条解析旧任务的文件路径。
-            tasks = materials.effective_capture_tasks()
+            tasks = materials.effective_capture_tasks(project_id=scope)
             ready = {"ready": True, "issues": [], "launch_mode": "shared"}
         else:
-            tasks = worker.tasks() if worker else [
-                task for task in all_tasks if current_root and current_root in Path(task["source_path"]).resolve().parents
-            ]
+            if worker:
+                tasks = worker.tasks(project_id=scope)
+            else:
+                tasks = [task for task in store.tasks()
+                         if current_root and current_root in Path(task["source_path"]).resolve().parents]
             ready = runner.last_readiness or {"ready": None, "issues": ["环境诊断可在设置中手动查看"],
                                               "launch_mode": profiles.load()["launch_mode"]}
+        all_tasks = [] if paged else tasks
         if sys.platform == "win32" and not hub:
             ready = ready | {"launch_mode": "native"}
         run = None if paged else store.latest_run()
+        if run:
+            run_project = str(run.get("project_id") or "")
+            if not run_project:
+                owners = {task_project_id(task_id) for task_id in run.get("task_ids", [])}
+                run_project = scope if owners == {scope} else ""
+            if run_project != scope:
+                run = None
         if run:
             by_id = {task["id"]: task for task in all_tasks}
             ids = run["task_ids"]
@@ -697,9 +908,11 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         with store.connect() as db:
             all_rows = db.execute(
                 "SELECT d.store_json FROM material_decisions d "
-                "JOIN material_batches b ON b.id=d.batch_id WHERE d.decision='skipped' AND b.deleted_at=''"
+                "JOIN material_batches b ON b.id=d.batch_id "
+                "WHERE d.decision='skipped' AND b.deleted_at='' AND b.project_id=?", (scope,)
             ).fetchall()
-        capture_codes = {_rejection_store_code(task.get("source_name")) for task in store.rejections()}
+        capture_codes = {_rejection_store_code(task.get("source_name")) for task in store.rejections()
+                         if task_project_id(task["id"]) == scope}
         all_material_codes = set()
         for row in all_rows:
             try:
@@ -721,30 +934,51 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             query=queue_q, status=queue_filter, sort=queue_sort, page=queue_page, size=queue_size,
             selected_ids=set(selected.split(",")), batch_id=queue_batch,
         ) if paged else None
+        events = store.events() if include_events else []
+        if role != "standalone":
+            events = [event for event in events
+                      if event.get("task_id") and task_project_id(str(event["task_id"])) == scope]
+        output_path = ""
+        if settings.output_dir:
+            if role == "worker" and worker:
+                project = next((item for item in worker.projects() if item["id"] == scope), None)
+                if project:
+                    output_path = str(batch_output_dir(settings.output_dir, "0" * 32,
+                                                       project_code=project["code"]).parent)
+            elif hub and release:
+                with store.connect() as db:
+                    project_code = get_project(db, scope)["code"]
+                output_path = str(batch_output_dir(settings.output_dir, release["batch_id"],
+                                                   release.get("batch_name", ""), project_code=project_code))
+            elif release:
+                output_path = str(batch_output_dir(settings.output_dir, release["batch_id"],
+                                                   release.get("batch_name", "")))
+            else:
+                output_path = str(Path(settings.output_dir).expanduser().resolve())
         return {"execution_engine": engine, "launch_mode": launch_mode,
                 "engine_ready": ready["ready"], "engine_message": "；".join(ready["issues"]) or engine_message,
                 "robot_readiness": ready, "run_directory": str(getattr(runner, "run_directory", "") or ""),
                 "running": runner.running, "stop_requested": runner.stop.is_set(),
-                "run": run, "current_task": runner.current_task,
+                "run": run, "current_task": runner.current_task if run else None,
                 "material_release": release,
-                "batch_output_dir": (str(batch_output_dir(settings.output_dir,
-                                                          release["batch_id"] if release else "",
-                                                          release.get("batch_name", "") if release else ""))
-                                     if settings.output_dir else ""),
+                "batch_output_dir": output_path,
                 "input_name": "本机分配" if worker else (current_root.name if current_root else ""),
                 "tasks": queue["records"] if queue else [task | describe_failure(task.get("error_code", ""), task.get("stage", ""), task.get("message", "")) | {"store_state": store_state(task)} for task in tasks],
                 "counts": queue["counts"] if queue else state_counts(tasks),
                 **({"queue": {key: value for key, value in queue.items() if key not in {"records", "counts"}}} if queue else {}),
                 "material_rejected": material_rejected, "material_rejected_all": material_rejected_all,
-                "events": store.events() if include_events else [],
-                "manual": runner.manual_state() if runner.running else None}
+                "events": events,
+                "manual": runner.manual_state() if runner.running and run else None}
 
     @app.get("/api/capture/queue")
-    def capture_queue(batch_ids: str = "all", q: str = ""):
+    def capture_queue(batch_ids: str = "all", q: str = "", project_id: str | None = None):
         """跨批次有效任务清单：列表、统计、全选和开跑共用这一份数据。"""
+        scope = project_scope(project_id)
         wanted = None if batch_ids in {"", "all"} else [value for value in batch_ids.split(",") if value]
-        records = worker.tasks() if worker else materials.effective_capture_tasks()
+        records = worker.tasks(project_id=scope) if worker else materials.effective_capture_tasks(project_id=scope)
         if wanted is not None:
+            for batch_id in wanted:
+                batch_scope(batch_id, scope)
             records = [row for row in records if row["batch_id"] in set(wanted)]
         needle = q.strip().casefold()
         if needle:
@@ -768,165 +1002,204 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         }
 
     @app.get("/api/materials/batches")
-    def material_batches(view: Literal["full", "options"] = "full"):
-        return {"batches": materials.batch_options() if view == "options" else materials.list_batches()}
+    def material_batches(view: Literal["full", "options"] = "full", project_id: str | None = None):
+        scope = project_scope(project_id)
+        return {"batches": materials.batch_options(project_id=scope) if view == "options"
+                else materials.list_batches(project_id=scope)}
 
     @app.get("/api/materials/batch-management")
-    def manage_material_batches(deleted: bool = False):
-        return {"batches": materials.batch_management.list(deleted=deleted)}
+    def manage_material_batches(deleted: bool = False, project_id: str | None = None):
+        scope = project_scope(project_id)
+        return {"batches": materials.batch_management.list(deleted=deleted, project_id=scope)}
 
     @app.post("/api/materials/batches")
     def import_local_materials(payload: dict):
-        if set(payload) - {"input_dir", "name", "description"} or not isinstance(payload.get("name"), str):
+        if set(payload) - {"input_dir", "name", "description", "project_id"} or not isinstance(payload.get("name"), str):
             raise ValueError("请填写批次名称")
         if not isinstance(payload.get("input_dir"), str) or not payload["input_dir"].strip():
             raise ValueError("请选择素材目录")
+        scope = project_scope(payload.get("project_id"), write=True)
         with control_lock:
             idle()
             return materials.create_local_batch(Path(payload["input_dir"]),
-                                                name=payload["name"], description=payload.get("description", ""))
+                                                name=payload["name"], description=payload.get("description", ""),
+                                                project_id=scope)
 
     @app.post("/api/materials/uploads")
     def begin_material_upload(payload: dict):
-        if set(payload) - {"name", "description"} or not isinstance(payload.get("name"), str):
+        if set(payload) - {"name", "description", "project_id"} or not isinstance(payload.get("name"), str):
             raise ValueError("请填写批次名称")
+        scope = project_scope(payload.get("project_id"), write=True)
         with control_lock:
             idle()
-            return materials.begin_upload(name=payload["name"], description=payload.get("description", ""))
+            return materials.begin_upload(name=payload["name"], description=payload.get("description", ""),
+                                          project_id=scope)
 
     @app.patch("/api/materials/batches/{batch_id}")
-    def edit_material_batch(batch_id: str, payload: dict):
+    def edit_material_batch(batch_id: str, payload: dict, project_id: str | None = None):
         if set(payload) - {"name", "description"} or not isinstance(payload.get("name"), str):
             raise ValueError("请填写批次名称")
+        scope = batch_scope(batch_id, project_id, write=True)
         with control_lock:
-            return materials.batch_management.update(batch_id, name=payload["name"], description=payload.get("description", ""))
+            return materials.batch_management.update(batch_id, name=payload["name"],
+                                                     description=payload.get("description", ""), project_id=scope)
 
     @app.delete("/api/materials/batches/{batch_id}")
-    def delete_material_batch(batch_id: str):
+    def delete_material_batch(batch_id: str, project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id, write=True)
         with control_lock:
             try:
                 if hub:
                     hub.require_unassigned(batch_id)
-                return {"ok": True, "batch": materials.batch_management.delete(batch_id)}
+                return {"ok": True, "batch": materials.batch_management.delete(batch_id, project_id=scope)}
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from None
 
     @app.post("/api/materials/batches/{batch_id}/restore")
-    def restore_material_batch(batch_id: str):
+    def restore_material_batch(batch_id: str, project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id, write=True, include_deleted=True)
         with control_lock:
-            return materials.batch_management.restore(batch_id)
+            return materials.batch_management.restore(batch_id, project_id=scope)
 
     @app.delete("/api/materials/batches/{batch_id}/permanent")
-    def purge_material_batch(batch_id: str):
+    def purge_material_batch(batch_id: str, project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id, write=True, include_deleted=True)
         with control_lock:
             try:
                 if hub:
                     hub.require_unassigned(batch_id)
-                return {"ok": True, **materials.batch_management.purge(batch_id)}
+                return {"ok": True, **materials.batch_management.purge(batch_id, project_id=scope)}
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from None
 
     @app.post("/api/materials/selection/clear")
     def clear_material_selection(payload: dict):
-        if set(payload) - {"batch_id"}:
+        if set(payload) - {"batch_id", "project_id"}:
             raise ValueError("清除选择参数无效")
+        scope = project_scope(payload.get("project_id"), write=True)
         with control_lock:
             idle()
             try:
-                result = materials.batch_management.clear_selection(batch_id=payload.get("batch_id"))
+                result = materials.batch_management.clear_selection(batch_id=payload.get("batch_id"), project_id=scope)
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from None
             runner.invalidate_readiness()
             return result
 
     @app.put("/api/materials/uploads/{batch_id}/file")
-    async def upload_material_file(batch_id: str, path: str, request: Request):
+    async def upload_material_file(batch_id: str, path: str, request: Request, project_id: str | None = None):
         data = bytearray()
         async for chunk in request.stream():
             if len(data) + len(chunk) > 50 * 1024 * 1024:
                 raise HTTPException(413, "单张图片不能超过 50 MB")
             data.extend(chunk)
-        return materials.add_upload_file(batch_id, path, bytes(data))
+        with control_lock:
+            scope = batch_scope(batch_id, project_id, write=True)
+            return materials.add_upload_file(batch_id, path, bytes(data), project_id=scope)
 
     @app.post("/api/materials/uploads/{batch_id}/finish")
-    def finish_material_upload(batch_id: str):
-        return materials.finish_upload(batch_id)
+    def finish_material_upload(batch_id: str, project_id: str | None = None):
+        with control_lock:
+            scope = batch_scope(batch_id, project_id, write=True)
+            return materials.finish_upload(batch_id, project_id=scope)
 
     @app.post("/api/materials/uploads/{batch_id}/abort")
-    def abort_material_upload(batch_id: str):
+    def abort_material_upload(batch_id: str, project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id, write=True)
         with control_lock:
-            return materials.abort_upload(batch_id)
+            return materials.abort_upload(batch_id, project_id=scope)
 
     @app.post("/api/materials/batches/{batch_id}/analyze")
-    def analyze_materials(batch_id: str):
-        try:
-            return materials.start_analysis(batch_id)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
+    def analyze_materials(batch_id: str, project_id: str | None = None):
+        with control_lock:
+            scope = batch_scope(batch_id, project_id, write=True)
+            try:
+                return materials.start_analysis(batch_id, project_id=scope)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
 
     @app.post("/api/materials/batches/{batch_id}/reanalyze")
-    def reanalyze_materials(batch_id: str, payload: dict):
+    def reanalyze_materials(batch_id: str, payload: dict, project_id: str | None = None):
         store_ids = payload.get("store_ids")
         if not isinstance(store_ids, list) or not store_ids or any(not isinstance(item, str) for item in store_ids):
             raise HTTPException(422, "store_ids 必须是非空字符串数组") from None
         if len(store_ids) > 2000:
             raise HTTPException(422, "单次最多重新分析 2000 家门店") from None
-        try:
-            return materials.start_reanalysis(batch_id, store_ids)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from None
+        with control_lock:
+            scope = batch_scope(batch_id, project_id, write=True)
+            try:
+                return materials.start_reanalysis(batch_id, store_ids, project_id=scope)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
 
     @app.post("/api/materials/batches/{batch_id}/retry-failed")
-    def retry_failed_materials(batch_id: str):
-        try:
-            return materials.retry_failed(batch_id)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from None
+    def retry_failed_materials(batch_id: str, project_id: str | None = None):
+        with control_lock:
+            scope = batch_scope(batch_id, project_id, write=True)
+            try:
+                return materials.retry_failed(batch_id, project_id=scope)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
 
     def _batch_name(batch_id: str) -> str:
         return materials.batch_name(batch_id)
 
     @app.get("/api/materials/jobs")
-    def material_jobs(active: bool = True, batch_id: str = "", limit: int = 20):
-        jobs = materials.list_jobs(active=active, batch_id=batch_id, limit=max(1, min(100, limit)))
+    def material_jobs(active: bool = True, batch_id: str = "", limit: int = 20,
+                      project_id: str | None = None):
+        scope = project_scope(project_id)
+        if batch_id:
+            batch_scope(batch_id, scope)
+        jobs = materials.list_jobs(active=active, batch_id=batch_id, limit=max(1, min(100, limit)),
+                                   project_id=scope)
         return {"jobs": [{**job, "batch_name": job.get("batch_name") or _batch_name(job["batch_id"])}
                          for job in jobs]}
 
     @app.get("/api/materials/jobs/{job_id}")
-    def material_job(job_id: str, events: bool = True):
+    def material_job(job_id: str, events: bool = True, project_id: str | None = None):
+        scope = project_scope(project_id)
         try:
-            return materials.job_detail(job_id, events=events)
+            return materials.job_detail(job_id, events=events, project_id=scope)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
 
     @app.post("/api/materials/jobs/{job_id}/pause")
-    def pause_material_job(job_id: str):
-        try:
-            return materials.pause_job(job_id)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
+    def pause_material_job(job_id: str, project_id: str | None = None):
+        with control_lock:
+            scope = project_scope(project_id, write=True)
+            try:
+                return materials.pause_job(job_id, project_id=scope)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
 
     @app.post("/api/materials/jobs/{job_id}/resume")
-    def resume_material_job(job_id: str):
-        try:
-            return materials.resume_job(job_id)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
+    def resume_material_job(job_id: str, project_id: str | None = None):
+        with control_lock:
+            scope = project_scope(project_id, write=True)
+            try:
+                return materials.resume_job(job_id, project_id=scope)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
 
     @app.post("/api/materials/jobs/{job_id}/cancel")
-    def cancel_material_job(job_id: str):
-        try:
-            return materials.cancel_job(job_id)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
+    def cancel_material_job(job_id: str, project_id: str | None = None):
+        with control_lock:
+            scope = project_scope(project_id, write=True)
+            try:
+                return materials.cancel_job(job_id, project_id=scope)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
 
     @app.get("/api/tasks/active")
-    def active_tasks():
+    def active_tasks(project_id: str | None = None):
         """任务中心唯一入口：把素材分析与采集运行统一成同一结构，前端不再自行合并两个接口。"""
+        scope = project_scope(project_id)
         items = []
-        jobs = materials.list_jobs(active=True, limit=20)
+        jobs = materials.list_jobs(active=True, limit=20, project_id=scope)
         seen = {job["id"] for job in jobs}
-        jobs += [job for job in materials.jobs.recent_finished() if job["id"] not in seen]
+        jobs += [job for job in materials.jobs.history(100, project_id=scope)
+                 if job["id"] not in seen and job.get("status") not in
+                 {"queued", "running", "pause_requested", "paused", "interrupted"}]
         for job in jobs:
             items.append({
                 "source": "materials",
@@ -943,6 +1216,11 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             })
         # 共享后台不执行桌面采集。迁移过来的本地轮次留在历史页，采集端分配以共享状态为准。
         run = None if hub else store.latest_run()
+        if run and str(run.get("project_id") or "") != scope:
+            if not run.get("project_id") and {task_project_id(task_id) for task_id in run.get("task_ids", [])} == {scope}:
+                run["project_id"] = scope
+            else:
+                run = None
         status = ""
         if run:
             status = "running" if runner.running else {"completed": "completed", "failed": "failed",
@@ -954,8 +1232,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         if run:
             setting = configs.load()
             current_root = Path(setting.input_dir).expanduser().resolve() if setting.input_dir else None
-            tasks = [task for task in store.tasks()
-                     if current_root and current_root in Path(task["source_path"]).resolve().parents]
+            tasks = worker.tasks(project_id=scope) if worker else [
+                task for task in store.tasks()
+                if current_root and current_root in Path(task["source_path"]).resolve().parents
+            ]
             by_id = {task["id"]: task for task in tasks}
             ids = run["task_ids"]
             progress = _run_progress(run)
@@ -979,7 +1259,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             })
         if hub:
             cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
-            for row in hub.history_records(shortcut_since=cutoff.isoformat(timespec="seconds")):
+            for row in hub.history_records(shortcut_since=cutoff.isoformat(timespec="seconds"), project_id=scope):
                 if row["status"] not in ACTIVE_RUN_STATUSES and history_timestamp(row["updated_at"]) < cutoff.timestamp():
                     continue
                 items.append({
@@ -992,40 +1272,85 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 })
         return {"tasks": items}
 
-    def capture_history_task_index() -> dict:
+    def capture_history_task_index(project_id: str | None = None) -> dict:
         # 在采集端按分配记录补充旧轮次来源；在共享后台按当前发布快照提取批次。
         tasks = {task["id"]: task for task in store.tasks()}
         if worker:
             with store.connect() as db:
-                assigned = db.execute("SELECT task_id,batch_id,batch_name,revision AS version FROM worker_assignments ORDER BY rowid")
+                if worker._hub_supports_project_scope:
+                    owner_filter = "worker_id=? AND project_id=?"
+                    params = (worker._current_worker_id(), project_id)
+                else:
+                    owner_filter = "(worker_id='' OR worker_id=?)"
+                    params = (worker._current_worker_id(),)
+                assigned = db.execute("SELECT task_id,batch_id,batch_name,revision AS version,project_id,project_code,project_name "
+                                      "FROM worker_assignments WHERE " + owner_filter + " ORDER BY rowid",
+                                      params)
+                assigned_ids = set()
                 for row in assigned:
                     if row["task_id"] in tasks:
                         tasks[row["task_id"]].update(dict(row))
+                        assigned_ids.add(row["task_id"])
+                tasks = {task_id: task for task_id, task in tasks.items() if task_id in assigned_ids}
         else:
-            for row in materials.effective_capture_tasks():
+            for row in materials.effective_capture_tasks(project_id=project_id):
                 if row["id"] in tasks:
                     tasks[row["id"]] = row
+            if project_id is not None:
+                tasks = {task_id: task for task_id, task in tasks.items()
+                         if task_project_id(task_id) == project_id}
         return tasks
+
+    def scoped_capture_history(run: dict, result_rows: list[dict], task_index: dict, project_id: str) -> dict | None:
+        """按轮次/逐店持久快照裁切历史；未知项目归属不借用当前 UI 选择。"""
+        ids = list(run.get("task_ids") or [])
+        run_owner = str(run.get("project_id") or "")
+        if run_owner == project_id:
+            selected_ids = ids
+            selected_results = []
+            for row in result_rows:
+                if row.get("project_id") in (None, "", project_id):
+                    selected_results.append(row | {"project_id": project_id})
+        else:
+            selected_results = [row for row in result_rows if row.get("project_id") == project_id]
+            selected_ids = [task_id for task_id in ids
+                            if any(row.get("task_id") == task_id for row in selected_results)]
+        if not selected_ids:
+            return None
+        by_id = {row.get("task_id"): row for row in selected_results}
+        selected = {**run, "task_ids": selected_ids, "project_id": project_id}
+        if run_owner != project_id:
+            selected["material_batch_id"] = ""
+        record = capture_history_row(selected, selected_results, task_index)
+        for task in record.get("tasks", []):
+            task["project_id"] = project_id
+            result = by_id.get(task["task_id"], {})
+            task["batch_id"] = result.get("batch_id", "")
+        record["project_id"] = project_id
+        return record
 
     @app.get("/api/tasks/history")
     def task_history(kind: str = "all", status: str = "", q: str = "", page: int = 1,
-                     page_size: int = 20, worker_id: str = ""):
+                     page_size: int = 20, worker_id: str = "", project_id: str | None = None):
         """任务中心历史页：采集运行与素材分析任务统一成同一结构，按时间倒序分页。"""
         page = max(1, int(page))
         page_size = min(100, max(5, int(page_size)))
+        scope = project_scope(project_id)
         rows: list[dict] = []
         if kind in ("all", "capture"):
-            runs = store.run_history(500) if not worker_id else []
+            runs = store.run_history(500, project_id=scope) if not worker_id else []
             results = store.capture_run_results([run["id"] for run in runs])
-            task_index = capture_history_task_index() if runs else {}
+            task_index = capture_history_task_index(scope) if runs else {}
             for run in runs:
-                item = capture_history_row(run, results.get(run["id"], []), task_index)
+                item = scoped_capture_history(run, results.get(run["id"], []), task_index, scope)
+                if item is None:
+                    continue
                 item.pop("tasks")
                 rows.append(item)
             if hub:
-                rows.extend(hub.history_records(worker_id=worker_id))
+                rows.extend(hub.history_records(worker_id=worker_id, project_id=scope))
         if kind in ("all", "materials") and not worker_id:
-            for job in materials.jobs.history(500):
+            for job in materials.jobs.history(500, project_id=scope):
                 rows.append({
                     "kind": "materials",
                     "id": job["id"],
@@ -1075,12 +1400,13 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         }
 
     @app.get("/api/tasks/history/{kind}/{item_id}")
-    def task_history_detail(kind: str, item_id: str):
+    def task_history_detail(kind: str, item_id: str, project_id: str | None = None):
         """历史任务详情：采集运行返回逐店状态，素材分析返回阶段事件。"""
+        scope = project_scope(project_id)
         if kind == "capture":
             if hub and ":" in item_id:
                 worker_id, run_id = item_id.split(":", 1)
-                record = hub.history_detail(worker_id, run_id)
+                record = hub.history_detail(worker_id, run_id, project_id=scope)
                 if record is not None:
                     return record
                 raise HTTPException(404, "采集电脑的轮次尚未同步或不存在")
@@ -1088,14 +1414,17 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             if run is None:
                 raise HTTPException(404, "运行记录不存在")
             results = store.capture_run_results([item_id]).get(item_id, [])
-            record = capture_history_row(run, results, capture_history_task_index())
+            index = capture_history_task_index(scope)
+            record = scoped_capture_history(run, results, index, scope)
+            if record is None:
+                raise HTTPException(404, "运行记录不属于当前项目或归属待核验")
             # 伴随提取的门店名称按轮次独立保存，补进逐店明细；未观察到的任务为空字符串。
-            observed = store.observed_store_names(item_id)
+            observed = store.observed_store_names(item_id, project_id=scope)
             for task in record.get("tasks") or []:
                 task["observed_store_name"] = observed.get(str(task.get("task_id") or ""), "")
             return record
         if kind == "materials":
-            job = materials.job_detail(item_id, events=True)
+            job = materials.job_detail(item_id, events=True, project_id=scope)
             # 与列表行保持同一口径：进度来自 job 行本身，不能返回空 counts 让前端显示 0/0。
             return {"kind": "materials", "id": item_id, "title": _batch_name(job["batch_id"]),
                     "batch_id": job["batch_id"], "batch_name": _batch_name(job["batch_id"]),
@@ -1112,15 +1441,42 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         raise HTTPException(404, "任务类型不存在")
 
     @app.get("/api/tasks/observed-store-name/{task_id}")
-    def observed_store_name(task_id: str):
+    def observed_store_name(task_id: str, project_id: str | None = None):
         """按原始任务编号导出最近一次伴随提取的门店名称，含未采集成功的轮次。"""
-        record = store.observed_store_name_latest(task_id)
+        scope = project_scope(project_id)
+        ctx.task_scope(task_id, scope)
+        if worker:
+            with store.connect() as db:
+                if worker._hub_supports_project_scope:
+                    assigned = db.execute("SELECT run_id FROM worker_assignments WHERE task_id=? AND project_id=? "
+                                          "AND worker_id=? ORDER BY rowid DESC LIMIT 1",
+                                          (task_id, scope, worker._current_worker_id())).fetchone()
+                else:
+                    assigned = db.execute("SELECT run_id FROM worker_assignments WHERE task_id=? "
+                                          "AND (worker_id='' OR worker_id=?) ORDER BY rowid DESC LIMIT 1",
+                                          (task_id, worker._current_worker_id())).fetchone()
+            record = store.observed_store_name_record(assigned["run_id"], task_id) if assigned and assigned["run_id"] else {}
+            if record and record.get("store_name"):
+                return record | {"project_id": scope}
+            raise HTTPException(404, "该任务暂无门店名称观察记录")
+        elif hub:
+            with store.connect() as db:
+                valid = db.execute("SELECT 1 FROM capture_run_results WHERE task_id=? AND project_id=? LIMIT 1",
+                                   (task_id, scope)).fetchone()
+            if not valid:
+                raise HTTPException(404, "该任务不属于当前项目或归属待核验")
+            name = hub.observed_store_name(task_id, scope)
+            if not name:
+                raise HTTPException(404, "该任务暂无门店名称观察记录")
+            return {"task_id": task_id, "project_id": scope, "store_name": name}
+        else:
+            record = store.observed_store_name_latest(task_id, project_id=scope)
         if not record:
             raise HTTPException(404, "该任务暂无门店名称观察记录")
         return record
 
     @app.patch("/api/tasks/history/capture/{run_id}")
-    def rename_capture_run(run_id: str, payload: dict):
+    def rename_capture_run(run_id: str, payload: dict, project_id: str | None = None):
         """只改任务展示名称；ID、进度、执行时间、批次和历史结果保持原字段。"""
         name = payload.get("name")
         if not isinstance(name, str):
@@ -1130,26 +1486,37 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             raise ValueError("任务名称需为 1 到 64 个字符")
         if store.get_run(run_id) is None:
             raise HTTPException(404, "运行记录不存在")
+        scope = project_scope(project_id, write=True)
+        run = store.get_run(run_id)
+        results = store.capture_run_results([run_id]).get(run_id, [])
+        if scoped_capture_history(run, results, capture_history_task_index(scope), scope) is None:
+            raise HTTPException(404, "运行记录不属于当前项目")
         store.rename_run(run_id, name)
         results = store.capture_run_results([run_id]).get(run_id, [])
-        return capture_history_row(store.get_run(run_id), results, capture_history_task_index())
+        record = scoped_capture_history(store.get_run(run_id), results, capture_history_task_index(), scope)
+        return record
 
     @app.get("/api/materials/batches/{batch_id}")
-    def material_batch(batch_id: str):
-        return materials.get_batch(batch_id)
+    def material_batch(batch_id: str, project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id)
+        return materials.get_batch(batch_id, project_id=scope)
 
     @app.get("/api/materials/batches/{batch_id}/stores/{store_id}")
-    def material_store(batch_id: str, store_id: str):
-        return materials.get_store(batch_id, store_id)
+    def material_store(batch_id: str, store_id: str, project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id)
+        return materials.get_store(batch_id, store_id, project_id=scope)
 
     @app.post("/api/materials/batches/{batch_id}/stores/{store_id}/uploads")
-    def begin_material_store_upload(batch_id: str, store_id: str):
+    def begin_material_store_upload(batch_id: str, store_id: str, project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id, write=True)
         with control_lock:
             idle()
-            return materials.begin_store_upload(batch_id, store_id)
+            return materials.begin_store_upload(batch_id, store_id, project_id=scope)
 
     @app.put("/api/materials/batches/{batch_id}/stores/{store_id}/uploads/{upload_id}/file")
-    async def upload_material_store_file(batch_id: str, store_id: str, upload_id: str, filename: str, request: Request):
+    async def upload_material_store_file(batch_id: str, store_id: str, upload_id: str, filename: str,
+                                        request: Request, project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id, write=True)
         data = bytearray()
         async for chunk in request.stream():
             if len(data) + len(chunk) > 50 * 1024 * 1024:
@@ -1157,78 +1524,94 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             data.extend(chunk)
         with control_lock:
             idle()
-            return materials.add_store_upload_file(batch_id, store_id, upload_id, filename, bytes(data))
+            return materials.add_store_upload_file(batch_id, store_id, upload_id, filename, bytes(data),
+                                                   project_id=scope)
 
     @app.post("/api/materials/batches/{batch_id}/stores/{store_id}/uploads/{upload_id}/commit")
-    def commit_material_store_upload(batch_id: str, store_id: str, upload_id: str, payload: dict):
+    def commit_material_store_upload(batch_id: str, store_id: str, upload_id: str, payload: dict,
+                                    project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id, write=True)
         if set(payload) - {"mode", "files"} or "mode" not in payload or "files" not in payload:
             raise ValueError("补图提交参数无效")
         with control_lock:
             idle()
-            return materials.commit_store_upload(batch_id, store_id, upload_id, payload["mode"], payload["files"])
+            return materials.commit_store_upload(batch_id, store_id, upload_id, payload["mode"], payload["files"],
+                                                 project_id=scope)
 
     @app.delete("/api/materials/batches/{batch_id}/stores/{store_id}/uploads/{upload_id}")
-    def abort_material_store_upload(batch_id: str, store_id: str, upload_id: str):
+    def abort_material_store_upload(batch_id: str, store_id: str, upload_id: str,
+                                    project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id, write=True)
         with control_lock:
             idle()
-            materials.abort_store_upload(batch_id, store_id, upload_id)
+            materials.abort_store_upload(batch_id, store_id, upload_id, project_id=scope)
             return {"ok": True}
 
     @app.post("/api/materials/batches/{batch_id}/stores/{store_id}/reanalyze")
-    def reanalyze_material_store(batch_id: str, store_id: str):
+    def reanalyze_material_store(batch_id: str, store_id: str, project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id, write=True)
         with control_lock:
             idle()
-            return materials.reanalyze_store(batch_id, store_id)
+            return materials.reanalyze_store(batch_id, store_id, project_id=scope)
 
     @app.get("/api/materials/batches/{batch_id}/stores/{store_id}/images/{image_index}")
-    def material_image(batch_id: str, store_id: str, image_index: int):
-        result = materials.preview_original(batch_id, store_id, image_index)
+    def material_image(batch_id: str, store_id: str, image_index: int, project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id)
+        result = materials.preview_original(batch_id, store_id, image_index, project_id=scope)
         return Response(result["bytes"], media_type=result["media_type"])
 
     @app.get("/api/materials/batches/{batch_id}/stores/{store_id}/images/{image_index}/candidates/{candidate_index}")
-    def material_candidate(batch_id: str, store_id: str, image_index: int, candidate_index: int):
-        result = materials.preview_candidate(batch_id, store_id, image_index, candidate_index)
+    def material_candidate(batch_id: str, store_id: str, image_index: int, candidate_index: int,
+                           project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id)
+        result = materials.preview_candidate(batch_id, store_id, image_index, candidate_index, project_id=scope)
         return Response(result["bytes"], media_type=result["media_type"])
 
     @app.get("/api/materials/batches/{batch_id}/stores/{store_id}/selected")
-    def material_selected_candidate(batch_id: str, store_id: str):
+    def material_selected_candidate(batch_id: str, store_id: str, project_id: str | None = None):
         """当前门店正在使用的候选二维码；未选码的门店返回 404，不猜测。"""
-        record = materials.get_store(batch_id, store_id)
+        scope = batch_scope(batch_id, project_id)
+        record = materials.get_store(batch_id, store_id, project_id=scope)
         selected = record.get("selected") or {}
         if selected.get("image_index") is None or selected.get("candidate_index") is None:
             raise HTTPException(404, "该门店尚未选择二维码")
         result = materials.preview_candidate(batch_id, store_id, int(selected["image_index"]),
-                                             int(selected["candidate_index"]))
+                                             int(selected["candidate_index"]), project_id=scope)
         return Response(result["bytes"], media_type=result["media_type"],
                         headers={"Cache-Control": "no-store"})
 
     @app.post("/api/materials/batches/{batch_id}/stores/{store_id}/decision")
-    def decide_material_store(batch_id: str, store_id: str, payload: dict):
+    def decide_material_store(batch_id: str, store_id: str, payload: dict, project_id: str | None = None):
         allowed = {"decision", "image_index", "candidate_index", "box", "reject_reason", "reject_detail"}
         if set(payload) - allowed or "decision" not in payload:
             raise ValueError("确认参数无效")
         if payload["decision"] == "skip" and not payload.get("reject_reason"):
             raise ValueError("请选择不合格原因")
-        try:
-            return materials.decide_store(batch_id, store_id, **payload)
-        except Exception as exc:
-            box = payload.get("box") if isinstance(payload.get("box"), dict) else {}
-            logger.warning(
-                "decision failed batch=%s store=%s decision=%s image=%s candidate=%s "
-                "box=%s error=%r",
-                batch_id, store_id, payload.get("decision"), payload.get("image_index"),
-                payload.get("candidate_index"),
-                {key: box.get(key) for key in ("x", "y", "width", "height")},
-                exc,
-            )
-            raise
+        with control_lock:
+            scope = batch_scope(batch_id, project_id, write=True)
+            try:
+                return materials.decide_store(batch_id, store_id, **payload, project_id=scope)
+            except Exception as exc:
+                box = payload.get("box") if isinstance(payload.get("box"), dict) else {}
+                logger.warning(
+                    "decision failed batch=%s store=%s decision=%s image=%s candidate=%s "
+                    "box=%s error=%r",
+                    batch_id, store_id, payload.get("decision"), payload.get("image_index"),
+                    payload.get("candidate_index"),
+                    {key: box.get(key) for key in ("x", "y", "width", "height")},
+                    exc,
+                )
+                raise
 
     @app.post("/api/materials/batches/{batch_id}/accept-recommendations")
-    def accept_material_recommendations(batch_id: str):
-        return materials.accept_recommendations(batch_id)
+    def accept_material_recommendations(batch_id: str, project_id: str | None = None):
+        with control_lock:
+            scope = batch_scope(batch_id, project_id, write=True)
+            return materials.accept_recommendations(batch_id, project_id=scope)
 
     @app.post("/api/materials/batches/{batch_id}/publish")
-    def publish_materials(batch_id: str, payload: dict | None = None):
+    def publish_materials(batch_id: str, payload: dict | None = None, project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id, write=True)
         with control_lock:
             fields = payload or {}
             materials.versions.validate(fields.get("name"), fields.get("version"), fields.get("description", ""))
@@ -1236,7 +1619,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             can_activate = not runner.running and not (run and run["status"] in {"paused", "blocked", "interrupted"})
             result = materials.publish_snapshot(
                 batch_id, fields.get("description", ""), name=fields["name"], version=fields["version"],
-                activate=can_activate,
+                activate=can_activate, project_id=scope,
             )
             if can_activate:
                 runner.invalidate_readiness()
@@ -1245,10 +1628,11 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return result
 
     @app.get("/api/materials/rework")
-    def material_rework(batch_ids: str = "all", q: str = ""):
+    def material_rework(batch_ids: str = "all", q: str = "", project_id: str | None = None):
         """跨批次返工清单：待处理 / 不合格 / 已选码待发布。"""
+        scope = project_scope(project_id)
         wanted = None if batch_ids in {"", "all"} else [value for value in batch_ids.split(",") if value]
-        records = materials.rework_records(wanted)
+        records = materials.rework_records(wanted, project_id=scope)
         needle = q.strip().casefold()
         if needle:
             records = [row for row in records
@@ -1265,23 +1649,26 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         }
 
     @app.post("/api/materials/rework/return")
-    def return_material_rework(payload: dict):
+    def return_material_rework(payload: dict, project_id: str | None = None):
         """打回选错码的门店：恢复待处理，等待人工在原批次重新选码。"""
         if set(payload) != {"batch_id", "store_id"}:
             raise ValueError("打回参数无效")
+        scope = batch_scope(str(payload["batch_id"]), project_id, write=True)
         with control_lock:
             idle()
-            result = materials.return_rework_store(str(payload["batch_id"]), str(payload["store_id"]))
+            result = materials.return_rework_store(str(payload["batch_id"]), str(payload["store_id"]),
+                                                   project_id=scope)
             if hub:
                 hub.reconcile_assignments()
             return result
 
     @app.post("/api/materials/rework/publish")
-    def publish_material_rework(payload: dict):
+    def publish_material_rework(payload: dict, project_id: str | None = None):
         """统一发布已处理门店：按原批次分组，各自在最新快照上增量更新。"""
         payload = payload or {}
         if set(payload) - {"store_ids", "description"}:
             raise ValueError("发布参数无效")
+        scope = project_scope(project_id, write=True)
         store_ids = payload.get("store_ids")
         if not isinstance(store_ids, list) or not store_ids:
             raise ValueError("请勾选要发布的门店")
@@ -1292,15 +1679,17 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             batch_id, _, store_id = value.partition(":")
             if not batch_id or not store_id:
                 raise ValueError("门店发布标识无效")
+            batch_scope(batch_id, scope, write=True)
             groups.setdefault(batch_id, []).append(store_id)
-        names = {batch["batch_id"]: batch.get("name", "") for batch in materials.list_batches()}
+        names = {batch["batch_id"]: batch.get("name", "") for batch in materials.list_batches(project_id=scope)}
         description = str(payload.get("description") or "跨批次返工发布")
         results, errors = [], []
         with control_lock:
             idle()
             for batch_id, ids in groups.items():
                 try:
-                    result = materials.publish_snapshot(batch_id, description, store_ids=ids, activate=False)
+                    result = materials.publish_snapshot(batch_id, description, store_ids=ids, activate=False,
+                                                        project_id=scope)
                     if hub:
                         hub.reconcile_assignments()
                     results.append({
@@ -1317,23 +1706,28 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return {"results": results, "errors": errors}
 
     @app.post("/api/materials/batches/{batch_id}/activate")
-    def activate_material_version(batch_id: str, payload: dict):
+    def activate_material_version(batch_id: str, payload: dict, project_id: str | None = None):
+        scope = batch_scope(batch_id, project_id, write=True)
         with control_lock:
             idle()
             run = store.latest_run()
             if run and run["status"] in {"paused", "blocked", "interrupted"}:
                 raise HTTPException(409, "请先继续或终止当前采集，再切换素材版本")
-            result = materials.activate_version(batch_id, payload.get("version", ""))
+            result = materials.activate_version(batch_id, payload.get("version", ""), project_id=scope)
             runner.invalidate_readiness()
             return result
 
     @app.post("/api/scan")
-    def scan():
+    def scan(project_id: str | None = None):
         with control_lock:
             idle()
+            scope = project_scope(project_id, write=True)
             config = configs.load()
             if not config.input_dir:
                 raise HTTPException(400, "请先选择用于采集的发布版本")
+            selected_release = materials.active_release(Path(config.input_dir).expanduser().resolve(), project_id=scope)
+            if selected_release is None or Path(config.input_dir).name != selected_release["snapshot_id"]:
+                raise HTTPException(409, "当前素材目录不属于所选项目的已发布版本")
             if ((Path(config.input_dir) / ".materials-snapshot.json").is_file()
                     and store.material_binding(config.input_dir) is None):
                 raise HTTPException(400, "素材版本已移入回收站或尚未发布，请重新选择采集版本")
@@ -1347,12 +1741,17 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             store.event(f"扫描完成：新增 {result['added']} 个素材任务")
             root_dir = Path(config.input_dir).expanduser().resolve()
             current_total = sum(root_dir in Path(task["source_path"]).parents for task in store.tasks())
-            return {**result, "current_total": current_total, "material_release": materials.active_release(root_dir)}
+            return {**result, "current_total": current_total,
+                    "material_release": materials.active_release(root_dir, project_id=scope)}
  
     @app.post("/api/start")
-    def start():
+    def start(payload: dict | None = None):
         with control_lock:
             idle()
+            payload = payload or {}
+            if set(payload) - {"project_id"}:
+                raise ValueError("开跑参数无效")
+            scope = project_scope(payload.get("project_id"), write=True)
             # 接口层先做运行前检查，避免环境未就绪时返回 200 后才在后台失败。
             preflight = environment.snapshot().get("preflight") or {}
             if preflight and not preflight.get("ready", True):
@@ -1361,19 +1760,27 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             run = store.latest_run()
             if run and run["status"] in {"paused", "blocked", "interrupted"}:
                 raise HTTPException(409, "请先继续或终止当前批次")
-            runner.start()
-            return status()
+            runner.start(project_id=scope)
+            return status(project_id=scope)
 
     @app.post("/api/resume")
     def resume(payload: dict | None = None):
         with control_lock:
             idle()
+            payload = payload or {}
+            if set(payload) - {"mode", "project_id"}:
+                raise ValueError("恢复参数无效")
+            scope = project_scope(payload.get("project_id"), write=True)
             run = store.latest_run()
             if not run or run["status"] not in {"paused", "blocked", "interrupted"}:
                 raise HTTPException(409, "当前没有可恢复的暂停或阻塞批次")
-            payload = payload or {}
+            owner = str(run.get("project_id") or "")
+            if not owner and {task_project_id(task_id) for task_id in run.get("task_ids", [])} == {scope}:
+                owner = scope
+            if owner != scope:
+                raise HTTPException(404, "该采集轮次不属于当前项目或归属待核验")
             mode = payload.get("mode", "")
-            if payload and (set(payload) != {"mode"} or mode != "manual" or sys.platform != "win32"
+            if mode and (mode != "manual" or sys.platform != "win32"
                             or run.get("capture_mode") != "auto" or run["status"] != "paused"):
                 raise ValueError("只有已暂停的 Windows 全自动批次可以切换半自动")
             profile = profiles.load()
@@ -1385,42 +1792,48 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 raise HTTPException(409, "此批次没有尚未完成的门店")
             try:
                 if worker:
-                    worker.check_start(remaining)
+                    worker.check_start(remaining, project_id=scope)
                 if mode:
-                    runner.start(resume_run=run, capture_mode=mode)
+                    runner.start(resume_run=run, capture_mode=mode, project_id=scope)
                 else:
-                    runner.start(resume_run=run)
+                    runner.start(resume_run=run, project_id=scope)
             except (RuntimeError, ValueError) as exc:
                 raise HTTPException(409, str(exc)) from None
-            return status()
+            return status(project_id=scope)
 
     @app.post("/api/ui-tars/trial")
     def start_ui_tars_trial(payload: dict | None = None):
         payload = payload or {}
+        scope = project_scope(payload.get("project_id"), write=True)
         task_id = payload.get("task_id")
         task_ids = payload.get("task_ids")
-        if set(payload) == {"task_ids"}:
+        if set(payload) <= {"task_ids", "project_id"} and task_ids is not None:
             if not isinstance(task_ids, list) or not task_ids or any(
                 not isinstance(value, str) or not value.strip() for value in task_ids
             ):
                 raise ValueError("全自动试验需要有效的门店任务列表")
             with control_lock:
                 idle()
-                return runner.start(ui_tars_trial=True, trial_task_ids=[value.strip() for value in task_ids])
-        if set(payload) - {"task_id"} or (payload and (not isinstance(task_id, str) or not task_id.strip())):
+                selected = [value.strip() for value in task_ids]
+                for selected_id in selected:
+                    task_scope(selected_id, scope, write=True)
+                return runner.start(ui_tars_trial=True, trial_task_ids=selected, project_id=scope)
+        if set(payload) - {"task_id", "project_id"} or (task_id is not None and (not isinstance(task_id, str) or not task_id.strip())):
             raise ValueError("试验需要指定已有的门店任务")
         with control_lock:
             idle()
             if task_id:
-                return runner.start(ui_tars_trial=True, trial_task_id=task_id.strip())
-            return runner.start(ui_tars_trial=True)
+                task_scope(task_id.strip(), scope, write=True)
+                return runner.start(ui_tars_trial=True, trial_task_id=task_id.strip(), project_id=scope)
+            return runner.start(ui_tars_trial=True, project_id=scope)
 
     @app.post("/api/capture/start")
     def start_capture(payload: dict | None = None):
         """统一开跑入口：本轮模式与任务清单在这里锁定，两种模式共用同一批门店。"""
         payload = payload or {}
-        if set(payload) - {"mode", "task_ids", "name"}:
+        if set(payload) - {"mode", "task_ids", "name", "project_id"}:
             raise ValueError("开跑参数无效")
+        scope = project_scope(payload.get("project_id"), write=True)
         mode = payload.get("mode")
         if mode not in {"auto", "manual"}:
             raise ValueError("请选择全自动 Agent 或半自动人工")
@@ -1441,20 +1854,23 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             if run and run["status"] in {"paused", "blocked", "interrupted"}:
                 raise HTTPException(409, "请先继续或终止当前批次")
             try:
+                for task_id in unique_ids:
+                    task_scope(task_id, scope, write=True)
                 if worker:
-                    worker.check_start(unique_ids)
+                    worker.check_start(unique_ids, project_id=scope)
                 result = runner.start(ui_tars_trial=True, trial_task_ids=unique_ids,
-                                      cross_batch=True, capture_mode=mode, run_name=name.strip())
+                                      cross_batch=True, capture_mode=mode, run_name=name.strip(),
+                                      project_id=scope)
             except (ValueError, RuntimeError) as exc:
                 raise HTTPException(400, str(exc)) from None
             if worker:
-                return {**result, "status": status()}
+                return {**result, "status": status(project_id=scope)}
             try:
                 # 采集轮次与审核失效跟随实际开跑，失败不影响已启动的批次。
-                materials.register_capture_round(unique_ids)
+                materials.register_capture_round(unique_ids, project_id=scope)
             except Exception:
                 logger.exception("记录采集轮次失败")
-            return {**result, "status": status()}
+            return {**result, "status": status(project_id=scope)}
 
     def manual_device() -> tuple[str, str]:
         local_name = socket.gethostname()
@@ -1462,6 +1878,11 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return connection.get("id") or local_name, connection.get("name") or local_name
 
     def _manual_action(request: Request, kind: str, payload: dict) -> dict:
+        scope = project_scope(payload.get("project_id"), write=True)
+        run = require_run_scope(scope)
+        current_task = runner.current_task or {}
+        if current_task.get("id"):
+            task_scope(str(current_task["id"]), scope, write=True)
         expected = payload.get("context")
         if request.state.remote_control or expected is not None:
             keys = {"device_id", "run_id", "task_id", "wait_id"}
@@ -1476,21 +1897,24 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             raise HTTPException(409, str(exc)) from None
         if request.state.remote_control:
             return result | {"manual": runner.manual_state()}
-        return result | {"manual": runner.manual_state(), "status": status()}
+        return result | {"manual": runner.manual_state(), "status": status(project_id=scope)}
 
     @app.get("/api/manual/state")
-    def manual_state():
+    def manual_state(project_id: str | None = None):
+        scope = project_scope(project_id)
         device_id, device_name = manual_device()
         run = store.latest_run()
-        return {"device_id": device_id, "device_name": device_name, "manual": runner.manual_state(),
-                "run_name": run.get("name") or "半自动采集" if run else "",
-                "run_status": run["status"] if run else "",
+        visible = run if run_project_matches(run, scope) else None
+        return {"device_id": device_id, "device_name": device_name,
+                "manual": runner.manual_state() if visible and runner.running else {},
+                "run_name": (visible.get("name") or "半自动采集") if visible else "",
+                "run_status": visible["status"] if visible else "",
                 "remote_url": f"https://{remote_control_host}/remote-control" if remote_control_host else ""}
 
     @app.post("/api/manual/capture")
     def manual_capture(request: Request, payload: dict | None = None):
         payload = payload or {}
-        if set(payload) - {"context"}:
+        if set(payload) - {"context", "project_id"}:
             raise ValueError("截图参数无效")
         with control_lock:
             return _manual_action(request, "capture", payload)
@@ -1498,7 +1922,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     @app.post("/api/manual/reject")
     def manual_reject(request: Request, payload: dict | None = None):
         payload = payload or {}
-        if set(payload) - {"reason", "detail", "context"}:
+        if set(payload) - {"reason", "detail", "context", "project_id"}:
             raise ValueError("不合格参数无效")
         with control_lock:
             return _manual_action(request, "reject", payload)
@@ -1506,15 +1930,17 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     @app.post("/api/manual/skip")
     def manual_skip(request: Request, payload: dict | None = None):
         payload = payload or {}
-        if set(payload) - {"context"}:
+        if set(payload) - {"context", "project_id"}:
             raise ValueError("跳过参数无效")
         with control_lock:
             return _manual_action(request, "skip", payload)
 
     @app.post("/api/manual/reason")
     def manual_reason(payload: dict):
-        if set(payload) != {"reason"}:
+        if set(payload) - {"reason", "project_id"} or "reason" not in payload:
             raise ValueError("不合格原因参数无效")
+        scope = project_scope(payload.get("project_id"), write=True)
+        require_run_scope(scope)
         return {"ok": True, "reason": runner.set_manual_reason(str(payload["reason"]))}
 
     @app.get("/api/robot/profile")
@@ -1536,23 +1962,33 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return result
 
     @app.post("/api/stop")
-    def stop():
+    def stop(payload: dict | None = None):
         with control_lock:
-            run = store.latest_run()
+            payload = payload or {}
+            if set(payload) - {"project_id"}:
+                raise ValueError("暂停参数无效")
+            scope = project_scope(payload.get("project_id"), write=True)
+            run = require_run_scope(scope)
             if run and run["mode"] == "attached":
                 raise HTTPException(409, "单店采集可以终止后重试")
             runner.pause()
-            return status()
+            return status(project_id=scope)
 
     @app.post("/api/terminate")
-    def terminate():
+    def terminate(payload: dict | None = None):
         with control_lock:
+            payload = payload or {}
+            if set(payload) - {"project_id"}:
+                raise ValueError("终止参数无效")
+            scope = project_scope(payload.get("project_id"), write=True)
+            require_run_scope(scope)
             runner.terminate()
-            return status()
+            return status(project_id=scope)
 
     @app.get("/api/tasks/{task_id}/source")
-    def task_source_image(task_id: str):
+    def task_source_image(task_id: str, project_id: str | None = None):
         """任务当前使用的二维码裁剪图；不合格详情用它展示“当前使用的候选码”。"""
+        task_scope(task_id, project_id)
         task = store.get(task_id)
         path = Path(task["source_path"]).expanduser()
         if not path.is_file():
@@ -1560,7 +1996,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return FileResponse(path, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/tasks/{task_id}/last-frame")
-    def task_last_frame(task_id: str):
+    def task_last_frame(task_id: str, project_id: str | None = None):
         """待检查门店的“最后一帧”：取运行期目录里该任务最新的一张画面。
 
         待检查任务没有发布截图，动作记录也可能因调试日志轮转丢失证据字段；
@@ -1568,6 +2004,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         """
         if not re.fullmatch(r"[0-9a-f]{20}", task_id):
             raise HTTPException(404, "任务编号无效")
+        task_scope(task_id, project_id)
         task = store.get(task_id)
         runtime = Path(configs.load().output_dir).expanduser().resolve().parent
         candidates: list[Path] = []
@@ -1605,7 +2042,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return FileResponse(newest, media_type="image/png", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/tasks/{task_id}/actions")
-    def task_actions(task_id: str, before: int | None = None):
+    def task_actions(task_id: str, before: int | None = None, project_id: str | None = None):
+        task_scope(task_id, project_id)
         actions = store.actions(task_id, before)
         for row in actions:
             compact = row.get("details") or {}
@@ -1626,9 +2064,12 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return debug_log.summary(limit)
 
     @app.get("/api/debug/runs/{run_id}/export")
-    def export_debug_run(run_id: str):
+    def export_debug_run(run_id: str, project_id: str | None = None):
         if not re.fullmatch(r"[0-9a-f]{32}", run_id):
             raise HTTPException(400, "运行编号无效")
+        scope = project_scope(project_id)
+        if not run_project_matches(store.get_run(run_id), scope):
+            raise HTTPException(404, "采集轮次不属于当前项目或归属待核验")
         handle = tempfile.NamedTemporaryFile(prefix="menu-capture-debug-", suffix=".zip", delete=False)
         path = Path(handle.name)
         handle.close()
@@ -1649,25 +2090,42 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return debug_log.clear()
 
     @app.post("/api/materials/batches/{batch_id}/stage")
-    def set_material_batch_stage(batch_id: str, payload: dict):
+    def set_material_batch_stage(batch_id: str, payload: dict, project_id: str | None = None):
         with control_lock:
-            return materials.set_stage(batch_id, payload.get("stage", ""))
+            scope = batch_scope(batch_id, payload.get("project_id", project_id), write=True)
+            if set(payload) - {"stage", "project_id"}:
+                raise ValueError("批次阶段参数无效")
+            return materials.set_stage(batch_id, payload.get("stage", ""), project_id=scope)
 
     @app.post("/api/materials/batches/{batch_id}/approve")
-    def approve_material_batch(batch_id: str):
+    def approve_material_batch(batch_id: str, payload: dict | None = None, project_id: str | None = None):
         with control_lock:
+            payload = payload or {}
+            if set(payload) - {"project_id"}:
+                raise ValueError("审核参数无效")
+            scope = batch_scope(batch_id, payload.get("project_id", project_id), write=True)
             if hub:
                 hub.require_unassigned(batch_id)
-            return materials.set_approved(batch_id, True)
+            return materials.set_approved(batch_id, True, project_id=scope)
 
     @app.post("/api/materials/batches/{batch_id}/approve/undo")
-    def unapprove_material_batch(batch_id: str):
+    def unapprove_material_batch(batch_id: str, payload: dict | None = None, project_id: str | None = None):
         with control_lock:
-            return materials.set_approved(batch_id, False)
+            payload = payload or {}
+            if set(payload) - {"project_id"}:
+                raise ValueError("撤销审核参数无效")
+            scope = batch_scope(batch_id, payload.get("project_id", project_id), write=True)
+            return materials.set_approved(batch_id, False, project_id=scope)
 
     @app.get("/api/action-evidence/{name}")
-    def action_evidence(name: str):
+    def action_evidence(name: str, project_id: str | None = None):
         if not re.fullmatch(r"[0-9a-f]{32}\.png", name):
+            raise HTTPException(404)
+        scope = project_scope(project_id)
+        with store.connect() as db:
+            rows = db.execute("SELECT DISTINCT task_id FROM run_actions WHERE details LIKE ?",
+                              ("%" + name + "%",)).fetchall()
+        if not any(task_project_id(str(row["task_id"])) == scope for row in rows):
             raise HTTPException(404)
         path = store.path.parent / "action-evidence" / name
         if not path.is_file():
@@ -1675,9 +2133,13 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return FileResponse(path, media_type="image/png")
 
     @app.post("/api/tasks/{task_id}/retry")
-    def retry(task_id: str):
+    def retry(task_id: str, payload: dict | None = None):
         with control_lock:
             idle()
+            payload = payload or {}
+            if set(payload) - {"project_id"}:
+                raise ValueError("重试参数无效")
+            task_scope(task_id, payload.get("project_id"), write=True)
             if hub:
                 hub.protect_task(task_id)
             task = store.get(task_id)
@@ -1690,10 +2152,14 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return {"ok": True}
 
     @app.post("/api/tasks/{task_id}/mark-review")
-    def mark_task_review(task_id: str):
+    def mark_task_review(task_id: str, payload: dict | None = None):
         """人工把已有采集结果的门店改为待检查；不合格记录必须先撤销，避免状态自相矛盾。"""
         with control_lock:
             idle()
+            payload = payload or {}
+            if set(payload) - {"project_id"}:
+                raise ValueError("待检查参数无效")
+            task_scope(task_id, payload.get("project_id"), write=True)
             if hub:
                 hub.protect_task(task_id)
             task = store.get(task_id)
@@ -1708,15 +2174,25 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
 
     @app.post("/api/reveal")
     def reveal(payload: dict):
+        if set(payload) - {"path", "project_id"}:
+            raise ValueError("打开目录参数无效")
         config = configs.load()
         if payload.get("path") not in {"input", "output"}:
             raise ValueError("只能打开素材目录或结果目录")
+        scope = project_scope(payload.get("project_id"))
         selected = config.input_dir if payload["path"] == "input" else config.output_dir
         if not selected.strip():
             raise ValueError("请先选择采集素材版本" if payload["path"] == "input" else "请先设置输出目录")
-        release = materials.active_release(Path(config.input_dir).resolve()) if config.input_dir else None
-        path = (batch_output_dir(selected, release["batch_id"], release.get("batch_name", ""))
-                if payload["path"] == "output" and release else Path(selected))
+        if payload["path"] == "output" and worker:
+            project = next((item for item in worker.projects() if item["id"] == scope), None)
+            if project is None:
+                raise HTTPException(404, "项目不存在或该采集端没有分配记录")
+            path = batch_output_dir(selected, "0" * 32, project_code=project["code"]).parent
+        else:
+            release = materials.active_release(Path(config.input_dir).resolve(), project_id=scope) \
+                if config.input_dir else None
+            path = (batch_output_dir(selected, release["batch_id"], release.get("batch_name", ""))
+                    if payload["path"] == "output" and release and role == "standalone" else Path(selected))
         path.mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             os.startfile(path)
@@ -1725,8 +2201,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return {"ok": True}
 
     @app.get("/api/artifacts/{task_id}")
-    def artifacts(task_id: str):
+    def artifacts(task_id: str, project_id: str | None = None):
         with runner.output_lock:
+            task_scope(task_id, project_id)
             task = store.get(task_id)
             if not task["output_dir"]:
                 return {"files": []}
@@ -1735,7 +2212,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                               if p.is_file() and p.suffix.lower() in {".png", ".json"}]}
 
     @app.get("/api/source/{task_id}")
-    def source_image(task_id: str):
+    def source_image(task_id: str, project_id: str | None = None):
+        task_scope(task_id, project_id)
         task = store.get(task_id)
         source = Path(task["source_path"]).resolve()
         if worker and worker.source_root(task_id) and source.is_file():
@@ -1749,8 +2227,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return FileResponse(source)
 
     @app.get("/api/artifact/{task_id}/{relative_path:path}")
-    def artifact(task_id: str, relative_path: str):
+    def artifact(task_id: str, relative_path: str, project_id: str | None = None):
         with runner.output_lock:
+            task_scope(task_id, project_id)
             task = store.get(task_id)
             if not task["output_dir"]:
                 raise HTTPException(404, "此任务还没有输出")

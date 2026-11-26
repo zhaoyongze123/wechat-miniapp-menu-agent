@@ -11,17 +11,18 @@ from menu_capture.quality.failures import describe as describe_failure
 REVIEW_RERUN_LIMIT = 300
 
 
-def _review_queue(ctx: ApiContext, batch_ids: str, query: str) -> dict:
+def _review_queue(ctx: ApiContext, batch_ids: str, query: str, project_id: str) -> dict:
     """待检查清单：跨批次读取任务状态，同一门店只保留最新一条。"""
     # 与批次管理、工作台保持同一口径：只取未删除批次的最新发布快照任务，
     # 旧版本遗留的失败任务不进入清单，避免同一门店重复计数或被重跑旧素材。
-    current_tasks = {row["id"]: row for row in ctx.materials.effective_capture_tasks()
+    current_tasks = {row["id"]: row for row in ctx.materials.effective_capture_tasks(project_id=project_id)
                      if capture_outcome(row) == "review"}
     candidates = current_tasks.values()
     # 待检查入口只展示批次名和阶段。版本差异、素材计数留给批次管理页。
     with ctx.store.connect() as db:
         batches = [dict(row) for row in db.execute(
-            "SELECT id,name,capture_rounds,manual_stage,approved_at FROM material_batches WHERE deleted_at=''"
+            "SELECT id,name,capture_rounds,manual_stage,approved_at FROM material_batches "
+            "WHERE deleted_at='' AND project_id=?", (project_id,)
         )]
     workflow = {batch["id"]: ctx.materials.workflow_stage(batch) for batch in batches}
     names = {batch["id"]: batch["name"] or batch["id"] for batch in batches}
@@ -30,8 +31,11 @@ def _review_queue(ctx: ApiContext, batch_ids: str, query: str) -> dict:
         run_by_task = {
             row["id"]: row["run_id"]
             for row in db.execute(
-                "SELECT t.id, a.run_id FROM tasks t LEFT JOIN run_actions a ON a.id="
-                "(SELECT MAX(latest.id) FROM run_actions latest WHERE latest.task_id=t.id)"
+                "SELECT c.task_id AS id,c.run_id FROM capture_run_results c "
+                "JOIN runs r ON r.id=c.run_id WHERE c.project_id=? "
+                "AND r.updated_at=(SELECT MAX(r2.updated_at) FROM capture_run_results c2 "
+                "JOIN runs r2 ON r2.id=c2.run_id WHERE c2.task_id=c.task_id AND c2.project_id=?)",
+                (project_id, project_id),
             )
             if row["run_id"]
         }
@@ -49,7 +53,7 @@ def _review_queue(ctx: ApiContext, batch_ids: str, query: str) -> dict:
         failure = describe_failure(task.get("error_code", ""), task.get("stage", ""),
                                    task.get("message", ""))
         # 与打回接口共用同一判定，避免列表显示可操作但实际被拒。
-        blocker = ctx.rejections.return_blocker(task["id"], current=True)
+        blocker = ctx.rejections.return_blocker(task["id"], current=True, project_id=project_id)
         records.append({
             "task_id": task["id"],
             "store_name": task["source_name"],
@@ -101,12 +105,15 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     control_lock, idle = ctx.control_lock, ctx.idle
 
     @app.get("/api/reviews/pending")
-    def pending_reviews(batch_ids: str = "all", q: str = ""):
-        return _review_queue(ctx, batch_ids, q)
+    def pending_reviews(batch_ids: str = "all", q: str = "", project_id: str | None = None):
+        scope = ctx.project_scope(project_id)
+        return _review_queue(ctx, batch_ids, q, scope)
 
     @app.post("/api/reviews/pending/rerun")
     def rerun_pending_reviews(payload: dict):
         task_ids = payload.get("task_ids")
+        if set(payload) - {"task_ids", "name", "project_id"}:
+            raise ValueError("待检查重跑参数无效")
         if (not isinstance(task_ids, list) or not task_ids or len(task_ids) > REVIEW_RERUN_LIMIT
                 or any(not isinstance(value, str) or not value.strip() for value in task_ids)):
             raise ValueError(f"请选择 1 到 {REVIEW_RERUN_LIMIT} 个待检查任务")
@@ -118,10 +125,16 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise ValueError("任务名称无效")
         with control_lock:
             idle()
+            scope = ctx.project_scope(payload.get("project_id"), write=True)
+            current_ids = {row["task_id"] for row in _review_queue(ctx, "all", "", scope)["records"]}
+            if any(task_id not in current_ids for task_id in selected):
+                raise ValueError("所选任务不属于当前项目的待检查清单")
+            if ctx.worker:
+                ctx.worker.check_start(selected, project_id=scope)
             result = runner.start(ui_tars_trial=True, trial_task_ids=selected, cross_batch=True,
-                                  capture_mode="auto", run_name=name.strip())
+                                  capture_mode="auto", run_name=name.strip(), project_id=scope)
             # 启动成功后才累加轮次，避免校验失败也把批次标成“已重跑”。
-            materials.register_capture_round(selected)
+            materials.register_capture_round(selected, project_id=scope)
             return result
 
     @app.post("/api/reviews/approve")
@@ -129,14 +142,20 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         """最终按原批次审核通过；一次可提交多个批次，批次号与归属不变。"""
         batch_ids = payload.get("batch_ids") if isinstance(payload, dict) else None
         if (not isinstance(batch_ids, list) or not 1 <= len(batch_ids) <= 100
-                or any(not isinstance(value, str) or not value.strip() for value in batch_ids)):
+                or any(not isinstance(value, str) or not value.strip() for value in batch_ids)
+                or set(payload) - {"batch_ids", "project_id"}):
             raise ValueError("请选择 1 到 100 个原批次")
         results = []
         with control_lock:
+            scope = ctx.project_scope(payload.get("project_id"), write=True)
             selected = list(dict.fromkeys(value.strip() for value in batch_ids))
             if hub:
                 for batch_id in selected:
+                    ctx.batch_scope(batch_id, scope, write=True)
                     hub.require_unassigned(batch_id)
+            else:
+                for batch_id in selected:
+                    ctx.batch_scope(batch_id, scope, write=True)
             for batch_id in selected:
-                results.append(materials.set_approved(batch_id, True))
+                results.append(materials.set_approved(batch_id, True, project_id=scope))
         return {"ok": True, "batches": results}
