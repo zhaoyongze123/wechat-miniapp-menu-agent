@@ -12,7 +12,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -82,6 +84,8 @@ class VelopackBackend:
         self.request_path = self.data_dir / APPLY_REQUEST
         self.apply_state_path = self.data_dir / APPLY_STATE
         self.progress_path = self.data_dir / DOWNLOAD_PROGRESS
+        self._download_lock = threading.Lock()
+        self._download_process: subprocess.Popen | None = None
 
     # ---------- 环境探测 ----------
 
@@ -204,16 +208,41 @@ class VelopackBackend:
         cancel=None,
         timeout: float = DOWNLOAD_TIMEOUT_SECONDS,
     ) -> dict:
-        """在独立进程中下载，取消即终止子进程；不会触碰业务目录或运行中的版本。"""
+        """下载互斥；上次子进程未确认退出时禁止开启新的下载。"""
+        if not self._download_lock.acquire(blocking=False):
+            return {"status": "failed", "message": "已有下载任务正在运行"}
+        try:
+            previous = self._download_process
+            if previous is not None and previous.poll() is None:
+                return {"status": "failed", "message": "上次下载进程尚未退出，暂不能重试"}
+            self._download_process = None
+            progress_path = self.progress_path.with_name(
+                f"{self.progress_path.stem}-{uuid.uuid4().hex}.json"
+            )
+            try:
+                return self._download(version, channel, progress, cancel, timeout, progress_path)
+            finally:
+                process = self._download_process
+                if process is None or process.poll() is not None:
+                    self._download_process = None
+                    try:
+                        progress_path.unlink(missing_ok=True)
+                        progress_path.with_suffix(progress_path.suffix + ".tmp").unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        finally:
+            self._download_lock.release()
+
+    def _download(self, version, channel, progress, cancel, timeout, progress_path: Path) -> dict:
         selected = channel or self.channel
         command = [
             self.python, "-m", "menu_capture.updates.velopack_worker",
             "--repo", self.repository,
             "--channel", selected,
             "--version", str(version),
-            "--progress", str(self.progress_path),
+            "--progress", str(progress_path),
         ]
-        _write_json(self.progress_path, {"stage": "starting", "percent": 0})
+        _write_json(progress_path, {"stage": "starting", "percent": 0})
         kwargs: dict[str, Any] = {
             "cwd": str(self.app_dir),
             "stdin": subprocess.DEVNULL,
@@ -228,8 +257,9 @@ class VelopackBackend:
             kwargs["start_new_session"] = True
         try:
             process = subprocess.Popen(command, **kwargs)
+            self._download_process = process
         except OSError as exc:
-            _write_json(self.progress_path, {
+            _write_json(progress_path, {
                 "stage": "failed", "percent": 0, "error": f"无法启动下载进程：{exc}",
             })
             return {"status": "failed", "message": f"无法启动下载进程：{exc}"}
@@ -237,34 +267,41 @@ class VelopackBackend:
         try:
             while process.poll() is None:
                 if cancel is not None and cancel.is_set():
-                    self._terminate(process)
+                    if not self._terminate(process):
+                        return {"status": "failed", "message": "无法确认下载进程已退出，暂不能重试"}
                     return {"status": "cancelled", "message": "下载已取消，未安装任何内容"}
                 if timeout and time.monotonic() - started > timeout:
-                    self._terminate(process)
-                    return {"status": "failed", "message": "下载超时，已终止下载进程"}
-                state = _read_json(self.progress_path, {})
+                    stopped = self._terminate(process)
+                    message = "下载超时，已终止下载进程" if stopped else "下载超时，无法确认下载进程已退出"
+                    return {"status": "failed", "message": message}
+                state = _read_json(progress_path, {})
                 if progress is not None and isinstance(state, dict):
                     progress(state)
                 time.sleep(0.5)
         finally:
             if process.poll() is None:
                 self._terminate(process)
-        state = _read_json(self.progress_path, {})
+        state = _read_json(progress_path, {})
         if process.returncode == 0 and str(state.get("stage") or "") == "completed":
             return {"status": "completed", "message": f"已下载并校验 {version}"}
         message = str(state.get("error") or "") or f"下载进程退出码 {process.returncode}"
         return {"status": "failed", "message": message}
 
     @staticmethod
-    def _terminate(process: subprocess.Popen) -> None:
+    def _terminate(process: subprocess.Popen) -> bool:
+        """只在子进程已退出时返回成功；杀进程后仍需要回收句柄。"""
+        if process.poll() is not None:
+            return True
         try:
             process.terminate()
             process.wait(timeout=10)
-        except Exception:  # noqa: BLE001 - 终止失败时尽力清理，不掩盖原始取消意图
+        except (OSError, subprocess.TimeoutExpired):
             try:
                 process.kill()
-            except Exception:  # noqa: BLE001
-                pass
+                process.wait(timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                return process.poll() is not None
+        return process.poll() is not None
 
     # ---------- 应用更新请求（由启动器执行真正切换） ----------
 

@@ -22,12 +22,9 @@ def _write_progress(path: Path, payload: dict) -> None:
 
 def _percent(value: Any) -> int:
     try:
-        number = float(value)
-    except (TypeError, ValueError):
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError, OverflowError):
         return 0
-    if 0 <= number <= 1:
-        number *= 100
-    return max(0, min(100, int(number)))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1248,19 +1248,21 @@ class UpdateService:
             )
         except Exception as exc:  # noqa: BLE001 - 下载失败必须如实落盘
             result = {"status": "failed", "message": str(exc) or "下载失败"}
-        finally:
-            with self._lock:
+        with self._lock:
+            try:
+                status = str(result.get("status") or "failed")
+                if status == "completed":
+                    # SDK 只报告处理百分比，不代表实际网络下载字节数。
+                    self._report_velopack_progress({"percent": 100})
+                    self._finish_download("completed")
+                elif status == "cancelled":
+                    self._finish_download("cancelled", error=str(result.get("message") or "下载已取消"))
+                else:
+                    self._finish_download("failed", error=str(result.get("message") or "下载失败"))
+            finally:
+                # 最终状态落盘后才允许新下载覆盖状态。
                 self._downloading = False
                 self._download_cancel = None
-        status = str(result.get("status") or "failed")
-        if status == "completed":
-            # SDK 已完成校验并落盘；安装前仍会再次确认待安装资产版本。
-            self._finish_download("completed", downloaded=self._download_state.get("total") or 0)
-            return
-        if status == "cancelled":
-            self._finish_download("cancelled", error=str(result.get("message") or "下载已取消"))
-            return
-        self._finish_download("failed", error=str(result.get("message") or "下载失败"))
 
     def _report_velopack_progress(self, state: dict) -> None:
         if not isinstance(state, dict):
@@ -1269,10 +1271,8 @@ class UpdateService:
         if not isinstance(percent, (int, float)):
             return
         with self._lock:
-            total = int(self._download_state.get("total") or 0)
             self._download_state = {
                 **self._download_state,
-                "downloaded": int(total * float(percent) / 100) if total else 0,
                 "progress": max(0, min(100, int(percent))),
             }
 
