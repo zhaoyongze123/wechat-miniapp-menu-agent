@@ -144,23 +144,31 @@ python3 deploy/tools/workspace_audit.py --repo <主仓路径> --json # 机器可
 
 | 指标 | 治理前 | 治理后 |
 | --- | --- | --- |
-| 主仓 | `1ef91cc`，落后 `origin/main` 235 个提交，2 个已跟踪文件与 1 个日志脏改 | `4b06f0a`，领先 0 / 落后 0 |
-| 注册 Worktree | 16 | 4（主仓 + #101 + #102 + #103 跟进） |
-| 回收 | — | 13 个，释放约 2.4 GB |
-| 保护 | 3 个未推送分支、2 个 stash、4 个工作区补丁与未跟踪文件 | 5 个远端 `backup/105-mac-*` 分支 + `archive/development/issue105-mac/` |
+| 主仓 | `1ef91cc`，落后 `origin/main` 235 个提交，2 个已跟踪文件与 1 个日志脏改 | `9e2b88b`，领先 0 / 落后 0；无靠 `.git/info/exclude` 掩盖的目录 |
+| 注册 Worktree | 16 | 3（主仓 + #101 + #102，均属未关闭 Issue） |
+| 旧克隆 | `/private/tmp/menu-agent-pr25.*` 及 22 个同源 Worktree，实测 4.16 GB | 已回收，`df` 释放 2.78 GB |
+| 旧运行环境 | launchd `com.yipu.menu-capture`（PID 1320），数据 5.2 GB | 服务停止、启动项移除；数据归档，删除可重建部分 0.68 GB |
+| 保护 | 3 个未推送分支、2 个 stash、4 个工作区补丁 | 5 个远端 `backup/105-mac-*` 分支、`archive/development/issue105-mac/`、`archive/development/issue105-mac-clones/`、`archive/legacy/mac-legacy-runner/` |
 
-保留：`/private/tmp/menu-agent-issue101`、`/private/tmp/menu-agent-issue102`、`/private/tmp/menu-agent-pr103`（活跃开发，任务完成后按第 4 节回收）。
+旧克隆归档：`menu-agent-pr25.bundle`（56 MB，`git bundle verify` 报告完整历史）、31 个独有提交（23 个分支头）逐个验证可读取、3 个未提交补丁（反向应用校验通过）、2 个构建候选包与浏览器测试证据，合计 58 MB；未推送任何内容到远端，未保留完整仓库副本。
 
-另有 11 个 `/private/tmp` 旧克隆工作区（指向 `menu-agent-pr25.*` 旧克隆，非本仓库注册 Worktree），含未推送历史分支，本次未删除，待确认后处理。
-
-遗留说明：Mac 主仓内仍有旧布局目录 `UFS_Menu_Scraper/`（约 5.8 GB 运行数据）与 `UFS_Menu_Capture_CrossPlatform/`（约 5.8 MB），被一个持续运行的开发服务引用，未迁移、未删除；待 Velopack 迁移完成后随生产环境解耦一并处理。
+旧运行环境：任务库 1380 条、最后写入 2026-11-09，停止前无连接、无请求日志，判定为淘汰的开发服务。`data/`（含 4.2 GB 素材、3807 个文件，`integrity_check=ok`）与凭证配置整体移入 `archive/legacy/mac-legacy-runner/`，权限 600；素材未与生产 Hub 逐哈希比对，按“价值未证明可丢弃”保留。
 
 ### Windows
 
 | 指标 | 治理前 | 治理后 |
 | --- | --- | --- |
-| 主仓 | `D:\menu-agent`，11 个注册 Worktree | 3 个 Worktree（主仓 + #105 + #103） |
-| 回收 | — | 10 个，另清理缓存 1.73 GB |
-| 保护 | 独有提交 2 个、pr30 补丁、deploy/hub 未跟踪配置、governance-playwright 证据 | `backup/105-windows-baseline-sync`、`backup/105-windows-qr-handoff`、`archive/development/issue105-*` |
+| 主仓 | `D:\menu-agent`，`bf03388`，落后 145 个提交 | `9e2b88b`，领先 0 / 落后 0（`fetch` + `merge --ff-only`） |
+| 注册 Worktree | 3（主仓 + #105 + #103） | 2（主仓 + #103 活跃区） |
+| 旧治理分支 | `chore/105-storage-governance @ a165f1a`，PR #107 | 本地与远端分支已删除，PR #107 关闭；补丁归档 |
+| 保护 | `work/` 未跟踪 | `work/` 全量备份至 `archive/development/issue105-workdir/`（234,200,210 字节一致） |
 
-有意保留：`D:\MenuCapture`（正式交付，原地）、`D:\menu-agent-backups\issue88-*`（#88 回滚点，验收后 30 天）、`D:\handoff\menu-hub-migration-*`（迁移恢复点）、`D:\menu-agent\hub-data`（待确认是否被 Docker 卷取代）、`UFS_Menu_Scraper/macos_runner\.venv`（被计划任务引用）。
+主仓同步不触及生产：Worker 0.3.4 从 `runtime/MenuCapture/releases/0.3.4` 运行，数据在 `data/MenuCapture`，两者均未被 Git 跟踪；同步后 `/healthz` 返回 200。
+
+### 剩余风险与未完成项
+
+1. `D:\menu-agent\UFS_Menu_Scraper`（13.76 GB，含素材）与 `UFS_Menu_Capture_CrossPlatform`（5.8 MB）仍在主仓内，被计划任务的 `.venv` 入口引用；已按规范加入本机 `.git/info/exclude` 过渡防误提交，待 #101 生产迁移窗口移出并修正计划任务引用。
+2. `archive/legacy/mac-legacy-runner/data/materials`（4.2 GB）未与生产 Hub 做逐哈希比对，暂按独有业务数据保留，不自动删除。
+3. `D:\menu-agent-backups\issue88-*`、`D:\handoff\menu-hub-migration-*` 与 `D:\menu-agent\hub-data` 按 30 天保留期继续观察，尚未证明可回收。
+4. Windows Worker `/api/version` 响应缓慢为既有问题；另有 0.3.3 残留 updater 进程（PID 23880），均未在本次重启或清理。
+5. `/private/tmp/menu-agent-issue101` 与 `issue102` 属未关闭 Issue，Issue 结束后按第 4 节回收。
