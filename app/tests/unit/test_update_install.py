@@ -37,7 +37,8 @@ class FakeBackend:
     def prepare_recovery_package(self, previous_version: str, previous_commit: str, target: dict) -> dict:
         path = self.data_dir / "recovery" / "old.nupkg"
         return {
-            "version": previous_version, "commit": previous_commit, "name": path.name,
+            "version": previous_version, "commit": previous_commit, "channel": "stable",
+            "name": path.name,
             "size": 1, "sha256": "c" * 64, "path": str(path),
             "source": {"type": "test"},
             "inner_manifest": {"version": previous_version, "commit": previous_commit},

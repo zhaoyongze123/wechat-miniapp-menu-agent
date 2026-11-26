@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from contextlib import closing
 from datetime import datetime
@@ -427,7 +428,13 @@ def database_unchanged(data_dir: Path, snapshot: dict, workdir: Path) -> bool:
         probe.unlink(missing_ok=True)
 
 
-def prepare_verify_home(data_root: Path, destination: Path, *, transaction_id: str) -> dict:
+def prepare_verify_home(
+    data_root: Path,
+    destination: Path,
+    *,
+    transaction_id: str,
+    forbidden_roots: tuple[Path, ...] = (),
+) -> dict:
     """构造隔离验证目录：数据库用一致性副本，配置/身份文件只复制小文件。"""
     data_root = Path(data_root)
     destination = Path(destination)
@@ -436,6 +443,12 @@ def prepare_verify_home(data_root: Path, destination: Path, *, transaction_id: s
     if (destination == data_root or destination.is_relative_to(data_root)
             or data_root.is_relative_to(destination)):
         raise ValueError("隔离验证目录必须与生产数据目录完全分离")
+    for forbidden in forbidden_roots:
+        resolved_forbidden = Path(forbidden).resolve()
+        if (destination == resolved_forbidden
+                or destination.is_relative_to(resolved_forbidden)
+                or resolved_forbidden.is_relative_to(destination)):
+            raise ValueError(f"隔离验证目录不得与受保护安装目录重叠：{resolved_forbidden}")
     if destination.exists():
         raise ValueError(f"隔离验证目录已存在，拒绝复用旧副本：{destination}")
     destination.mkdir(parents=True)
@@ -556,10 +569,47 @@ def request_verify_exit(port: int, token: str, *, transaction_id: str, target_ve
         return False
 
 
-def request_worker_shutdown(port: int, token: str, *, transaction_id: str,
-                            target_version: str) -> bool:
+def request_worker_shutdown_result(port: int, token: str, *, transaction_id: str,
+                                   target_version: str) -> tuple[str, str]:
+    """区分明确接受、明确拒绝（HTTP 错误）与传输/响应丢失，避免响应丢失误解锁。"""
     request = urllib.request.Request(
         f"http://127.0.0.1:{int(port)}/api/internal/shutdown",
+        data=json.dumps({"transaction_id": transaction_id,
+                         "target_version": target_version}).encode("utf-8"),
+        method="POST",
+        headers={"X-Coordinator-Token": token, "Content-Type": "application/json"},
+    )
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=10) as response:
+            payload = json.loads(response.read())
+            if payload.get("ok") is True:
+                return "accepted", ""
+            return "rejected", str(payload.get("detail") or payload.get("message") or "Worker 拒绝受控关闭")
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read(4096).decode("utf-8", errors="replace")
+            parsed = json.loads(body)
+            detail = str(parsed.get("detail") or parsed.get("message") or body)
+        except Exception:  # noqa: BLE001
+            detail = f"HTTP {exc.code}"
+        return "rejected", detail
+    except Exception as exc:  # noqa: BLE001 - 网络中断、超时或响应截断均属传输不确定
+        return "transport_error", str(exc)
+
+
+def request_worker_shutdown(port: int, token: str, *, transaction_id: str,
+                            target_version: str) -> bool:
+    outcome, _detail = request_worker_shutdown_result(
+        port, token, transaction_id=transaction_id, target_version=target_version)
+    return outcome == "accepted"
+
+
+def request_release_business_gate(port: int, token: str, *, transaction_id: str,
+                                  target_version: str) -> bool:
+    """仅在事务 completed/rolled_back 后放行真实 Worker 的后台业务与同步服务。"""
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{int(port)}/api/internal/release-business-gate",
         data=json.dumps({"transaction_id": transaction_id,
                          "target_version": target_version}).encode("utf-8"),
         method="POST",

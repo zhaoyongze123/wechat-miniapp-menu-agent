@@ -184,9 +184,16 @@ class VelopackBackend:
             partial.unlink(missing_ok=True)
 
     def prepare_recovery_package(self, previous_version: str, previous_commit: str,
-                                 target: dict) -> dict:
-        """从上一版正式 Release 核验并复制旧 full 包；无法证明身份则拒绝。"""
-        channel = "preview" if str(target.get("channel") or "").endswith("preview") else "stable"
+                                 target: dict, *, previous_channel: str | None = None) -> dict:
+        """从上一版正式 Release 核验并复制旧 full 包；使用旧版实际发布渠道而非目标渠道。"""
+        if previous_channel is not None:
+            channel = str(previous_channel).strip().lower()
+        else:
+            from menu_capture.updates.updates import Version
+
+            channel = "preview" if Version.parse(previous_version).is_prerelease else "stable"
+        if channel not in {"stable", "preview"}:
+            raise VelopackError("旧版恢复包发布渠道无效")
         manifest = self.fetch_release_manifest(previous_version, channel)
         if str(manifest.get("git_commit") or "") != previous_commit:
             raise VelopackError("旧版正式发布 commit 与当前运行版本不一致")
@@ -237,6 +244,7 @@ class VelopackBackend:
             pass
         return {
             "version": previous_version, "commit": previous_commit,
+            "channel": channel,
             "name": full["name"], "size": full["size"], "sha256": full["sha256"],
             "path": str(destination), "source": source,
             "inner_manifest": {
@@ -271,11 +279,14 @@ class VelopackBackend:
             raise VelopackError("恢复包内部发布清单已变化")
         return path
 
-    def rollback(self, asset: dict, *, channel: str) -> None:
-        """仅供外部恢复协调器在复核数据库与包后调用；使用官方 updater 应用旧 full 包。"""
+    def rollback(self, asset: dict, *, channel: str | None = None) -> None:
+        """仅供外部恢复协调器在复核数据库与包后调用；使用官方 updater 与旧包实际渠道应用旧 full 包。"""
         if not self.available():
             raise VelopackError("当前不是 Velopack 安装环境")
         package = self.verify_recovery_package(asset)
+        recovery_channel = str(asset.get("channel") or "").strip().lower()
+        if channel is not None and str(channel).strip().lower() != recovery_channel:
+            raise VelopackError("回滚渠道与恢复包实际发布渠道不一致")
         # 官方 updater 从 packages 目录按文件名取包；先复制并再次校验。
         target_path = self._packages_dir() / asset["name"]
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,7 +303,7 @@ class VelopackBackend:
             FileName=asset["name"], SHA1="", SHA256=asset["sha256"],
             Size=int(asset["size"]), NotesMarkdown="", NotesHtml="",
         )
-        self.manager(channel).wait_exit_then_apply_updates(
+        self.manager(recovery_channel).wait_exit_then_apply_updates(
             old, silent=True, restart=True, restart_args=None,
         )
 

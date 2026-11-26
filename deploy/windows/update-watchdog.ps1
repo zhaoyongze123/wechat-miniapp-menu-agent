@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 独立于 Velopack current 目录运行的恢复看门狗。
 
@@ -7,7 +7,10 @@
 且事务（包括 stopping 阶段）超过约定的无进展时限，则在安装事务锁内把状态推进到 recovery_required。
 #>
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$ControlFile)
+param(
+    [Parameter(Mandatory)][string]$ControlFile,
+    [switch]$Once
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -39,15 +42,17 @@ function Write-WatchdogLog {
 }
 
 function Get-ProcessIdentityState {
-    param([int]$Pid, [double]$StartedAt, [string]$ExpectedExecutable)
-    if ($Pid -le 0 -or $StartedAt -le 0) { return 'unknown' }
+    param([int]$ProcessId, [double]$StartedAt, [string]$ExpectedExecutable)
+    if ($ProcessId -le 0 -or $StartedAt -le 0) { return 'unknown' }
+    $process = $null
     try {
-        $process = Get-Process -Id $Pid -ErrorAction Stop
+        $process = [Diagnostics.Process]::GetProcessById($ProcessId)
+        if ($process.HasExited) { return 'dead' }
         $actualStart = [DateTimeOffset]$process.StartTime.ToUniversalTime()
         $actualEpoch = $actualStart.ToUnixTimeMilliseconds() / 1000.0
         if ([Math]::Abs($actualEpoch - $StartedAt) -gt 0.25) { return 'dead' }
         if ($ExpectedExecutable) {
-            $actualPath = $process.Path
+            $actualPath = $process.MainModule.FileName
             if (-not $actualPath) { return 'unknown' }
             if (-not [string]::Equals($actualPath, $ExpectedExecutable,
                     [StringComparison]::OrdinalIgnoreCase)) { return 'dead' }
@@ -57,6 +62,32 @@ function Get-ProcessIdentityState {
         return 'dead'
     } catch {
         # 权限、WMI 或进程查询异常均为 unknown，绝不据此接管或宣告退出。
+        return 'unknown'
+    } finally {
+        if ($null -ne $process) { $process.Dispose() }
+    }
+}
+
+function Get-UpdaterProcessState {
+    param([string]$InstallRoot)
+    if ([string]::IsNullOrWhiteSpace($InstallRoot)) { return 'unknown' }
+    try {
+        $expectedPath = [IO.Path]::GetFullPath((Join-Path $InstallRoot 'Update.exe'))
+        $candidates = @(Get-Process -Name 'Update' -ErrorAction SilentlyContinue)
+        foreach ($proc in $candidates) {
+            try {
+                $procPath = $proc.Path
+                if (-not $procPath) { return 'unknown' }
+                if ([string]::Equals([IO.Path]::GetFullPath($procPath), $expectedPath,
+                        [StringComparison]::OrdinalIgnoreCase)) {
+                    return 'running'
+                }
+            } catch {
+                return 'unknown'
+            }
+        }
+        return 'stopped'
+    } catch {
         return 'unknown'
     }
 }
@@ -78,21 +109,29 @@ function Set-RecoveryRequired {
         if (-not $locked) { return }
 
         $journal = Get-Content -LiteralPath $JournalPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($journal.transaction_id -ne $Control.transaction_id
-                -or $journal.target_version -ne $Control.target_version
-                -or $journal.target_commit -ne $Control.target_commit
-                -or $journal.previous_version -ne $Control.previous_version
-                -or $journal.previous_commit -ne $Control.previous_commit
-                -or $journal.status -notin @('applying', 'verifying', 'rolling_back')) {
+        if ($journal.transaction_id -ne $Control.transaction_id -or
+                $journal.target_version -ne $Control.target_version -or
+                $journal.target_commit -ne $Control.target_commit -or
+                $journal.previous_version -ne $Control.previous_version -or
+                $journal.previous_commit -ne $Control.previous_commit -or
+                $journal.status -notin @('stopping', 'applying', 'verifying', 'rolling_back')) {
             return
         }
+        $observedOwner = [string]$journal.owner_token
+        if ([string]::IsNullOrWhiteSpace($observedOwner)) { return }
         $coordinator = $journal.coordinator
         if ($null -eq $coordinator -or $null -eq $coordinator.pid -or
                 $null -eq $coordinator.process_started_at) { return }
         $coordinatorPid = [int]$coordinator.pid
         $coordinatorStarted = [double]$coordinator.process_started_at
-        $state = Get-ProcessIdentityState -Pid $coordinatorPid -StartedAt $coordinatorStarted
+        $state = Get-ProcessIdentityState -ProcessId $coordinatorPid -StartedAt $coordinatorStarted
         if ($state -ne 'dead') { return }
+
+        $updaterState = Get-UpdaterProcessState -InstallRoot ([string]$Control.install_root)
+        if ($updaterState -ne 'stopped') {
+            Write-WatchdogLog -Path $LogPath -Message "官方 updater 状态为 $updaterState，暂不写入 recovery_required。"
+            return
+        }
 
         $updated = [DateTimeOffset]::MinValue
         if (-not [DateTimeOffset]::TryParse([string]$journal.updated_at, [ref]$updated)) { return }
@@ -100,7 +139,7 @@ function Set-RecoveryRequired {
         if ($age -lt [double]$Control.stale_after_seconds) { return }
 
         $journal.status = 'recovery_required'
-        $journal.error = '外部看门狗确认安装协调器已退出且事务长时间无进展'
+        $journal.error = '外部看门狗确认安装协调器与官方 updater 均已退出且事务长时间无进展'
         $journal.message = '保留恢复闸门；看门狗不会自行切换版本或解包恢复包'
         $journal.finished_at = ''
         $journal.updated_at = [DateTimeOffset]::UtcNow.ToString('o')
@@ -109,12 +148,16 @@ function Set-RecoveryRequired {
             -NotePropertyValue ([DateTimeOffset]::UtcNow.ToString('o')) -Force
         $journal.evidence | Add-Member -NotePropertyName watchdog_owner_pid `
             -NotePropertyValue $WatchdogPid -Force
+        $journal.evidence | Add-Member -NotePropertyName failed_owner_token `
+            -NotePropertyValue $observedOwner -Force
         $journal.evidence | Add-Member -NotePropertyName failed_coordinator_pid `
             -NotePropertyValue $coordinatorPid -Force
         $journal.evidence | Add-Member -NotePropertyName failed_coordinator_started_at `
             -NotePropertyValue $coordinatorStarted -Force
         $journal.evidence | Add-Member -NotePropertyName watchdog_observed_state `
             -NotePropertyValue $state -Force
+        $journal.evidence | Add-Member -NotePropertyName watchdog_updater_state `
+            -NotePropertyValue $updaterState -Force
         Write-JsonAtomic -Path $JournalPath -Payload $journal
         Write-WatchdogLog -Path $LogPath -Message '事务已进入 recovery_required；等待人工恢复。'
     } catch {
@@ -137,7 +180,7 @@ $recoveryRoot = Split-Path -Parent (Resolve-Path -LiteralPath $ControlFile).Path
 $logPath = Join-Path $recoveryRoot 'watchdog.log'
 $readyPath = Join-Path $recoveryRoot 'watchdog-ready.json'
 $journalPath = Join-Path $control.data_root 'data\update-install.json'
-$lockPath = "$journalPath.lock"
+$lockPath = [IO.Path]::ChangeExtension($journalPath, '.lock')
 $selfPid = $PID
 $selfProcess = Get-Process -Id $selfPid -ErrorAction Stop
 $selfStarted = ([DateTimeOffset]$selfProcess.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds() / 1000.0
@@ -163,5 +206,6 @@ while ($true) {
     } catch {
         Write-WatchdogLog -Path $logPath -Message "监控事务失败，保持恢复闸门：$_"
     }
+    if ($Once) { break }
     Start-Sleep -Seconds 5
 }

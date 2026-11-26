@@ -124,6 +124,8 @@ def validate_local_asset(asset, *, version, commit):
         raise ValueError("恢复包大小或 SHA-256 无效")
     if asset.get("version") != version or asset.get("commit") != commit:
         raise ValueError("恢复包版本或 commit 与可信来源不一致")
+    if asset.get("channel") not in {"stable", "preview"}:
+        raise ValueError("恢复包发布渠道无效")
     if not isinstance(asset.get("path"), str) or not asset["path"]:
         raise ValueError("恢复包路径缺失")
     if not isinstance(asset.get("source"), dict) or not asset["source"]:

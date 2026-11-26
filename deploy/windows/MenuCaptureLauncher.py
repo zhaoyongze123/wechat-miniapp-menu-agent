@@ -17,6 +17,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -620,9 +621,46 @@ def _stop_worker_before_recovery(ctx: Context, journal: dict, worker: WorkerHand
     return False, detail
 
 
+def _verify_home_path(data_root: Path, transaction_id: str) -> Path:
+    """为候选版本生成与真实 data_root、install_root/current/packages 完全分离的隔离根目录。"""
+    resolved_data = Path(data_root).resolve()
+    protected = (
+        resolved_data,
+        _install_root().resolve(),
+        _current_dir().resolve(),
+        (_install_root() / "packages").resolve(),
+    )
+
+    def _overlaps(candidate: Path) -> bool:
+        resolved = candidate.resolve()
+        return any(
+            resolved == root or resolved.is_relative_to(root) or root.is_relative_to(resolved)
+            for root in protected
+        )
+
+    override = str(os.environ.get("MENU_CAPTURE_VERIFY_ROOT") or "").strip()
+    if override:
+        base = Path(override).expanduser()
+        candidate = base / f"verify-{transaction_id}"
+        if _overlaps(candidate):
+            raise ValueError(f"MENU_CAPTURE_VERIFY_ROOT 与生产数据或安装目录重叠：{candidate}")
+        return candidate
+
+    sibling = resolved_data.parent / f"{resolved_data.name}-verify" / f"verify-{transaction_id}"
+    if not _overlaps(sibling):
+        return sibling
+    fallback = Path(tempfile.gettempdir()).resolve() / "MenuCapture-verify" / f"verify-{transaction_id}"
+    if _overlaps(fallback):
+        raise ValueError(f"无法为候选验证分配独立根目录：{fallback}")
+    return fallback
+
+
 def _handle_prepared(ctx: Context, worker: WorkerHandle) -> str:
     from menu_capture.updates import recovery
 
+    journal = ctx.transaction.read()
+    # 先按事务所有权规则 claim，再做预检；否则预检失败无法合法写入 failed。
+    _claim(ctx, journal, "prepared")
     journal = ctx.transaction.read()
     current = _current_dir()
     manifest = recovery.release_manifest(current)
@@ -637,8 +675,6 @@ def _handle_prepared(ctx: Context, worker: WorkerHandle) -> str:
     except Exception as exc:  # noqa: BLE001
         _transition(ctx, journal, "failed", error=str(exc), message="安装资产复核失败，未停止 Worker")
         return "keep"
-    _claim(ctx, journal, "stopping")
-    journal = ctx.transaction.read()
     journal = _transition(ctx, journal, "stopping", evidence={
         "worker_pid": worker.pid, "launcher_pid": os.getpid(),
         "stopping_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
@@ -647,23 +683,44 @@ def _handle_prepared(ctx: Context, worker: WorkerHandle) -> str:
         journal = _transition(ctx, journal, "failed", error="外部恢复协调器未就绪",
                               message="未交接更新，保留旧 Worker")
         return "keep"
-    acknowledged = True
+    shutdown_outcome = "accepted"
+    shutdown_detail = ""
     if worker.poll() is None:
-        acknowledged = recovery.request_worker_shutdown(
+        shutdown_outcome, shutdown_detail = recovery.request_worker_shutdown_result(
             _port(), ctx.token, transaction_id=journal["transaction_id"],
             target_version=journal["target_version"])
-    if not acknowledged:
-        journal = _transition(ctx, journal, "failed", error="Worker 未确认受控关闭",
-                              message="未交接更新，保留旧 Worker")
-        return "keep"
-    ok, reason = _wait_worker_exit(worker)
-    if not ok:
-        _transition(ctx, journal, "recovery_required", error=reason,
-                    message="业务进程树未安全退出，禁止交接更新")
+    if shutdown_outcome == "rejected":
+        # 仅在 Worker 明确拒绝且进程仍存活时才回退为 failed 并保留旧 Worker。
+        if worker.poll() is None:
+            journal = _transition(ctx, journal, "failed",
+                                  error=shutdown_detail or "Worker 拒绝受控关闭",
+                                  message="未交接更新，保留旧 Worker")
+            return "keep"
+        _transition(ctx, journal, "recovery_required",
+                    error=f"Worker 拒绝关闭后进程状态异常：{shutdown_detail}",
+                    message="Worker 退出状态不确定，保持恢复闸门")
         return "recovery"
+    if shutdown_outcome == "transport_error":
+        # HTTP 响应丢失不等于 Worker 未停止：必须核验真实进程树与端口，未知时保持闸门。
+        ok, reason = _wait_worker_exit(worker)
+        if not ok or worker.poll() != 0:
+            _transition(
+                ctx, journal, "recovery_required",
+                error=f"Worker 关闭响应丢失且退出状态未确认（{shutdown_detail}）：{reason or f'退出码 {worker.poll()}'}",
+                message="关闭状态不确定，保持恢复闸门",
+            )
+            return "recovery"
+        _log(ctx.data_root, f"关闭响应丢失（{shutdown_detail}），但已通过 Job Object 与端口确认 Worker 正常退出")
+    else:
+        ok, reason = _wait_worker_exit(worker)
+        if not ok:
+            _transition(ctx, journal, "recovery_required", error=reason,
+                        message="业务进程树未安全退出，禁止交接更新")
+            return "recovery"
     journal = _transition(ctx, journal, "applying", evidence={
         "worker_exit_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
         "port_free": True, "job_active_processes": 0,
+        "shutdown_ack": shutdown_outcome,
         "updater_handoff_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
     }, message="业务已安全退出，交接官方 updater")
     ctx.backend.apply_pending(journal["target_asset"], channel=journal["channel"])
@@ -681,10 +738,13 @@ def _verify_candidate(ctx: Context, journal: dict) -> str:
         _transition(ctx, journal, "recovery_required", error=str(exc),
                     message="安装目录身份与事务目标不一致")
         return "recovery"
-    verify_home = ctx.data_root / "recovery" / f"verify-{journal['transaction_id']}"
     try:
-        recovery.prepare_verify_home(ctx.data_root, verify_home,
-                                     transaction_id=journal["transaction_id"])
+        verify_home = _verify_home_path(ctx.data_root, journal["transaction_id"])
+        recovery.prepare_verify_home(
+            ctx.data_root, verify_home,
+            transaction_id=journal["transaction_id"],
+            forbidden_roots=(_install_root(), current, _install_root() / "packages"),
+        )
     except Exception as exc:  # noqa: BLE001
         _transition(ctx, journal, "recovery_required", error=str(exc),
                     message="无法生成隔离验证数据副本")
@@ -741,6 +801,10 @@ def _verify_candidate(ctx: Context, journal: dict) -> str:
         "real_start_ok": True, "health_verified_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
         "installed_version": journal["target_version"], "installed_commit": journal["target_commit"],
     }, message="新版本已在真实数据上健康启动，安装完成")
+    if not recovery.request_release_business_gate(
+            _port(), ctx.token, transaction_id=journal["transaction_id"],
+            target_version=journal["target_version"]):
+        _log(ctx.data_root, "事务已完成，但放行后台业务闸门请求未获确认")
     ctx.worker = normal
     _log(ctx.data_root, "新版本安装验证完成，业务 Worker 继续运行")
     return "running"
@@ -773,7 +837,8 @@ def _rollback_or_recovery(ctx: Context, journal: dict, reason: str) -> str:
                     message="无法安全执行回滚")
         return "recovery"
     try:
-        ctx.backend.rollback(journal["recovery_asset"], channel=journal["channel"])
+        recovery_channel = str(journal["recovery_asset"].get("channel") or "").strip().lower()
+        ctx.backend.rollback(journal["recovery_asset"], channel=recovery_channel)
     except Exception as exc:  # noqa: BLE001 - updater 失败时保留唯一恢复闸门
         _transition(ctx, journal, "recovery_required", error=f"官方 updater 回滚失败：{exc}",
                     message="回滚交接失败，保留恢复闸门等待人工确认")
@@ -833,6 +898,10 @@ def _handle_after_update(ctx: Context) -> str:
         _transition(ctx, journal, "rolled_back", evidence={
             "rollback_verified_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())},
             message="回滚完成，旧版本健康运行")
+        if not recovery.request_release_business_gate(
+                _port(), ctx.token, transaction_id=journal["transaction_id"],
+                target_version=journal["previous_version"]):
+            _log(ctx.data_root, "回滚已完成，但放行后台业务闸门请求未获确认")
         _log(ctx.data_root, "回滚完成，旧版本继续运行")
         return "running"
     else:
@@ -924,9 +993,16 @@ def main(argv: list[str] | None = None) -> int:
             elif status == "prepared":
                 if worker is None or worker.poll() is not None:
                     worker = _start_worker(data_root, token, stop_nonce=stop_nonce)
-                outcome = _handle_prepared(ctx, worker)
+                try:
+                    outcome = _handle_prepared(ctx, worker)
+                except (RuntimeError, TransactionError) as exc:
+                    _log(data_root, f"准备阶段所有权接管或事务更新失败：{exc}")
+                    _message("更新事务所有权校验失败，已保留恢复闸门。")
+                    return 3
                 if outcome == "exit":
                     return 0
+                if outcome == "recovery":
+                    return 3
             elif status == "stopping":
                 # 旧启动器停止后由外部协调器收尾；这里不并发启动业务。
                 return 3

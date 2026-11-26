@@ -112,10 +112,12 @@ Windows 的差分、重建与安装已交给 Velopack，不再由本项目生成
 - `data/update-install.json` 为唯一安装事务事实源，事务带 schema_version、transaction_id、目标发布资产身份、数据库结构基线。跨进程短时锁与原子替换保护状态迁移；陈旧请求不得覆盖新事务。
 - Worker 关闭入口仅接受本机 HTTP POST、协调令牌、合法 stopping 事务及匹配目标版本；重新检查采集和标注空闲。旧 update-apply-request、update-apply-state、rollback-request 不再驱动安装。
 - 超时只用于诊断，不解除业务闸门；仅版本字符串相等不能完成安装。未知状态和损坏记录保持恢复阻断。
-- 恢复看门狗位于 `data/recovery`，必须先复制自当前受信发布并完成 nonce/PID/创建时间 ready 握手。它只在协调器确证退出且事务长时间无进展时写入 `recovery_required`，不自行解包、切换目录或回滚。
-- 验证候选版本时，使用 SQLite backup API（包含 WAL 已提交事务）创建与生产数据目录隔离的副本；缺少主库、数据库清单为空、复制失败、结构或核心业务表行数不一致均拒绝成功。真实数据只在隔离验证通过且后续业务健康门禁满足时才允许完成事务。
+- 恢复看门狗位于 `data/recovery`，必须先复制自当前受信发布并完成 nonce/PID/创建时间 ready 握手。它与 Python 共用同一字节锁（`data/update-install.lock`），在锁内重读事务、确认协调器已退出且官方 `Update.exe` 已停止并超过无进展时限后写入 `recovery_required`，**定位为独立于 `current` 的故障检测器**，不自行解包、切换目录或回滚；新启动器完全无法启动时按下方受控人工恢复 SOP 处置（不宣称已验证无人值守自动恢复）。
+- 验证候选版本时，使用 SQLite backup API（包含 WAL 已提交事务）在**与 `data_root`、`current`、`packages` 完全分离的独立目录**创建一致性副本；缺少主库、数据库清单为空、复制失败、结构或核心业务表行数不一致均拒绝成功。真实 Worker 在 `verifying` 阶段启动时，`TaskStore` 初始化与后台业务/同步写入（`recover_publishes`、`store.recover`、`materials`、`shared worker`、`connections`、`resume_schedule`）明确分离，须待事务进入 `completed` 并通过本机 `/api/internal/release-business-gate` 放行后才启动后台业务服务。
+- 准备阶段（`prepared`）先按事务所有权规则 `claim` 再做预检，确保预检失败合法落盘为 `failed` 并保留旧 Worker；HTTP shutdown 响应丢失时核验真实进程树与端口，状态不确定一律进入 `recovery_required`，绝不直接 `failed` 解锁。
+- 恢复包严格使用 `previous_version` 的实际发布渠道（支持 `stable -> preview`、`preview -> stable` 与同渠道），并在 `recovery_asset.channel` 中持久化，回滚时按旧包实际渠道调用 SDK。
 - 回滚前要求候选 Worker 通过受控本机 API 确认关闭，并验证 Job Object 进程树退出且业务端口释放。停止失败或进程状态未知时保持 `recovery_required`，不得启动 updater。
-- 直接 `--rollback-to` 已禁用。真实 Windows 验收、固定发布公钥引导、数据库迁移兼容及 Inno 迁移收口完成前，不恢复生产自动安装。历史 Inno 验收不构成新框架通过证据。
+- 直接 `--rollback-to` 已禁用。真实 Windows 验收、固定发布公钥引导、数据库迁移兼容及 Inno 迁移脚本/实机验证完成前，不恢复生产自动安装。历史 Inno 验收不构成新框架通过证据。
 
 ## Hub 镜像更新执行器（宿主机，需显式部署）
 
@@ -196,7 +198,12 @@ Windows 的差分、重建与安装已交给 Velopack，不再由本项目生成
 1. **首次 Inno → Velopack 迁移**：记录并保护实际 MENU_CAPTURE_HOME、设备身份、配置、数据库和待补传数据；确认业务空闲后停止旧 Worker 与登录入口，保留旧程序和可恢复资料。独立安装经验证的新 Setup，复用原数据目录，核对版本、commit、配对和数据后再清理旧入口。失败恢复旧入口，不先卸载旧版。新 Setup 不进入旧 windows_installer 清单，全局 min_supported_version 不为迁移而抬高。
 2. **日常升级**：Hub 保持受控更新；Windows 真实安装和恢复验证完成前仅允许检查/受控下载，不启用自动切换。暂停但未结束的业务轮次也阻止安装。
 3. **升级前备份**：保留可信旧版完整包、配置、数据、设备身份与待补传结果。结构一致不等于数据语义一定兼容。
-4. **回滚**：Windows 直接切换入口已禁用，独立恢复协调器未完成时转人工恢复；不得猜测旧包或运行未经核验的 Update.exe 命令。Hub 使用执行器 POST /rollback。
+4. **回滚与 `current` 外受控人工恢复 SOP**：Windows 直接切换入口已禁用。当新启动器完全无法启动或事务进入 `recovery_required` 时，运维在 `current` 之外按以下顺序执行受控人工恢复（不得解包或手工覆盖 `current`）：
+   1. **确认进程与更新器均已停止**：核对 `MenuCapture.exe`、`python.exe`（业务 Worker）与 `<install_root>\Update.exe` 均已退出，且业务端口（默认 `8765`）未被占用；若 `Update.exe` 仍在运行则等待其结束，禁止并发干预。
+   2. **审计事务与数据库基线**：读取 `<data_root>\data\update-install.json`（确认 `transaction_id`、`previous_version`、`previous_commit`、`recovery_asset` 与 `schema_baseline.snapshot.sha256`）及 `<data_root>\recovery\watchdog.log`；对当前 `<data_root>\data\tasks.sqlite3` 做只读 SQLite backup 后比对 SHA-256。若数据库已发生前向变更或存在待补传/新增业务数据，必须先备份整份 `<data_root>\data` 并评估兼容性，禁止盲目覆盖。
+   3. **核验可信恢复包**：定位 `recovery_asset.path`（位于 `<data_root>\data\recovery\<version>-<sha12>\*.nupkg`），用 `Get-FileHash -Algorithm SHA256` 核对与 `recovery_asset.sha256` 一致，并确认包内 `release-manifest.json` 的 `version`/`git_commit` 与 `previous_version`/`previous_commit` 一致；将已核验的 `.nupkg` 复制到 `<install_root>\packages\` 并再次核对 SHA-256。
+   4. **通过官方更新器恢复并复核**：仅在确认恢复包与数据库兼容后，调用官方 `<install_root>\Update.exe`（或对应旧版经验证的官方 `Setup.exe`）完成受控安装；启动后核对 `/healthz`、`/api/version`（版本与 commit 回到 `previous_version`/`previous_commit`）与 `tasks.sqlite3` 完整性，最后留存人工恢复审计记录后再解除 `update-install.json` 恢复闸门。
+   - Hub 回滚使用宿主机执行器 `POST /rollback`。
 5. **存储清理**：先 `GET /api/updates/cleanup` 预览，再以 `confirm: "cleanup"` 确认；安装/下载
    期间拒绝清理。Hub 镜像与归档执行 `python3 hub_retention.py --keep 3` 预览，确认后加
    `--apply --confirm prune`。绝不删除数据卷、Docker 容器或业务素材。

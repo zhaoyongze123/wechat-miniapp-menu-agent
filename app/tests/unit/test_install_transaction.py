@@ -12,7 +12,7 @@ TARGET_COMMIT = "b" * 40
 
 def create(tx):
     recovery = {
-        "version": PREVIOUS_VERSION, "commit": PREVIOUS_COMMIT,
+        "version": PREVIOUS_VERSION, "commit": PREVIOUS_COMMIT, "channel": "stable",
         "name": "Yipu.MenuCapture.0.3.4-full.nupkg", "size": 1, "sha256": "c" * 64,
         "path": "/data/recovery/0.3.4/Yipu.MenuCapture.0.3.4-full.nupkg",
         "source": {"type": "official-release", "url": "https://github.com/owner/repo/releases/download/v0.3.4"},

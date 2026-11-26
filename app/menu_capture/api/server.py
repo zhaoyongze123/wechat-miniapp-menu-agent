@@ -119,11 +119,6 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                          clipboard_text_preparer=prepare_clipboard_text,
                          ocr_reader=image_ocr, qr_detector=qr_boxes, debug_log=debug_log,
                          usage_ledger=model_usage)
-    if not verify_only:
-        # 先恢复目录替换事务，再把非事务中的中断任务标为待检查，避免新结果覆盖旧结果后被误判回滚。
-        runner.recover_publishes()
-        # 服务重启后不能沿用“运行中”状态，更不能自动重放上一次的桌面动作。
-        store.recover()
     control_lock = threading.RLock()
     materials = MaterialService(root / "data", configs, store)
     hub = SharedHub(store, materials) if role == "hub" else None
@@ -227,7 +222,39 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     runner.update_blocked = install.active
     annotations.update_gate = install.gate
     annotations.update_blocked = install.active
-    updates.resume_schedule()
+    # 真实数据迁移提交点（TaskStore 初始化）与业务/同步后台写入显式分离：
+    # 隔离验证或安装事务仍处于 verifying/applying/rolling_back/recovery_required 时，
+    # 禁止 recover_publishes、store.recover、materials、shared worker、connections 与 schedule 写入。
+    business_gate_active = bool(verify_only or (role == "worker" and install.active_nonblocking()))
+    business_started = False
+    business_lock = threading.Lock()
+
+    def _activate_business_services(*, start_runtime: bool) -> None:
+        nonlocal business_started
+        with business_lock:
+            if business_started:
+                return
+            # 先恢复目录替换事务，再把非事务中的中断任务标为待检查，避免新结果覆盖旧结果后被误判回滚。
+            runner.recover_publishes()
+            # 服务重启后不能沿用“运行中”状态，更不能自动重放上一次的桌面动作。
+            store.recover()
+            updates.resume_schedule()
+            if start_runtime:
+                if role != "hub":
+                    threading.Thread(target=_warm_local_ocr, name="ocr-warmup", daemon=True).start()
+                materials.start_job_runner()
+                if delivery:
+                    delivery.start()
+                if worker:
+                    worker.start()
+                    if sys.platform == "win32":
+                        connections.connect()
+            business_started = True
+
+    if not business_gate_active:
+        runner.recover_publishes()
+        store.recover()
+        updates.resume_schedule()
     token = secrets.token_urlsafe(32)
     def _warm_local_ocr() -> None:
         """后台预热 Apple Vision：首次 OCR 要加载框架约 3-4 秒，别让它落在第一次截图之后。"""
@@ -246,9 +273,26 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
 
     @asynccontextmanager
     async def lifespan(app):
-        if verify_only:
-            # 隔离副本只验证启动、版本、健康与只读数据访问，不启动采集/分发/连接。
-            yield
+        if verify_only or business_gate_active:
+            # 隔离副本或安装验证门禁期间只开放健康/版本探测，不启动采集、分发、同步或连接。
+            try:
+                yield
+            finally:
+                if business_started:
+                    if delivery:
+                        delivery.stop()
+                    if worker:
+                        worker.close()
+                    try:
+                        materials.shutdown()
+                    except Exception:
+                        pass
+                    try:
+                        annotations.shutdown()
+                    except Exception:
+                        pass
+                    connections.close()
+                debug_log.close()
             return
         if role != "hub":
             threading.Thread(target=_warm_local_ocr, name="ocr-warmup", daemon=True).start()
@@ -298,6 +342,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     app.state.shared_hub = hub
     app.state.shared_worker = worker
     app.state.updates_install = install
+    app.state.business_gate_active = business_gate_active
     register_shared_routes(app, role, hub, worker, control_lock)
 
     # Only this exact internal protocol may bypass browser CSRF, and only with its own token.
@@ -366,6 +411,37 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                     raise HTTPException(409, "当前进程不支持受控关闭")
                 server.should_exit = True
                 return {"ok": True}
+
+        @app.post("/api/internal/release-business-gate")
+        def internal_release_business_gate(request: Request, payload: dict):
+            if verify_only:
+                raise HTTPException(409, "隔离验证副本不允许放行业务后台服务")
+            if request.client is None or request.client.host not in {"127.0.0.1", "::1"}:
+                raise HTTPException(403, "业务闸门放行仅允许本机连接")
+            provided = request.headers.get("x-coordinator-token", "")
+            if not hmac.compare_digest(provided.encode(), coordinator_token.encode()):
+                raise HTTPException(401, "协调令牌无效")
+            if set(payload) != {"transaction_id", "target_version"} or any(
+                not isinstance(value, str) or not value for value in payload.values()
+            ):
+                raise HTTPException(409, "放行参数无效")
+            try:
+                journal = install.transaction.read()
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(409, str(exc)) from None
+            status = journal.get("status")
+            expected_version = (
+                journal.get("target_version") if status == "completed"
+                else journal.get("previous_version") if status == "rolled_back"
+                else ""
+            )
+            if (journal.get("transaction_id") != payload["transaction_id"]
+                    or status not in {"completed", "rolled_back"}
+                    or expected_version != payload["target_version"]):
+                raise HTTPException(409, "安装事务尚未完成，拒绝放行业务后台服务")
+            _activate_business_services(start_runtime=True)
+            app.state.business_gate_active = False
+            return {"ok": True, "business_started": True}
 
         if verify_only:
             @app.post("/api/internal/verify-exit")
@@ -479,10 +555,17 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             and not is_remote and request.client is not None
             and request.client.host in {"127.0.0.1", "::1"}
         )
+        internal_release_gate_protocol = (
+            role == "worker" and bool(coordinator_token)
+            and path == "/api/internal/release-business-gate" and request.method == "POST"
+            and not is_remote and request.client is not None
+            and request.client.host in {"127.0.0.1", "::1"}
+        )
         if (request.method not in {"GET", "HEAD"} and not worker_protocol
                 and not internal_shutdown_protocol and not internal_recovery_protocol
                 and not internal_verify_protocol
-                and not internal_launcher_protocol):
+                and not internal_launcher_protocol
+                and not internal_release_gate_protocol):
             supplied = request.headers.get("x-capture-token", "")
             origin = request.headers.get("origin")
             try:
