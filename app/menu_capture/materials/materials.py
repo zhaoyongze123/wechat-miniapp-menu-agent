@@ -38,7 +38,7 @@ from menu_capture.materials.util import (
     _now, _selected_margin_ratio, _sha256, _store_id,
 )
 from menu_capture.storage.store import TaskStore
-from menu_capture.projects.service import get_project
+from menu_capture.projects.service import assert_batch_scope, assert_writable, get_project, select_version
 
 logger = logging.getLogger(__name__)
 
@@ -288,25 +288,42 @@ class MaterialService:
         return {"code": code, "label": REJECTION_REASONS[code], "detail": row.get("reject_detail", ""),
                 "marked_at": row.get("rejected_at", ""), "reviewed_at": row.get("reject_reviewed_at", "")}
 
-    def create_local_batch(self, input_root: Path, *, name: str | None = None, description: str = "") -> dict:
+    def create_local_batch(self, input_root: Path, *, name: str | None = None, description: str = "",
+                           project_id: str | None = None) -> dict:
         name, description = self._batch_metadata(name, description)
         source = self._validate_local_root(Path(input_root))
         images = _enumerate_images(source)
         self._validate_local_limits(images)
         batch_id = uuid.uuid4().hex
-        return self._insert_batch(batch_id, "local", source, "ready_to_analyze", total=len(images), name=name, description=description)
+        return self._insert_batch(batch_id, "local", source, "ready_to_analyze", total=len(images),
+                                  name=name, description=description, project_id=project_id)
 
-    def begin_upload(self, *, name: str | None = None, description: str = "") -> dict:
+    def begin_upload(self, *, name: str | None = None, description: str = "",
+                     project_id: str | None = None) -> dict:
         name, description = self._batch_metadata(name, description)
         batch_id = uuid.uuid4().hex
         source = self.upload_root / batch_id / "source"
         source.mkdir(parents=True, mode=0o700, exist_ok=False)
-        with self.task_store.connect() as db:
-            stamp = _now()
-            db.execute(
-                "INSERT INTO material_batches(id,source_kind,source_root,status,created_at,updated_at,name,description) VALUES(?,?,?,?,?,?,?,?)",
-                (batch_id, "upload", str(source), "uploading", stamp, stamp, name, description),
-            )
+        try:
+            with self.task_store.connect() as db:
+                stamp = _now()
+                if project_id is not None:
+                    db.execute("BEGIN IMMEDIATE")
+                    assert_writable(db, project_id)
+                    db.execute(
+                        "INSERT INTO material_batches(id,source_kind,source_root,status,created_at,updated_at,name,description,project_id) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (batch_id, "upload", str(source), "uploading", stamp, stamp, name, description, project_id),
+                    )
+                else:
+                    db.execute(
+                        "INSERT INTO material_batches(id,source_kind,source_root,status,created_at,updated_at,name,description) VALUES(?,?,?,?,?,?,?,?)",
+                        (batch_id, "upload", str(source), "uploading", stamp, stamp, name, description),
+                    )
+        except Exception:
+            # Only remove the newly created empty directory, never a source tree.
+            source.rmdir()
+            source.parent.rmdir()
+            raise
         return {"batch_id": batch_id, "status": "uploading", "file_count": 0, "total_bytes": 0}
 
     def add_upload_file(self, batch_id: str, relative_path: str, content: bytes) -> dict:
@@ -1321,8 +1338,9 @@ class MaterialService:
             (analysis_dir / old_artifact).unlink(missing_ok=True)
         store["selected_artifact"] = None
 
-    def active_release(self, active_root: Path) -> dict | None:
-        release = self.versions.active(active_root)
+    def active_release(self, active_root: Path, *, project_id: str | None = None) -> dict | None:
+        release = (self.versions.active_project(project_id) if project_id is not None
+                   else self.versions.active(active_root))
         if release:
             try:
                 batch = self._batch_row(release["batch_id"])
@@ -1333,8 +1351,10 @@ class MaterialService:
         return release
 
     def _version_summary(self, batch: dict) -> dict:
-        root = Path(self.configs.load().input_dir).expanduser().resolve()
-        versions = self.versions.list(batch["id"], root, include_deleted=bool(batch.get("deleted_at")))
+        project_id = batch.get("project_id")
+        root = self.published_root if project_id is not None else Path(self.configs.load().input_dir).expanduser().resolve()
+        versions = self.versions.list(batch["id"], root, include_deleted=bool(batch.get("deleted_at")),
+                                      project_id=project_id)
         changes = self.versions.changes(batch["id"], versions[0]["snapshot_id"] if versions else "")
         return {
             "name": self.versions.batch_name(batch), "release": versions[0] if versions else None,
@@ -1370,21 +1390,33 @@ class MaterialService:
                 f"SELECT * FROM material_batches {predicate} ORDER BY created_at DESC,id DESC", params)]
         return [self._batch_summary(row) for row in rows]
 
-    def batch_options(self) -> list[dict]:
+    def batch_options(self, *, project_id: str | None = None) -> list[dict]:
         """批次下拉框只读名称和阶段，避免加载识别结果、发布差异及历史运行。"""
         with self.task_store.connect() as db:
-            rows = [dict(row) for row in db.execute(
-                "SELECT b.id,b.name,b.created_at,b.capture_rounds,b.manual_stage,b.approved_at,v.snapshot_id "
-                "FROM material_batches b LEFT JOIN material_versions v ON v.batch_id=b.id "
-                "AND v.id=(SELECT version_id FROM material_selection WHERE singleton=1) "
-                "WHERE b.deleted_at='' ORDER BY b.created_at DESC,b.id DESC"
-            )]
+            if project_id is not None:
+                get_project(db, project_id)
+                rows = [dict(row) for row in db.execute(
+                    "SELECT b.id,b.name,b.created_at,b.capture_rounds,b.manual_stage,b.approved_at,v.snapshot_id "
+                    "FROM material_batches b LEFT JOIN material_versions v ON v.batch_id=b.id "
+                    "AND v.id=(SELECT version_id FROM project_material_selection WHERE project_id=?) "
+                    "WHERE b.deleted_at='' AND b.project_id=? ORDER BY b.created_at DESC,b.id DESC",
+                    (project_id, project_id))]
+            else:
+                rows = [dict(row) for row in db.execute(
+                    "SELECT b.id,b.name,b.created_at,b.capture_rounds,b.manual_stage,b.approved_at,v.snapshot_id "
+                    "FROM material_batches b LEFT JOIN material_versions v ON v.batch_id=b.id "
+                    "AND v.id=(SELECT version_id FROM material_selection WHERE singleton=1) "
+                    "WHERE b.deleted_at='' ORDER BY b.created_at DESC,b.id DESC"
+                )]
         selected = next((row for row in rows if row["snapshot_id"]), None)
         active_id = None
         if selected:
-            root = Path(self.configs.load().input_dir).expanduser().resolve()
-            if root == (self.published_root / selected["snapshot_id"]).resolve():
+            if project_id is not None:
                 active_id = selected["id"]
+            else:
+                root = Path(self.configs.load().input_dir).expanduser().resolve()
+                if root == (self.published_root / selected["snapshot_id"]).resolve():
+                    active_id = selected["id"]
         return [{"batch_id": row["id"], "name": self.versions.batch_name(row),
                  "created_at": row["created_at"], "workflow": self.workflow_stage(row),
                  "current_active": row["id"] == active_id} for row in rows]
@@ -2033,16 +2065,24 @@ class MaterialService:
             return {"release": self.active_release(snapshot), "task_scan": scan}
 
     def _insert_batch(self, batch_id: str, kind: str, source: Path, status: str, *, total: int = 0,
-                      name: str, description: str) -> dict:
+                      name: str, description: str, project_id: str | None = None) -> dict:
         source = source.resolve(strict=True)
         if self.material_root == source or self.material_root in source.parents or source in self.material_root.parents:
             raise ValueError("素材源不能与素材管理输出目录重叠")
         with self.task_store.connect() as db:
             stamp = _now()
-            db.execute(
-                "INSERT INTO material_batches(id,source_kind,source_root,status,progress_total,created_at,updated_at,name,description) VALUES(?,?,?,?,?,?,?,?,?)",
-                (batch_id, kind, str(source), status, total, stamp, stamp, name, description),
-            )
+            if project_id is not None:
+                db.execute("BEGIN IMMEDIATE")
+                assert_writable(db, project_id)
+                db.execute(
+                    "INSERT INTO material_batches(id,source_kind,source_root,status,progress_total,created_at,updated_at,name,description,project_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (batch_id, kind, str(source), status, total, stamp, stamp, name, description, project_id),
+                )
+            else:
+                db.execute(
+                    "INSERT INTO material_batches(id,source_kind,source_root,status,progress_total,created_at,updated_at,name,description) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (batch_id, kind, str(source), status, total, stamp, stamp, name, description),
+                )
         return {"batch_id": batch_id, "status": status, "progress": {"done": 0, "total": total}}
 
     def _validate_local_root(self, path: Path) -> Path:
