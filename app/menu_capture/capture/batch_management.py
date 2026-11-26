@@ -9,7 +9,7 @@ import re
 
 from menu_capture.core.config import atomic_json
 from menu_capture.materials.materials import _now
-from menu_capture.projects.service import assert_writable, resolve_batch_project
+from menu_capture.projects.service import LEGACY_ID, assert_writable, clear_selection, resolve_batch_project
 
 
 _ACTIVE_BATCH_STATES = {"uploading", "queued", "analyzing"}
@@ -109,10 +109,14 @@ class BatchManager:
             config = self.service.configs.load()
             input_dir = config.input_dir
             current_root = Path(input_dir).expanduser().resolve() if input_dir else None
+            project_id = project_id or LEGACY_ID
             with self.service.task_store.connect() as db:
                 selection = db.execute(
-                    "SELECT v.id AS version_id,v.batch_id,v.snapshot_id FROM material_selection s "
-                    "JOIN material_versions v ON v.id=s.version_id WHERE s.singleton=1"
+                    "SELECT v.id AS version_id,v.batch_id,v.snapshot_id FROM project_material_selection s "
+                    "JOIN material_versions v ON v.id=s.version_id "
+                    "JOIN material_batches b ON b.id=v.batch_id "
+                    "WHERE s.project_id=? AND b.project_id=s.project_id AND b.deleted_at=''",
+                    (project_id,),
                 ).fetchone()
                 active = None
                 if selection and current_root == (self.service.published_root / selection["snapshot_id"]).resolve():
@@ -124,8 +128,13 @@ class BatchManager:
             if batch_id and batch_id != active["batch_id"]:
                 raise ValueError("指定批次不是当前选用版本")
             with self.service.task_store.connect() as db:
-                runs = db.execute("SELECT status FROM runs WHERE material_batch_id=?", (active["batch_id"],)).fetchall()
-            if any(row["status"] not in _TERMINAL_RUN_STATES for row in runs):
+                runs = db.execute(
+                    "SELECT 1 FROM runs r WHERE r.status NOT IN ('completed','terminated','stopped','failed','cancelled') "
+                    "AND (r.project_id=? OR r.material_batch_id=? OR EXISTS ("
+                    "SELECT 1 FROM capture_run_results c WHERE c.run_id=r.id AND c.project_id=?)) LIMIT 1",
+                    (project_id, active["batch_id"], project_id),
+                ).fetchone()
+            if runs:
                 raise ValueError("仍有运行中或可恢复的采集任务引用此批次，不能清除当前选用状态")
 
             previous = config.model_dump()
@@ -134,8 +143,8 @@ class BatchManager:
             atomic_json(self.service.configs.path, payload)
             try:
                 with self.service.task_store.connect() as db:
-                    db.execute("DELETE FROM material_selection WHERE singleton=1 AND version_id=?",
-                               (active["version_id"],))
+                    db.execute("BEGIN IMMEDIATE")
+                    clear_selection(db, project_id, active["batch_id"])
             except Exception:
                 atomic_json(self.service.configs.path, previous)
                 raise

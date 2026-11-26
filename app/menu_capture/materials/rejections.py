@@ -34,6 +34,9 @@ class RejectionService:
 
         Hub 走已同步结果归属；Worker/单机按任务当前采集轮次读取，绝不跨轮次回退到历史名称。
         """
+        if self.materials is not None and self.materials.role == "standalone":
+            # 独立模式只有 legacy 一个工作区；保留没有项目快照的旧轮次名称。
+            project_id = None
         try:
             if self.observed_names is not None:
                 if project_id is not None:

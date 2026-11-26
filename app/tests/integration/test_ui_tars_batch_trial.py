@@ -13,6 +13,7 @@ from menu_capture.core.config import ConfigStore
 from menu_capture.api.server import create_app
 from menu_capture.storage.store import TaskStore
 from menu_capture.capture.uipath_runner import UiPathRunner
+from menu_capture.projects.service import LEGACY_ID
 
 
 def _published_task(root: Path, snapshot_id: str, shop_name: str) -> Path:
@@ -108,7 +109,8 @@ def test_batch_trial_endpoint_passes_published_task_ids_without_touching_officia
 
     assert response.status_code == 200, response.text
     assert response.json()["task_ids"] == task_ids
-    assert received == {"ui_tars_trial": True, "trial_task_ids": task_ids}
+    assert received == {"ui_tars_trial": True, "trial_task_ids": task_ids,
+                        "project_id": LEGACY_ID}
     assert [app.state.store.get(task_id) for task_id in task_ids] == before_tasks
     assert app.state.store.get_run("legacy-blocked") == before_run
     assert app.state.store.latest_run()["id"] == "legacy-blocked"

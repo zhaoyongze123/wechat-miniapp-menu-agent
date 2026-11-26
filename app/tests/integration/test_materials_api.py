@@ -164,7 +164,8 @@ def test_invalid_publish_does_not_change_current_input_during_capture(tmp_path: 
     original = app.state.configs.load().input_dir
     response = client.post("/api/materials/batches/nonexistent/publish", json={},
                            headers={"X-Capture-Token": app.state.token})
-    assert response.status_code == 400
+    # Missing project batch IDs now fail scope resolution before publish readiness checks.
+    assert response.status_code == 404
     assert app.state.configs.load().input_dir == original
 
 

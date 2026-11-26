@@ -19,16 +19,12 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def list_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all",
                         reviewed: str = "all", project_id: str | None = None):
         scope = ctx.project_scope(project_id)
-        if batch_id not in {"", "all", "__unbound__"}:
-            ctx.batch_scope(batch_id, scope)
         return rejections.list(source, reason, q, batch_id, reviewed, project_id=scope)
 
     @app.get("/api/rejections/export.xlsx")
     def export_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all",
                           reviewed: str = "all", project_id: str | None = None):
         scope = ctx.project_scope(project_id)
-        if batch_id not in {"", "all", "__unbound__"}:
-            ctx.batch_scope(batch_id, scope)
         content = rejections.export_xlsx(source, reason, q, batch_id, reviewed, project_id=scope)
         filename = "不合格门店清单.xlsx"
         return Response(
@@ -83,7 +79,19 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 if not isinstance(item, dict):
                     raise ValueError("批量撤销参数无效")
                 if item.get("source_type") == "capture":
-                    ctx.task_scope(str(item.get("task_id") or ""), scope, write=True)
+                    task_id = str(item.get("task_id") or "")
+                    try:
+                        ctx.task_scope(task_id, scope, write=True)
+                    except HTTPException as exc:
+                        # 不存在的 ID 没有归属可越界，保留 undo_many 的逐项失败回执；
+                        # 已存在但不属于项目的记录仍在任何写入前整体拒绝。
+                        if exc.status_code != 404:
+                            raise
+                        try:
+                            store.get(task_id)
+                        except ValueError:
+                            continue
+                        raise
                 elif item.get("source_type") == "materials":
                     ctx.batch_scope(str(item.get("batch_id") or ""), scope, write=True)
             return rejections.undo_many(items, protect_task=hub.protect_task if hub else None,

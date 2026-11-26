@@ -408,6 +408,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             raise HTTPException(400, "请选择项目")
         if role == "worker":
             if project_id is None:
+                if worker and not worker._hub_supports_project_scope:
+                    return LEGACY_ID
                 raise HTTPException(400, "请选择项目")
             project = next((item for item in (worker.projects() if worker else [])
                             if item.get("id") == project_id), None)
@@ -480,11 +482,13 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             if owner and owner["id"] == scope:
                 return scope
         if role == "standalone":
-            task = store.get(task_id)
-            active_root = Path(configs.load().input_dir).expanduser().resolve() if configs.load().input_dir else None
-            source = Path(task.get("source_path") or "").expanduser().resolve()
-            if active_root and (source == active_root or active_root in source.parents):
+            try:
+                store.get(task_id)
                 return scope
+            except ValueError:
+                current = runner.current_task or {}
+                if current.get("id") == task_id:
+                    return scope
         raise HTTPException(404, "任务不属于当前项目或归属待核验")
 
     def task_project_id(task_id: str) -> str | None:
@@ -500,7 +504,17 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return LEGACY_ID if rows else None
         with store.connect() as db:
             owner = resolve_task_project(db, task_id)
-        return owner["id"] if owner else None
+        if owner:
+            return owner["id"] if role != "standalone" or owner["id"] == LEGACY_ID else None
+        if role == "standalone":
+            try:
+                store.get(task_id)
+                # 独立模式只有一个历史兼容工作区；旧的本机任务仍能读取和处置，
+                # 但不会把这条临时兼容判断写回未知历史归属。
+                return LEGACY_ID
+            except ValueError:
+                return None
+        return None
 
     def run_project_matches(run: dict | None, project_id: str) -> bool:
         if not run:
@@ -508,6 +522,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         owner = str(run.get("project_id") or "")
         if owner:
             return owner == project_id
+        if role == "standalone":
+            return project_id == LEGACY_ID
         return bool(run.get("task_ids")) and {task_project_id(task_id) for task_id in run["task_ids"]} == {project_id}
 
     def require_run_scope(project_id: str) -> dict:
@@ -846,13 +862,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         if sys.platform == "win32" and not hub:
             ready = ready | {"launch_mode": "native"}
         run = None if paged else store.latest_run()
-        if run:
-            run_project = str(run.get("project_id") or "")
-            if not run_project:
-                owners = {task_project_id(task_id) for task_id in run.get("task_ids", [])}
-                run_project = scope if owners == {scope} else ""
-            if run_project != scope:
-                run = None
+        if run and not run_project_matches(run, scope):
+            run = None
         if run:
             by_id = {task["id"]: task for task in all_tasks}
             ids = run["task_ids"]
@@ -1216,11 +1227,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             })
         # 共享后台不执行桌面采集。迁移过来的本地轮次留在历史页，采集端分配以共享状态为准。
         run = None if hub else store.latest_run()
-        if run and str(run.get("project_id") or "") != scope:
-            if not run.get("project_id") and {task_project_id(task_id) for task_id in run.get("task_ids", [])} == {scope}:
-                run["project_id"] = scope
-            else:
-                run = None
+        if run and not run_project_matches(run, scope):
+            run = None
         status = ""
         if run:
             status = "running" if runner.running else {"completed": "completed", "failed": "failed",
@@ -1305,7 +1313,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         """按轮次/逐店持久快照裁切历史；未知项目归属不借用当前 UI 选择。"""
         ids = list(run.get("task_ids") or [])
         run_owner = str(run.get("project_id") or "")
-        if run_owner == project_id:
+        standalone_legacy = role == "standalone" and project_id == LEGACY_ID and not run_owner
+        if run_owner == project_id or standalone_legacy:
             selected_ids = ids
             selected_results = []
             for row in result_rows:
@@ -1319,7 +1328,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return None
         by_id = {row.get("task_id"): row for row in selected_results}
         selected = {**run, "task_ids": selected_ids, "project_id": project_id}
-        if run_owner != project_id:
+        if run_owner != project_id and not standalone_legacy:
             selected["material_batch_id"] = ""
         record = capture_history_row(selected, selected_results, task_index)
         for task in record.get("tasks", []):
@@ -1338,7 +1347,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         scope = project_scope(project_id)
         rows: list[dict] = []
         if kind in ("all", "capture"):
-            runs = store.run_history(500, project_id=scope) if not worker_id else []
+            # 单机历史没有多项目边界；保留旧版无 project_id 轮次的读取兼容。
+            runs = store.run_history(500, project_id=None if role == "standalone" else scope) if not worker_id else []
             results = store.capture_run_results([run["id"] for run in runs])
             task_index = capture_history_task_index(scope) if runs else {}
             for run in runs:
@@ -1419,7 +1429,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             if record is None:
                 raise HTTPException(404, "运行记录不属于当前项目或归属待核验")
             # 伴随提取的门店名称按轮次独立保存，补进逐店明细；未观察到的任务为空字符串。
-            observed = store.observed_store_names(item_id, project_id=scope)
+            observed = store.observed_store_names(
+                item_id, project_id=None if role == "standalone" else scope)
             for task in record.get("tasks") or []:
                 task["observed_store_name"] = observed.get(str(task.get("task_id") or ""), "")
             return record
@@ -1470,7 +1481,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 raise HTTPException(404, "该任务暂无门店名称观察记录")
             return {"task_id": task_id, "project_id": scope, "store_name": name}
         else:
-            record = store.observed_store_name_latest(task_id, project_id=scope)
+            record = store.observed_store_name_latest(
+                task_id, project_id=None if role == "standalone" else scope)
         if not record:
             raise HTTPException(404, "该任务暂无门店名称观察记录")
         return record
@@ -1774,10 +1786,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             run = store.latest_run()
             if not run or run["status"] not in {"paused", "blocked", "interrupted"}:
                 raise HTTPException(409, "当前没有可恢复的暂停或阻塞批次")
-            owner = str(run.get("project_id") or "")
-            if not owner and {task_project_id(task_id) for task_id in run.get("task_ids", [])} == {scope}:
-                owner = scope
-            if owner != scope:
+            if not run_project_matches(run, scope):
                 raise HTTPException(404, "该采集轮次不属于当前项目或归属待核验")
             mode = payload.get("mode", "")
             if mode and (mode != "manual" or sys.platform != "win32"
@@ -1879,17 +1888,28 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
 
     def _manual_action(request: Request, kind: str, payload: dict) -> dict:
         scope = project_scope(payload.get("project_id"), write=True)
-        run = require_run_scope(scope)
-        current_task = runner.current_task or {}
-        if current_task.get("id"):
-            task_scope(str(current_task["id"]), scope, write=True)
         expected = payload.get("context")
+        manual = runner.manual_state()
         if request.state.remote_control or expected is not None:
             keys = {"device_id", "run_id", "task_id", "wait_id"}
             if (not isinstance(expected, dict) or set(expected) != keys
                     or any(not isinstance(expected[key], str) or not expected[key] for key in keys)
                     or expected["device_id"] != manual_device()[0]):
                 raise HTTPException(409, "采集端或门店上下文已失效，请重读当前状态")
+
+        # 旧版 Hub 不下发项目快照，半自动会话也没有可关联的本地 runs 行。
+        # 仅在旧协议且客户端回传的完整上下文仍与当前等待状态一致时，按单工作区兼容。
+        legacy_manual_session = False
+        if role == "worker" and worker and not worker._hub_supports_project_scope and manual:
+            if (not isinstance(expected, dict)
+                    or any(expected[key] != manual.get(key) for key in ("run_id", "task_id", "wait_id"))):
+                raise HTTPException(409, "采集端或门店上下文已失效，请重读当前状态")
+            legacy_manual_session = True
+        if not legacy_manual_session:
+            require_run_scope(scope)
+        current_task = runner.current_task or {}
+        if current_task.get("id") and not legacy_manual_session:
+            task_scope(str(current_task["id"]), scope, write=True)
         try:
             result = runner.manual_action(kind, str(payload.get("reason") or ""),
                                           str(payload.get("detail") or ""), expected=expected)
@@ -1905,8 +1925,15 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         device_id, device_name = manual_device()
         run = store.latest_run()
         visible = run if run_project_matches(run, scope) else None
+        manual = runner.manual_state()
+        if role == "standalone" and not visible and manual:
+            # 独立模式旧半自动会话可能没有持久轮次快照，只有本机一个工作区可读。
+            visible = {"name": "", "status": ""}
+        if role == "worker" and worker and not worker._hub_supports_project_scope and not visible and manual:
+            # 旧 Hub 的单工作区协议没有项目快照，旧半自动会话继续按 legacy 本地读取。
+            visible = {"name": "", "status": ""}
         return {"device_id": device_id, "device_name": device_name,
-                "manual": runner.manual_state() if visible and runner.running else {},
+                "manual": manual if visible else {},
                 "run_name": (visible.get("name") or "半自动采集") if visible else "",
                 "run_status": visible["status"] if visible else "",
                 "remote_url": f"https://{remote_control_host}/remote-control" if remote_control_host else ""}

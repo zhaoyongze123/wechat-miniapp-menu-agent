@@ -611,11 +611,15 @@ class TaskStore:
     def observed_store_name_latest(self, task_id: str, *, project_id: str | None = None) -> dict:
         """按原始任务编号查最近一次观察记录，含未采集成功的轮次。"""
         with self.connect() as db:
-            project_filter = " AND c.project_id=?" if project_id is not None else ""
-            params = (str(task_id or ""), project_id) if project_id is not None else (str(task_id or ""),)
-            row = db.execute("SELECT o.* FROM observed_store_names o JOIN capture_run_results c"
-                             " ON c.run_id=o.run_id AND c.task_id=o.task_id WHERE o.task_id=?" + project_filter
-                             + " ORDER BY o.updated_at DESC,o.run_id DESC LIMIT 1", params).fetchone()
+            if project_id is None:
+                row = db.execute("SELECT * FROM observed_store_names WHERE task_id=? "
+                                  "ORDER BY updated_at DESC,run_id DESC LIMIT 1",
+                                  (str(task_id or ""),)).fetchone()
+            else:
+                row = db.execute("SELECT o.* FROM observed_store_names o JOIN capture_run_results c"
+                                 " ON c.run_id=o.run_id AND c.task_id=o.task_id WHERE o.task_id=? AND c.project_id=?"
+                                 " ORDER BY o.updated_at DESC,o.run_id DESC LIMIT 1",
+                                 (str(task_id or ""), project_id)).fetchone()
         return dict(row) if row else {}
 
     def material_binding(self, source: str) -> dict | None:

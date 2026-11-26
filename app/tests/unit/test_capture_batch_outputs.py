@@ -10,6 +10,7 @@ from PIL import Image
 
 from menu_capture.capture.capture_outputs import archive_unqualified, batch_output_dir, store_output_dir
 from menu_capture.api.server import create_app
+from menu_capture.projects.service import LEGACY_ID
 
 
 def _image(path: Path, color: str) -> Path:
@@ -226,5 +227,6 @@ def test_explicit_trial_targets_existing_task_without_changing_blocked_legacy_ru
 
     assert response.status_code == 200, response.text
     assert response.json()["task_id"] == task["id"]
-    assert called == {"ui_tars_trial": True, "trial_task_id": task["id"]}
+    assert called == {"ui_tars_trial": True, "trial_task_id": task["id"],
+                      "project_id": LEGACY_ID}
     assert app.state.store.get_run("legacy-blocked") == before_run
