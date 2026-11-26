@@ -21,6 +21,14 @@
 - 更新完成后确认运行版本已是目标版本，再自动刷新页面加载新版前端。
 - 按 Issue #32 最新范围取消 Hub 远程触发其他电脑安装与多设备分批安装编排；独立发布签名、Hub 镜像归档定时治理、历史技术方案清理暂缓。既有 Release 清单校验、SHA-256 与 Windows 签名状态检查保持不变。
 
+## [0.5.1] - 2026-11-26
+
+### 变更
+
+- 正式渠道软件更新改为静态签名清单发现：客户端读取 `releases/latest/download/update-manifest.json` 并用既有 Ed25519 公钥验签，不再调用 GitHub REST API，消除匿名配额耗尽导致的更新检查失败。
+- Windows 增量下载改用 Velopack `HttpSource`，固定到 `releases/download/v<已验签版本>/` 版本目录；保留相邻版本 Delta、跨版本 Full 兜底、包摘要校验与官方 `Update.exe` 安装重启链路，不引入自研 OTA。
+- 预览渠道仍使用 GitHub Release 列表以获得预发布版本；生产正式渠道与 Velopack 客户端均不再依赖 GitHub REST API。
+
 ## [0.2.2] - 2026-11-24
 
 基于 `0.2.0-rc.3` 生产使用反馈的补丁版本，不改变业务规则与数据模型。

@@ -74,6 +74,8 @@ OCI_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 # GitHub Release 上附带的更新清单；与安装目录内的运行时 release-manifest.json 区分。
 MANIFEST_ASSET = "update-manifest.json"
+# 正式渠道静态清单入口：GitHub 固定 latest/download 地址，客户端无需 REST API 与令牌。
+STATIC_MANIFEST_URL = f"https://github.com/{{repository}}/releases/latest/download/{MANIFEST_ASSET}"
 _VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$", re.IGNORECASE)
@@ -284,7 +286,7 @@ def _normalize_oci(item: dict) -> dict | None:
     return {"registry": registry, "digest": digest}
 
 
-def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: list[dict],
+def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: list[dict] | None,
                        repository: str = DEFAULT_REPOSITORY) -> dict:
     if not isinstance(manifest, dict):
         raise ValueError("发布清单格式无效")
@@ -305,7 +307,11 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
     raw_assets = manifest.get("assets")
     if not isinstance(raw_assets, list) or not raw_assets:
         raise ValueError("发布清单缺少资产列表")
-    known = {str(item.get("name") or ""): item for item in release_assets if isinstance(item, dict)}
+    # 静态清单入口拿不到 Release 资产列表；此时只依赖 Ed25519 签名与清单内自洽校验。
+    known = (
+        {str(item.get("name") or ""): item for item in release_assets if isinstance(item, dict)}
+        if release_assets is not None else None
+    )
     assets: list[dict] = []
     seen: set[str] = set()
     for item in raw_assets:
@@ -324,22 +330,23 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
             raise ValueError(f"发布资产架构无效: {name}")
         if not name or Path(name).name != name:
             raise ValueError("发布资产名称无效")
-        published = known.get(name)
-        if published is None:
+        published = known.get(name) if known is not None else None
+        if known is not None and published is None:
             raise ValueError(f"Release 中不存在资产: {name}")
         size = item.get("size")
         if not isinstance(size, int) or size <= 0:
             raise ValueError(f"发布资产大小无效: {name}")
-        if published.get("size") is not None and int(published["size"]) != size:
+        if published is not None and published.get("size") is not None and int(published["size"]) != size:
             raise ValueError(f"发布资产大小与 Release 不一致: {name}")
         sha = str(item.get("sha256") or "").lower()
         if not _SHA256_RE.fullmatch(sha):
             raise ValueError(f"发布资产 SHA-256 无效: {name}")
-        digest = str(published.get("digest") or "")
+        digest = str(published.get("digest") or "") if published is not None else ""
         if digest.startswith("sha256:") and digest.split(":", 1)[1].lower() != sha:
             raise ValueError(f"发布资产摘要与 Release 不一致: {name}")
         url = _safe_asset_url(str(item.get("url") or ""), tag)
-        if published.get("browser_download_url") and str(published["browser_download_url"]) != url:
+        if (published is not None and published.get("browser_download_url")
+                and str(published["browser_download_url"]) != url):
             raise ValueError(f"发布资产地址与 Release 不一致: {name}")
         seen.add(kind)
         asset = {
@@ -1269,7 +1276,7 @@ class UpdateService:
 
     def _verify_velopack_target(self, target: dict, channel: str) -> None:
         """网络校验在下载线程内执行，不持服务状态锁。"""
-        release = self.backend.check(channel)
+        release = self.backend.check(channel, version=str(target.get("version") or ""))
         if release is None or release.get("is_downgrade"):
             raise ValueError("Velopack 没有合法的升级目标")
         require_target(release, target)
@@ -2075,30 +2082,42 @@ class UpdateService:
         if cache.get("etag"):
             headers["If-None-Match"] = str(cache["etag"])
         try:
-            status, response_headers, body = self._fetcher(
-                f"https://api.github.com/repos/{self.repository}/releases?per_page=20", headers, 10.0
-            )
-            if status == 304:
+            if channel == "stable":
+                # 正式渠道走静态签名清单：不查 Release 列表，避免匿名 API 配额耗尽。
+                status, response_headers, body = self._fetcher(
+                    STATIC_MANIFEST_URL.format(repository=self.repository),
+                    {"Accept": "application/json", "User-Agent": "menu-capture-updater"}, 10.0,
+                )
+                if status != 200:
+                    raise ValueError(f"发布清单下载失败（HTTP {status}）")
                 if not still_current():
                     return
-                with self._lock:
-                    latest_cache = dict(self._cache)
-                    latest_cache.update({"checked_at": now, "error": "", "backoff_until": 0,
-                                         "source": "github"})
-                    self._cache = latest_cache
-                    self._write_json(self.cache_path, latest_cache)
-                self._maybe_auto_download()
-                return
-            if status != 200:
-                raise ValueError(f"GitHub 返回 HTTP {status}")
-            releases = json.loads(body.decode("utf-8"))
-            if not isinstance(releases, list):
-                raise ValueError("GitHub Release 响应格式无效")
-            # 渠道已切换时不再下载旧渠道的清单，直接丢弃在途结果。
-            if not still_current():
-                return
-            # 清单下载也在锁外完成，避免慢网络阻塞 /api/updates/status。
-            latest = self._select_release(releases, channel)
+                latest = self._static_release(body, channel)
+            else:
+                status, response_headers, body = self._fetcher(
+                    f"https://api.github.com/repos/{self.repository}/releases?per_page=20", headers, 10.0
+                )
+                if status == 304:
+                    if not still_current():
+                        return
+                    with self._lock:
+                        latest_cache = dict(self._cache)
+                        latest_cache.update({"checked_at": now, "error": "", "backoff_until": 0,
+                                             "source": "github"})
+                        self._cache = latest_cache
+                        self._write_json(self.cache_path, latest_cache)
+                    self._maybe_auto_download()
+                    return
+                if status != 200:
+                    raise ValueError(f"GitHub 返回 HTTP {status}")
+                releases = json.loads(body.decode("utf-8"))
+                if not isinstance(releases, list):
+                    raise ValueError("GitHub Release 响应格式无效")
+                # 渠道已切换时不再下载旧渠道的清单，直接丢弃在途结果。
+                if not still_current():
+                    return
+                # 清单下载也在锁外完成，避免慢网络阻塞 /api/updates/status。
+                latest = self._select_release(releases, channel)
         except Exception as exc:  # 网络、清单或格式错误都保留上次成功信息
             if not still_current():
                 return
@@ -2116,7 +2135,10 @@ class UpdateService:
             updated = dict(self._cache)
             updated.update({
                 "checked_at": now,
-                "etag": response_headers.get("etag") or response_headers.get("ETag") or updated.get("etag", ""),
+                # 静态清单入口不使用 ETag 缓存；正式渠道清空旧 API 的 ETag，避免误用条件请求。
+                "etag": (""
+                         if channel == "stable"
+                         else response_headers.get("etag") or response_headers.get("ETag") or updated.get("etag", "")),
                 "latest": latest,
                 "error": "",
                 "backoff_until": 0,
@@ -2147,6 +2169,37 @@ class UpdateService:
             self.start_download()
         except ValueError:
             return
+
+    def _static_release(self, body: bytes, channel: str) -> dict:
+        """解析固定 latest/download 入口返回的签名清单。
+
+        静态入口只有清单文件本身，没有 Release 资产列表可交叉核对；
+        可信度由 Ed25519 签名（覆盖版本、渠道、资产地址与摘要）保证。
+        """
+        try:
+            manifest = json.loads(body.decode("utf-8"))
+        except (UnicodeError, ValueError) as exc:
+            raise ValueError("发布清单无法解析") from exc
+        if not isinstance(manifest, dict):
+            raise ValueError("发布清单格式无效")
+        version = str(manifest.get("version") or "")
+        extension = manifest.get("velopack")
+        tag = f"v{version}"
+        if isinstance(extension, dict) and extension.get("tag"):
+            tag = str(extension["tag"])
+        checked = _validate_manifest(manifest, tag, channel, None, self.repository)
+        return {
+            "version": version,
+            "tag": tag,
+            "channel": checked["channel"],
+            "name": f"MenuCapture {version}",
+            "html_url": f"https://github.com/{self.repository}/releases/tag/{tag}",
+            "published_at": str(manifest.get("built_at") or ""),
+            "notes": "",
+            "eligible": True,
+            "reason": "",
+            **checked,
+        }
 
     def _select_release(self, releases: list[dict], channel: str) -> dict | None:
         candidates: list[tuple[Version, dict]] = []

@@ -371,7 +371,7 @@ def test_p0_3_prepare_recovery_package_and_rollback_use_previous_channel(
     monkeypatch.setattr(
         backend,
         "manager",
-        lambda ch=None: (manager_channels.append(str(ch)) or FakeManager()),
+        lambda ch=None, version=None: (manager_channels.append(str(ch)) or FakeManager()),
     )
 
     fake_velopack = SimpleNamespace(VelopackAsset=lambda **kw: SimpleNamespace(**kw))
