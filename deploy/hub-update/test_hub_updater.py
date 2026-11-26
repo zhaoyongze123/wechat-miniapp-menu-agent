@@ -75,8 +75,13 @@ class FakeDocker:
         self.platform = "linux/amd64"
         self.tags: list[tuple[str, str]] = []
         self.loads: list[str] = []
+        # `docker compose version` 的输出决定是否使用 --wait。
+        self.compose_version = "Docker Compose version v2.29.7"
+        self.calls: list[list[str]] = []
+        self.compose_calls: list[tuple[list[str], dict[str, str]]] = []
 
     def run(self, args: list[str], timeout: float) -> tuple[int, str]:
+        self.calls.append(list(args))
         command = args[:2]
         if command == ["docker", "volume"]:
             return 0, "[]"
@@ -105,6 +110,8 @@ class FakeDocker:
                 return 1, "invalid archive"
             self.loads.append(args[3])
             return 0, f"Loaded image: {self.loaded}"
+        if command == ["docker", "compose"] and args[2:] == ["version"]:
+            return 0, self.compose_version
         if command == ["docker", "compose"] and "ps" in args:
             return 0, "cid-1"
         if command == ["docker", "inspect"]:
@@ -112,17 +119,19 @@ class FakeDocker:
                 return 0, "healthy"
             return 0, self.current
         if command == ["docker", "image"]:
-            if "--format" in args:
+            if args[2] == "inspect" and "--format" in args:
                 template = args[args.index("--format") + 1]
-                if "RepoDigests" in template:
+                if template == "{{json .}}":
+                    os_name, _, architecture = self.platform.partition("/")
                     digests = self.repo_digests if self.repo_digests is not None else [self.pulled]
-                    return 0, json.dumps(digests)
-                if "Architecture" in template:
-                    return 0, self.platform
+                    return 0, json.dumps({
+                        "RepoDigests": digests, "Os": os_name, "Architecture": architecture,
+                    })
             return 0, "[]"
         raise AssertionError(f"unexpected command: {args}")
 
     def run_env(self, args: list[str], timeout: float, env: dict[str, str]) -> tuple[int, str]:
+        self.compose_calls.append((list(args), dict(env)))
         if self.fail_switch:
             return 1, "compose failed"
         self.current = env["MENU_CAPTURE_IMAGE"]
@@ -613,6 +622,47 @@ def test_apply_oci_pulls_digest_and_never_loads_archive(tmp_path: Path) -> None:
     assert updater.journal()["delivery"] == "oci"
 
 
+def test_apply_oci_uses_docker_native_commands_in_order(tmp_path: Path) -> None:
+    """pull → image inspect → tag → compose up，且参数固定为 digest/linux amd64。"""
+    docker = FakeDocker()
+    updater = make_updater(tmp_path, docker, healthy=healthy, registry=REGISTRY)
+
+    updater.apply(oci_request(tmp_path))
+
+    pull = next(call for call in docker.calls if call[:2] == ["docker", "pull"])
+    inspect = next(call for call in docker.calls if call[:4] == ["docker", "image", "inspect", "--format"])
+    tag = next(call for call in docker.calls if call[:2] == ["docker", "tag"])
+    assert pull == ["docker", "pull", "--platform", "linux/amd64", f"{REGISTRY}@{DIGEST}"]
+    assert inspect == ["docker", "image", "inspect", "--format", "{{json .}}", f"{REGISTRY}@{DIGEST}"]
+    assert tag == ["docker", "tag", f"{REGISTRY}@{DIGEST}", "menu-capture-hub:0.2.4"]
+    assert docker.calls.index(pull) < docker.calls.index(inspect) < docker.calls.index(tag)
+
+    args, env = docker.compose_calls[0]
+    assert args == [
+        "docker", "compose", "-f", str(updater.config.compose_file), "-p", "menu-capture",
+        "up", "-d", "--no-build", "--pull", "never",
+        "--wait", "--wait-timeout", "180", "hub",
+    ]
+    assert env["MENU_CAPTURE_IMAGE"] == "menu-capture-hub:0.2.4"
+
+
+def test_apply_oci_falls_back_to_polling_without_compose_wait(tmp_path: Path) -> None:
+    """Compose 不支持 --wait 时降级为应用层健康轮询，命令不得携带 --wait。"""
+    docker = FakeDocker()
+    docker.compose_version = "Docker Compose version v2.5.0"
+    updater = make_updater(tmp_path, docker, healthy=healthy, registry=REGISTRY)
+
+    result = updater.apply(oci_request(tmp_path))
+
+    assert result["status"] == "completed"
+    args, _ = docker.compose_calls[0]
+    assert "--wait" not in args
+    assert "--wait-timeout" not in args
+    audit = (tmp_path / "state" / "hub-update-audit.jsonl").read_text(encoding="utf-8")
+    assert '"action": "compose"' in audit
+    assert '"result": "unsupported"' in audit
+
+
 def test_apply_oci_pull_failure_falls_back_to_archive(tmp_path: Path) -> None:
     docker = FakeDocker()
     docker.fail_pull = True
@@ -683,3 +733,13 @@ def test_validate_rejects_untrusted_oci(tmp_path: Path, image: str, digest: str,
 
     with pytest.raises(UpdateError, match=message):
         validate_payload(payload, make_config(tmp_path, REGISTRY))
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "abc", "1.5"])
+def test_wait_timeout_must_be_positive_integer(tmp_path: Path, value: str) -> None:
+    with pytest.raises(UpdateError, match="HUB_UPDATE_WAIT_TIMEOUT"):
+        Config({"HUB_UPDATE_TOKEN": TOKEN, "HUB_UPDATE_WAIT_TIMEOUT": value})
+
+
+def test_wait_timeout_defaults_to_180(tmp_path: Path) -> None:
+    assert Config({"HUB_UPDATE_TOKEN": TOKEN}).wait_timeout == 180

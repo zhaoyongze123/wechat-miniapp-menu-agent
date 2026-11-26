@@ -29,13 +29,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 DEFAULT_REPOSITORY = "zhaoyongze123/wechat-miniapp-menu-agent"
 CHANNELS = {"stable", "preview"}
 ASSET_KINDS = {"windows_installer", "hub_image"}
-# 文件级增量补丁：作为 Release 的普通资产发布，仅在清单可选 patches 中登记。
-PATCH_ASSET_KIND = "windows_patch"
-PATCH_FORMAT = "zip-sha256-v1"
-PATCH_PLATFORM = "windows"
-# 生产默认关闭增量；未设置时行为与全量更新完全一致。
-INCREMENTAL_ENV = "MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE"
-UNSIGNED_ENV = "MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE"
+# Windows 交付由 Velopack 负责差分与安装；清单仍保留 windows_installer 作为发布身份与回退来源。
+VELOPACK_ASSET_KIND = "velopack"
 ALLOWED_ASSET_HOSTS = {
     "github.com",
     "objects.githubusercontent.com",
@@ -171,6 +166,10 @@ def _asset_kind_for_platform(platform: str) -> str:
 
 
 def _download_percent(state: dict) -> int:
+    # Velopack 下载只提供百分比；归档下载按字节计算。两者共用同一个展示字段。
+    explicit = state.get("progress")
+    if isinstance(explicit, (int, float)) and not isinstance(explicit, bool):
+        return max(0, min(100, int(explicit)))
     total = int(state.get("total") or 0)
     done = int(state.get("downloaded") or 0)
     if total <= 0:
@@ -196,117 +195,6 @@ def _downloadable_asset(latest: dict, platform: str, arch: str) -> dict | None:
 
 def _has_asset_for_platform(latest: dict, platform: str, arch: str) -> bool:
     return _downloadable_asset(latest, platform, arch) is not None
-
-
-def _normalize_patch(
-    item: Any,
-    *,
-    target_version: str,
-    tag: str,
-    windows_arch: str,
-    known: dict[str, dict] | None = None,
-) -> dict | None:
-    """把清单中的一条补丁收敛成可信结构；任何字段不合法就丢弃该条。
-
-    补丁是可选加速手段：单条非法只影响该条，不能让合法的完整安装资产不可用。
-    """
-    if not isinstance(item, dict) or not windows_arch:
-        return None
-    name = str(item.get("name") or "")
-    if not name or Path(name).name != name:
-        return None
-    from_text = str(item.get("from") or "").strip()
-    try:
-        from_version = Version.parse(from_text)
-        if from_version >= Version.parse(target_version):
-            return None
-    except ValueError:
-        return None
-    if str(item.get("format") or "") != PATCH_FORMAT:
-        return None
-    if str(item.get("platform") or "") != PATCH_PLATFORM:
-        return None
-    if _normalize_arch(item.get("arch")) != windows_arch:
-        return None
-    size = item.get("size")
-    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
-        return None
-    sha = str(item.get("sha256") or "").lower()
-    if not _SHA256_RE.fullmatch(sha):
-        return None
-    try:
-        url = _safe_asset_url(str(item.get("url") or ""), tag)
-    except ValueError:
-        return None
-    if known is not None:
-        published = known.get(name)
-        if published is None:
-            return None
-        if published.get("size") is not None and int(published["size"]) != size:
-            return None
-        digest = str(published.get("digest") or "")
-        if digest.startswith("sha256:") and digest.split(":", 1)[1].lower() != sha:
-            return None
-        if published.get("browser_download_url") and str(published["browser_download_url"]) != url:
-            return None
-    patch = {
-        "kind": PATCH_ASSET_KIND,
-        "from": from_text.lstrip("v"),
-        "name": name,
-        "size": size,
-        "sha256": sha,
-        "url": url,
-        "platform": PATCH_PLATFORM,
-        "arch": windows_arch,
-        "format": PATCH_FORMAT,
-    }
-    catalog = str(item.get("catalog") or "")
-    # catalog 必须是同一 Release 里的普通资产；缺失时仍允许按 unsigned 放行口径使用补丁。
-    if catalog and Path(catalog).name == catalog and (known is None or catalog in known):
-        patch["catalog"] = catalog
-    return patch
-
-
-def _validate_patches(
-    raw: Any,
-    *,
-    target_version: str,
-    tag: str,
-    assets: list[dict],
-    known: dict[str, dict],
-) -> list[dict]:
-    """逐条校验可选 patches；非法条目丢弃，整体类型错误视为没有补丁。"""
-    if not isinstance(raw, list):
-        return []
-    windows = next((item for item in assets if item.get("kind") == "windows_installer"), None)
-    if windows is None:
-        return []
-    windows_arch = _normalize_arch(windows.get("arch"))
-    patches: list[dict] = []
-    seen: set[str] = set()
-    for item in raw:
-        patch = _normalize_patch(
-            item, target_version=target_version, tag=tag,
-            windows_arch=windows_arch, known=known,
-        )
-        if patch is None or patch["from"] in seen:
-            continue
-        seen.add(patch["from"])
-        patches.append(patch)
-    return patches
-
-
-def _incremental_enabled(patch: dict) -> bool:
-    """增量默认关闭；未满足等价可信条件时一律回退全量。
-
-    有签名 catalog 时由执行器验证签名；没有 catalog 时必须沿用既有 unsigned 放行开关，
-    不新增任何放宽。
-    """
-    if os.environ.get(INCREMENTAL_ENV) != "1":
-        return False
-    if patch.get("catalog"):
-        return True
-    return os.environ.get(UNSIGNED_ENV) == "1"
 
 
 def _file_sha256(path: Path) -> str:
@@ -457,12 +345,6 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
             if oci is not None:
                 asset.update(oci)
         assets.append(asset)
-    # 可选 patches 是尽力而为的加速扩展：非法条目丢弃，绝不影响已验证的完整资产。
-    target_version = version_text(tag_version, tag)
-    patches = _validate_patches(
-        manifest.get("patches"), target_version=target_version, tag=tag,
-        assets=assets, known=known,
-    )
     return {
         "version": version,
         "channel": manifest_channel,
@@ -471,7 +353,6 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
         "min_supported_version": str(manifest.get("min_supported_version") or ""),
         "rollback": str(manifest.get("rollback") or ""),
         "assets": assets,
-        "patches": patches,
     }
 
 
@@ -489,6 +370,7 @@ class UpdateService:
         clock: Callable[[], float] = time.time,
         platform: str | None = None,
         machine: str | None = None,
+        backend: Any | None = None,
     ) -> None:
         # 三个目录语义必须分开：
         # - data_root：配置、缓存、审计等可写数据（Windows 上通常由 MENU_CAPTURE_HOME 指定）；
@@ -502,6 +384,8 @@ class UpdateService:
         self.platform = platform or _platform_name()
         self.local_arch = _normalize_arch(machine or platform_module.machine())
         self.repository = repository
+        # Windows 更新交付引擎（Velopack）；Hub/单机模式为 None，不引入额外依赖。
+        self.backend = backend
         self.data_dir = self.data_root / "data"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.cache_path = self.data_dir / "update-cache.json"
@@ -715,7 +599,6 @@ class UpdateService:
         if not isinstance(assets, list) or not assets:
             return None
         seen: set[str] = set()
-        windows_arch = ""
         for asset in assets:
             if not isinstance(asset, dict):
                 return None
@@ -727,8 +610,6 @@ class UpdateService:
             expected = "windows" if kind == "windows_installer" else "linux"
             if asset.get("platform") != expected or not _normalize_arch(asset.get("arch")):
                 return None
-            if kind == "windows_installer":
-                windows_arch = _normalize_arch(asset.get("arch"))
             size = asset.get("size")
             if not isinstance(size, int) or size <= 0:
                 return None
@@ -738,18 +619,7 @@ class UpdateService:
                 _safe_asset_url(str(asset.get("url") or ""), tag)
             except ValueError:
                 return None
-        # 跨端数据仍需重新收敛补丁结构：只采纳字段完整、平台/架构匹配的条目。
-        raw_patches = latest.get("patches")
-        patches: list[dict] = []
-        if isinstance(raw_patches, list) and windows_arch:
-            for item in raw_patches:
-                patch = _normalize_patch(
-                    item, target_version=str(latest.get("version") or ""),
-                    tag=tag, windows_arch=windows_arch,
-                )
-                if patch is not None:
-                    patches.append(patch)
-        return {**latest, "patches": patches}, checked_at
+        return {**latest}, checked_at
 
     def save_preferences(self, payload: dict) -> dict:
         if not isinstance(payload, dict) or set(payload) - {"auto_check", "channel", "auto_download", "keep_versions"}:
@@ -817,7 +687,19 @@ class UpdateService:
 
     # ---------- 版本清点（只读） ----------
 
+    def _velopack_mode(self) -> bool:
+        """Windows + Velopack 安装布局：版本目录由框架管理，不再暴露自研清点/回滚。"""
+        if self.backend is None or self.platform != "windows":
+            return False
+        try:
+            return bool(self.backend.available())
+        except Exception:  # noqa: BLE001 - 能力探测失败按未启用处理
+            return False
+
     def _install_root(self) -> Path | None:
+        if self._velopack_mode():
+            # Velopack 自行管理 current/packages 与版本保留，不参与自研 releases 清点。
+            return None
         if sys.platform != "win32":
             return None
         # 安装布局：<install>/releases/<version>/app/menu_capture → 安装根为程序目录的上三级。
@@ -835,16 +717,15 @@ class UpdateService:
         return self._install_root()
 
     def install_supported(self) -> bool:
-        """自动安装必须同时满足：Windows 采集端、可定位安装根、运维显式启用。
+        """自动安装必须同时满足：Windows 采集端、可交付安装布局、运维显式启用。
 
-        未在真实 Windows 升级/回滚验收前不默认开启，避免把未经环境验证的高权限链路暴露给业务页面。
+        Velopack 布局下不再要求自研 releases 目录；未在真实 Windows 升级验收前不默认开启。
         """
-        return (
-            sys.platform == "win32"
-            and self.role == "worker"
-            and self._install_root() is not None
-            and os.environ.get("MENU_CAPTURE_ALLOW_SELF_UPDATE") == "1"
-        )
+        if self.role != "worker" or os.environ.get("MENU_CAPTURE_ALLOW_SELF_UPDATE") != "1":
+            return False
+        if self._velopack_mode():
+            return True
+        return sys.platform == "win32" and self._install_root() is not None
 
     def _install_capable(self) -> bool:
         if self.install_capability is not None:
@@ -1266,10 +1147,10 @@ class UpdateService:
         return state
 
     def start_download(self) -> dict:
-        """启动唯一的下载任务；版本、平台、架构与哈希全部来自已验证清单。
+        """启动唯一的下载任务。
 
-        与清理共用文件系统锁：清理在删除下载目录期间不允许再启动新下载，
-        否则刚写入的断点文件会被当成可清理项删掉。
+        - Windows + Velopack：由 SDK 选择/校验包并差分下载，取消通过独立子进程终止实现；
+        - Hub/归档模式：仍走受控 HTTP 下载（保留断点续传与 SHA-256 校验）。
         """
         with self._filesystem_lock:
             with self._lock:
@@ -1280,23 +1161,26 @@ class UpdateService:
                 if not isinstance(latest, dict) or not _update_available(latest, current, self.platform, self.local_arch):
                     raise ValueError("当前没有可下载的更新，请先检查更新并确认平台、架构匹配")
                 if self._oci_delivery(latest) is not None:
-                    # OCI 模式绝不能先下 175 MB 完整归档再 docker pull：产物无需本地落盘。
                     raise ValueError("当前宿主执行器支持镜像分层拉取，无需下载完整镜像归档")
-                full_asset = _downloadable_asset(latest, self.platform, self.local_arch)
-                if full_asset is None:
-                    raise ValueError("发布清单中没有与本机平台和架构匹配的资产")
                 version = str(latest.get("version") or "")
-            # 基线清单读取与安全开关判定放在状态锁外；只持文件系统锁，避免与清理竞态。
-            patch = self._select_patch(latest, current)
-            with self._lock:
-                if self._downloading:
-                    raise ValueError("已有下载任务正在运行")
-                current_latest = self._cache.get("latest")
-                if not isinstance(current_latest, dict) or str(current_latest.get("version") or "") != version:
-                    raise ValueError("更新清单已变化，请重新检查更新")
-                asset = patch or full_asset
+                channel = str(self._preferences.get("channel") or "stable")
+                velopack = self._velopack_mode()
+                if velopack:
+                    # SDK 的版本选择必须与已验证清单一致；不一致时拒绝，避免装错版本。
+                    self._verify_velopack_target(version, channel)
+                    asset = {
+                        "kind": VELOPACK_ASSET_KIND,
+                        "name": f"velopack-{version}",
+                        "arch": self.local_arch,
+                        "sha256": "",
+                        "size": 0,
+                    }
+                else:
+                    full_asset = _downloadable_asset(latest, self.platform, self.local_arch)
+                    if full_asset is None:
+                        raise ValueError("发布清单中没有与本机平台和架构匹配的资产")
+                    asset = full_asset
                 previous = dict(self._download_state)
-                # 同一版本、同一资产续传时保留 ETag/Last-Modified，用于 If-Range 防止拼接已变化的资源。
                 same_asset = (
                     previous.get("version") == version
                     and previous.get("asset_name") == str(asset.get("name") or "")
@@ -1313,10 +1197,8 @@ class UpdateService:
                     "asset_kind": str(asset.get("kind") or ""),
                     "asset_name": str(asset.get("name") or ""),
                     "arch": str(asset.get("arch") or ""),
-                    # 记录资产身份，安装前与后续版本绑定判断都以它为准，不能只看 completed。
                     "sha256": str(asset.get("sha256") or ""),
-                    # 补丁模式记录基线版本；回退全量时保留原因，便于审计。
-                    "from_version": current if patch is not None else "",
+                    "from_version": "",
                     "fallback_reason": "",
                     "etag": str(previous.get("etag") or "") if same_asset else "",
                     "last_modified": str(previous.get("last_modified") or "") if same_asset else "",
@@ -1324,15 +1206,75 @@ class UpdateService:
                     "started_at": _utc_now(),
                 }
                 self._write_download_state()
-                thread = threading.Thread(
-                    target=self._run_download,
-                    args=(dict(asset), version, self._download_cancel),
-                    name="menu-capture-update-download",
-                    daemon=True,
-                )
+                if velopack:
+                    thread = threading.Thread(
+                        target=self._run_velopack_download,
+                        args=(version, channel, self._download_cancel),
+                        name="menu-capture-velopack-download",
+                        daemon=True,
+                    )
+                else:
+                    thread = threading.Thread(
+                        target=self._run_download,
+                        args=(dict(asset), version, self._download_cancel),
+                        name="menu-capture-update-download",
+                        daemon=True,
+                    )
                 self._download_thread = thread
         thread.start()
         return self.download_status()
+
+    def _verify_velopack_target(self, version: str, channel: str) -> None:
+        """核对 SDK 的版本选择与已验证清单一致；失败按检查错误抛出，不静默改版本。"""
+        try:
+            release = self.backend.check(channel)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"无法通过 Velopack 核对发布版本：{exc}") from exc
+        if release is None:
+            raise ValueError("Velopack 发布源没有可用更新，请重新检查更新")
+        if str(release.get("version") or "") != version:
+            raise ValueError(
+                f"发布源版本 {release.get('version')} 与已验证清单 {version} 不一致，已拒绝下载"
+            )
+
+    def _run_velopack_download(self, version: str, channel: str, cancel: threading.Event) -> None:
+        """调用 SDK 下载；进度写入既有下载状态，取消即终止下载子进程。"""
+        try:
+            result = self.backend.download(
+                version,
+                channel=channel,
+                progress=lambda state: self._report_velopack_progress(state),
+                cancel=cancel,
+            )
+        except Exception as exc:  # noqa: BLE001 - 下载失败必须如实落盘
+            result = {"status": "failed", "message": str(exc) or "下载失败"}
+        finally:
+            with self._lock:
+                self._downloading = False
+                self._download_cancel = None
+        status = str(result.get("status") or "failed")
+        if status == "completed":
+            # SDK 已完成校验并落盘；安装前仍会再次确认待安装资产版本。
+            self._finish_download("completed", downloaded=self._download_state.get("total") or 0)
+            return
+        if status == "cancelled":
+            self._finish_download("cancelled", error=str(result.get("message") or "下载已取消"))
+            return
+        self._finish_download("failed", error=str(result.get("message") or "下载失败"))
+
+    def _report_velopack_progress(self, state: dict) -> None:
+        if not isinstance(state, dict):
+            return
+        percent = state.get("percent")
+        if not isinstance(percent, (int, float)):
+            return
+        with self._lock:
+            total = int(self._download_state.get("total") or 0)
+            self._download_state = {
+                **self._download_state,
+                "downloaded": int(total * float(percent) / 100) if total else 0,
+                "progress": max(0, min(100, int(percent))),
+            }
 
     def cancel_download(self) -> dict:
         with self._lock:
@@ -1368,38 +1310,6 @@ class UpdateService:
             return None
         return asset
 
-    def _select_patch(self, latest: dict, current: str) -> dict | None:
-        """选择与当前版本匹配的增量补丁；基线不可信或安全开关未开时返回 None。
-
-        该方法只做少量清单读取，必须在状态锁外调用；最终仍由执行器再次校验基线哈希。
-        """
-        if self.platform != PATCH_PLATFORM or not current:
-            return None
-        root = self._install_root()
-        if root is None:
-            return None
-        releases = root / "releases"
-        base = releases / current
-        if not base.is_dir() or base.is_symlink() or _is_reparse(base):
-            return None
-        manifest = self._read_json(base / "release-manifest.json", {})
-        if not isinstance(manifest, dict) or str(manifest.get("version") or "") != current:
-            return None
-        for patch in latest.get("patches") or []:
-            if not isinstance(patch, dict):
-                continue
-            if str(patch.get("from") or "") != current:
-                continue
-            if _normalize_arch(patch.get("arch")) != self.local_arch:
-                continue
-            if not _incremental_enabled(patch):
-                continue
-            name = str(patch.get("name") or "")
-            if not name or Path(name).name != name:
-                continue
-            return patch
-        return None
-
     # ---------- 空闲后更新（安排 / 取消） ----------
 
     def install_schedule(self) -> dict:
@@ -1422,12 +1332,15 @@ class UpdateService:
             state = dict(self._download_state)
             version = str(state.get("version") or "")
             if state.get("status") != "completed" or not version:
-                # OCI 交付没有本地产物：能力可用且版本可更新时同样允许安排空闲后更新。
                 latest = self._cache.get("latest")
                 oci = self._oci_delivery(latest)
-                if oci is None:
+                if oci is not None:
+                    version = str(latest.get("version") or "") if isinstance(latest, dict) else ""
+                elif self._velopack_mode() and isinstance(latest, dict):
+                    # Velopack 下载状态可能因进程重启过时；只要 SDK 有同版本待安装包就允许安排。
+                    version = str(latest.get("version") or "")
+                if not version:
                     raise ValueError("请先下载更新，再安排空闲后安装")
-                version = str(latest.get("version") or "") if isinstance(latest, dict) else ""
         if oci is None and not self._downloaded_artifact_ready(version):
             raise ValueError("下载产物不完整或已被清理，请重新下载后再安排")
         with self._lock:
@@ -1682,17 +1595,19 @@ class UpdateService:
         return schedule
 
     def _downloaded_artifact_ready(self, version: str) -> bool:
+        if self._velopack_mode():
+            # SDK 管理下载与校验；进程重启后仍以“待安装资产版本”为唯一事实源。
+            try:
+                pending = self.backend.pending_restart()
+            except Exception:  # noqa: BLE001 - 探测失败按未就绪处理
+                return False
+            return bool(pending) and str(pending.get("version")) == version
         state = dict(self._download_state)
         name = str(state.get("asset_name") or "")
-        if (
-            state.get("status") != "completed" or state.get("version") != version
-            or Path(name).name != name or not name
-        ):
+        if state.get("status") != "completed" or state.get("version") != version:
             return False
-        # 补丁落盘后可能损坏或被清理。仍将已完成的补丁记录交给控制器核对身份和路径，
-        # 由独立执行器决定是否在同一授权内回退，无需在后台调度重复下载补丁。
-        if state.get("asset_kind") == PATCH_ASSET_KIND and self.platform == PATCH_PLATFORM:
-            return True
+        if Path(name).name != name or not name:
+            return False
         try:
             target = self.download_dir / version / name
             return target.is_file() and not _is_reparse(target)
@@ -1838,9 +1753,7 @@ class UpdateService:
             "attempts": int(data.get("attempts") or 0),
         }
 
-    def _run_download(
-        self, asset: dict, version: str, cancel: threading.Event, *, allow_fallback: bool = True
-    ) -> None:
+    def _run_download(self, asset: dict, version: str, cancel: threading.Event) -> None:
         name = str(asset.get("name") or "")
         size = int(asset.get("size") or 0)
         sha = str(asset.get("sha256") or "")
@@ -1946,18 +1859,8 @@ class UpdateService:
             self._finish_download("completed", path=str(final), downloaded=size)
         except Exception as exc:
             message = str(exc) or "下载失败"
-            # 用户取消绝不触发兜底；补丁失败才在同一授权下自动改下完整包一次。
             if cancel.is_set():
                 self._finish_download("cancelled", error="下载已取消，已保留断点")
-            elif (
-                allow_fallback
-                and str(asset.get("kind") or "") == PATCH_ASSET_KIND
-            ):
-                full = self._fallback_to_full(version, message)
-                if full is not None:
-                    self._run_download(full, version, cancel, allow_fallback=False)
-                    return
-                self._finish_download("failed", error=message)
             else:
                 # 未完成的 .part 原样保留，下一次开始下载会按 Range 续传。
                 self._finish_download("failed", error=message)
@@ -1965,42 +1868,6 @@ class UpdateService:
             with self._lock:
                 self._downloading = False
                 self._download_cancel = None
-
-    def _fallback_to_full(self, version: str, reason: str) -> dict | None:
-        """补丁不可用时切换到同一版本的完整包；只在锁内改状态，文件清理放在锁外。"""
-        with self._lock:
-            latest = self._cache.get("latest")
-            full = _downloadable_asset(latest, self.platform, self.local_arch) if isinstance(latest, dict) else None
-            if full is None or str((latest or {}).get("version") or "") != version:
-                return None
-            state = dict(self._download_state)
-            patch_name = str(state.get("asset_name") or "")
-            if patch_name == str(full.get("name") or ""):
-                return None
-            state.update({
-                "status": "downloading",
-                "active": True,
-                "asset_kind": str(full.get("kind") or ""),
-                "asset_name": str(full.get("name") or ""),
-                "sha256": str(full.get("sha256") or ""),
-                "total": int(full.get("size") or 0),
-                "downloaded": 0,
-                "error": "",
-                "path": "",
-                "etag": "",
-                "last_modified": "",
-                "fallback_reason": reason,
-            })
-            self._download_state = state
-            self._download_persisted = 0
-            self._write_download_state()
-            self._append_history("download", "ok", f"增量补丁不可用，已回退全量包：{reason}", version)
-        if patch_name and Path(patch_name).name == patch_name:
-            try:
-                self._part_path(version, patch_name).unlink(missing_ok=True)
-            except OSError:
-                pass
-        return dict(full)
 
     def _set_download_meta(self, headers: dict[str, str]) -> None:
         etag = _header_value(headers, "etag")
@@ -2365,6 +2232,7 @@ def _empty_download_state() -> dict:
         "last_modified": "",
         "downloaded": 0,
         "total": 0,
+        "progress": 0,
         "started_at": "",
         "finished_at": "",
         "error": "",

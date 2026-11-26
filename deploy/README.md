@@ -24,7 +24,17 @@ A 机运行共享后台。A、B 都安装 Windows 采集端，用各自已登录
 
 前后端随发布版本一起打包：React 构建产物在 `web/react/`，运行时不依赖 Node、npm 或外部 CDN。安装包与镜像都会写入版本信息，可用 `GET /api/version` 核对实际运行的后端版本与前端入口哈希。
 
-Windows 采集端按版本目录并存（`releases\<版本>`），`current-version` 决定守护进程启动哪个版本；数据、配置、设备身份和待上传结果都在 `%LOCALAPPDATA%\MenuCapture`，升级与回滚都不触碰。升级：运行新版安装包。回滚：执行安装目录下的 `rollback.ps1 -Version <旧版本>`，守护进程会在当前采集或标注结束后切回旧版本；脚本校验目标版本文件完整，并通过健康检查与 Worker 进程路径等待切换完成，兼容没有 `/api/version` 与 React 清单的迁移前版本。新版版本目录内的 `release-manifest.json` 记录版本、源码提交与前端入口哈希，可用于发布核对。
+Windows 采集端使用 Velopack 安装：程序在 `%LOCALAPPDATA%\Yipu.MenuCapture`（`current` + `packages` + `Update.exe`），
+与旧 Inno Setup 的 `%LOCALAPPDATA%\Programs\MenuCapture` 隔离；数据、配置、设备身份和待上传结果仍在
+`%LOCALAPPDATA%\MenuCapture`（或 `MENU_CAPTURE_HOME`），升级与回滚都不触碰。升级：运行新 `Setup.exe`，
+或由工作台检查、下载并经用户授权后应用。回滚：执行 `MenuCapture.exe --rollback-to <旧版本>`，使用本机
+`packages` 中保留的同版本 full 包，回滚前比对数据库结构指纹。`release-manifest.json` 继续记录版本、
+源码提交与前端入口哈希，可用于发布核对。
+
+首次从 Inno Setup 迁移到 Velopack 属于受控迁移，不做原地自动升级：先停止并卸载旧采集端（确认没有
+`releases\*` Worker 与登录启动项在运行），再运行新版 `Setup.exe`，核对 `current\sq.version`、
+`/api/version`、设备配对和待补传数据后再切回登录自启动。第一个 Velopack 正式版本必须把发布输入
+`min_supported_version` 设为该版本号，使旧客户端只提示手动迁移，不会把 `Setup.exe` 当成兼容安装包自动执行。
 
 共享后台使用已经导入并核对摘要的镜像升级与回滚。保持同一 Compose 项目和数据卷。
 

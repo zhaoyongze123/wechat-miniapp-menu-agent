@@ -1,0 +1,325 @@
+"""Windows 更新适配层：薄封装 Velopack 官方 Python SDK。
+
+职责边界：
+- 只复用 SDK 的版本发现、差分下载、包重建与安装/重启能力；
+- 授权、空闲闸门、业务状态、审计与界面仍由 `UpdateService` / `InstallController` 负责；
+- SDK 的 `download_updates` 没有取消令牌，取消通过独立下载子进程终止实现；
+- 本模块在非 Windows 或未安装 `velopack` 时可导入但不启用，不能影响 Hub/单机模式。
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+# 与 vpk 打包参数保持一致：独立安装目录，避免与旧 Inno Setup 安装目录及默认数据目录混淆。
+PACK_ID = "Yipu.MenuCapture"
+VELOPACK_VERSION = "1.2.161"
+# 通道编码平台、架构与发布渠道，避免不同平台/架构互相看到对方资产。
+CHANNEL_PREFIX = "win-x64-"
+DEFAULT_CHANNEL = "stable"
+# 启动器与工作进程通过环境变量共享安装布局，避免依赖 SDK 从 python.exe 反推安装根。
+ENV_ROOT = "MENU_CAPTURE_VELOPACK_ROOT"
+ENV_CURRENT = "MENU_CAPTURE_VELOPACK_CURRENT"
+ENV_PACKAGES = "MENU_CAPTURE_VELOPACK_PACKAGES"
+APPLY_REQUEST = "update-apply-request.json"
+APPLY_STATE = "update-apply-state.json"
+DOWNLOAD_PROGRESS = "update-download-progress.json"
+DOWNLOAD_TIMEOUT_SECONDS = 1800
+
+
+class VelopackError(RuntimeError):
+    """适配层无法完成请求时抛出；调用方应如实展示原因，不回退到自研安装器。"""
+
+
+def channel_name(channel: str) -> str:
+    value = str(channel or DEFAULT_CHANNEL).strip().lower()
+    if value not in {"stable", "preview"}:
+        raise VelopackError("发布渠道无效")
+    return f"{CHANNEL_PREFIX}{value}"
+
+
+def _read_json(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return default
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.replace(path)
+
+
+def _utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+
+
+class VelopackBackend:
+    """Velopack SDK 的最小适配面；所有方法都不在导入期依赖 Windows 原生模块。"""
+
+    def __init__(
+        self,
+        repository: str,
+        data_dir: Path,
+        *,
+        channel: str = DEFAULT_CHANNEL,
+        python: str | None = None,
+        app_dir: Path | None = None,
+    ) -> None:
+        self.repository = repository
+        self.data_dir = Path(data_dir)
+        self.channel = channel
+        # 下载子进程必须使用打包内的 Python，确保能导入 velopack 原生模块。
+        self.python = python or sys.executable
+        self.app_dir = Path(app_dir) if app_dir is not None else Path(__file__).resolve().parents[2]
+        self.request_path = self.data_dir / APPLY_REQUEST
+        self.apply_state_path = self.data_dir / APPLY_STATE
+        self.progress_path = self.data_dir / DOWNLOAD_PROGRESS
+
+    # ---------- 环境探测 ----------
+
+    def _current_dir(self) -> Path | None:
+        override = os.environ.get(ENV_CURRENT)
+        if override:
+            path = Path(override)
+            return path if path.is_dir() else None
+        # 启动器固定位于 current 根；工作进程位于 current/python，逐级向上寻找 sq.version。
+        candidate = Path(sys.executable).resolve().parent
+        for _ in range(4):
+            if (candidate / "sq.version").is_file():
+                return candidate
+            if candidate.parent == candidate:
+                break
+            candidate = candidate.parent
+        return None
+
+    def _root_dir(self) -> Path | None:
+        override = os.environ.get(ENV_ROOT)
+        if override:
+            path = Path(override)
+            return path if path.is_dir() else None
+        current = self._current_dir()
+        if current is None:
+            return None
+        root = current.parent
+        return root if (root / "Update.exe").is_file() else None
+
+    def _packages_dir(self) -> Path:
+        override = os.environ.get(ENV_PACKAGES)
+        if override:
+            return Path(override)
+        root = self._root_dir()
+        return (root / "packages") if root is not None else (self.data_dir / "velopack-packages")
+
+    def available(self) -> bool:
+        """仅 Windows、已安装 velopack 且能定位安装布局时启用。"""
+        if sys.platform != "win32":
+            return False
+        try:
+            import velopack  # noqa: F401
+        except Exception:  # noqa: BLE001 - 缺少依赖时按不支持处理
+            return False
+        return self._root_dir() is not None and self._current_dir() is not None
+
+    def locator(self):
+        import velopack
+
+        current = self._current_dir()
+        root = self._root_dir()
+        if current is None or root is None:
+            raise VelopackError("无法定位 Velopack 安装目录")
+        return velopack.VelopackLocatorConfig(
+            RootAppDir=root,
+            UpdateExePath=root / "Update.exe",
+            PackagesDir=self._packages_dir(),
+            ManifestPath=current / "sq.version",
+            CurrentBinaryDir=current,
+            IsPortable=False,
+        )
+
+    def manager(self, channel: str | None = None):
+        import velopack
+
+        selected = channel or self.channel
+        source = velopack.GithubSource(
+            f"https://github.com/{self.repository}",
+            None,
+            selected == "preview",
+        )
+        # AllowVersionDowngrade 保持关闭：降级只用于显式回滚，不参与日常更新检查。
+        options = velopack.UpdateOptions(False, 10, channel_name(selected))
+        return velopack.UpdateManager(source, options, self.locator())
+
+    # ---------- 版本发现与下载 ----------
+
+    def check(self, channel: str | None = None) -> dict | None:
+        """返回 SDK 选中的目标版本；没有任何适用更新时返回 None。"""
+        try:
+            info = self.manager(channel).check_for_updates()
+        except Exception as exc:  # noqa: BLE001 - 网络/解析失败统一呈现为检查失败
+            raise VelopackError(f"Velopack 检查更新失败：{exc}") from exc
+        if info is None:
+            return None
+        asset = info.TargetFullRelease
+        release = {
+            "version": str(asset.Version),
+            "notes": str(asset.NotesMarkdown or ""),
+            "sha256": str(asset.SHA256 or "").lower(),
+            "size": int(asset.Size or 0),
+            "is_downgrade": bool(info.IsDowngrade),
+            "deltas": len(list(info.DeltasToTarget or [])),
+        }
+        return release
+
+    def pending_restart(self) -> dict | None:
+        """返回已下载并可应用的资产；没有时返回 None。"""
+        if not self.available():
+            return None
+        try:
+            asset = self.manager().get_update_pending_restart()
+        except Exception as exc:  # noqa: BLE001
+            raise VelopackError(f"读取待安装更新失败：{exc}") from exc
+        if asset is None:
+            return None
+        return {
+            "version": str(asset.Version),
+            "file_name": str(asset.FileName),
+            "sha256": str(asset.SHA256 or "").lower(),
+            "size": int(asset.Size or 0),
+        }
+
+    def download(
+        self,
+        version: str,
+        *,
+        channel: str | None = None,
+        progress: Callable[[dict], None] | None = None,
+        cancel=None,
+        timeout: float = DOWNLOAD_TIMEOUT_SECONDS,
+    ) -> dict:
+        """在独立进程中下载，取消即终止子进程；不会触碰业务目录或运行中的版本。"""
+        selected = channel or self.channel
+        command = [
+            self.python, "-m", "menu_capture.updates.velopack_worker",
+            "--repo", self.repository,
+            "--channel", selected,
+            "--version", str(version),
+            "--progress", str(self.progress_path),
+        ]
+        _write_json(self.progress_path, {"stage": "starting", "percent": 0})
+        kwargs: dict[str, Any] = {
+            "cwd": str(self.app_dir),
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "close_fds": True,
+        }
+        if sys.platform == "win32":
+            # 独立进程组：终止下载子进程时不会误伤采集端自身。
+            kwargs["creationflags"] = 0x00000008 | 0x00000200
+        else:
+            kwargs["start_new_session"] = True
+        try:
+            process = subprocess.Popen(command, **kwargs)
+        except OSError as exc:
+            _write_json(self.progress_path, {
+                "stage": "failed", "percent": 0, "error": f"无法启动下载进程：{exc}",
+            })
+            return {"status": "failed", "message": f"无法启动下载进程：{exc}"}
+        started = time.monotonic()
+        try:
+            while process.poll() is None:
+                if cancel is not None and cancel.is_set():
+                    self._terminate(process)
+                    return {"status": "cancelled", "message": "下载已取消，未安装任何内容"}
+                if timeout and time.monotonic() - started > timeout:
+                    self._terminate(process)
+                    return {"status": "failed", "message": "下载超时，已终止下载进程"}
+                state = _read_json(self.progress_path, {})
+                if progress is not None and isinstance(state, dict):
+                    progress(state)
+                time.sleep(0.5)
+        finally:
+            if process.poll() is None:
+                self._terminate(process)
+        state = _read_json(self.progress_path, {})
+        if process.returncode == 0 and str(state.get("stage") or "") == "completed":
+            return {"status": "completed", "message": f"已下载并校验 {version}"}
+        message = str(state.get("error") or "") or f"下载进程退出码 {process.returncode}"
+        return {"status": "failed", "message": message}
+
+    @staticmethod
+    def _terminate(process: subprocess.Popen) -> None:
+        try:
+            process.terminate()
+            process.wait(timeout=10)
+        except Exception:  # noqa: BLE001 - 终止失败时尽力清理，不掩盖原始取消意图
+            try:
+                process.kill()
+            except Exception:  # noqa: BLE001
+                pass
+
+    # ---------- 应用更新请求（由启动器执行真正切换） ----------
+
+    def request_apply(self, version: str) -> None:
+        """只登记应用请求；真正退出、切换与重启由启动器完成，避免自进程被强制结束。"""
+        _write_json(self.request_path, {
+            "version": str(version),
+            "channel": self.channel,
+            "requested_at": _utc_now(),
+            "requested_by_pid": os.getpid(),
+        })
+
+    def read_apply_request(self) -> dict | None:
+        data = _read_json(self.request_path, None)
+        return data if isinstance(data, dict) and data.get("version") else None
+
+    def clear_apply_request(self) -> None:
+        try:
+            self.request_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def read_apply_state(self) -> dict:
+        data = _read_json(self.apply_state_path, {})
+        return data if isinstance(data, dict) else {}
+
+    def write_apply_state(self, status: str, version: str, message: str = "", error: str = "") -> None:
+        _write_json(self.apply_state_path, {
+            "status": status,
+            "version": str(version),
+            "message": message,
+            "error": error,
+            "updated_at": _utc_now(),
+        })
+
+    def apply_pending(self, expected_version: str) -> dict:
+        """启动器调用：应用已下载的更新并重启。返回前会挂起等待当前进程退出。"""
+        if not self.available():
+            raise VelopackError("当前不是 Velopack 安装环境")
+        pending = self.pending_restart()
+        if pending is None:
+            raise VelopackError("没有已下载完成的更新包")
+        if str(pending.get("version")) != str(expected_version):
+            raise VelopackError(
+                f"待安装版本 {pending.get('version')} 与请求版本 {expected_version} 不一致"
+            )
+        manager = self.manager()
+        self.write_apply_state("applying", expected_version, "正在应用更新并重启")
+        # 调用方（启动器）此时已正常停止 Worker，current 内没有在写业务的进程；
+        # apply_updates_and_restart 会启动 Update.exe 等待本进程退出后替换 current 并重启。
+        manager.apply_updates_and_restart(self._pending_asset())
+        return pending
+
+    def _pending_asset(self):
+        asset = self.manager().get_update_pending_restart()
+        if asset is None:
+            raise VelopackError("待安装更新包已消失")
+        return asset

@@ -9,18 +9,6 @@ on:
         default: '0.1.0'
         required: true
         type: string
-      previous_installer_tag:
-        description: 升级回滚验收用旧版 Release 标签
-        required: false
-        type: string
-      previous_installer_run:
-        description: 复用先前验收通过的旧版安装包 Actions Run ID
-        required: false
-        type: string
-      ota_base_version:
-        description: 应用内更新验收用的基础版本（须低于 version；补丁只复用该版本正式发布的历史构建）
-        required: false
-        type: string
       create_release:
         description: 验收通过后用同一次产物创建或更新 Release 草稿
         default: false
@@ -80,22 +68,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: 校验正式候选必须具备旧版与 OTA 基线
-        if: inputs.create_release
-        env:
-          PREVIOUS_INSTALLER_TAG: ${{ inputs.previous_installer_tag }}
-          PREVIOUS_INSTALLER_RUN: ${{ inputs.previous_installer_run }}
-          OTA_BASE_VERSION: ${{ inputs.ota_base_version }}
-        run: |
-          # 正式候选必须覆盖真实旧版升级与应用内更新，不允许静默跳过关键验收。
-          if [ -z "$PREVIOUS_INSTALLER_TAG" ] && [ -z "$PREVIOUS_INSTALLER_RUN" ]; then
-            echo "创建发布草稿前必须提供 previous_installer_tag 或 previous_installer_run"
-            exit 1
-          fi
-          if [ -z "$OTA_BASE_VERSION" ]; then
-            echo "创建发布草稿前必须提供 ota_base_version"
-            exit 1
-          fi
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.11.3'
@@ -115,37 +87,6 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-      - name: 下载用于旧版升级与回滚验收的安装包
-        if: github.event_name == 'workflow_dispatch' && inputs.previous_installer_tag != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PREVIOUS_TAG: ${{ inputs.previous_installer_tag }}
-        shell: pwsh
-        run: |
-          gh release download $env:PREVIOUS_TAG --repo $env:GITHUB_REPOSITORY --pattern 'MenuCapture-Setup-*-win-x64.exe' --dir $env:RUNNER_TEMP
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $installer = Get-ChildItem $env:RUNNER_TEMP -Filter 'MenuCapture-Setup-*-win-x64.exe' -File | Select-Object -First 1
-          if (-not $installer) { throw "Release $env:PREVIOUS_TAG did not contain a Windows installer." }
-          "PREVIOUS_INSTALLER=$($installer.FullName)" >> $env:GITHUB_ENV
-          "PREVIOUS_VERSION=$($env:PREVIOUS_TAG -replace '^v', '')" >> $env:GITHUB_ENV
-      - name: 下载旧版安装包 CI 产物
-        if: github.event_name == 'workflow_dispatch' && inputs.previous_installer_tag == '' && inputs.previous_installer_run != ''
-        uses: actions/download-artifact@v4
-        with:
-          name: menu-capture-windows-x64
-          path: ${{ runner.temp }}/previous-installer
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.previous_installer_run }}
-      - name: 核对旧版 CI 安装包
-        if: github.event_name == 'workflow_dispatch' && inputs.previous_installer_tag == '' && inputs.previous_installer_run != ''
-        shell: pwsh
-        run: |
-          $previous = @(Get-ChildItem (Join-Path $env:RUNNER_TEMP 'previous-installer') -Filter 'MenuCapture-Setup-*-win-x64.exe' -File -Recurse)
-          if ($previous.Count -ne 1 -or $previous[0].Name -notmatch '^MenuCapture-Setup-(.+)-win-x64\.exe$') {
-            throw '旧版安装包产物必须包含且只包含一个可识别的 Windows 安装包。'
-          }
-          "PREVIOUS_INSTALLER=$($previous[0].FullName)" >> $env:GITHUB_ENV
-          "PREVIOUS_VERSION=$($Matches[1])" >> $env:GITHUB_ENV
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.11.3'
@@ -157,168 +98,33 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # 通用单测、集成测试与目录级契约已在后端门禁全量执行；这里只补充 Windows 本机行为。
           uv run --frozen pytest -q --basetemp (Join-Path $env:RUNNER_TEMP 'mc-py') tests/contract
-      - name: 构建 Windows x64 安装包
+      - name: 锁定 Velopack CLI 1.2.161
         shell: pwsh
-        env:
-          BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
         run: |
-          $version = $env:BUILD_VERSION
-          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
-          # 本次构建的 staging bundle 一律保留：目标版本补丁与后续版本的历史基线都只能来自真实构建产物，
-          # 不允许用当前 HEAD 改版本号重新构建来伪造历史。
-          ./deploy/windows/build.ps1 -Version $version -BundleOutput (Join-Path $env:RUNNER_TEMP 'mc-bundle-target')
-      - name: 验证安装与进程恢复
-        shell: pwsh
-        env:
-          BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
-        run: |
-          $version = $env:BUILD_VERSION
-          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
-          $installer = Get-ChildItem deploy/artifacts -Filter '*.exe' -File | Select-Object -First 1
-          $smokeArgs = @{ Installer = $installer.FullName; Version = $version }
-          if ($env:PREVIOUS_INSTALLER) {
-            $smokeArgs.PreviousInstaller = $env:PREVIOUS_INSTALLER
-            $smokeArgs.PreviousVersion = $env:PREVIOUS_VERSION
-          }
-          ./deploy/windows/smoke.ps1 @smokeArgs
-          if (-not $env:PREVIOUS_INSTALLER) {
-            Write-Host 'Upgrade/rollback smoke skipped. Dispatch with previous_installer_tag or previous_installer_run to verify the previous release.'
-          }
-      - name: 归档本次构建 bundle 作为后续版本的历史基线
-        if: inputs.create_release
-        shell: pwsh
-        env:
-          BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
-        run: |
-          $version = $env:BUILD_VERSION
-          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
-          $bundle = Join-Path $env:RUNNER_TEMP 'mc-bundle-target'
-          if (-not (Test-Path -LiteralPath (Join-Path $bundle 'release-manifest.json'))) {
-            throw '构建未产出带发布清单的 staging bundle，无法归档为历史基线。'
-          }
-          $zip = Join-Path 'deploy/artifacts' "MenuCapture-$version-bundle.zip"
-          # 用 ZipFile 按目录树原样打包，避免通配符漏掉以点开头的文件。
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          [IO.Compression.ZipFile]::CreateFromDirectory(
-            $bundle, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
-          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          Set-Content -LiteralPath "$zip.sha256" -Value "$hash  $(Split-Path -Leaf $zip)" -Encoding ASCII
-      - name: 生成增量补丁（复用正式发布的历史构建，缺失则跳过）
-        if: inputs.ota_base_version != ''
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
-          OTA_BASE_VERSION: ${{ inputs.ota_base_version }}
-        run: |
-          $version = $env:BUILD_VERSION
-          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
-          $base = $env:OTA_BASE_VERSION
-          $meta = Join-Path $env:RUNNER_TEMP 'ota-base-meta'
-          $baseBundle = Join-Path $env:RUNNER_TEMP 'mc-bundle-base'
-          New-Item -ItemType Directory -Path $meta -Force | Out-Null
-          # 历史基线只能来自正式发布的真实构建产物；发布资产缺失时跳过补丁，完整安装包照常发布。
-          gh release download "v$base" --repo $env:GITHUB_REPOSITORY `
-            --pattern "MenuCapture-$base-bundle.zip" `
-            --pattern "MenuCapture-$base-bundle.zip.sha256" `
-            --pattern 'update-manifest.json' `
-            --dir $meta
+          # vpk 与 Python SDK 必须同为 1.2.161，避免安装包与更新元数据由不同版本生成。
+          dotnet tool install -g vpk --version 1.2.161
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "::warning::下载 Release v$base 的历史构建失败（gh 退出码 $LASTEXITCODE），将跳过增量补丁。"
+            dotnet tool update -g vpk --version 1.2.161 --allow-downgrade
+            if ($LASTEXITCODE -ne 0) { throw 'vpk 1.2.161 安装失败。' }
           }
-          $bundleZip = Join-Path $meta "MenuCapture-$base-bundle.zip"
-          $releaseManifest = Join-Path $meta 'update-manifest.json'
-          if (-not (Test-Path -LiteralPath $bundleZip) -or
-              -not (Test-Path -LiteralPath "$bundleZip.sha256") -or
-              -not (Test-Path -LiteralPath $releaseManifest)) {
-            Write-Host "Release v$base 未提供历史构建 bundle、校验值或更新清单，跳过增量补丁；本次仅发布完整安装包。"
-            exit 0
-          }
-          $expected = ((Get-Content -LiteralPath "$bundleZip.sha256" -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
-          $actual = (Get-FileHash -LiteralPath $bundleZip -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($expected -ne $actual) {
-            Write-Host '::warning::历史构建 bundle 校验值与正式发布不一致，跳过增量补丁。'
-            exit 0
-          }
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          if (Test-Path -LiteralPath $baseBundle) { Remove-Item -LiteralPath $baseBundle -Recurse -Force }
-          [IO.Compression.ZipFile]::ExtractToDirectory($bundleZip, $baseBundle)
-          $bundleManifestPath = Join-Path $baseBundle 'release-manifest.json'
-          if (-not (Test-Path -LiteralPath $bundleManifestPath)) {
-            Write-Host '历史构建 bundle 缺少发布清单，跳过增量补丁。'
-            exit 0
-          }
-          $bundleManifest = Get-Content -LiteralPath $bundleManifestPath -Raw | ConvertFrom-Json
-          $release = Get-Content -LiteralPath $releaseManifest -Raw | ConvertFrom-Json
-          # 版本与构建提交必须同时与正式发布清单一致，否则该 bundle 不能作为可信基线。
-          if ($bundleManifest.version -ne $base -or $release.version -ne $base) {
-            Write-Host '历史构建 bundle 版本与请求的基线版本不一致，跳过增量补丁。'
-            exit 0
-          }
-          if (-not $bundleManifest.git_commit -or $bundleManifest.git_commit -ne $release.git_commit) {
-            Write-Host '历史构建 bundle 的构建提交与正式发布清单不一致，跳过增量补丁。'
-            exit 0
-          }
-          $patch = Join-Path 'deploy/artifacts' "MenuCapture-$base-to-$version.patch.zip"
-          uv run --frozen --project app python deploy/windows/make_patch.py `
-            --from-dir $baseBundle `
-            --to-dir (Join-Path $env:RUNNER_TEMP 'mc-bundle-target') `
-            --from-version $base `
-            --to-version $version `
-            --output $patch
-          if ($LASTEXITCODE -ne 0) {
-            # 补丁属于可选交付，任何生成问题都不能阻断完整安装包与正式 Release。
-            Write-Host '::warning::增量补丁生成失败，本次仅发布完整安装包。'
-            Remove-Item -LiteralPath $patch -Force -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath "$patch.sha256" -Force -ErrorAction SilentlyContinue
-            exit 0
-          }
-          # skipped 表示运行环境/依赖/安装器变化，不产出补丁，继续发布完整安装包。
-          if (Test-Path -LiteralPath $patch) {
-            $hash = (Get-FileHash -LiteralPath $patch -Algorithm SHA256).Hash.ToLowerInvariant()
-            Set-Content -LiteralPath "$patch.sha256" -Value "$hash  $(Split-Path -Leaf $patch)" -Encoding ASCII
-          } else {
-            Write-Host 'Incremental patch skipped; full installer remains the only update asset.'
-          }
-      - name: 验收应用内更新接口（使用正式历史安装包，缺失则跳过）
-        if: inputs.ota_base_version != ''
+          $vpk = Join-Path $env:USERPROFILE '.dotnet\tools\vpk.exe'
+          if (-not (Test-Path -LiteralPath $vpk)) { throw 'vpk 未安装到预期位置。' }
+          $reported = (& $vpk --version | Out-String).Trim()
+          Write-Host "vpk $reported"
+          if ($reported -notmatch '1\.2\.161') { throw "vpk 版本不是 1.2.161：$reported" }
+          # 后续脚本按 PATH 解析 vpk；同一作业内保持一致。
+          "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
+      - name: 构建 Windows x64 安装包（Velopack）
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
           BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
-          OTA_BASE_VERSION: ${{ inputs.ota_base_version }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           $version = $env:BUILD_VERSION
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
-          $base = $env:OTA_BASE_VERSION
-          $baseDir = Join-Path $env:RUNNER_TEMP 'ota-base-official'
-          New-Item -ItemType Directory -Path $baseDir -Force | Out-Null
-          # 验收基线同样必须来自正式发布，不能用当前源码重新构建。
-          gh release download "v$base" --repo $env:GITHUB_REPOSITORY `
-            --pattern 'MenuCapture-Setup-*-win-x64.exe' --dir $baseDir
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "::warning::下载 Release v$base 正式安装包失败（gh 退出码 $LASTEXITCODE）。"
-          }
-          $baseInstaller = Get-ChildItem $baseDir -Filter 'MenuCapture-Setup-*-win-x64.exe' -File |
-            Select-Object -First 1
-          if (-not $baseInstaller) {
-            Write-Host "Release v$base 未提供正式安装包，跳过应用内更新验收；完整安装包仍照常发布。"
-            exit 0
-          }
-          $installer = Get-ChildItem deploy/artifacts -Filter '*.exe' -File | Select-Object -First 1
-          # 0.2.2 及更早版本没有安装接口，OTA 只能从包含执行器的基础版本开始。
-          ./deploy/windows/ota-smoke.ps1 -Installer $installer.FullName -Version $version `
-            -PreviousInstaller $baseInstaller.FullName -PreviousVersion $base
-      - name: 上传验收日志
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: menu-capture-smoke-logs
-          path: |
-            ${{ runner.temp }}/menu-capture-smoke-logs-*
-            ${{ runner.temp }}/menu-capture-ota-logs-*
-          if-no-files-found: warn
-          retention-days: 14
+          # 产物只包含本次版本：Setup、full/delta nupkg 与 releases.win-x64-stable.json；
+          # 历史包仅用于生成 delta，由构建脚本在临时目录下载，不进入发布资产。
+          ./deploy/windows/build.ps1 -Version $version
       - uses: actions/upload-artifact@v4
         with:
           name: menu-capture-windows-x64
@@ -579,29 +385,23 @@ jobs:
           tag="v$VERSION"
           channel="stable"
           case "$VERSION" in *-*) channel="preview" ;; esac
-          exe=$(find release-assets -maxdepth 1 -name 'MenuCapture-Setup-*.exe' -print -quit)
+          exe=$(find release-assets -maxdepth 1 -name '*-Setup.exe' -print -quit)
           hub=$(find release-assets -maxdepth 1 -name 'menu-capture-hub-*.tar.gz' -print -quit)
-          test -n "$exe" && test -n "$hub"
+          releases_json=$(find release-assets -maxdepth 1 -name 'releases.win-*.json' -print -quit)
+          full=$(find release-assets -maxdepth 1 -name "*-$VERSION-*-full.nupkg" -print -quit)
+          # Velopack 客户端需要 Setup、通道索引与完整包同时存在，缺一不可。
+          test -n "$exe" && test -n "$hub" && test -n "$releases_json" && test -n "$full"
           test -s "$exe.sha256" && test -s "$hub.sha256"
           exe_name=$(basename "$exe"); hub_name=$(basename "$hub")
           exe_sha=$(cut -d' ' -f1 < "$exe.sha256")
           hub_sha=$(cut -d' ' -f1 < "$hub.sha256")
           exe_size=$(stat -c%s "$exe")
           hub_size=$(stat -c%s "$hub")
-          # 增量补丁是可选扩展：缺失或非法时只影响 patches 字段，完整安装包照常发布。
-          patch=$(find release-assets -maxdepth 1 -name 'MenuCapture-*-to-*.patch.zip' -print -quit || true)
-          patch_name=""; patch_size=""; patch_sha=""
-          if [ -n "$patch" ] && [ -s "$patch.sha256" ]; then
-            patch_name=$(basename "$patch")
-            patch_size=$(stat -c%s "$patch")
-            patch_sha=$(cut -d' ' -f1 < "$patch.sha256")
-          fi
           python3 - "$tag" "$channel" "$GITHUB_SHA" "$MIN_SUPPORTED" \
-            "$exe_name" "$exe_size" "$exe_sha" "$hub_name" "$hub_size" "$hub_sha" \
-            "$patch_name" "${{ inputs.ota_base_version }}" "$patch_size" "$patch_sha" <<'PY'
+            "$exe_name" "$exe_size" "$exe_sha" "$hub_name" "$hub_size" "$hub_sha" <<'PY'
           import json, os, sys
           (tag, channel, commit, min_version, exe_name, exe_size, exe_sha,
-           hub_name, hub_size, hub_sha, patch_name, patch_from, patch_size, patch_sha) = sys.argv[1:15]
+           hub_name, hub_size, hub_sha) = sys.argv[1:11]
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}"
           # OCI 是 hub_image 的可选扩展：摘要文件缺失或非法时只影响分层拉取，
           # 完整归档资产照常发布，旧客户端完全不受影响。
@@ -634,18 +434,6 @@ jobs:
                   hub_asset,
               ],
           }
-          if patch_name and patch_from and patch_size and patch_sha:
-              # 可选顶层扩展；旧客户端忽略该字段，只使用完整安装资产。
-              manifest["patches"] = [{
-                  "from": patch_from,
-                  "name": patch_name,
-                  "size": int(patch_size),
-                  "sha256": patch_sha,
-                  "url": f"{base}/{patch_name}",
-                  "platform": "windows",
-                  "arch": "x64",
-                  "format": "zip-sha256-v1",
-              }]
           with open("release-assets/update-manifest.json", "w", encoding="utf-8") as handle:
               json.dump(manifest, handle, ensure_ascii=False, indent=2)
           PY

@@ -4,8 +4,8 @@ param(
     [ValidatePattern('^\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$')]
     [string]$Version = '0.1.0',
     [string]$Output = (Join-Path $PSScriptRoot '..\artifacts'),
-    # 可选：把本次构建的 staging bundle 另存一份，供增量补丁生成复用，
-    # 避免为生成补丁再完整构建一次。目录必须不存在，防止旧产物被误当本次构建。
+    # 可选：把本次构建的 staging bundle 另存一份，供诊断与人工排查。
+    # 增量更新已由 Velopack 基于 nupkg 生成，不再复用这里的 bundle。目录必须不存在，防止旧产物被误当本次构建。
     [string]$BundleOutput = ''
 )
 Set-StrictMode -Version Latest
@@ -98,14 +98,47 @@ function Find-BuildCommand {
     throw "Missing Windows build tool: $Name"
 }
 
+function Get-ReleaseNotes {
+    param([string]$Version)
+    # 优先摘录 CHANGELOG 中该版本的段落；缺失时使用占位文本，确保 vpk 始终拿到发布说明。
+    $changelog = Join-Path $repo 'CHANGELOG.md'
+    if (Test-Path -LiteralPath $changelog -PathType Leaf) {
+        $lines = @(Get-Content -LiteralPath $changelog -Encoding UTF8)
+        $start = -1
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match ('^#{1,6}\s*\[?v?' + [regex]::Escape($Version) + '\]?(\s|$)')) {
+                $start = $i
+                break
+            }
+        }
+        if ($start -ge 0) {
+            $end = $lines.Count
+            for ($j = $start + 1; $j -lt $lines.Count; $j++) {
+                if ($lines[$j] -match '^#{1,2}\s') {
+                    $end = $j
+                    break
+                }
+            }
+            if ($end -gt $start + 1) {
+                $section = ($lines[($start + 1)..($end - 1)] -join "`n").Trim()
+                if ($section) { return $section }
+            }
+        }
+    }
+    return "菜单采集工作台 $Version"
+}
+
 $sevenZip = Find-BuildCommand '7z.exe' (Join-Path $env:ProgramFiles '7-Zip\7z.exe')
-$compiler = Find-BuildCommand 'ISCC.exe' (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')
 $uv = (Get-Command -Name 'uv.exe' -CommandType Application).Source
 $null = New-Item -ItemType Directory -Path $Output -Force
 $Output = (Resolve-Path $Output).Path
-$asset = Join-Path $Output "MenuCapture-Setup-$Version-win-x64.exe"
-if (Test-Path -LiteralPath $asset) { throw "Installer already exists: $asset" }
-# ISCC 编译器不支持超过 260 字符的源路径；构建目录放在短路径下，避免 node_modules 深层文件打包失败。
+# 不覆盖已存在的产物：Velopack 的 Setup 名称不含版本号，同名文件一律视为已发布或上次构建残留。
+$conflicts = @(
+    Get-ChildItem -LiteralPath $Output -Filter '*-Setup.exe' -File -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath $Output -Filter "*-$Version-*.nupkg" -File -ErrorAction SilentlyContinue
+)
+if ($conflicts.Count -gt 0) { throw "Installer already exists: $($conflicts[0].FullName)" }
+# Windows 工具链对长路径仍有限制；构建目录放在短路径下，避免 node_modules 深层文件打包失败。
 $tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
 $stage = Join-Path $tempRoot ('mc-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
 $bundle = Join-Path $stage 'bundle'
@@ -244,17 +277,102 @@ try {
     )
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'runtimes.json') -Destination $bundle
     Set-Content -LiteralPath (Join-Path $bundle 'vc-runtime-version.txt') -Value $crtVersion.Name -Encoding ASCII
-    $language = Join-Path $stage 'ChineseSimplified.isl'
-    Get-VerifiedFile $runtime.installer_language.url $language $runtime.installer_language.sha256
-    # Inno Setup 与 Windows PowerShell 5.1 需要 BOM 才能在任意系统代码页正确读取中文。
-    $utf8Bom = [Text.UTF8Encoding]::new($true)
-    $setup = Join-Path $stage 'setup.iss'
-    [IO.File]::WriteAllText($setup, [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'setup.iss')), $utf8Bom)
-    [IO.File]::WriteAllText((Join-Path $bundle 'Launch.ps1'), [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Launch.ps1')), $utf8Bom)
-    [IO.File]::WriteAllText((Join-Path $bundle 'rollback.ps1'), [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'rollback.ps1')), $utf8Bom)
-    Invoke-Checked $compiler @("/DAppVersion=$Version", "/DBundleDir=$bundle", "/DLanguageFile=$language", "/O$Output", $setup)
-    $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
-    Set-Content -LiteralPath "$asset.sha256" -Value "$hash  $([IO.Path]::GetFileName($asset))" -Encoding ASCII
+
+    # 启动器为 PyInstaller onedir：用临时目录中的独立虚拟环境安装打包工具与 Velopack Python SDK（1.2.161），
+    # 避免把 PyInstaller 等构建依赖带进随包分发的 python/ 运行时。产物（MenuCapture.exe + _internal）复制到
+    # bundle 根目录后作为 vpk 的 mainExe。
+    $launcherSource = Join-Path $PSScriptRoot 'MenuCaptureLauncher.py'
+    if (-not (Test-Path -LiteralPath $launcherSource -PathType Leaf)) {
+        throw "Missing launcher source: $launcherSource"
+    }
+    $launcherVenv = Join-Path $stage 'launcher-venv'
+    Invoke-Checked $python @('-m', 'venv', $launcherVenv)
+    $launcherPython = Join-Path $launcherVenv 'Scripts\python.exe'
+    Invoke-Checked $launcherPython @(
+        '-m', 'pip', 'install', '--disable-pip-version-check', '--no-cache-dir', 'pyinstaller', 'velopack==1.2.161'
+    )
+    $launcherDist = Join-Path $stage 'launcher-dist'
+    # 启动器只负责拉起并守护本地服务；显式排除运行时已自带的大模块，避免在 _internal 中重复打包。
+    $launcherExcludes = 'cv2', 'onnxruntime', 'rapidocr_onnxruntime', 'fastapi', 'uvicorn', 'starlette',
+        'pydantic', 'numpy', 'pandas', 'screeninfo', 'zxingcpp', 'playwright', 'menu_capture'
+    $pyInstallerArgs = @(
+        '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--name', 'MenuCapture',
+        '--distpath', $launcherDist,
+        '--workpath', (Join-Path $stage 'launcher-build'),
+        '--specpath', $stage
+    )
+    foreach ($module in $launcherExcludes) { $pyInstallerArgs += @('--exclude-module', $module) }
+    $pyInstallerArgs += $launcherSource
+    Invoke-Checked $launcherPython $pyInstallerArgs
+    $launcherDir = Join-Path $launcherDist 'MenuCapture'
+    if (-not (Test-Path -LiteralPath (Join-Path $launcherDir 'MenuCapture.exe') -PathType Leaf)) {
+        throw 'PyInstaller did not produce MenuCapture.exe.'
+    }
+    Copy-Item -Path (Join-Path $launcherDir '*') -Destination $bundle -Recurse -Force
+
+    # Velopack CLI 固定 1.2.161：已预装时只校验版本，缺失时按锁定版本安装，避免产物行为漂移。
+    $vpkCommand = Get-Command 'vpk' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($vpkCommand) {
+        $vpk = $vpkCommand.Source
+    } else {
+        $dotnet = Find-BuildCommand 'dotnet.exe' (Join-Path $env:ProgramFiles 'dotnet\dotnet.exe')
+        Invoke-Checked $dotnet @('tool', 'install', '-g', 'vpk', '--version', '1.2.161')
+        $vpk = Join-Path $env:USERPROFILE '.dotnet\tools\vpk.exe'
+    }
+    $vpkVersion = (& $vpk --version | Out-String).Trim()
+    if ($vpkVersion -notmatch '1\.2\.161') { throw "vpk must be 1.2.161, found '$vpkVersion'." }
+
+    $releaseNotes = Join-Path $stage 'release-notes.md'
+    [IO.File]::WriteAllText($releaseNotes, (Get-ReleaseNotes $Version), $utf8NoBom)
+
+    # 历史包只用于生成 delta，放在临时目录，避免旧版本 nupkg 混入本次发布产物。
+    $packDir = Join-Path $stage 'velopack'
+    $null = New-Item -ItemType Directory -Path $packDir
+    $token = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { '' }
+    $downloadArgs = @(
+        'download', 'github',
+        '--repoUrl', 'https://github.com/zhaoyongze123/wechat-miniapp-menu-agent',
+        '--outputDir', $packDir
+    )
+    if ($token) { $downloadArgs += @('--token', $token) }
+    & $vpk @downloadArgs
+    if ($LASTEXITCODE -ne 0) {
+        # 首次迁移到 Velopack 时仓库里还没有历史包，属于正常情况：本次按全量迁移处理，后续版本才会产生 delta。
+        Write-Warning "没有可复用的历史 Velopack 包（vpk download 退出码 $LASTEXITCODE），本次仅生成完整包。"
+    }
+
+    Invoke-Checked $vpk @(
+        'pack',
+        '-u', 'Yipu.MenuCapture',
+        '-v', $Version,
+        '-p', $bundle,
+        '-e', 'MenuCapture.exe',
+        '--packTitle', '菜单采集工作台',
+        '--packAuthors', '意谱科技',
+        '--releaseNotes', $releaseNotes,
+        '-c', 'win-x64-stable',
+        '--outputDir', $packDir
+    )
+
+    # 只发布本次版本的产物：Setup、full/delta nupkg 与通道索引；下载的历史基线包留在临时目录。
+    $products = @(
+        Get-ChildItem -LiteralPath $packDir -Filter '*-Setup.exe' -File -ErrorAction SilentlyContinue
+        Get-ChildItem -LiteralPath $packDir -Filter "*-$Version-*.nupkg" -File -ErrorAction SilentlyContinue
+        Get-ChildItem -LiteralPath $packDir -Filter 'releases.win-x64-stable.json' -File -ErrorAction SilentlyContinue
+    )
+    if (-not ($products | Where-Object { $_.Name -like '*-Setup.exe' })) {
+        throw 'vpk pack did not produce a Setup.exe.'
+    }
+    if (-not ($products | Where-Object { $_.Name -like "*-$Version-*-full.nupkg" })) {
+        throw "vpk pack did not produce a full package for $Version."
+    }
+    foreach ($file in $products) {
+        $target = Join-Path $Output $file.Name
+        Copy-Item -LiteralPath $file.FullName -Destination $target -Force
+        $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+        Set-Content -LiteralPath "$target.sha256" -Value "$hash  $($file.Name)" -Encoding ASCII
+        Write-Host "Artifact: $target"
+    }
     if ($BundleOutput) {
         $bundleOutputPath = [IO.Path]::GetFullPath($BundleOutput)
         if (Test-Path -LiteralPath $bundleOutputPath) { throw "Bundle output already exists: $bundleOutputPath" }
@@ -263,7 +381,6 @@ try {
         Copy-Item -LiteralPath $bundle -Destination $bundleOutputPath -Recurse -Force
         Write-Host "Bundle: $bundleOutputPath"
     }
-    Write-Host "Installer: $asset"
 } finally {
     Remove-Item -LiteralPath $stage -Recurse -Force
 }

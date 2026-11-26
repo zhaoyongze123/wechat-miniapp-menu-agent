@@ -93,7 +93,16 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     configs = ConfigStore(root, managed=role != "standalone" or bool(os.environ.get("MENU_CAPTURE_HOME")))
     # root 是可写数据目录（可能由 MENU_CAPTURE_HOME 指定）；程序目录必须单独传入，
     # 否则安装目录/历史版本清点会错误地从数据目录反推。
-    updates = UpdateService(root, role=role, app_root=ROOT)
+    # Windows 采集端的 Windows 包交付由 Velopack 承担；Hub/单机不加载该后端。
+    velopack_backend = None
+    if sys.platform == "win32" and role == "worker":
+        from menu_capture.updates.velopack_backend import VelopackBackend
+
+        velopack_backend = VelopackBackend(
+            "zhaoyongze123/wechat-miniapp-menu-agent", root / "data",
+            python=sys.executable, app_dir=ROOT,
+        )
+    updates = UpdateService(root, role=role, app_root=ROOT, backend=velopack_backend)
     store = TaskStore(root / "data/tasks.sqlite3")
     model_usage = UsageLedger(store)
     debug_log = DebugLog(root / "data", configs.load().debug_logging.max_storage_mb)
@@ -164,15 +173,11 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         updates.rollback_capability = lambda: False
     else:
         install = InstallController(
-            download_dir=updates.download_dir,
-            install_root=updates.install_root(),
             data_dir=updates.data_dir,
+            backend=velopack_backend,
             role=role,
             platform=updates.platform,
-            arch=updates.local_arch,
-            port=int(os.environ.get("MENU_CAPTURE_PORT", "8765")),
             latest_provider=lambda: (updates.status_no_check().get("latest") or {}),
-            artifact_provider=updates.download_status,
             current_version=updates.current_version,
             idle_check=lambda: (
                 (True, "") if not (runner.running or annotations.active)
@@ -281,6 +286,22 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     app.state.shared_worker = worker
     app.state.updates_install = install
     register_shared_routes(app, role, hub, worker, control_lock)
+
+    # 启动器在应用 Velopack 更新前需要先让 Worker 正常退出；只注册带随机令牌的本地入口。
+    # 没有令牌（普通开发/单机运行）时该路由完全不存在，不扩大攻击面。
+    coordinator_token = str(os.environ.get("MENU_CAPTURE_COORDINATOR_TOKEN") or "")
+    if coordinator_token:
+        @app.post("/api/internal/shutdown")
+        def internal_shutdown(request: Request):
+            provided = request.headers.get("x-coordinator-token", "")
+            if not hmac.compare_digest(provided, coordinator_token):
+                raise HTTPException(401, "协调令牌无效")
+            server = getattr(app.state, "uvicorn_server", None)
+            if server is None:
+                raise HTTPException(409, "当前进程不支持受控关闭")
+            # 只置位退出标志，由 uvicorn 触发 lifespan 清理，不强行结束采集线程。
+            server.should_exit = True
+            return {"ok": True}
 
     def basic_authorized(header: str, expected_user: bytes, expected_password: str) -> bool:
         method, _, credentials = header.partition(" ")
@@ -1784,7 +1805,11 @@ def main():
                 remote_control_password=os.environ.get("MENU_CAPTURE_REMOTE_CONTROL_PASSWORD", ""),
             )
             app.state.debug_log.install_service_logging()
-            uvicorn.run(app, host=host, port=port, access_log=False, log_config=None)
+            # 以编程方式持有 Server，供启动器请求“正常退出后应用更新”，避免强制结束进程。
+            config = uvicorn.Config(app, host=host, port=port, access_log=False, log_config=None)
+            server = uvicorn.Server(config)
+            app.state.uvicorn_server = server
+            server.run()
     except InstanceLockedError:
         raise SystemExit("本机控制台已运行，请打开 http://127.0.0.1:8765")
 
