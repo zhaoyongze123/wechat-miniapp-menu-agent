@@ -167,7 +167,7 @@ app/
 产物落点：
 
 - 合格输出：`<output_dir>/<批次名>/<门店>/`
-- Hub 派生交付视图：`<MENU_CAPTURE_DELIVERY_MOUNT>/项目/<project.code>/合格/<门店目录>/`；每项目独立索引范围。既有根目录下的旧 `合格/` 保留，不自动搬迁或删除。
+- Hub 派生交付视图：`<MENU_CAPTURE_DELIVERY_MOUNT>/项目/<project.code>/合格/<门店目录>/`；每项目独立索引范围。旧版扁平 `合格/<门店>/` 已一次性并入历史项目（legacy），服务不再写入或重建该结构。
 - 运行期临时：`<output_dir 同级>/.uipath-runs`、`.uipath-staging`
 - 不合格归档：配置的 `unqualified_dir/<门店>/二维码.png + 归档说明.txt`
 
