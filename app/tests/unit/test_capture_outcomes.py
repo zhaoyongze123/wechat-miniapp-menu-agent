@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from menu_capture.api.server import create_app
+from menu_capture.projects.service import LEGACY_ID, ensure_legacy_project
 
 
 STAMP = "2026-11-20T12:00:00+08:00"
@@ -15,9 +16,12 @@ AUTH = {"Authorization": "Basic " + b64encode(b"admin:isolated-test").decode()}
 
 def seed_batch(app, snap, batch_id, version):
     with app.state.store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        ensure_legacy_project(db)
         db.execute("INSERT OR IGNORE INTO material_batches(id,name,source_kind,source_root,status,created_at,updated_at)"
                    " VALUES(?,?,?,?,?,?,?)",
                    (batch_id, batch_id, "local", str(app.state.materials.published_root), "completed", STAMP, STAMP))
+        db.execute("UPDATE material_batches SET project_id=? WHERE id=?", (LEGACY_ID, batch_id))
         db.execute("INSERT INTO material_versions VALUES(?,?,?,?,?,?,?)",
                    (f"{batch_id}-{version}", batch_id, version, snap, "", STAMP, 1))
     root = app.state.materials.published_root / snap
@@ -94,9 +98,11 @@ def test_same_qr_stays_frozen_across_publish_and_changed_qr_can_be_assigned(tmp_
     with TestClient(app, base_url="http://127.0.0.1", headers=AUTH) as client:
         headers = {"X-Capture-Token": client.get("/api/session").json()["token"]}
         response = client.post("/api/shared/assignments", headers=headers,
-                               json={"worker_id": "device", "task_ids": [frozen["id"]]})
+                               json={"worker_id": "device", "task_ids": [frozen["id"]],
+                                     "project_id": LEGACY_ID})
         assert response.status_code == 409
-        assert client.post(f"/api/tasks/{frozen['id']}/retry", headers=headers).status_code == 409
+        assert client.post(f"/api/tasks/{frozen['id']}/retry", headers=headers,
+                           json={"project_id": LEGACY_ID}).status_code == 409
         assert not client.get("/api/reviews/pending").json()["records"]
         third = seed_batch(app, "c"*64, "第一批", "v3")
         save_qr(third, name, color="black")
@@ -104,7 +110,8 @@ def test_same_qr_stays_frozen_across_publish_and_changed_qr_can_be_assigned(tmp_
         eligible = app.state.materials.effective_capture_tasks()[0]
         assert eligible["runnable"]
         response = client.post("/api/shared/assignments", headers=headers,
-                               json={"worker_id": "device", "task_ids": [eligible["id"]]})
+                               json={"worker_id": "device", "task_ids": [eligible["id"]],
+                                     "project_id": LEGACY_ID})
         assert response.status_code == 200
 
 
@@ -171,7 +178,8 @@ def test_hub_batch_scope_preserves_selection_and_conflicts_are_atomic(tmp_path):
             return client.post(path, headers=headers, json=payload)
 
         def assign(device, tasks):
-            return post("/api/shared/assignments", {"worker_id": device, "task_ids": tasks})
+            return post("/api/shared/assignments", {"worker_id": device, "task_ids": tasks,
+                                                     "project_id": LEGACY_ID})
 
         hub = app.state.shared_hub
         a = hub.pair(post("/api/shared/pairing").json()["code"], "A 机")
@@ -201,6 +209,9 @@ def test_worker_reports_latest_run_and_can_fall_back_to_older_hub(tmp_path):
     hub_app = create_app(tmp_path / "hub", role="hub", admin_password="isolated-test")
     worker_app = create_app(tmp_path / "worker", role="worker")
     hub, worker = hub_app.state.shared_hub, worker_app.state.shared_worker
+    with hub.store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        ensure_legacy_project(db)
     mode = "new"
     payloads = []
     with TestClient(hub_app, base_url="http://127.0.0.1", headers=AUTH) as client:
@@ -226,8 +237,13 @@ def test_worker_reports_latest_run_and_can_fall_back_to_older_hub(tmp_path):
         worker.store.update_run("run", status="running", current_index=1)
         worker.poll()
         worker.poll()
-        report = hub.status()["workers"][0]["last_run"]
-        assert (report["status"], report["processed"], report["total"]) == ("running", 1, 2)
+        # 此测试的旧轮次任务没有分配快照，后台不能把无归属摘要显示到任何项目。
+        report = hub.status(project_id=LEGACY_ID)["workers"][0]["last_run"]
+        assert report is None
+        with hub.store.connect() as db:
+            saved = db.execute("SELECT status,project_id FROM shared_worker_runs WHERE worker_id=?",
+                               (worker.connection["id"],)).fetchone()
+        assert saved["status"] == "running" and saved["project_id"] == ""
 
         mode = "old"
         worker.poll()
@@ -237,8 +253,8 @@ def test_worker_reports_latest_run_and_can_fall_back_to_older_hub(tmp_path):
         worker.store.update_run("run", status="completed", current_index=2)
         worker.poll()
         worker.poll()
-        report = hub.status()["workers"][0]["last_run"]
-        assert (report["status"], report["processed"]) == ("completed", 2)
+        report = hub.status(project_id=LEGACY_ID)["workers"][0]["last_run"]
+        assert report is None
 
 
 def test_device_profile_revoke_remove_and_paginated_records_keep_identity(tmp_path):
@@ -252,12 +268,13 @@ def test_device_profile_revoke_remove_and_paginated_records_keep_identity(tmp_pa
     device = hub.pair(hub.pairing_code()["code"], "旧名称")
     device_id = device["id"]
     route = f"/api/shared/workers/{device_id}"
-    assigned = hub.assign(device_id, task_ids)["assignments"]
+    assigned = hub.assign(device_id, task_ids, project_id=LEGACY_ID)["assignments"]
     # 模拟已经有较多历史记录，设备任务列表仍可读到 200 条以前的记录。
     with store.connect() as db:
-        db.executemany("""INSERT INTO shared_assignments VALUES
-            (:id,:task_id,:worker_id,:batch_id,:batch_name,:store,:revision,:snapshot_id,:source_hash,
-             :source_suffix,'completed',:created_at)""",
+        db.executemany("""INSERT INTO shared_assignments(id,task_id,worker_id,batch_id,batch_name,store,revision,
+            snapshot_id,source_hash,source_suffix,status,created_at,project_id,project_code,project_name)
+            VALUES(:id,:task_id,:worker_id,:batch_id,:batch_name,:store,:revision,:snapshot_id,:source_hash,
+             :source_suffix,'completed',:created_at,:project_id,:project_code,:project_name)""",
             (assigned[0] | {"id": f"{n:032x}", "store": f"历史门店{n}", "created_at": STAMP} for n in range(205)))
 
     with TestClient(app, base_url="http://127.0.0.1", headers=AUTH) as client:
@@ -270,22 +287,31 @@ def test_device_profile_revoke_remove_and_paginated_records_keep_identity(tmp_pa
         assert client.post(route + "/archive", headers=headers).status_code == 409
         listing = client.get("/api/shared/assignments", params={
             "worker_id": device_id, "phase": "completed", "page": 7, "size": 30,
+            "project_id": LEGACY_ID,
         }).json()
         assert listing["total"] == 205 and len(listing["records"]) == 25
         assert {row["worker_name"] for row in listing["records"]} == {"采集机 A"}
-        matches = client.get("/api/shared/assignments", params={"worker_id": device_id, "q": "乙门店"}).json()
+        matches = client.get("/api/shared/assignments", params={"worker_id": device_id, "q": "乙门店",
+                                                                "project_id": LEGACY_ID}).json()
         assert matches["total"] == 1
 
         batch = "/api/shared/assignments/reclaim"
         ids = [row["id"] for row in assigned]
-        malformed = client.post(batch, headers=headers, json={"assignment_ids": [ids[0], "not-an-id"]})
+        malformed = client.post(batch, headers=headers, json={"assignment_ids": [ids[0], "not-an-id"],
+                                                              "project_id": LEGACY_ID})
         assert malformed.status_code == 400
-        mixed = client.post(batch, headers=headers, json={"assignment_ids": [ids[0], "f"*32]}).json()
-        assert mixed["count"] == 1
-        assert {item["id"] for item in mixed["results"] if item["status"] == "reclaimed"} == {ids[0]}
-        assert next(item for item in mixed["results"] if item["id"] == "f"*32)["message"] == "分配记录不存在"
+        mixed = client.post(batch, headers=headers, json={"assignment_ids": [ids[0], "f"*32],
+                                                          "project_id": LEGACY_ID})
+        assert mixed.status_code == 409
+        # 项目范围内批量回收采用整批校验；未知 ID 与越项目 ID 一样不暴露部分结果，也不部分写入。
+        assert sum(row["status"] in {"assigned", "ready"} for row in hub.status()["assignments"]) == 2
+        first_reclaimed = client.post(batch, headers=headers, json={"assignment_ids": [ids[0]],
+                                                                    "project_id": LEGACY_ID}).json()
+        assert first_reclaimed["count"] == 1
+        assert first_reclaimed["results"][0]["status"] == "reclaimed"
         assert sum(row["status"] in {"assigned", "ready"} for row in hub.status()["assignments"]) == 1
-        reclaimed = client.post(batch, headers=headers, json={"assignment_ids": ids}).json()
+        reclaimed = client.post(batch, headers=headers, json={"assignment_ids": ids,
+                                                             "project_id": LEGACY_ID}).json()
         assert reclaimed["count"] == 1 and {row["id"] for row in reclaimed["tasks"]} == {assigned[1]["task_id"]}
         assert next(item for item in reclaimed["results"] if item["id"] == ids[0])["status"] == "failed"
         revoked = client.post(route + "/revoke", headers=headers)
@@ -294,9 +320,11 @@ def test_device_profile_revoke_remove_and_paginated_records_keep_identity(tmp_pa
         assert client.post("/api/shared/worker/sync", headers=identity,
                            json={"ready_ids": [], "pending_uploads": 0}).status_code == 401
         assert client.post("/api/shared/assignments", headers=headers,
-                           json={"worker_id": device_id, "task_ids": task_ids}).status_code == 409
+                           json={"worker_id": device_id, "task_ids": task_ids,
+                                 "project_id": LEGACY_ID}).status_code == 409
         assert client.post(route + "/archive", headers=headers).json()["archived_at"]
-        records = client.get("/api/shared/assignments", params={"worker_id": device_id, "phase": "reclaimed"}).json()
+        records = client.get("/api/shared/assignments", params={"worker_id": device_id, "phase": "reclaimed",
+                                                                 "project_id": LEGACY_ID}).json()
         assert {row["id"] for row in records["records"]} == set(ids)
 
 
@@ -325,12 +353,12 @@ def test_qr_cache_reuses_verified_bytes_but_refreshes_corrupt_or_changed_qr(tmp_
         worker._http = httpx.Client(transport=httpx.MockTransport(transport))
         worker.connect("http://127.0.0.1", hub.pairing_code()["code"], "旧名称")
         identifier = worker.connection["id"]
-        first_assignment = hub.assign(identifier, [task_id])["assignments"][0]
+        first_assignment = hub.assign(identifier, [task_id], project_id=LEGACY_ID)["assignments"][0]
         worker.poll()
         assert len(downloads) == 1 and worker.source_root(task_id)
         hub.edit_worker(identifier, "新名称", "")
         hub.reclaim(first_assignment["id"])
-        second_assignment = hub.assign(identifier, [task_id])["assignments"][0]
+        second_assignment = hub.assign(identifier, [task_id], project_id=LEGACY_ID)["assignments"][0]
         worker.poll()
         assert second_assignment["id"] != first_assignment["id"]
         assert len(downloads) == 1 and worker.source_root(task_id)
@@ -339,7 +367,7 @@ def test_qr_cache_reuses_verified_bytes_but_refreshes_corrupt_or_changed_qr(tmp_
         for cached in (first_assignment, second_assignment):
             worker._source_path(cached).write_bytes(b"corrupt")
         hub.reclaim(second_assignment["id"])
-        third_assignment = hub.assign(identifier, [task_id])["assignments"][0]
+        third_assignment = hub.assign(identifier, [task_id], project_id=LEGACY_ID)["assignments"][0]
         worker.poll()
         assert len(downloads) == 2
         assert worker._source_path(third_assignment).read_bytes() == (first / "甲门店/qr.png").read_bytes()
@@ -349,7 +377,7 @@ def test_qr_cache_reuses_verified_bytes_but_refreshes_corrupt_or_changed_qr(tmp_
         new_file = save_qr(second, "甲门店", color="black")
         hub_app.state.store.scan(second, reuse_sources=[first])
         new_id = hub_app.state.materials.effective_capture_tasks()[0]["id"]
-        fourth_assignment = hub.assign(identifier, [new_id])["assignments"][0]
+        fourth_assignment = hub.assign(identifier, [new_id], project_id=LEGACY_ID)["assignments"][0]
         worker.poll()
         assert len(downloads) == 3
         assert worker._source_path(fourth_assignment).read_bytes() == new_file.read_bytes()

@@ -19,7 +19,7 @@ from menu_capture.capture.capture_history import ACTIVE_RUN_STATUSES, capture_hi
 from menu_capture.capture.capture_results import store_state, waiting_for_materials
 from menu_capture.materials.materials import REJECTION_REASONS, MaterialService
 from menu_capture.storage.store import TaskStore
-from menu_capture.projects.service import ProjectConflict, ProjectNotFound, assert_batch_set, get_project
+from menu_capture.projects.service import LEGACY_ID, ProjectConflict, ProjectNotFound, assert_batch_set, get_project
 from menu_capture.shared.shared_history import HistoryReport
 
 MAX_RESULT_SIZE = 1024**3
@@ -113,7 +113,8 @@ class SharedHub:
                 CREATE TABLE IF NOT EXISTS shared_worker_runs (
                     worker_id TEXT PRIMARY KEY REFERENCES shared_workers(id),
                     status TEXT NOT NULL, mode TEXT NOT NULL,
-                    processed INTEGER NOT NULL, total INTEGER NOT NULL, reported_at TEXT NOT NULL
+                    processed INTEGER NOT NULL, total INTEGER NOT NULL, reported_at TEXT NOT NULL,
+                    project_id TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS shared_worker_software (
                     worker_id TEXT PRIMARY KEY REFERENCES shared_workers(id),
@@ -122,6 +123,10 @@ class SharedHub:
                     channel TEXT NOT NULL DEFAULT '', checked_at TEXT NOT NULL DEFAULT '',
                     download_status TEXT NOT NULL DEFAULT '', install_status TEXT NOT NULL DEFAULT '',
                     reported_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS shared_worker_capabilities (
+                    worker_id TEXT PRIMARY KEY REFERENCES shared_workers(id),
+                    capabilities TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS shared_update_rollout (
                     id INTEGER PRIMARY KEY CHECK (id=1),
@@ -132,7 +137,8 @@ class SharedHub:
                 CREATE TABLE IF NOT EXISTS shared_run_history (
                     worker_id TEXT NOT NULL REFERENCES shared_workers(id), run_id TEXT NOT NULL,
                     generation INTEGER NOT NULL, status TEXT NOT NULL, summary TEXT NOT NULL,
-                    tasks TEXT NOT NULL, synced_at TEXT NOT NULL, PRIMARY KEY(worker_id, run_id)
+                    tasks TEXT NOT NULL, synced_at TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(worker_id, run_id)
                 );
                 CREATE INDEX IF NOT EXISTS shared_run_status ON shared_run_history(status,synced_at);
                 CREATE TABLE IF NOT EXISTS shared_pairing (
@@ -141,9 +147,11 @@ class SharedHub:
                 CREATE TABLE IF NOT EXISTS shared_assignments (
                     id TEXT PRIMARY KEY, task_id TEXT NOT NULL, worker_id TEXT NOT NULL,
                     batch_id TEXT NOT NULL, batch_name TEXT NOT NULL, store TEXT NOT NULL,
+                    store_id TEXT NOT NULL DEFAULT '',
                     revision TEXT NOT NULL, snapshot_id TEXT NOT NULL,
                     source_hash TEXT NOT NULL, source_suffix TEXT NOT NULL, status TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT '',
+                    project_code TEXT NOT NULL DEFAULT '', project_name TEXT NOT NULL DEFAULT ''
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS shared_current_store
                     ON shared_assignments(batch_id, store) WHERE status IN ('assigned','ready');
@@ -165,8 +173,28 @@ class SharedHub:
                     "INSERT OR IGNORE INTO shared_result_names(assignment_id,store_name) "
                     "SELECT assignment_id,observed_store_name FROM shared_results"
                 )
+            assignment_columns = {row["name"] for row in db.execute("PRAGMA table_info(shared_assignments)")}
+            for column in ("project_id", "project_code", "project_name", "store_id"):
+                if column not in assignment_columns:
+                    db.execute(f"ALTER TABLE shared_assignments ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            # 只依据稳定的批次外键回填既有分配；项目删除/改名不会改变已存下来的归属快照。
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'").fetchone():
+                db.execute("""UPDATE shared_assignments SET
+                    project_id=(SELECT b.project_id FROM material_batches b WHERE b.id=shared_assignments.batch_id),
+                    project_code=(SELECT p.code FROM material_batches b JOIN projects p ON p.id=b.project_id
+                                  WHERE b.id=shared_assignments.batch_id),
+                    project_name=(SELECT p.name FROM material_batches b JOIN projects p ON p.id=b.project_id
+                                  WHERE b.id=shared_assignments.batch_id)
+                    WHERE project_id='' AND EXISTS (SELECT 1 FROM material_batches b JOIN projects p
+                        ON p.id=b.project_id WHERE b.id=shared_assignments.batch_id)""")
+            history_columns = {row["name"] for row in db.execute("PRAGMA table_info(shared_run_history)")}
+            if "project_id" not in history_columns:
+                db.execute("ALTER TABLE shared_run_history ADD COLUMN project_id TEXT NOT NULL DEFAULT ''")
+            run_columns = {row["name"] for row in db.execute("PRAGMA table_info(shared_worker_runs)")}
+            if "project_id" not in run_columns:
+                db.execute("ALTER TABLE shared_worker_runs ADD COLUMN project_id TEXT NOT NULL DEFAULT ''")
 
-    def status(self, *, include_history: bool = True) -> dict:
+    def status(self, *, include_history: bool = True, project_id: str | None = None) -> dict:
         with self.store.connect() as db:
             workers = [dict(row) for row in db.execute("""
                 SELECT w.id,w.name,w.last_seen,w.pending_uploads,COALESCE(p.description,'') AS description,
@@ -181,7 +209,11 @@ class SharedHub:
             rollout_row = db.execute(
                 "SELECT mode,worker_ids,updated_at FROM shared_update_rollout WHERE id=1").fetchone()
             for worker in workers:
-                worker["last_run"] = runs.get(worker["id"])
+                last_run = runs.get(worker["id"])
+                if project_id is None or not last_run or last_run.get("project_id") != project_id:
+                    # 摘要没有可核验的本项目归属时不跨项目展示。
+                    last_run = None
+                worker["last_run"] = last_run
                 worker["history_synced_at"] = history_times.get(worker["id"], "")
                 row = software.get(worker["id"])
                 # 未上报过的设备明确为 null，不用空对象冒充“已是最新”。
@@ -196,24 +228,28 @@ class SharedHub:
                     "install_status": row["install_status"],
                     "reported_at": row["reported_at"],
                 } if row else None)
+            assignment_scope = " AND a.project_id=?" if project_id is not None else ""
+            assignment_params = (project_id,) if project_id is not None else ()
+            if project_id is not None:
+                get_project(db, project_id)
             assignments = [dict(row) for row in db.execute("""
                 SELECT a.*, COALESCE(r.disposition, '') AS disposition, COALESCE(r.message, '') AS result_message,
                        COALESCE(n.store_name, '') AS observed_store_name
                 FROM shared_assignments a LEFT JOIN shared_results r ON a.id=r.assignment_id
                 LEFT JOIN shared_result_names n ON a.id=n.assignment_id
-                WHERE a.status IN ('assigned','ready') ORDER BY a.created_at DESC,a.id
-            """)]
+                WHERE a.status IN ('assigned','ready')""" + assignment_scope + " ORDER BY a.created_at DESC,a.id",
+                assignment_params)]
             if include_history:
                 assignments.extend(dict(row) for row in db.execute("""
                     SELECT a.*, COALESCE(r.disposition, '') AS disposition, COALESCE(r.message, '') AS result_message,
                            COALESCE(n.store_name, '') AS observed_store_name
                     FROM shared_assignments a LEFT JOIN shared_results r ON a.id=r.assignment_id
                     LEFT JOIN shared_result_names n ON a.id=n.assignment_id
-                    WHERE a.status IN ('completed','reclaimed') ORDER BY a.created_at DESC,a.id LIMIT 200
-                """))
+                    WHERE a.status IN ('completed','reclaimed')""" + assignment_scope +
+                    " ORDER BY a.created_at DESC,a.id LIMIT 200", assignment_params))
         if any(row["status"] in ACTIVE for row in assignments):
             current = {(task["batch_id"], task["source_name"]): task["id"]
-                       for task in self.materials.effective_capture_tasks()}
+                       for task in self.materials.effective_capture_tasks(project_id=project_id)}
             for row in assignments:
                 if row["status"] in ACTIVE:
                     row["current_task_id"] = current.get((row["batch_id"], row["store"]), row["task_id"])
@@ -421,7 +457,7 @@ class SharedHub:
             where.append("instr(lower(a.store || ' ' || a.batch_name || ' ' || a.revision || ' ' || a.task_id), lower(?))>0")
             params.append(query.strip())
         if project_id is not None:
-            where.append("EXISTS (SELECT 1 FROM material_batches b WHERE b.id=a.batch_id AND b.project_id=?)")
+            where.append("a.project_id=?")
             params.append(project_id)
         source = ("FROM shared_assignments a JOIN shared_workers w ON w.id=a.worker_id "
                   "LEFT JOIN shared_results r ON r.assignment_id=a.id "
@@ -435,13 +471,13 @@ class SharedHub:
             pages = max(1, (total + size - 1) // size)
             page = min(page, pages)
             records = [dict(row) for row in db.execute(
-                "SELECT a.id,a.task_id,a.worker_id,w.name AS worker_name,a.store,a.batch_name,a.revision,a.status,"
+                "SELECT a.id,a.task_id,a.worker_id,w.name AS worker_name,a.store,a.store_id,a.batch_name,a.revision,a.status,"
                 "COALESCE(r.disposition,'') AS disposition,COALESCE(r.message,'') AS result_message,"
                 "COALESCE(n.store_name,'') AS observed_store_name " +
                 source + " ORDER BY a.created_at DESC,a.id LIMIT ? OFFSET ?", (*params, size, (page - 1) * size))]
         return {"records": records, "total": total, "page": page, "pages": pages}
 
-    def observed_store_name(self, task_id: str) -> str:
+    def observed_store_name(self, task_id: str, project_id: str | None = None) -> str:
         """按原始任务编号取当前有效采集结果伴随的门店名称。
 
         只认当前有效结果的归属：任务自身或其 inherited_from 链上的原任务，且 disposition='accepted'
@@ -464,13 +500,15 @@ class SharedHub:
             if not owners:
                 return ""
             placeholders = ",".join("?" * len(owners))
+            project_filter = " AND a.project_id=?" if project_id is not None else ""
+            params = (*owners, project_id) if project_id is not None else tuple(owners)
             row = db.execute(
                 "SELECT n.store_name AS observed_store_name FROM shared_results r"
                 " JOIN shared_assignments a ON a.id=r.assignment_id"
                 " LEFT JOIN shared_result_names n ON n.assignment_id=r.assignment_id"
                 f" WHERE a.task_id IN ({placeholders}) AND r.disposition='accepted'"
-                " ORDER BY r.received_at DESC, r.assignment_id DESC LIMIT 1",
-                tuple(owners)).fetchone()
+                + project_filter + " ORDER BY r.received_at DESC, r.assignment_id DESC LIMIT 1",
+                params).fetchone()
         return str(row["observed_store_name"] or "") if row else ""
 
     def reclaim_many(self, assignment_ids: list[str], *, project_id: str | None = None) -> dict:
@@ -546,6 +584,8 @@ class SharedHub:
         if (not isinstance(task_ids, list) or not 1 <= len(task_ids) <= 300
                 or any(not isinstance(value, str) or not value for value in task_ids)):
             raise ValueError("请选择 1 至 300 家已发布门店")
+        if not isinstance(project_id, str) or not project_id:
+            raise SharedConflict("分配必须指定项目")
         effective = self.materials.effective_capture_tasks()
         tasks = {task["id"]: task for task in effective}
         selected = []
@@ -569,8 +609,16 @@ class SharedHub:
             db.execute("BEGIN IMMEDIATE")
             if self._worker(db, worker_id)["revoked_at"]:
                 raise SharedConflict("采集电脑已解除配对，请选择有效设备")
+            capabilities = self._worker_capabilities(db, worker_id)
+            if project_id != LEGACY_ID and "project_scope" not in capabilities:
+                raise SharedConflict("该采集端尚未协商项目隔离能力，暂不能接收新项目分配")
             if project_id is not None:
                 self._assert_project_batches(db, project_id, [task["batch_id"] for task, _ in selected])
+            project = get_project(db, project_id)
+            if project["archived_at"]:
+                raise SharedConflict("已归档项目不能新增分配")
+            if any(task.get("project_id") != project_id for task, _ in selected):
+                raise SharedConflict("所选门店不属于当前项目，本次分配未生效")
             # Reconcile must always see every project's effective tasks.
             self._reconcile_assignments(db, self._store_index(effective))
             # 在同一个写事务核对占用，整次提交全部通过后才生成分配记录。
@@ -593,14 +641,17 @@ class SharedHub:
                 record = {
                     "id": secrets.token_hex(16), "task_id": task["id"], "worker_id": worker_id,
                     "batch_id": task["batch_id"], "batch_name": task["batch_name"], "store": task["source_name"],
+                    "store_id": task.get("store_id") or task["id"],
                     "revision": task["version"], "snapshot_id": ongoing[0] if ongoing else task["batch_snapshot_id"],
                     "source_hash": task["source_hash"], "source_suffix": suffix, "status": "assigned",
-                    "created_at": stamp,
+                    "created_at": stamp, "project_id": project["id"], "project_code": project["code"],
+                    "project_name": project["name"],
                 }
-                db.execute("INSERT INTO shared_assignments(id,task_id,worker_id,batch_id,batch_name,store,"
-                           "revision,snapshot_id,source_hash,source_suffix,status,created_at) "
+                db.execute("INSERT INTO shared_assignments(id,task_id,worker_id,batch_id,batch_name,store,store_id,"
+                           "revision,snapshot_id,source_hash,source_suffix,status,created_at,project_id,project_code,project_name) "
                            "VALUES(:id,:task_id,:worker_id,:batch_id,:batch_name,"
-                           ":store,:revision,:snapshot_id,:source_hash,:source_suffix,:status,:created_at)", record)
+                           ":store,:store_id,:revision,:snapshot_id,:source_hash,:source_suffix,:status,:created_at,"
+                           ":project_id,:project_code,:project_name)", record)
                 rows.append(record)
             db.executemany(
                 "UPDATE material_batches SET capture_rounds=capture_rounds+1,manual_stage='',"
@@ -712,17 +763,37 @@ class SharedHub:
         row["update_available"] = 1 if software["update_available"] else 0
         return row
 
+    @staticmethod
+    def _worker_capabilities(db, worker_id: str) -> set[str]:
+        row = db.execute("SELECT capabilities FROM shared_worker_capabilities WHERE worker_id=?",
+                         (worker_id,)).fetchone()
+        try:
+            values = json.loads(row["capabilities"]) if row else []
+        except (TypeError, ValueError):
+            values = []
+        return {item for item in values if isinstance(item, str)}
+
     def sync(self, worker_id: str, ready_ids: list[str], pending_uploads: int,
-             run_summary: dict | None = None, software: dict | None = None) -> dict:
+             run_summary: dict | None = None, software: dict | None = None,
+             capabilities: set[str] | None = None) -> dict:
+        known_capabilities = {"project_scope", "run_history", "run_summary", "software_status"}
+        capabilities = set(capabilities or ())
+        if capabilities - known_capabilities:
+            raise ValueError("采集端能力声明无效")
+        project_capability = "project_scope" in capabilities
         if (not isinstance(ready_ids, list) or len(ready_ids) > 1000
                 or any(not isinstance(value, str) or len(value) != 32 for value in ready_ids)
                 or type(pending_uploads) is not int or not 0 <= pending_uploads <= 10000):
             raise ValueError("采集端同步参数无效")
         if run_summary is not None:
-            if (not isinstance(run_summary, dict) or set(run_summary) != {"status", "mode", "processed", "total"}
+            required_summary = {"status", "mode", "processed", "total"}
+            allowed_summary = required_summary | ({"project_id"} if project_capability else set())
+            if (not isinstance(run_summary, dict) or not required_summary <= set(run_summary) <= allowed_summary
                     or not isinstance(run_summary["status"], str) or run_summary["status"] not in REPORTED_RUN_STATUSES
                     or run_summary["mode"] not in ("auto", "manual", "")
                     or any(type(run_summary[key]) is not int for key in ("processed", "total"))
+                    or ("project_id" in run_summary and run_summary["project_id"] is not None
+                        and (not isinstance(run_summary["project_id"], str) or len(run_summary["project_id"]) > 128))
                     or not 0 <= run_summary["processed"] <= run_summary["total"] <= 10000):
                 raise ValueError("采集端轮次摘要无效")
         software_row = self._software_row(software)
@@ -734,18 +805,29 @@ class SharedHub:
             worker = self._worker(db, worker_id)
             if worker["revoked_at"]:
                 raise WorkerUnauthorized("采集电脑已解除配对")
+            db.execute("""INSERT INTO shared_worker_capabilities(worker_id,capabilities,updated_at)
+                VALUES(?,?,?) ON CONFLICT(worker_id) DO UPDATE SET
+                capabilities=excluded.capabilities,updated_at=excluded.updated_at""",
+                       (worker_id, json.dumps(sorted(capabilities)), stamp))
+            if run_summary is not None and run_summary.get("project_id"):
+                if not project_capability or not db.execute(
+                    "SELECT 1 FROM shared_assignments WHERE worker_id=? AND project_id=? LIMIT 1",
+                    (worker_id, run_summary["project_id"]),
+                ).fetchone():
+                    raise SharedConflict("轮次项目与该采集端已保存的分配快照不一致")
             rollout_row = db.execute(
                 "SELECT mode,worker_ids FROM shared_update_rollout WHERE id=1").fetchone()
             db.execute("UPDATE shared_workers SET last_seen=?,pending_uploads=? WHERE id=?",
                        (stamp, pending_uploads, worker_id))
             if run_summary is not None:
                 db.execute("""
-                    INSERT INTO shared_worker_runs(worker_id,status,mode,processed,total,reported_at)
-                    VALUES (?,?,?,?,?,?)
+                    INSERT INTO shared_worker_runs(worker_id,status,mode,processed,total,reported_at,project_id)
+                    VALUES (?,?,?,?,?,?,?)
                     ON CONFLICT(worker_id) DO UPDATE SET status=excluded.status,mode=excluded.mode,
-                        processed=excluded.processed,total=excluded.total,reported_at=excluded.reported_at
+                        processed=excluded.processed,total=excluded.total,reported_at=excluded.reported_at,
+                        project_id=excluded.project_id
                 """, (worker_id, run_summary["status"], run_summary["mode"], run_summary["processed"],
-                      run_summary["total"], stamp))
+                      run_summary["total"], stamp, str(run_summary.get("project_id") or "")))
             if software_row is not None:
                 db.execute("""
                     INSERT INTO shared_worker_software(worker_id,current_version,platform,latest_version,
@@ -767,11 +849,37 @@ class SharedHub:
                 SELECT * FROM shared_assignments WHERE worker_id=? AND status IN ('assigned','ready','completed')
                 ORDER BY rowid
             """, (worker_id,))]
+            project_ids = list(dict.fromkeys(row["project_id"] for row in assignments if row["project_id"]))
+            project_catalogue = []
+            if project_ids:
+                marks = ",".join("?" for _ in project_ids)
+                project_catalogue = [dict(row) for row in db.execute(
+                    f"SELECT id,code,name,archived_at FROM projects WHERE id IN ({marks}) ORDER BY code,id",
+                    project_ids)]
         rows = [row for row in assignments if row["status"] in ACTIVE]
-        for row in rows:
-            batch_snapshots[row["batch_id"]] = row["snapshot_id"]
+        # 旧端只收到属于自己的批次。新协议额外带项目快照，避免 Worker 使用全局 batch 映射。
+        supported_project_scope = project_capability and all(
+            row["project_id"] and row["project_code"] and row["project_name"] for row in rows)
+        if supported_project_scope:
+            batch_snapshots = {row["batch_id"]: row["snapshot_id"] for row in rows}
+            project_by_id = {project["id"]: project for project in project_catalogue}
+            if any(row["project_id"] not in project_by_id for row in rows):
+                supported_project_scope = False
+        if not supported_project_scope:
+            rows = [row for row in rows if row["status"] in ACTIVE]
+            batch_ids = list(dict.fromkeys(row["batch_id"] for row in assignments))
+            batch_snapshots = {batch_id: snapshot_id for batch_id, snapshot_id in
+                               self.materials.latest_snapshot_map().items() if batch_id in batch_ids}
+        response_assignments = assignments if not supported_project_scope else [
+            row | {"store_id": row["store_id"] or row["task_id"]}
+            for row in assignments if row["project_id"]]
+        if not supported_project_scope:
+            response_assignments = [{key: value for key, value in row.items()
+                                     if key not in {"project_id", "project_code", "project_name"}}
+                                    for row in response_assignments]
+        projects_for_worker = project_catalogue if supported_project_scope else []
         states = {}
-        for row in assignments:
+        for row in response_assignments:
             task = current.get((row["batch_id"], row["store"]))
             if self._valid_current(row, task):
                 states[row["task_id"]] = {"state": store_state(task), "reject_reason": task["reject_reason"] or ""}
@@ -782,64 +890,155 @@ class SharedHub:
             rollout_ids = []
         # 分批模式下只有本批设备收到目标版本；其余设备保持本机检查，不被动升级。
         in_rollout = rollout_mode != "batch" or worker_id in rollout_ids
-        return {"assignments": rows,
-                "batches": [{"batch_id": batch_id, "snapshot_id": snapshot_id}
-                            for batch_id, snapshot_id in batch_snapshots.items()],
+        batches = [{"batch_id": batch_id, "snapshot_id": snapshot_id}
+                   for batch_id, snapshot_id in batch_snapshots.items()]
+        if supported_project_scope:
+            owner_by_batch = {row["batch_id"]: row["project_id"] for row in rows}
+            batches = [{**batch, "project_id": owner_by_batch[batch["batch_id"]]} for batch in batches
+                       if batch["batch_id"] in owner_by_batch]
+        response = {"assignments": rows if supported_project_scope else response_assignments,
+                "batches": batches,
                 "states": states, "supports_run_summary": True, "supports_run_history": True,
                 "supports_software_status": True,
                 # Hub 已校验且未过期时分发完整元数据；Worker 会再次校验后才采纳。
                 "update_target": self._update_target() if in_rollout else None,
                 "update_rollout": {"mode": rollout_mode, "in_rollout": in_rollout},
                 "worker_name": worker["name"]}
+        if supported_project_scope:
+            response["supports_project_scope"] = True
+            response["projects"] = projects_for_worker
+            response["assignments"] = assignments
+        return response
 
-    def record_run_history(self, worker_id: str, report: HistoryReport) -> dict:
-        record = capture_history_row(report.run.model_dump(), [row.model_dump() for row in report.results], {})
-        tasks = record.pop("tasks")
-        record["history_status"] = "partial" if record["counts"]["unknown"] else "synced"
+    def record_run_history(self, worker_id: str, report: HistoryReport,
+                           *, capabilities: set[str] | None = None) -> dict:
+        capabilities = set(capabilities or ())
+        run_data = report.run.model_dump()
+        result_data = [row.model_dump() for row in report.results]
+        has_project_payload = bool(run_data.get("project_id") or any(row.get("project_id") for row in result_data))
+        if has_project_payload and "project_scope" not in capabilities:
+            raise SharedConflict("采集端尚未协商项目隔离能力，不能提交项目字段")
+        run_data["project_id"] = run_data.get("project_id") or ""
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             if self._worker(db, worker_id)["revoked_at"]:
                 raise WorkerUnauthorized("采集电脑已解除配对")
+            # 每家门店的项目身份来自 Hub 保存的 worker/task assignment 快照；未知归属不推测。
+            task_ids = list(report.run.task_ids)
+            placeholders = ",".join("?" for _ in task_ids)
+            assignment_rows = db.execute(
+                "SELECT task_id,project_id FROM shared_assignments WHERE worker_id=? "
+                f"AND task_id IN ({placeholders}) AND project_id<>'' ORDER BY rowid",
+                (worker_id, *task_ids),
+            ).fetchall() if task_ids else []
+            project_by_task: dict[str, str] = {}
+            conflicts: set[str] = set()
+            for row in assignment_rows:
+                previous = project_by_task.get(row["task_id"])
+                if previous and previous != row["project_id"]:
+                    conflicts.add(row["task_id"])
+                project_by_task[row["task_id"]] = row["project_id"]
+            if conflicts:
+                raise SharedConflict("轮次门店对应多个项目快照，项目归属待核验")
+            reported_by_task = {row["task_id"]: row.get("project_id") or "" for row in result_data}
+            for task_id, reported in reported_by_task.items():
+                expected = project_by_task.get(task_id, "")
+                if reported and reported != expected:
+                    raise SharedConflict("逐店历史项目与 Hub 保存的分配快照不一致")
+            expected_run_projects = {project_by_task[task_id] for task_id in task_ids if task_id in project_by_task}
+            all_known = len(project_by_task) == len(task_ids)
+            expected_run_project = next(iter(expected_run_projects)) if all_known and len(expected_run_projects) == 1 else ""
+            reported_run_project = run_data.get("project_id") or ""
+            if reported_run_project and reported_run_project != expected_run_project:
+                raise SharedConflict("轮次项目与 Hub 保存的逐店分配快照不一致")
+            run_data["project_id"] = expected_run_project
+            for row in result_data:
+                row["project_id"] = project_by_task.get(row["task_id"], "")
+            record = capture_history_row(run_data, result_data, {})
+            tasks = record.pop("tasks")
+            for task in tasks:
+                task["project_id"] = project_by_task.get(task["task_id"], "")
+                source = next((row for row in result_data if row["task_id"] == task["task_id"]), {})
+                task["batch_id"] = source.get("batch_id", "")
+            record["project_id"] = expected_run_project
+            record["history_status"] = "partial" if record["counts"]["unknown"] else "synced"
             db.execute("""
-                INSERT INTO shared_run_history(worker_id,run_id,generation,status,summary,tasks,synced_at)
-                VALUES(?,?,?,?,?,?,?)
+                INSERT INTO shared_run_history(worker_id,run_id,generation,status,summary,tasks,synced_at,project_id)
+                VALUES(?,?,?,?,?,?,?,?)
                 ON CONFLICT(worker_id,run_id) DO UPDATE SET generation=excluded.generation,
-                    status=excluded.status,summary=excluded.summary,tasks=excluded.tasks,synced_at=excluded.synced_at
+                    status=excluded.status,summary=excluded.summary,tasks=excluded.tasks,synced_at=excluded.synced_at,
+                    project_id=excluded.project_id
                 WHERE excluded.generation > shared_run_history.generation
             """, (worker_id, report.run.id, report.generation, report.run.status,
-                  json.dumps(record, ensure_ascii=False), json.dumps(tasks, ensure_ascii=False), utc_stamp()))
+                  json.dumps(record, ensure_ascii=False), json.dumps(tasks, ensure_ascii=False), utc_stamp(),
+                  expected_run_project))
         return {"acknowledged": report.generation}
 
     @staticmethod
-    def _synced_history_row(row) -> dict:
+    def _synced_history_row(row, *, project_id: str | None = None) -> dict:
+        summary = json.loads(row["summary"])
+        if project_id is not None:
+            tasks = json.loads(row["tasks"] or "[]") if "tasks" in row.keys() else []
+            tasks = [task for task in tasks if task.get("project_id") == project_id]
+            outcomes = [task.get("status", "") for task in tasks]
+            recorded = sum(outcome in {"captured", "review", "rejected"} for outcome in outcomes)
+            batches = {}
+            for task in tasks:
+                batch_id = task.get("batch_id") or ""
+                if batch_id:
+                    batch = batches.setdefault(batch_id, {"id": batch_id,
+                        "name": task.get("batch_name") or batch_id, "versions": [], "stores": 0})
+                    batch["stores"] += 1
+                    version = task.get("version") or ""
+                    if version and version not in batch["versions"]:
+                        batch["versions"].append(version)
+            summary["project_id"] = project_id
+            summary["batches"] = list(batches.values())
+            summary["batch_id"] = next(iter(batches)) if len(batches) == 1 else ""
+            summary["batch_name"] = next(iter(batches.values()))["name"] if len(batches) == 1 else ""
+            summary["counts"] = {"total": len(tasks), "processed": recorded,
+                "done": outcomes.count("captured"), "attention": outcomes.count("review"),
+                "rejected": outcomes.count("rejected"), "recorded": recorded,
+                "unknown": len(tasks) - recorded, "failed": 0}
         return {
-            **json.loads(row["summary"]), "id": f'{row["worker_id"]}:{row["run_id"]}',
+            **summary, "id": f'{row["worker_id"]}:{row["run_id"]}',
             "local_run_id": row["run_id"], "worker_id": row["worker_id"], "worker_name": row["worker_name"],
             "worker_last_seen": row["worker_last_seen"], "synced_at": row["synced_at"], "can_rename": False,
         }
 
-    def history_records(self, worker_id: str = "", *, shortcut_since: str = "") -> list[dict]:
+    def history_records(self, worker_id: str = "", *, shortcut_since: str = "",
+                        project_id: str | None = None) -> list[dict]:
         query = """
-            SELECT h.worker_id,h.run_id,h.synced_at,h.summary,w.name AS worker_name,w.last_seen AS worker_last_seen
+            SELECT h.worker_id,h.run_id,h.synced_at,h.summary,h.tasks,w.name AS worker_name,w.last_seen AS worker_last_seen
             FROM shared_run_history h JOIN shared_workers w ON h.worker_id=w.id
             WHERE (?='' OR h.worker_id=?)
         """
         args = [worker_id, worker_id]
+        if project_id is not None:
+            query += " AND (h.project_id=? OR EXISTS (SELECT 1 FROM json_each(h.tasks) t WHERE json_extract(t.value,'$.project_id')=?))"
+            args.extend((project_id, project_id))
         if shortcut_since:
             placeholders = ",".join("?" for _ in ACTIVE_RUN_STATUSES)
             query += f" AND (h.status IN ({placeholders}) OR h.synced_at >= ?)"
             args.extend([*sorted(ACTIVE_RUN_STATUSES), shortcut_since])
         with self.store.connect() as db:
-            return [self._synced_history_row(row) for row in db.execute(query, args)]
+            return [self._synced_history_row(row, project_id=project_id) for row in db.execute(query, args)]
 
-    def history_detail(self, worker_id: str, run_id: str) -> dict | None:
+    def history_detail(self, worker_id: str, run_id: str, *, project_id: str | None = None) -> dict | None:
         with self.store.connect() as db:
             row = db.execute("""
                 SELECT h.*,w.name AS worker_name,w.last_seen AS worker_last_seen
                 FROM shared_run_history h JOIN shared_workers w ON h.worker_id=w.id
                 WHERE h.worker_id=? AND h.run_id=?
             """, (worker_id, run_id)).fetchone()
-        return self._synced_history_row(row) | {"tasks": json.loads(row["tasks"])} if row is not None else None
+        if row is None:
+            return None
+        tasks = json.loads(row["tasks"])
+        if project_id is not None:
+            tasks = [task for task in tasks if task.get("project_id") == project_id]
+            if not tasks:
+                return None
+        return self._synced_history_row(row, project_id=project_id) | {"tasks": tasks}
 
     def assignment(self, worker_id: str, assignment_id: str) -> dict:
         with self.store.connect() as db:

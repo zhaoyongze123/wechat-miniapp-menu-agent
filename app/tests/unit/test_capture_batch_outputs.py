@@ -53,6 +53,35 @@ def test_store_output_dir_resolves_batch_name(tmp_path: Path):
     assert destination.name == "同一家店"
 
 
+def test_worker_capture_output_uses_persisted_project_and_store_identity(tmp_path: Path):
+    app = create_app(tmp_path, role="worker")
+    worker = app.state.shared_worker
+    worker.connection = {"id": "device-1", "supports_project_scope": True}
+    worker._hub_supports_project_scope = True
+    with app.state.store.connect() as db:
+        db.execute(
+            "INSERT INTO worker_project_catalogue(worker_id,project_id,code,name,archived_at,updated_at) "
+            "VALUES(?,?,?,?,?,?)",
+            ("device-1", "project-q4", "2026-Q4", "第四季度", "", "now"),
+        )
+        db.execute(
+            """INSERT INTO worker_assignments(
+                id,task_id,batch_id,batch_name,store,store_id,revision,snapshot_id,source_hash,source_suffix,
+                status,created_at,worker_id,project_id,project_code,project_name
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("a" * 32, "task-q4", "b" * 32, "同名批次", "同名门店", "store-q4", "v1", "s" * 32,
+             "h" * 64, ".png", "ready", "now", "device-1", "project-q4", "2026-Q4", "第四季度"),
+        )
+    task = {"id": "task-q4", "source_name": "同名门店"}
+
+    destination = app.state.runner._store_output_dir(tmp_path / "output", task)
+
+    assert destination == store_output_dir(
+        tmp_path / "output", "同名门店", "b" * 32, "同名批次",
+        project_code="2026-Q4", store_id="store-q4",
+    )
+
+
 def test_flat_store_output_puts_store_directly_under_save_root(tmp_path: Path):
     destination = store_output_dir(tmp_path / "合格", "E0017_同一家店", "f" * 32, "100张测试素材", flat=True)
 

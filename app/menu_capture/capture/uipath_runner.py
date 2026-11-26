@@ -276,6 +276,8 @@ class UiPathRunner:
         self._manual_last_result = ""
         # 共享采集端注入任务来源，只有已校验并落盘的分配包可进入桌面执行。
         self.assignment_source: Callable[[str], str] | None = None
+        # Worker 项目路径必须来自持久化分配快照，不能从当前 UI 选择推断。
+        self.project_binding_provider: Callable[[str], dict | None] | None = None
         self._capture_start_index = 0
 
     @property
@@ -528,7 +530,8 @@ class UiPathRunner:
 
     def start(self, resume_run: dict | None = None, *, ui_tars_trial: bool = False,
               trial_task_id: str | None = None, trial_task_ids: list[str] | None = None,
-              cross_batch: bool = False, capture_mode: str = "", run_name: str = "") -> dict:
+              cross_batch: bool = False, capture_mode: str = "", run_name: str = "",
+              project_id: str = "") -> dict:
         # 所有采集入口的唯一闸门：与安装任务共享同一把锁，
         # 保证「安装空闲校验 + 写任务」与「采集启动」不会交叉，窗口内不会出现刚启动采集就被替换版本。
         gate = getattr(self, "update_gate", None)
@@ -537,21 +540,23 @@ class UiPathRunner:
             return self._start_run(resume_run, ui_tars_trial=ui_tars_trial,
                                    trial_task_id=trial_task_id, trial_task_ids=trial_task_ids,
                                    cross_batch=cross_batch, capture_mode=capture_mode,
-                                   run_name=run_name)
+                                   run_name=run_name, project_id=project_id)
         with gate:
             if blocker is not None and blocker():
                 raise ValueError("更新安装进行中，已暂停新的采集操作")
             return self._start_run(resume_run, ui_tars_trial=ui_tars_trial,
                                    trial_task_id=trial_task_id, trial_task_ids=trial_task_ids,
                                    cross_batch=cross_batch, capture_mode=capture_mode,
-                                   run_name=run_name)
+                                   run_name=run_name, project_id=project_id)
 
     def _start_run(self, resume_run: dict | None = None, *, ui_tars_trial: bool = False,
                    trial_task_id: str | None = None, trial_task_ids: list[str] | None = None,
-                   cross_batch: bool = False, capture_mode: str = "", run_name: str = "") -> dict:
+                   cross_batch: bool = False, capture_mode: str = "", run_name: str = "",
+                   project_id: str = "") -> dict:
         with self.lock:
             if self.running:
                 raise ValueError("UiPath 单任务控制器已在运行")
+            project_id = project_id or str((resume_run or {}).get("project_id") or "")
             if capture_mode not in {"", "auto", "manual"}:
                 raise ValueError("采集模式无效")
             task_ids_override = resume_run.get("task_ids", []) if resume_run else None
@@ -675,7 +680,8 @@ class UiPathRunner:
                     else:
                         self.store.create_run(self.run_id, "automatic", task_ids,
                                               message=f"{label}已启动", material=None, capture_mode=capture_mode,
-                                              name=run_name.strip()[:80] or self.store.default_run_name(task_ids))
+                                              name=run_name.strip()[:80] or self.store.default_run_name(task_ids),
+                                              project_id=project_id)
                 target = (self._manual_batch_worker if capture_mode == "manual"
                           else self._ui_tars_trial_worker)
                 self.thread = threading.Thread(
@@ -690,14 +696,18 @@ class UiPathRunner:
                         "result_file": str(output_dir / ("batch-result.json" if trial_batch_sources else "navigation-result.json")),
                         "launch_mode": profile.get("launch_mode", "manual")}
             if resume_run:
-                self.store.update_run(self.run_id, status="resuming", current_task_id=task_ids[0],
-                                      message="正在恢复批次；开始下一家前会先确认微信安全起点")
+                resume_changes = {"status": "resuming", "current_task_id": task_ids[0],
+                                  "message": "正在恢复批次；开始下一家前会先确认微信安全起点"}
+                if project_id and not resume_run.get("project_id"):
+                    resume_changes["project_id"] = project_id
+                self.store.update_run(self.run_id, **resume_changes)
             else:
                 # 跨批次任务没有单一素材版本；批次归属按每家店的来源快照单独记录。
                 self.store.create_run(self.run_id, profile["mode"], task_ids,
                                       material=None if trial_batch_sources
                                       else self.store.material_binding(settings.input_dir),
-                                      name=run_name.strip()[:80] or self.store.default_run_name(task_ids))
+                                      name=run_name.strip()[:80] or self.store.default_run_name(task_ids),
+                                      project_id=project_id)
             self._deadline = 0
             stage = "connecting" if launch_mode == "native" else "waiting_uipath"
             self.current_task = {"id": task["id"], "source_name": task["source_name"], "stage": stage, "mode": profile["mode"]}
@@ -2493,9 +2503,12 @@ class UiPathRunner:
                 self.store.event(f"旧合格目录移入历史失败（{type(exc).__name__}）：{str(exc)[:200]}",
                                  "warning", task["id"])
         try:
+            binding = self.project_binding_provider(task["id"]) if self.project_binding_provider else None
             destination = archive_unqualified(
                 root, Path(task["source_path"]).parent, task["source_name"],
                 status=status, stage=stage, message=message, code=code,
+                **({"project_code": binding["project_code"], "batch_id": binding["batch_id"],
+                    "store_id": binding["store_id"]} if binding else {}),
             )
         except Exception as exc:
             self.store.event(f"不合格原图归档失败（{type(exc).__name__}）：{str(exc)[:200]}",
@@ -2714,6 +2727,16 @@ class UiPathRunner:
         # 目录使用用户起的批次名称；只有拿不到名称（历史数据）时才回退到批次 ID。
         if flat is None:
             flat = bool(self.configs.load().flat_store_output)
+        binding = self.project_binding_provider(task["id"]) if self.project_binding_provider else None
+        if binding:
+            bound_batch_id = str(binding["batch_id"])
+            if batch_id and batch_id != bound_batch_id:
+                raise ValueError("采集任务批次与设备分配项目快照不一致")
+            return store_output_dir(
+                output_root, task["source_name"], bound_batch_id,
+                batch_name or self.store.material_batch_name(bound_batch_id),
+                flat=flat, project_code=str(binding["project_code"]), store_id=str(binding["store_id"]),
+            )
         name = batch_name or self.store.material_batch_name(batch_id)
         return store_output_dir(output_root, task["source_name"], batch_id, name, flat=flat)
 

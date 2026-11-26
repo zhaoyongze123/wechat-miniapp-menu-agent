@@ -29,6 +29,8 @@ class RunSnapshot(BaseModel):
     material_batch_id: ShortText
     created_at: ShortText
     updated_at: ShortText
+    # 仅支持项目 scope 的 Hub 才会收到此可选字段；旧 DTO 仍可省略。
+    project_id: Identifier | None = None
 
 
 class StoreResult(BaseModel):
@@ -42,6 +44,8 @@ class StoreResult(BaseModel):
     outcome: ShortText
     reject_reason: ShortText
     message: Message
+    # 旧 Hub 不接收此新字段；Worker 仅在能力协商成功后发送。
+    project_id: Identifier | None = None
 
 
 class HistoryReport(BaseModel):
@@ -69,7 +73,7 @@ class WorkerHistoryDelivery:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS worker_run_delivery (
                     run_id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 1,
-                    acknowledged INTEGER NOT NULL DEFAULT 0
+                    acknowledged INTEGER NOT NULL DEFAULT 0, worker_id TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TRIGGER IF NOT EXISTS queue_capture_run AFTER INSERT ON runs BEGIN
                     INSERT INTO worker_run_delivery(run_id) VALUES (NEW.id);
@@ -86,16 +90,26 @@ class WorkerHistoryDelivery:
                 END;
                 INSERT OR IGNORE INTO worker_run_delivery(run_id) SELECT id FROM runs;
             """)
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(worker_run_delivery)")}
+            if "worker_id" not in columns:
+                db.execute("ALTER TABLE worker_run_delivery ADD COLUMN worker_id TEXT NOT NULL DEFAULT ''")
 
-    def pending_report(self) -> dict | None:
+    def pending_report(self, *, include_project_scope: bool = False, worker_id: str | None = None) -> dict | None:
         with self.store.connect() as db:
             # 同一读快照冻结序号、轮次和逐店结论，避免同步期间读取到半次修改。
             db.execute("BEGIN")
-            row = db.execute("""
-                SELECT r.*, d.generation FROM worker_run_delivery d JOIN runs r ON r.id=d.run_id
-                WHERE d.generation > d.acknowledged
-                ORDER BY (d.acknowledged <> 0) DESC, r.rowid DESC LIMIT 1
-            """).fetchone()
+            if worker_id is None:
+                row = db.execute("""
+                    SELECT r.*, d.generation FROM worker_run_delivery d JOIN runs r ON r.id=d.run_id
+                    WHERE d.generation > d.acknowledged
+                    ORDER BY (d.acknowledged <> 0) DESC, r.rowid DESC LIMIT 1
+                """).fetchone()
+            else:
+                row = db.execute("""
+                    SELECT r.*, d.generation FROM worker_run_delivery d JOIN runs r ON r.id=d.run_id
+                    WHERE d.generation > d.acknowledged AND d.worker_id=?
+                    ORDER BY (d.acknowledged <> 0) DESC, r.rowid DESC LIMIT 1
+                """, (worker_id,)).fetchone()
             if row is None:
                 return None
             result_rows = db.execute("SELECT * FROM capture_run_results WHERE run_id=? ORDER BY rowid",
@@ -105,11 +119,15 @@ class WorkerHistoryDelivery:
             run["message"] = run["message"][:2048]
             results = []
             for result in result_rows:
-                record = {key: result[key] for key in StoreResult.model_fields}
+                record = {key: result[key] for key in StoreResult.model_fields if key != "project_id"}
+                if include_project_scope:
+                    record["project_id"] = str(result["project_id"] or "") or None
                 record["message"] = record["message"][:2048]
                 results.append(record)
-        return {"generation": run["generation"],
-                "run": {key: run[key] for key in RunSnapshot.model_fields}, "results": results}
+        run_payload = {key: run[key] for key in RunSnapshot.model_fields if key != "project_id"}
+        if include_project_scope:
+            run_payload["project_id"] = str(run["project_id"] or "") or None
+        return {"generation": run["generation"], "run": run_payload, "results": results}
 
     def acknowledge(self, run_id: str, generation: int) -> None:
         with self.store.connect() as db:
