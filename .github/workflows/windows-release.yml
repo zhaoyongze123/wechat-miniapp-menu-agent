@@ -14,6 +14,10 @@ on:
         default: false
         required: true
         type: boolean
+      force_full:
+        description: Force full integration (no release for docs/test-only changes)
+        type: boolean
+        default: false
       min_supported_version:
         description: 更新清单中的最低兼容版本（低于该版本不提供应用内更新）
         default: '0.2.0'
@@ -35,6 +39,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       base_ref: ${{ steps.detect.outputs.base_ref }}
+      head: ${{ steps.detect.outputs.head }}
+      risk: ${{ steps.detect.outputs.risk }}
       docs_only: ${{ steps.detect.outputs.docs_only }}
       frontend: ${{ steps.detect.outputs.frontend }}
       backend: ${{ steps.detect.outputs.backend }}
@@ -42,219 +48,46 @@ jobs:
       runtime_deps: ${{ steps.detect.outputs.runtime_deps }}
       packaging: ${{ steps.detect.outputs.packaging }}
       hub_deploy: ${{ steps.detect.outputs.hub_deploy }}
+      hub_regression: ${{ steps.detect.outputs.hub_regression }}
+      release_needed: ${{ steps.detect.outputs.release_needed }}
+      build: ${{ steps.detect.outputs.build }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: 分析相对上一正式标签或 HEAD~1 的改动分类
+      - name: Validate impact policy
+        run: python3 -m unittest discover -s deploy/tools -p test_change_plan.py
+      - name: Lock release candidate and analyze cumulative changes
         id: detect
         env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
           CREATE_RELEASE: ${{ inputs.create_release }}
+          FORCE_FULL: ${{ inputs.force_full }}
         run: |
-          python3 - <<'PY'
-          import os
-          import re
-          import subprocess
-          from pathlib import Path
-
-          def git(*args: str) -> subprocess.CompletedProcess[str]:
-              return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
-
-          def emit(values: dict[str, str], files: list[str], note: str = "") -> None:
-              out = Path(os.environ["GITHUB_OUTPUT"])
-              with out.open("a", encoding="utf-8") as handle:
-                  for key, val in values.items():
-                      handle.write(f"{key}={val}\n")
-              summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
-              lines = [
-                  "### 变更分类摘要",
-                  "",
-                  f"- 对比基线：`{values['base_ref']}`",
-                  f"- 正式发布草稿（`create_release`）：`{os.environ.get('CREATE_RELEASE', 'false')}`",
-                  f"- 变更文件数：`{len(files)}`",
-              ]
-              if note:
-                  lines.append(f"- 说明：{note}")
-              lines += [
-                  "",
-                  "| 分类 | 是否命中 |",
-                  "| --- | --- |",
-              ]
-              for key in ("docs_only", "frontend", "backend", "prompts", "runtime_deps", "packaging", "hub_deploy"):
-                  lines.append(f"| `{key}` | `{values[key]}` |")
-              summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-          fallback = {
-              "base_ref": "unknown",
-              "docs_only": "false",
-              "frontend": "true",
-              "backend": "true",
-              "prompts": "true",
-              "runtime_deps": "true",
-              "packaging": "true",
-              "hub_deploy": "true",
-          }
-
-          try:
-              head = git("rev-parse", "HEAD").stdout.strip()
-              base_ref = ""
-              tags = git("tag", "--merged", "HEAD", "--sort=-v:refname").stdout.splitlines()
-              for tag in tags:
-                  tag = tag.strip()
-                  if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
-                      continue
-                  tag_commit = git("rev-parse", f"{tag}^{{commit}}").stdout.strip()
-                  if tag_commit and tag_commit != head:
-                      base_ref = tag
-                      break
-              if not base_ref and git("rev-parse", "--verify", "HEAD~1").returncode == 0:
-                  base_ref = "HEAD~1"
-              if not base_ref:
-                  emit(fallback, [], "无法定位对比基线，保守走完整路径。")
-                  raise SystemExit(0)
-
-              diff = git("diff", "--name-only", f"{base_ref}..HEAD")
-              if diff.returncode != 0:
-                  emit(fallback, [], f"git diff 失败（{diff.stderr.strip()}），保守走完整路径。")
-                  raise SystemExit(0)
-
-              files = [line.strip() for line in diff.stdout.splitlines() if line.strip()]
-              if not files:
-                  fallback["base_ref"] = base_ref
-                  emit(fallback, [], "对比基线无文件差异，保守走完整路径。")
-                  raise SystemExit(0)
-
-              def is_doc(path: str) -> bool:
-                  name = Path(path).name
-                  return (
-                      path.endswith(".md")
-                      or path.startswith("docs/")
-                      or name in {".gitignore"}
-                      or name.startswith("LICENSE")
-                  )
-
-              frontend = any(p.startswith(("app/web-react/", "app/web/")) for p in files)
-              backend = any(
-                  p.startswith(("app/menu_capture/", "app/tests/"))
-                  or p in {"app/pyproject.toml", "app/uv.lock"}
-                  for p in files
-              )
-              prompts = any(
-                  p.startswith("app/ui_tars/prompts/")
-                  or (p.startswith("app/ui_tars/") and p.endswith((".mjs", ".json")))
-                  for p in files
-              )
-              runtime_deps = any(
-                  p in {
-                      "app/pyproject.toml",
-                      "app/uv.lock",
-                      "app/ui_tars/package.json",
-                      "app/ui_tars/package-lock.json",
-                      "deploy/windows/runtimes.json",
-                  }
-                  for p in files
-              )
-              packaging = any(p.startswith(("deploy/windows/", ".github/workflows/")) for p in files)
-              hub_deploy = any(
-                  p.startswith(("deploy/hub/", "deploy/hub-update/", ".github/workflows/"))
-                  for p in files
-              )
-              docs_only = all(is_doc(p) for p in files)
-
-              values = {
-                  "base_ref": base_ref,
-                  "docs_only": str(docs_only).lower(),
-                  "frontend": str(frontend).lower(),
-                  "backend": str(backend).lower(),
-                  "prompts": str(prompts).lower(),
-                  "runtime_deps": str(runtime_deps).lower(),
-                  "packaging": str(packaging).lower(),
-                  "hub_deploy": str(hub_deploy).lower(),
-              }
-              note = (
-                  "正式发布模式：强制执行全部安全门禁。"
-                  if os.environ.get("CREATE_RELEASE") == "true"
-                  else (
-                      "非正式发布且未改动前端：跳过 react-web 重复 npm test，仅校验提交产物完整性。"
-                      if not frontend
-                      else "检测到前端改动：执行完整前端构建与单测门禁。"
-                  )
-              )
-              emit(values, files, note)
-          except Exception as exc:  # noqa: BLE001 - 任何分析异常默认保守走完整路径
-              emit(fallback, [], f"改动分析异常（{exc}），保守走完整路径。")
-          PY
-
-  react-web:
-    needs: [changes]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        if: ${{ inputs.create_release == true || needs.changes.outputs.frontend != 'false' }}
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: app/web-react/package-lock.json
-      - name: 校验 React 底座、单测与提交的构建产物
-        if: ${{ inputs.create_release == true || needs.changes.outputs.frontend != 'false' }}
-        working-directory: app/web-react
-        run: |
-          npm ci --no-audit --no-fund
-          npm run typecheck
-          npm run lint:design
-          npm test
-          npm run build
-          if [ -n "$(git status --porcelain ../web/react)" ]; then
-            echo "web/react 产物与源码不一致，请本地重新构建并提交"
-            git status --short ../web/react
+          set -euo pipefail
+          if [[ "$CREATE_RELEASE" == "true" && "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Official release must be dispatched from main."
             exit 1
           fi
-      - name: 非正式发布且无前端改动：跳过重复 npm test（保留产物校验）
-        if: ${{ inputs.create_release != true && needs.changes.outputs.frontend == 'false' }}
-        run: echo "相对基线 ${{ needs.changes.outputs.base_ref }} 无前端文件变更且 create_release=false，跳过 npm test，继续执行静态产物完整性检查。"
-      - name: 校验旧前端已清理且发布产物自包含
-        working-directory: app
-        run: |
-          legacy=$(find web -maxdepth 1 -type f \( -name '*.js' -o -name '*.css' -o -name 'index.html' \) -print)
-          if [ -d web/vue ]; then legacy="$legacy web/vue"; fi
-          if [ -d web-ui ]; then legacy="$legacy web-ui"; fi
-          if [ -n "$legacy" ]; then
-            echo "旧前端文件仍在仓库中，请完成清理："
-            echo "$legacy"
-            exit 1
-          fi
-          test -s web/react/index.html
-          if grep -Eq 'https?://|/react/assets/|__CAPTURE_TOKEN__' web/react/index.html; then
-            echo "React 入口包含外部依赖、迁移期资源前缀或旧令牌占位符"
-            exit 1
-          fi
-          test -s web/react/.vite/manifest.json
+          args=()
+          if [[ "$FORCE_FULL" == "true" ]]; then args+=(--force-full); fi
+          python3 deploy/tools/change_plan.py --mode release --version "$VERSION" "${args[@]}"
 
-  backend-check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          version: '0.11.3'
-          enable-cache: true
-          cache-dependency-glob: 'app/uv.lock'
-      - name: Ruff 门禁（配置见 pyproject.toml）
-        working-directory: app
-        run: uvx ruff@0.17.6 check --no-cache .
-      - name: 全量通用测试（unit / integration / contract）
-        working-directory: app
-        run: |
-          uv sync --frozen --python 3.12
-          # 不再手工维护文件名清单：新增测试随目录自动纳入门禁。
-          uv run --frozen pytest -q tests/unit tests/integration tests/contract
+  checks:
+    needs: changes
+    uses: ./.github/workflows/source-checks.yml
+    with:
+      frontend: ${{ needs.changes.outputs.frontend == 'true' }}
+      static_frontend: ${{ needs.changes.outputs.build == 'true' || needs.changes.outputs.frontend == 'true' }}
+      backend: ${{ needs.changes.outputs.build == 'true' || needs.changes.outputs.backend == 'true' }}
+      windows_contract: ${{ needs.changes.outputs.build == 'true' || needs.changes.outputs.packaging == 'true' }}
+      hub_updater: ${{ needs.changes.outputs.build == 'true' || needs.changes.outputs.hub_deploy == 'true' }}
 
   windows:
     # 安装包使用仓库中已提交的前端产物，无需等待门禁；发布仍由 draft 统一等待全部门禁。
     needs: [changes]
+    if: ${{ needs.changes.outputs.build == 'true' }}
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -264,14 +97,6 @@ jobs:
           version: '0.11.3'
           enable-cache: true
           cache-dependency-glob: 'app/uv.lock'
-      - name: Windows 原生执行契约
-        shell: pwsh
-        working-directory: app
-        run: |
-          uv sync --frozen --python 3.12
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # 通用单测、集成测试与目录级契约已在后端门禁全量执行；这里只补充 Windows 本机行为。
-          uv run --frozen pytest -q --basetemp (Join-Path $env:RUNNER_TEMP 'mc-py') tests/contract
       - name: 缓存 Velopack CLI 1.2.161
         uses: actions/cache@v4
         with:
@@ -328,9 +153,12 @@ jobs:
           path: deploy/artifacts/
           if-no-files-found: error
           retention-days: 14
+          # Assets are already compressed; avoid another compression pass.
+          compression-level: 0
 
   hub:
-    needs: [backend-check, changes]
+    needs: [changes]
+    if: ${{ needs.changes.outputs.build == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # 仅向 GHCR 推送本仓库镜像；不授予无关写权限。
@@ -362,6 +190,7 @@ jobs:
             --cache-from type=gha,scope=hub \
             --cache-to type=gha,mode=max,scope=hub \
             --build-arg VERSION="$MENU_CAPTURE_VERSION" \
+            --build-arg REVISION="$GITHUB_SHA" \
             -t "$MENU_CAPTURE_IMAGE" \
             -f deploy/hub/Dockerfile.hub \
             .
@@ -371,6 +200,7 @@ jobs:
           mkdir -p deploy/hub/delivery && chmod 777 deploy/hub/delivery
           # 直接复用上一步已构建的候选镜像，不再触发二次构建。
           docker compose -f deploy/hub/compose.yaml up --no-build -d --wait
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$MENU_CAPTURE_IMAGE")" = "$GITHUB_SHA"
           curl --fail http://127.0.0.1:8766/healthz
           auth="admin:$MENU_CAPTURE_ADMIN_PASSWORD"
           curl --fail -u "$auth" http://127.0.0.1:8766/ | grep -q '<div id="root"></div>'
@@ -398,7 +228,7 @@ jobs:
           (cd hub-artifacts && sha256sum "$archive" > "$archive.sha256")
       - name: 加载官方基线镜像（v0.2.2，供升级与执行器验收复用）
         # 风险分级：仅当后端、运行时依赖或 Hub 部署变化时才做历史跨版本验收。
-        if: ${{ github.event_name == 'workflow_dispatch' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.hub_deploy == 'true' || needs.changes.outputs.runtime_deps == 'true') }}
+        if: ${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.hub_regression == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -411,7 +241,7 @@ jobs:
           docker load -i "$baseline_dir/menu-capture-hub-$base_version-linux-amd64.tar.gz"
           docker image inspect "menu-capture-hub:$base_version" > /dev/null
       - name: 验证共享后台原地升级（v0.2.2 → 候选版本）
-        if: ${{ github.event_name == 'workflow_dispatch' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.hub_deploy == 'true' || needs.changes.outputs.runtime_deps == 'true') }}
+        if: ${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.hub_regression == 'true' }}
         env:
           MENU_CAPTURE_HOST_PORT: '18777'
         run: |
@@ -438,13 +268,8 @@ jobs:
           MENU_CAPTURE_IMAGE="$candidate" "${compose[@]}" up --no-build -d --wait
           verify_worker
           curl --silent --fail -u "$auth" "$base/api/version" | jq -e --arg version "$MENU_CAPTURE_VERSION" '.version == $version'
-      - name: Hub 更新执行器契约单测
-        run: |
-          python3 -m venv "$RUNNER_TEMP/updater-venv"
-          "$RUNNER_TEMP/updater-venv/bin/pip" install --quiet pytest
-          "$RUNNER_TEMP/updater-venv/bin/python" -m pytest -q deploy/hub-update/test_hub_updater.py
       - name: 验收 Hub 宿主机更新执行器（隔离 Compose）
-        if: ${{ github.event_name == 'workflow_dispatch' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.hub_deploy == 'true' || needs.changes.outputs.runtime_deps == 'true') }}
+        if: ${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.hub_regression == 'true' }}
         run: |
           set -euo pipefail
           # 复用已归档的唯一镜像包（无二次 docker image save），通过 HUB_UPDATE_ARCHIVE_DIR 直接指向 hub-artifacts。
@@ -691,14 +516,16 @@ jobs:
           path: hub-artifacts/
           if-no-files-found: error
           retention-days: 14
+          # Assets are already compressed; avoid another compression pass.
+          compression-level: 0
       - name: 容器日志
         if: failure()
         run: docker compose -f deploy/hub/compose.yaml logs
 
   draft:
-    if: github.event_name == 'workflow_dispatch' && inputs.create_release
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_release && needs.changes.outputs.release_needed == 'true' }}
     # 发布草稿必须依赖全部质量门禁，任一检查失败都不生成发布准备。
-    needs: [backend-check, react-web, windows, hub]
+    needs: [changes, checks, windows, hub]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -730,6 +557,7 @@ jobs:
           hub_name=$(basename "$hub")
           hub_sha=$(cut -d' ' -f1 < "$hub.sha256")
           hub_size=$(stat -c%s "$hub")
+          (cd release-assets && sha256sum -c "$hub_name.sha256")
           "$RUNNER_TEMP/manifest-signing/bin/python" - "$tag" "$channel" "$GITHUB_SHA" "$MIN_SUPPORTED" \
             "$hub_name" "$hub_size" "$hub_sha" <<'PY'
           import hashlib, json, os, sys
@@ -739,12 +567,16 @@ jobs:
           sys.path.insert(0, "deploy/windows")
           from menu_capture.updates.velopack_trust import sign_manifest, signing_key_from_env
           from velopack_assets import release_assets
+          from menu_capture.updates.velopack_identity import inner_release_manifest
           (tag, channel, commit, min_version, hub_name, hub_size, hub_sha) = sys.argv[1:8]
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}"
           root = Path("release-assets")
           version = tag.lstrip("v")
           setup_name, full_name, *rest = release_assets(root, version)
           index_name = rest.pop()
+          inner = inner_release_manifest(root / full_name)
+          if inner.get('version') != version or inner.get('git_commit') != commit:
+              raise ValueError('Windows candidate version/commit mismatch')
           def vp_asset(name):
               path = root / name
               with path.open("rb") as stream:
