@@ -38,6 +38,7 @@ from menu_capture.materials.util import (
     _now, _selected_margin_ratio, _sha256, _store_id,
 )
 from menu_capture.storage.store import TaskStore
+from menu_capture.projects.service import get_project
 
 logger = logging.getLogger(__name__)
 
@@ -1356,10 +1357,17 @@ class MaterialService:
             raise ValueError("批次描述最多 500 字")
         return name.strip(), description.strip()
 
-    def list_batches(self, include_deleted: bool = False) -> list[dict]:
+    def list_batches(self, include_deleted: bool = False, *, project_id: str | None = None) -> list[dict]:
         with self.task_store.connect() as db:
-            predicate = "" if include_deleted else "WHERE deleted_at=''"
-            rows = [dict(row) for row in db.execute(f"SELECT * FROM material_batches {predicate} ORDER BY created_at DESC,id DESC")]
+            filters = [] if include_deleted else ["deleted_at=''"]
+            params = []
+            if project_id is not None:
+                get_project(db, project_id)
+                filters.append("project_id=?")
+                params.append(project_id)
+            predicate = "WHERE " + " AND ".join(filters) if filters else ""
+            rows = [dict(row) for row in db.execute(
+                f"SELECT * FROM material_batches {predicate} ORDER BY created_at DESC,id DESC", params)]
         return [self._batch_summary(row) for row in rows]
 
     def batch_options(self) -> list[dict]:
@@ -1445,11 +1453,16 @@ class MaterialService:
                 )
         return sorted(batch_ids)
 
-    def _latest_versions(self) -> dict[str, dict]:
-        """每个未删除批次的最新发布版本及其批次名称。"""
+    def _latest_versions(self, *, project_id: str | None = None) -> dict[str, dict]:
+        """显式项目范围用于业务查询；未指定时保留全局同步视图。"""
         with self.task_store.connect() as db:
-            batches = {row["id"]: dict(row) for row in db.execute(
-                "SELECT id,name,created_at FROM material_batches WHERE deleted_at=''")}
+            sql = "SELECT id,name,created_at FROM material_batches WHERE deleted_at=''"
+            params = ()
+            if project_id is not None:
+                get_project(db, project_id)
+                sql += " AND project_id=?"
+                params = (project_id,)
+            batches = {row["id"]: dict(row) for row in db.execute(sql, params)}
             latest: dict[str, dict] = {}
             for row in db.execute("SELECT * FROM material_versions ORDER BY rowid").fetchall():
                 batch = batches.get(row["batch_id"])
@@ -1458,14 +1471,14 @@ class MaterialService:
                 latest[row["batch_id"]] = {"version": dict(row), "batch": batch}
         return latest
 
-    def latest_snapshot_map(self) -> dict[str, str]:
-        """每个未删除批次的最新发布快照；采集端据此只展示当前快照的任务。"""
+    def latest_snapshot_map(self, *, project_id: str | None = None) -> dict[str, str]:
+        """每个未删除批次的最新发布快照；同步协调必须使用全局视图。"""
         return {batch_id: item["version"]["snapshot_id"]
-                for batch_id, item in self._latest_versions().items()}
+                for batch_id, item in self._latest_versions(project_id=project_id).items()}
 
-    def effective_capture_tasks(self) -> list[dict]:
+    def effective_capture_tasks(self, *, project_id: str | None = None) -> list[dict]:
         """有门店发布记录的批次按门店选取任务，旧快照按原有方式兼容。"""
-        latest = self._latest_versions()
+        latest = self._latest_versions(project_id=project_id)
         publications, blocked = self.store_versions.current({item["version"]["id"] for item in latest.values()})
         tasks = self.task_store.tasks()
         by_id = {task["id"]: task for task in tasks if not task["archived_at"]}
@@ -1497,6 +1510,7 @@ class MaterialService:
                     state.update(status="blocked", stage="returned_to_materials", message="待重新选码并发布")
                 result.append({
                     **state, "batch_id": batch_id, "batch_name": batch["name"] or batch_id,
+                    **({"project_id": project_id} if project_id is not None else {}),
                     "version": f"v{revision}" if revision else release["version"],
                     "material_version": revision, "batch_version": release["version"],
                     "store_id": mapping["store_id"],
