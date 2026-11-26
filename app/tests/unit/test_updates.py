@@ -1118,6 +1118,23 @@ def test_cleanup_recovery_keeps_newest_rollback_package(tmp_path):
     assert (recovery_root / "baseline-20260101000000-deadbeef.sqlite3").is_file()
 
 
+def test_cleanup_recovery_protects_current_version(tmp_path, monkeypatch):
+    service = UpdateService(tmp_path, role="worker", platform="windows", machine="AMD64")
+    root = service.data_dir / "recovery"
+    protected = root / "0.5.1-aaaaaaaaaaaa"
+    newer = root / "0.5.2-bbbbbbbbbbbb"
+    for directory in (protected, newer):
+        directory.mkdir(parents=True)
+        (directory / "full.nupkg").write_bytes(b"x" * 16)
+    stale = time.time() - 7200
+    os.utime(protected, (stale, stale))
+    monkeypatch.setattr(service, "current_version", lambda: "0.5.1")
+
+    preview = service.storage_preview()["scopes"]["recovery"]
+    assert preview["kept"] == [protected.name]
+    assert [item["name"] for item in preview["items"]] == [newer.name]
+
+
 def test_cleanup_logs_only_prunes_old_cli_transcripts(tmp_path):
     service = UpdateService(tmp_path, role="worker", platform="windows", machine="AMD64")
     cli_dir = service.data_dir / "debug-logs" / "cli"

@@ -26,6 +26,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from menu_capture.updates.install_transaction import InstallTransaction
 from menu_capture.updates.velopack_identity import require_publisher_trust, require_target, validate_extension
 from menu_capture.updates.velopack_trust import release_policy_from_manifest
 
@@ -1166,7 +1167,7 @@ class UpdateService:
             deleted.append({"scope": "downloads", "version": version, "size_bytes": size})
 
     def _preview_recovery(self) -> dict:
-        """回滚包治理：保留最新一份，其余历史完整包列入清理预览。"""
+        """回滚包治理：保护当前版本与实际回滚目标，其余历史完整包列入清理预览。"""
         root = self.data_dir / "recovery"
         if not root.is_dir() or _is_reparse(root):
             return {"supported": True, "reason": "恢复包目录尚未生成", "kept": [],
@@ -1182,18 +1183,47 @@ class UpdateService:
             except OSError:
                 continue
         found.sort(key=lambda item: item[0], reverse=True)
-        keep = found[0][1].name if found else ""
+        keep = self._recovery_keep_names([directory for _mtime, directory in found])
         items = [
             {"name": directory.name, "path": str(directory), "size_bytes": _tree_size(directory)}
-            for _mtime, directory in found[1:]
+            for _mtime, directory in found
+            if directory.name not in keep
         ]
         return {
             "supported": True,
-            "reason": "保留最新一份回滚包；其余历史完整包可清理",
-            "kept": [keep] if keep else [],
+            "reason": "保护当前版本与实际回滚目标；其余历史完整包可清理",
+            "kept": sorted(keep),
             "items": items,
             "reclaimable_bytes": sum(item["size_bytes"] for item in items),
         }
+
+    def _recovery_keep_names(self, ordered: list[Path]) -> set[str]:
+        """优先保留当前运行版本与安装事务引用的实际回滚包，兜底保留最新一份。"""
+        keep: set[str] = set()
+        try:
+            current = str(self.current_version() or "")
+        except (OSError, ValueError):
+            current = ""
+        if current:
+            keep |= {directory.name for directory in ordered
+                     if directory.name.startswith(f"{current}-")}
+        try:
+            transaction = InstallTransaction(self.data_dir).read()
+        except (OSError, ValueError):
+            transaction = {}
+        recovery = transaction.get("recovery_asset") if isinstance(transaction, dict) else None
+        path = str((recovery or {}).get("path") or "")
+        if path:
+            try:
+                parent = Path(path).parent
+                root = (self.data_dir / "recovery").resolve(strict=True)
+                if parent.resolve(strict=True).parent == root:
+                    keep.add(parent.name)
+            except OSError:
+                pass
+        if not keep and ordered:
+            keep.add(ordered[0].name)
+        return keep
 
     def _cleanup_recovery(self, deleted: list[dict], failures: list[dict]) -> None:
         root = self.data_dir / "recovery"
@@ -1207,7 +1237,7 @@ class UpdateService:
                         or path.resolve(strict=True).parent != resolved_root):
                     raise ValueError("恢复包目录不可信")
                 size = _tree_size(path)
-                shutil.rmtree(path)
+                _remove_tree(path)
             except (OSError, ValueError) as exc:
                 failures.append({"scope": "recovery", "name": str(item["name"]), "error": str(exc)})
                 continue
@@ -2434,6 +2464,17 @@ def _has_regular_nupkg(directory: Path) -> bool:
         )
     except OSError:
         return False
+
+
+def _remove_tree(directory: Path) -> None:
+    """Windows 恢复包按 0444 落盘，删除前先清除只读位，避免清理失败。"""
+    for child in sorted(directory.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        try:
+            if not child.is_symlink():
+                os.chmod(child, 0o600)
+        except OSError:
+            pass
+    shutil.rmtree(directory)
 
 
 def _tree_size(directory: Path) -> int:

@@ -53,6 +53,23 @@ def _file_sha256(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+# 可信来源只允许“签名 full”或“已核验基线+签名 delta 的重建产物”；
+# 开发期显式放行的 unsigned 构建单独标注，不能冒充生产 signed 信任。
+_RECORD_SOURCES = {"signed-full", "signed-delta-rebuild",
+                   "unsigned-full", "unsigned-delta-rebuild"}
+
+
+def _is_reparse(path: Path) -> bool:
+    """与 updates._is_reparse 语义一致：符号链接或 Windows 重解析点都不可跟随。"""
+    try:
+        if path.is_symlink():
+            return True
+        info = path.lstat()
+    except OSError:
+        return False
+    return bool(getattr(info, "st_file_attributes", 0) & 0x400)
+
+
 class VelopackError(RuntimeError):
     """适配层无法完成请求时抛出；调用方应如实展示原因，不回退到自研安装器。"""
 
@@ -76,7 +93,8 @@ def _write_json(path: Path, payload: Any) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
-        # 与既有私有状态文件一致：仅当前用户可读写，不新增独立权限模型。
+        # 原子落盘沿用既有私有状态文件模式；Windows 的访问边界由数据目录 ACL 继承，
+        # 这里的 chmod 只在 POSIX 下额外收紧，不能替代 Windows ACL。
         os.chmod(temp, 0o600)
     except OSError:
         pass
@@ -167,18 +185,28 @@ class VelopackBackend:
 
     def _read_records(self) -> dict:
         payload = _read_json(self._records_path(), {})
-        packages = payload.get("packages") if isinstance(payload, dict) else None
-        return packages if isinstance(packages, dict) else {}
+        if not isinstance(payload, dict) or payload.get("schema_version") != RECORD_SCHEMA:
+            return {}
+        packages = payload.get("packages")
+        if not isinstance(packages, dict):
+            return {}
+        return {key: value for key, value in packages.items() if isinstance(value, dict)}
 
     @staticmethod
-    def _valid_record(record: Any) -> bool:
+    def _valid_identity(record: Any) -> bool:
         if not isinstance(record, dict):
             return False
-        name, size, digest = record.get("name"), record.get("size"), record.get("sha256")
-        return (isinstance(name, str) and bool(name) and "/" not in name and "\\" not in name
+        name, size = record.get("name"), record.get("size")
+        digest, commit = record.get("sha256"), record.get("commit")
+        return (isinstance(name, str) and name.endswith(".nupkg")
+                and not any(char in name for char in "/\\:")
                 and type(size) is int and size > 0
                 and isinstance(digest, str) and _SHA256_TEXT_RE.fullmatch(digest) is not None
-                and isinstance(record.get("commit"), str))
+                and isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}", commit) is not None)
+
+    @classmethod
+    def _valid_record(cls, record: Any) -> bool:
+        return cls._valid_identity(record) and record.get("source") in _RECORD_SOURCES
 
     def verified_package(self, version: str, commit: str) -> dict | None:
         """返回该版本的可信产物身份；没有记录、记录损坏或 commit 不符都视为不可信。"""
@@ -193,10 +221,10 @@ class VelopackBackend:
 
     def package_matches(self, path: Path, record: dict) -> bool:
         """实际文件必须与可信记录或签名发布摘要逐字节一致。"""
-        if not self._valid_record(record):
+        if not self._valid_identity(record):
             return False
         try:
-            if path.is_symlink() or not path.is_file():
+            if _is_reparse(path) or not path.is_file():
                 return False
             identity = self.package_identity(path)
         except OSError:
@@ -284,6 +312,9 @@ class VelopackBackend:
             channel = "preview" if Version.parse(previous_version).is_prerelease else "stable"
         if channel not in {"stable", "preview"}:
             raise VelopackError("旧版恢复包发布渠道无效")
+        recovery_root = self._recovery_root()
+        if recovery_root.exists() and (_is_reparse(recovery_root) or not recovery_root.is_dir()):
+            raise VelopackError("恢复包目录不可信")
         # 1) 已验证产物记录优先：只接受与记录实际摘要逐字节一致的本地包或恢复副本。
         record = self.verified_package(previous_version, previous_commit)
         package: Path | None = None
@@ -291,7 +322,7 @@ class VelopackBackend:
         if record is not None:
             for candidate, kind in (
                 (self._packages_dir() / record["name"], "local-packages"),
-                (self._recovery_root() / f"{previous_version}-{record['sha256'][:12]}" / record["name"],
+                (recovery_root / f"{previous_version}-{record['sha256'][:12]}" / record["name"],
                  "recovery-cache"),
             ):
                 if self.package_matches(candidate, record):
@@ -317,7 +348,7 @@ class VelopackBackend:
                          "size": full["size"], "sha256": full["sha256"]}
             for candidate, kind in (
                 (self._packages_dir() / full["name"], "local-packages"),
-                (self._recovery_root() / f"{previous_version}-{full['sha256'][:12]}" / full["name"],
+                (recovery_root / f"{previous_version}-{full['sha256'][:12]}" / full["name"],
                  "recovery-cache"),
             ):
                 if self.package_matches(candidate, published):
@@ -325,24 +356,36 @@ class VelopackBackend:
                     source = {"type": kind, "url": full["url"], "tag": f"v{previous_version}"}
                     break
             if package is None:
-                recovery_tmp = self._recovery_root() / ".download"
+                recovery_tmp = recovery_root / ".download"
                 recovery_tmp.mkdir(parents=True, exist_ok=True)
                 package = self._download_verified(full, recovery_tmp / full["name"])
                 source = {"type": "official-release", "url": full["url"],
                           "tag": f"v{previous_version}"}
-            # 已由签名清单核验的产物身份，写入记录供后续增量升级复用。
+            # 已由发布者信任校验过的产物身份；unsigned 开发构建单独标注，不冒充 signed。
+            signed = extension["trust"].get("mode") == "ed25519"
             record = self.record_verified_package(
                 version=previous_version, commit=previous_commit, name=full["name"],
-                size=full["size"], sha256=full["sha256"], source=str(source["type"]),
+                size=full["size"], sha256=full["sha256"],
+                source="signed-full" if signed else "unsigned-full",
             )
         if record is None or source is None or package is None:
             raise VelopackError("恢复包身份未建立，拒绝继续")
         # 包内清单只作附加一致性检查，不作为信任依据。
         require_inner_manifest(package, version=previous_version, commit=previous_commit)
         name, size, digest = record["name"], record["size"], record["sha256"]
-        destination_dir = self._recovery_root() / f"{previous_version}-{digest[:12]}"
+        destination_dir = recovery_root / f"{previous_version}-{digest[:12]}"
         destination_dir.mkdir(parents=True, exist_ok=True)
+        if (_is_reparse(destination_dir) or not destination_dir.is_dir()
+                or destination_dir.resolve().parent != recovery_root.resolve()):
+            raise VelopackError("恢复包目录不可信")
         destination = destination_dir / name
+        if _is_reparse(destination):
+            try:
+                destination.unlink()
+            except OSError as exc:
+                raise VelopackError("恢复包路径无法安全清理") from exc
+        if destination.exists() and not destination.is_file():
+            raise VelopackError("恢复包路径不是普通文件")
         if destination.resolve() != package.resolve():
             if not destination.is_file() or destination.stat().st_size != size:
                 temp = destination.with_suffix(destination.suffix + ".tmp")
@@ -350,6 +393,12 @@ class VelopackBackend:
                 os.replace(temp, destination)
             if _file_sha256(destination) != digest:
                 raise VelopackError("恢复包复制后 SHA-256 不一致")
+        if source["type"] == "official-release" and package != destination:
+            # 已成功落位并校验，清理 .download 中的临时完整包，避免重复占用磁盘。
+            try:
+                package.unlink()
+            except OSError:
+                pass
         try:
             os.chmod(destination, 0o444)
         except OSError:
@@ -359,6 +408,7 @@ class VelopackBackend:
             "version": previous_version, "commit": previous_commit,
             "channel": channel,
             "name": name, "size": size, "sha256": digest,
+            # 这里的 source 只表示存放位置；可信来源记录在身份记录的 source 字段。
             "path": str(destination), "source": source,
             "inner_manifest": {
                 "version": str(inner.get("version") or ""),
@@ -506,9 +556,12 @@ class VelopackBackend:
 
     def _require_pending_package(self, target: dict, identity: dict) -> dict:
         """本地待安装包必须与已验证产物记录逐字节一致；无记录一律拒绝。"""
-        path = self._packages_dir() / identity["file_name"]
-        if path.is_symlink() or not path.is_file():
-            raise VelopackError("待安装包不存在")
+        root = self._packages_dir()
+        if _is_reparse(root) or not root.is_dir():
+            raise VelopackError("packages 目录不可信")
+        path = root / identity["file_name"]
+        if _is_reparse(path) or not path.is_file():
+            raise VelopackError("待安装包不存在或不是普通文件")
         if path.stat().st_size != identity["size"]:
             raise VelopackError("待安装包大小与 SDK 报告不一致")
         record = self.verified_package(target["version"], target["git_commit"])
@@ -522,13 +575,28 @@ class VelopackBackend:
 
     def discard_untrusted_cached_package(self, target: dict) -> None:
         """SDK 遇到同名目标包会跳过下载；只有可信记录与实际摘要一致时才允许保留。"""
-        path = self._packages_dir() / target["full"]["name"]
-        if path.is_symlink() or not path.is_file():
+        root = self._packages_dir()
+        if root.exists() and (_is_reparse(root) or not root.is_dir()):
+            raise VelopackError("packages 目录不可信")
+        path = root / target["full"]["name"]
+        if _is_reparse(path):
+            # 只删除链接本身，绝不跟随；无法安全清理时拒绝继续。
+            try:
+                path.unlink()
+            except OSError as exc:
+                raise VelopackError("目标缓存链接无法安全清理") from exc
             return
+        if not path.exists():
+            return
+        if not path.is_file():
+            raise VelopackError("目标缓存路径不是普通文件")
         record = self.verified_package(target["version"], target["git_commit"])
         if record is not None and self.package_matches(path, record):
             return
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise VelopackError("目标缓存无法清理") from exc
 
     def verify_pending(self, target: dict, channel: str) -> dict:
         require_publisher_trust(target)
@@ -661,6 +729,7 @@ class VelopackBackend:
         asset = manager.get_update_pending_restart()
         if asset is None:
             raise VelopackError("没有已下载完成的更新包")
+        # 与 verify_pending 共用同一守卫：路径、实际摘要与包内身份必须一致。
         self._require_pending_package(target, sdk_asset_identity(asset))
         # 启动器在调用后必须走正常退出路径，由官方 Update.exe 完成应用与重启。
         manager.wait_exit_then_apply_updates(
