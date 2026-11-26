@@ -158,12 +158,14 @@ python3 deploy/tools/workspace_audit.py --repo <主仓路径> --json # 机器可
 
 | 指标 | 治理前 | 治理后 |
 | --- | --- | --- |
-| 主仓 | `D:\menu-agent`，`bf03388`，落后 145 个提交 | `ab41f69`，领先 0 / 落后 0 |
-| 主仓体积 | 51.9 GB | **25.90 GB**（迁出 `data` 20.32 GB 后预计约 5.6 GB） |
+| 主仓 | `D:\menu-agent`，`bf03388`，落后 145 个提交 | 与 `origin/main` 同步（0/0）；**1.21 GB** |
+| 主仓体积 | 51.9 GB | **1.21 GB**（源码 + Git + `deploy` + 活跃 `work/`） |
+| 生产数据 | `menu-agent\data\MenuCapture` 20.32 GB（仓内） | `ma-workspace\production\worker\MenuCapture`（User 级 `MENU_CAPTURE_HOME`） |
+| 旧 Inno runtime | 4.38 GB（0.1.0/0.3.1/0.3.3/0.3.4 及 HubUpdater） | 已删除；Hub Updater 改用 Velopack Python |
 | 注册 Worktree | 3（主仓 + #105 + #103） | 2（主仓 + #103 活跃区） |
 | 历史快照 | issue88 36.47 GB + Hub 迁移 40.89 GB | 核验后删除，释放 **77.95 GB** |
 | 废弃副本 | `hub-data` 4.83 GB、`_archive`+`输出` 4.77 GB、交付归档 3.28 GB、`UFS_Menu_Scraper` 13.81 GB | 已回收 |
-| D 盘可用 | 225.90 GB（Phase 2 前）、233.07 GB（本阶段前） | **337.82 GB**（累计 +111.92 GB，本阶段 +104.75 GB） |
+| D 盘可用 | 225.90 GB（Phase 2 前）、233.07 GB（本阶段前） | **342.14 GB**（累计 +116.24 GB） |
 
 核验依据：
 
@@ -173,13 +175,20 @@ python3 deploy/tools/workspace_audit.py --repo <主仓路径> --json # 机器可
 - `UFS_Menu_Scraper`：素材 9,095 个文件全部覆盖；任务库即迁移前 2,441 任务集；动作证据 2,579 个文件全部覆盖；8 个引用任务与 2 个失效任务导出 XML 后注销。
 - 交付归档：`prod-backup-0.1.2` 仅 237 MB 动作证据未被现役数据覆盖（归档并去重至 200 MB）；0.3.0/0.3.1/0.3.4 安装包均在 GitHub Releases。
 
-保留：`D:\MenuCapture` 7.29 GB（正式交付）、`backup/issue88-a-034` 0.14 GB（#88 验收）、`work/` 0.22 GB（#101 活跃）。
+### 数据迁移与旧 runtime 清理
+
+- 迁移前核对：`MENU_CAPTURE_HOME` 为 **User 级**环境变量；任务库空闲 1,979 秒，现役 1,148 个任务；先用 `sqlite3.backup` 生成一致副本并通过 `integrity_check`（任务数一致），随后停止 `MenuCapture Velopack Worker`。
+- 同盘移动至 `ma-workspace\production\worker\MenuCapture`，更新 User 级环境变量，重启 Worker；17:29:36 健康检查 200，任务数 1,148 与迁移前一致。原 `menu-agent\data` 已空并删除。
+- 回滚入口：`ma-workspace\production\worker\migration\migrate-worker-data.ps1 -Rollback`，依据 `last-migration.json` 恢复目录与环境变量；脚本默认 Dry Run，前置保护或校验失败即终止。
+- Hub Updater：归档原任务 XML 与 `Run-HubUpdater.ps1` 后，目录移至 `production\hub\updater`，Python 入口改为 `%LOCALAPPDATA%\Yipu.MenuCapture\current\python\python.exe`；任务 Running，8767 监听正常（401 表示鉴权生效）。
+- 3 个 Disabled 旧任务（NightRunner、TechRegression、旧 Worker SID）导出 XML 后注销，旧 runtime 删除后无进程与任务引用。
+
+保留：`D:\MenuCapture` 7.29 GB（正式交付）、`backup/issue88-a-034` 0.14 GB（#88 验收）、`work/` 0.22 GB（#101 活跃）、`backups/database` 一致性数据库备份。
 
 ### 剩余风险与未完成项
 
-1. `data` 20.32 GB 是主仓降到 20 GB 以内的最后一项；`MENU_CAPTURE_HOME`（机器级环境变量）指向 `D:\menu-agent\data\MenuCapture`，需在维护窗口内停 Worker、迁数据、改环境变量、启动并验证采集/同步/审核/交付。
-2. `runtime` 4.38 GB 为现役 Inno 0.3.4 运行目录，Velopack v0.4.0 验收通过后再清理旧版本。
-3. `D:\menu-agent-backups\pre-0.4.0-*`（2.65 GB）为发布 Agent 今日创建的 v0.4.0 迁移回滚点，按 30 天保留期由发布流程管理。
-4. 执行偏差：`backup\20261120-pre-align`（44 MB，11-20 未提交快照）在批量清理中未归档即被删除，无卷影副本或其它副本可恢复；内容为旧布局未提交脚本与工作区补丁，不含业务数据、素材或凭证。
-5. `archive/legacy/mac-legacy-runner/data/materials`（4.2 GB）未与生产 Hub 逐哈希比对，按独有业务数据保留，不自动删除。
-6. Windows Worker `/api/version` 响应缓慢、0.3.3 残留 updater（PID 23880）为既有问题；`/private/tmp/menu-agent-issue101`、`issue102` 属未关闭 Issue。
+1. `D:\menu-agent-backups\pre-0.4.0-*`（2.65 GB）为发布 Agent 创建的 v0.4.0 迁移回滚点，按 30 天保留期由发布流程管理。
+2. 旧 Inno 回退资源：0.3.0/0.3.4 安装包在 GitHub Releases，迁移前数据库备份在 `backups/database`；Velopack 安装目录的 `packages` 当前为空，本地不具备 Velopack 侧回滚包，回退需重新安装并恢复数据库。
+3. 执行偏差：`backup\20261120-pre-align`（44 MB，11-20 未提交快照）在批量清理中未归档即被删除，无卷影副本或其它副本可恢复；内容为旧布局未提交脚本与工作区补丁，不含业务数据、素材或凭证。
+4. `archive/legacy/mac-legacy-runner/data/materials`（4.2 GB）未与生产 Hub 逐哈希比对，按独有业务数据保留，不自动删除。
+5. Windows Worker `/api/version` 响应缓慢为既有问题；`/private/tmp/menu-agent-issue101`、`issue102`、`issue92` 属未关闭 Issue，结束后按第 4 节回收。
