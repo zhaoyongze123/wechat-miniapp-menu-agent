@@ -667,6 +667,9 @@ class InstallOrchestrator:
         base_version = str(self.job.get("base_version") or "")
         if base_version != self.previous:
             raise ValueError("增量补丁的基线版本与当前版本不一致")
+        releases = self.install_root / "releases"
+        if not releases.is_dir() or releases.is_symlink() or _is_reparse(releases):
+            raise ValueError("本地版本目录不可用")
         base_dir = self.install_root / "releases" / base_version
         if not base_dir.is_dir() or base_dir.is_symlink() or _is_reparse(base_dir):
             raise ValueError("本地基线版本目录不可用")
@@ -719,6 +722,7 @@ class InstallOrchestrator:
                 arch=self.arch,
                 from_commit=self.base_commit,
                 to_commit=str(self.job.get("target_commit") or ""),
+                scope_root=self.install_root,
             )
         except update_patch.PatchError as exc:
             raise ValueError(f"增量补丁不可用：{exc}") from exc

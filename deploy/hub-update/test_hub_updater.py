@@ -501,6 +501,39 @@ def test_active_transaction_blocks_second_apply(tmp_path: Path) -> None:
         updater.apply(archive_request(tmp_path))
 
 
+def test_windows_pid_liveness_uses_read_only_native_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows 的存活判断必须查询句柄，不能调用会向目标进程发送信号的 os.kill。"""
+    import ctypes
+    from types import SimpleNamespace
+
+    state = {"wait_result": 258, "last_error": 0, "closed": []}
+    def open_process(access: int, inherit: bool, pid: int) -> int:
+        assert (access, inherit, pid) == (0x00100000, False, 1234)
+        return 44 if state["last_error"] == 0 else 0
+
+    kernel32 = SimpleNamespace(
+        OpenProcess=open_process,
+        WaitForSingleObject=lambda handle, timeout: state["wait_result"],
+        CloseHandle=lambda handle: state["closed"].append(handle) or True,
+    )
+    monkeypatch.setattr(hub_updater.os, "name", "nt")
+    monkeypatch.setattr(hub_updater.os, "kill", lambda *_: pytest.fail("os.kill must not be called"))
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: state["last_error"], raising=False)
+
+    assert hub_updater._pid_alive(1234) is True  # WAIT_TIMEOUT: running
+    assert state["closed"] == [44]
+
+    state["wait_result"] = 0
+    assert hub_updater._pid_alive(1234) is False  # WAIT_OBJECT_0: exited
+    assert state["closed"] == [44, 44]
+
+    state["last_error"] = 87  # ERROR_INVALID_PARAMETER: PID does not exist
+    assert hub_updater._pid_alive(1234) is False
+    state["last_error"] = 5  # ERROR_ACCESS_DENIED: unknown, fail closed
+    assert hub_updater._pid_alive(1234) is True
+
+
 def test_stale_active_journal_is_resolved(tmp_path: Path) -> None:
     docker = FakeDocker(current="menu-capture-hub:0.2.4")
     updater = make_updater(tmp_path, docker, healthy=lambda version: {"ok": True, "version": version})

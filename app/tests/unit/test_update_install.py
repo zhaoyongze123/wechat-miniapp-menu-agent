@@ -911,11 +911,19 @@ def make_target_tree(root: Path, version: str = "0.3.0") -> Path:
 
 def make_patch_job(tmp_path: Path, root: Path, *, fallback_body: bytes | None = None) -> dict:
     target = make_target_tree(root)
+    # CI 构建树里的安装脚本在根级；已安装布局则将它们部署到 install_root，
+    # 受管应用文件部署到 releases/<version>。
+    package_base = tmp_path / "patch-package-base"
+    shutil.copytree(root / "releases" / "0.2.2", package_base)
+    shutil.copy2(root / "Launch.ps1", package_base / "Launch.ps1")
+    shutil.copy2(root / "rollback.ps1", package_base / "rollback.ps1")
+    shutil.copy2(root / "Launch.ps1", target / "Launch.ps1")
+    shutil.copy2(root / "rollback.ps1", target / "rollback.ps1")
     download_dir = tmp_path / "download"
     patch_path = download_dir / "0.3.0" / "MenuCapture-0.2.2-to-0.3.0.patch.zip"
     patch_path.parent.mkdir(parents=True, exist_ok=True)
     update_patch.make_patch(
-        root / "releases" / "0.2.2", target,
+        package_base, target,
         from_version="0.2.2", to_version="0.3.0", output=patch_path,
     )
     body = fallback_body if fallback_body is not None else b"installer-bytes"

@@ -739,6 +739,18 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 "events": store.events() if include_events else [],
                 "manual": runner.manual_state() if runner.running else None}
 
+    if role == "worker":
+        @app.get("/api/worker/idle")
+        def worker_idle():
+            """供本机安装守护进程快速判断是否可切换版本，不构造工作台状态页。"""
+            running = bool(runner.running)
+            annotation_active = bool(annotations.active)
+            return {
+                "running": running,
+                "annotation_active": annotation_active,
+                "idle": not (running or annotation_active),
+            }
+
     @app.get("/api/capture/queue")
     def capture_queue(batch_ids: str = "all", q: str = ""):
         """跨批次有效任务清单：列表、统计、全选和开跑共用这一份数据。"""

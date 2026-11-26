@@ -66,6 +66,101 @@ def test_make_and_apply_patch_rebuilds_exact_target(tmp_path):
     assert not (stage / "app/web/react/index.css").exists()
 
 
+def test_apply_installed_layout_fingerprints_scripts_at_install_root(tmp_path):
+    """安装包脚本位于 install root，受管业务文件仍从 releases/<version> 重建。"""
+    package_base = write_tree(tmp_path / "package-base", BASE)
+    package_target = write_tree(tmp_path / "package-target", TARGET)
+    for package in (package_base, package_target):
+        (package / "Launch.ps1").write_bytes(b"stable-launcher")
+        (package / "rollback.ps1").write_bytes(b"stable-rollback")
+
+    zip_path = tmp_path / "installed-layout.patch.zip"
+    metadata = update_patch.make_patch(
+        package_base,
+        package_target,
+        from_version="0.3.1",
+        to_version="0.3.2",
+        output=zip_path,
+    )
+    assert metadata is not None
+
+    install_root = tmp_path / "install"
+    release_base = install_root / "releases" / "0.3.1"
+    write_tree(release_base, BASE)
+    (install_root / "Launch.ps1").write_bytes(b"stable-launcher")
+    (install_root / "rollback.ps1").write_bytes(b"stable-rollback")
+    # setup.iss 不在运行中的安装目录；发布清单本身记录的基线文件与包一致。
+    stage = install_root / "releases" / ".0.3.2.patch-tmp"
+    update_patch.apply(
+        release_base,
+        stage,
+        zip_path,
+        from_version="0.3.1",
+        to_version="0.3.2",
+        scope_root=install_root,
+    )
+    assert update_patch.scan_tree(stage) == update_patch.scan_tree(
+        package_target, exclude_root=update_patch.ROOT_ONLY_FILES
+    )
+
+
+def test_apply_installed_layout_rejects_changed_root_script(tmp_path):
+    package_base = write_tree(tmp_path / "package-base", BASE)
+    package_target = write_tree(tmp_path / "package-target", TARGET)
+    for package in (package_base, package_target):
+        (package / "Launch.ps1").write_bytes(b"trusted-launcher")
+        (package / "rollback.ps1").write_bytes(b"trusted-rollback")
+    zip_path = tmp_path / "installed-layout.patch.zip"
+    update_patch.make_patch(
+        package_base, package_target, from_version="0.3.1", to_version="0.3.2", output=zip_path
+    )
+
+    install_root = tmp_path / "install"
+    release_base = write_tree(install_root / "releases" / "0.3.1", BASE)
+    (install_root / "Launch.ps1").write_bytes(b"changed-launcher")
+    (install_root / "rollback.ps1").write_bytes(b"trusted-rollback")
+    with pytest.raises(PatchScopeError, match="指纹与补丁不一致"):
+        update_patch.apply(
+            release_base,
+            install_root / "releases" / ".0.3.2.patch-tmp",
+            zip_path,
+            from_version="0.3.1",
+            to_version="0.3.2",
+            scope_root=install_root,
+        )
+
+
+def test_apply_installed_layout_rejects_reparse_root_script(tmp_path):
+    package_base = write_tree(tmp_path / "package-base", BASE)
+    package_target = write_tree(tmp_path / "package-target", TARGET)
+    for package in (package_base, package_target):
+        (package / "Launch.ps1").write_bytes(b"trusted-launcher")
+        (package / "rollback.ps1").write_bytes(b"trusted-rollback")
+    zip_path = tmp_path / "installed-layout.patch.zip"
+    update_patch.make_patch(
+        package_base, package_target, from_version="0.3.1", to_version="0.3.2", output=zip_path
+    )
+
+    install_root = tmp_path / "install"
+    release_base = write_tree(install_root / "releases" / "0.3.1", BASE)
+    outside = tmp_path / "outside.ps1"
+    outside.write_bytes(b"trusted-launcher")
+    try:
+        (install_root / "Launch.ps1").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"当前平台不支持创建符号链接测试样本: {exc}")
+    (install_root / "rollback.ps1").write_bytes(b"trusted-rollback")
+    with pytest.raises(PatchError, match="重解析点"):
+        update_patch.apply(
+            release_base,
+            install_root / "releases" / ".0.3.2.patch-tmp",
+            zip_path,
+            from_version="0.3.1",
+            to_version="0.3.2",
+            scope_root=install_root,
+        )
+
+
 def test_make_patch_skips_when_python_runtime_changes(tmp_path):
     target = dict(TARGET)
     target["python/python.exe"] = b"runtime-2"

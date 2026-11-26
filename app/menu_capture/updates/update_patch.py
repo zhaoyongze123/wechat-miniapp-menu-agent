@@ -146,6 +146,9 @@ def scan_tree(root: Path, *, exclude_root: tuple[str, ...] = ()) -> dict[str, st
 
 def scope_fingerprint(root: Path, files: dict[str, str]) -> str:
     """受限区域的整体指纹：运行环境、依赖锁、安装器与根级脚本。"""
+    root = Path(root)
+    if not root.is_dir() or root.is_symlink() or _is_reparse(root):
+        raise PatchError(f"补丁受限区域目录不可用: {root}")
     entries: list[str] = []
     for name, sha in files.items():
         if _is_restricted(name):
@@ -155,8 +158,11 @@ def scope_fingerprint(root: Path, files: dict[str, str]) -> str:
             (path for path in Path(root).iterdir() if path.name.lower() == name),
             None,
         )
-        if candidate is not None and candidate.is_file() and not _is_reparse(candidate):
-            entries.append(f"{name}\0{file_sha256(candidate)}")
+        if candidate is not None:
+            if _is_reparse(candidate):
+                raise PatchError(f"补丁受限区域包含符号链接或重解析点: {candidate}")
+            if candidate.is_file():
+                entries.append(f"{name}\0{file_sha256(candidate)}")
     digest = hashlib.sha256()
     for item in sorted(entries):
         digest.update(item.encode("utf-8"))
@@ -347,10 +353,24 @@ def apply(
     arch: str = "x64",
     from_commit: str = "",
     to_commit: str = "",
+    scope_root: Path | None = None,
 ) -> dict:
     """在 stage_dir 中重建目标版本；任何失败都会清理 stage 并抛出 PatchError。"""
     base_dir = Path(base_dir)
     stage_dir = Path(stage_dir)
+    fingerprint_root = Path(scope_root) if scope_root is not None else base_dir
+    if scope_root is not None:
+        # 安装版把 Launch/rollback 放在安装根，业务文件则位于 releases/<version>。
+        # 只允许对这层既定布局使用外部指纹根，避免调用方把任意目录引入信任范围。
+        if (
+            base_dir.parent.name.lower() != "releases"
+            or base_dir.parent.parent != fingerprint_root
+            or not fingerprint_root.is_dir()
+            or fingerprint_root.is_symlink()
+            or _is_reparse(fingerprint_root)
+            or _is_reparse(base_dir.parent)
+        ):
+            raise PatchError("安装版补丁指纹目录与基线目录布局不匹配")
     if stage_dir.exists():
         raise PatchError("补丁临时目录已存在，拒绝覆盖")
     manifest = load_patch(zip_path)
@@ -367,7 +387,7 @@ def apply(
     target_files = manifest["files"]
     changed = set(manifest["changed"])
     deleted = set(manifest["deleted"])
-    if manifest["scope"]["base"] != scope_fingerprint(base_dir, base_files):
+    if manifest["scope"]["base"] != scope_fingerprint(fingerprint_root, base_files):
         raise PatchScopeError("本地基线的运行环境/依赖指纹与补丁不一致")
     try:
         stage_dir.mkdir(parents=True)

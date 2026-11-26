@@ -191,11 +191,41 @@ def _table_definitions(sql: str) -> tuple[dict[str, str], list[str], str]:
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        return _windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except OSError:
         return False
     return True
+
+
+def _windows_pid_alive(pid: int) -> bool:
+    """只读查询 Windows 进程状态；无法确认时保守认为事务仍在运行。"""
+    import ctypes
+    from ctypes import wintypes
+
+    # 零超时等待只需要 SYNCHRONIZE 权限，无需查询进程详情或终止权限。
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+    if not handle:
+        # ERROR_INVALID_PARAMETER 表示 PID 不存在。拒绝访问或其他未知错误时保守阻止并发事务。
+        return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER
+    try:
+        result = kernel32.WaitForSingleObject(handle, 0)
+        if result == 258:  # WAIT_TIMEOUT: 进程仍在运行
+            return True
+        # WAIT_OBJECT_0 表示已退出；WAIT_FAILED 或未知结果均保守保留活动状态。
+        return result != 0
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 class UpdateError(ValueError):

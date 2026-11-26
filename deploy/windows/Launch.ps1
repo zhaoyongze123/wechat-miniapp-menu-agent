@@ -83,12 +83,28 @@ function Start-Worker {
 }
 
 function Test-WorkerIdle {
-    $runner = Read-WorkerJson '/api/status'
+    try {
+        $state = Invoke-RestMethod -Uri "$workbench/api/worker/idle" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+        $running = $state.PSObject.Properties['running']
+        $annotationActive = $state.PSObject.Properties['annotation_active']
+        $idle = $state.PSObject.Properties['idle']
+        if ($null -eq $running -or $running.Value -isnot [bool] -or
+            $null -eq $annotationActive -or $annotationActive.Value -isnot [bool] -or
+            $null -eq $idle -or $idle.Value -isnot [bool]) { return $false }
+        # 即便服务错误地报告 idle=true，只要任一执行状态为真也必须阻止版本切换。
+        return $idle.Value -and -not ($running.Value -or $annotationActive.Value)
+    } catch {
+        $statusCode = 0
+        try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {}
+        # 仅旧版 Worker 不认识新端点时回退；超时、断连、鉴权或服务异常一律失败关闭。
+        if ($statusCode -ne 404) { return $false }
+    }
+    $runner = Read-WorkerJson '/api/status?include_events=false'
     $annotation = Read-WorkerJson '/api/annotation/state'
-    if ($null -eq $runner -or $null -eq $runner.PSObject.Properties['running']) { return $false }
-    $annotationActive = $null -ne $annotation -and
-        $null -ne $annotation.PSObject.Properties['active'] -and $annotation.active
-    return -not ($runner.running -or $annotationActive)
+    if ($null -eq $runner -or $null -eq $annotation -or
+        $null -eq $runner.PSObject.Properties['running'] -or $runner.running -isnot [bool] -or
+        $null -eq $annotation.PSObject.Properties['active'] -or $annotation.active -isnot [bool]) { return $false }
+    return -not ($runner.running -or $annotation.active)
 }
 
 function Test-WorkerReady {
