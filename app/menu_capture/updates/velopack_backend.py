@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from menu_capture.updates.velopack_identity import (
-    inner_release_manifest, require_full_file, require_publisher_trust, require_target,
+    inner_release_manifest, require_publisher_trust, require_target,
     sdk_asset_identity, validate_extension, validate_local_asset,
 )
 from menu_capture.updates.velopack_trust import release_policy_from_manifest
@@ -397,7 +397,8 @@ class VelopackBackend:
         require_publisher_trust(target)
         pending = self.pending_restart(channel)
         require_target(pending, target)
-        require_full_file(self._packages_dir(), target)
+        # 包级完整性由官方 SDK 在下载阶段校验（delta 与 full 的 SHA-256 都来自已签名清单）；
+        # 差分重建产物与发布 full 字节不同，不能在此再做字节比对。
         return pending
 
     def download(
@@ -526,7 +527,6 @@ class VelopackBackend:
         if asset is None:
             raise VelopackError("没有已下载完成的更新包")
         require_target(sdk_asset_identity(asset), target)
-        require_full_file(self._packages_dir(), target)
         # 启动器在调用后必须走正常退出路径，由官方 Update.exe 完成应用与重启。
         manager.wait_exit_then_apply_updates(
             asset, silent=True, restart=True, restart_args=None,

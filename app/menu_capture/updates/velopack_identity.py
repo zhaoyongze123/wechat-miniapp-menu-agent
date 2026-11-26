@@ -1,7 +1,6 @@
 """Release and SDK identity checks, distinct from publisher signature verification."""
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import zipfile
@@ -156,20 +155,3 @@ def inner_release_manifest(nupkg: Path) -> dict:
         raise ValueError("恢复包内部发布清单格式无效")
     return manifest
 
-
-def require_full_file(root: Path, target):
-    """Hash actual bytes, not merely SDK metadata; reject reparse points."""
-    full = target["full"]
-    name = full["name"]
-    if not name or any(c in name for c in "/\\:") or name in {".", ".."}:
-        raise ValueError("完整包名称无效")
-    path = root / name
-    for item in (root, path):
-        if item.is_symlink() or getattr(item.lstat(), "st_file_attributes", 0) & 0x400:
-            raise ValueError("完整包路径包含重解析点")
-    if not path.is_file() or path.stat().st_size != full["size"]:
-        raise ValueError("完整包大小不一致")
-    with path.open("rb") as stream:
-        if hashlib.file_digest(stream, "sha256").hexdigest() != full["sha256"]:
-            raise ValueError("完整包 SHA-256 不一致")
-    return path

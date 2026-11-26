@@ -3,7 +3,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
-from menu_capture.updates.velopack_identity import require_full_file, require_target, sdk_asset_identity, validate_extension, require_unsigned_opt_in
+from menu_capture.updates.velopack_identity import require_target, sdk_asset_identity, validate_extension, require_unsigned_opt_in
 
 REPO = "owner/repo"
 VERSION = "0.4.0"
@@ -59,22 +59,17 @@ def test_github_identity():
         validate(target, published)
 
 
-def test_sdk_and_bytes(tmp_path):
+def test_sdk_identity_matches_target():
+    # 包级完整性由官方 SDK 负责；这里只校验 SDK 目标与已签名发布身份一致。
     target = validate(fixture())
     full = target["full"]
     asset = SimpleNamespace(Version=VERSION, PackageId=target["pack_id"], Type="Full", FileName=full["name"],
                             SHA256=full["sha256"], Size=full["size"])
     require_target(sdk_asset_identity(asset), target)
-    path = tmp_path / full["name"]
-    path.write_bytes(BODY)
-    assert require_full_file(tmp_path, target) == path
     wrong = deepcopy(target)
     wrong["full"]["sha256"] = "0"*64
     with pytest.raises(ValueError):
         require_target(sdk_asset_identity(asset), wrong)
-    path.write_bytes(b"x"*len(BODY))
-    with pytest.raises(ValueError):
-        require_full_file(tmp_path, target)
 
 
 def test_unsigned_explicit_opt_in(monkeypatch):

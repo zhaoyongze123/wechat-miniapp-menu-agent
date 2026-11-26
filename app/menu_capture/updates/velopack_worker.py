@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from menu_capture.updates.velopack_backend import VelopackBackend
         from menu_capture.updates.velopack_identity import (
-            require_full_file, require_publisher_trust, require_target, sdk_asset_identity, validate_extension,
+            require_publisher_trust, require_target, sdk_asset_identity, validate_extension,
         )
 
         raw = json.loads(args.target_json)
@@ -70,7 +70,6 @@ def main(argv: list[str] | None = None) -> int:
 
         _write_progress(progress_path, {"stage": "downloading", "percent": 0})
         manager.download_updates(info, on_progress)
-        require_full_file(backend._packages_dir(), target)
         _write_progress(progress_path, {"stage": "completed", "percent": 100})
         return 0
     except Exception as exc:  # noqa: BLE001 - 子进程必须把失败原因交给父进程展示
