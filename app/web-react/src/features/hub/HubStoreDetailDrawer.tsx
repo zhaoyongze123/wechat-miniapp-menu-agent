@@ -9,6 +9,8 @@ import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { errorMessage } from '../../api/client'
 import { ReviewDispositionDialog } from '../quality/ReviewDispositionDialog'
+import { useProject } from '../projects/ProjectProvider'
+import { projectApiPath, projectQueryKey } from '../projects/scope'
 import { AssignmentDetailDrawer } from './AssignmentDetailDrawer'
 import { fetchAssignmentRecords } from './api'
 import { assignmentStatusOf, formatStore, storeStateOf } from './format'
@@ -37,6 +39,7 @@ export function HubStoreDetailDrawer({
   hasNext = false,
   position,
 }: HubStoreDetailDrawerProps) {
+  const { projectId } = useProject()
   const [page, setPage] = useState(1)
   const [assignment, setAssignment] = useState<AssignmentRecord | null>(null)
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null)
@@ -45,9 +48,9 @@ export function HubStoreDetailDrawer({
   const taskId = task?.id ?? ''
   useEffect(() => { setPage(1); setAssignment(null); setPreview(null) }, [taskId])
   const history = useQuery({
-    queryKey: ['hub-store-assignments', taskId, page],
-    queryFn: ({ signal }) => fetchAssignmentRecords({ workerId: '', phase: '', q: taskId, page, size: PAGE_SIZE }, signal),
-    enabled: Boolean(taskId),
+    queryKey: projectQueryKey(projectId, 'hub-store-assignments', taskId, page),
+    queryFn: ({ signal }) => fetchAssignmentRecords({ workerId: '', phase: '', q: taskId, page, size: PAGE_SIZE }, signal, projectId),
+    enabled: Boolean(projectId && taskId),
     staleTime: 5_000,
   })
   if (!task) return null
@@ -56,7 +59,7 @@ export function HubStoreDetailDrawer({
   const reviewable = status.label === '待检查'
   const records = (history.data?.records ?? []).filter((record) => record.task_id === taskId)
   if (assignment && assignment.task_id === taskId) {
-    return <AssignmentDetailDrawer key={assignment.id} record={assignment} onOpenChange={(open) => { if (!open) setAssignment(null) }} />
+    return <AssignmentDetailDrawer key={assignment.id} projectId={projectId} record={assignment} onOpenChange={(open) => { if (!open) setAssignment(null) }} />
   }
   return (
     <>
@@ -111,10 +114,10 @@ export function HubStoreDetailDrawer({
           </div>
         </dl>
         <div className="flex flex-wrap items-center gap-2">
-          <Button color="secondary" variant="outline" size="sm" onClick={() => setPreview({ src: `/api/tasks/${encodeURIComponent(task.id)}/source`, alt: '任务二维码' })}>
+          <Button color="secondary" variant="outline" size="sm" onClick={() => setPreview({ src: projectApiPath(`/api/tasks/${encodeURIComponent(task.id)}/source`, projectId), alt: '任务二维码' })}>
             查看二维码
           </Button>
-          <Button color="secondary" variant="outline" size="sm" onClick={() => setPreview({ src: `/api/tasks/${encodeURIComponent(task.id)}/last-frame`, alt: '最近采集画面' })}>
+          <Button color="secondary" variant="outline" size="sm" onClick={() => setPreview({ src: projectApiPath(`/api/tasks/${encodeURIComponent(task.id)}/last-frame`, projectId), alt: '最近采集画面' })}>
             查看最近画面
           </Button>
           {reviewable ? (

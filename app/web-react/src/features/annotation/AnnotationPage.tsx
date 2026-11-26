@@ -11,9 +11,12 @@ import { PageHeader } from '../../components/PageHeader'
 import { ImagePreview } from '../../components/ImagePreview'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
 import { StatePanel } from '../../components/StatePanel'
+import { useUnsavedChanges } from '../../components/UnsavedChangesProvider'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { useRole } from '../../app/RoleProvider'
+import { useProject } from '../projects/ProjectProvider'
+import { projectApiPath } from '../projects/scope'
 import {
   clickAnnotation,
   completeAnnotation,
@@ -102,6 +105,7 @@ export function AnnotationPage() {
 }
 
 function AnnotationWorkbench() {
+  const { projectId } = useProject()
   const toast = useToast()
   const queryClient = useQueryClient()
   const [filter, setFilter] = useState<'all' | TaskBucket>('all')
@@ -121,6 +125,11 @@ function AnnotationWorkbench() {
   const [review, setReview] = useState<AnnotationHistory | null>(null)
   const [preview, setPreview] = useState<{ src: string; alt: string; caption?: string } | null>(null)
   const autoDecideKey = useRef('')
+
+  useUnsavedChanges(
+    Boolean(selected.size || box || category || target.trim() || note.trim() || confirm || rejectOpen),
+    '人工标注选择尚未提交，切换项目后当前选择和输入将清除。',
+  )
 
   const busy = Boolean(busyLabel)
   const stateQuery = useAnnotationState({ enabled: true, paused: busy || deciding })
@@ -159,9 +168,9 @@ function AnnotationWorkbench() {
   const activeStep: AnnotationStep | undefined = steps[Math.min(stepCursor, Math.max(0, steps.length - 1))]
 
   const historyQuery = useQuery({
-    queryKey: ['annotation', 'history', reviewTaskId],
-    queryFn: ({ signal }) => fetchAnnotationHistory(reviewTaskId, signal),
-    enabled: Boolean(reviewTaskId),
+    queryKey: ['project', projectId || 'unselected', 'annotation', 'history', reviewTaskId],
+    queryFn: ({ signal }) => fetchAnnotationHistory(reviewTaskId, signal, projectId),
+    enabled: Boolean(projectId && reviewTaskId),
     staleTime: 0,
   })
   // 会话一旦开始，回看必须退出，避免与实时画面互相干扰。
@@ -181,14 +190,14 @@ function AnnotationWorkbench() {
     }
   }, [historyQuery.error, toast])
 
-  const applyState = (next: AnnotationState) => queryClient.setQueryData(ANNOTATION_STATE_KEY, next)
+  const applyState = (next: AnnotationState) => queryClient.setQueryData(ANNOTATION_STATE_KEY(projectId), next)
 
   const run = async (label: string, action: () => Promise<AnnotationState>, refreshTasks = false): Promise<boolean> => {
     setBusyLabel(label)
     try {
       const next = await action()
       applyState(next)
-      if (refreshTasks) await queryClient.invalidateQueries({ queryKey: ANNOTATION_TASKS_KEY })
+      if (refreshTasks) await queryClient.invalidateQueries({ queryKey: ANNOTATION_TASKS_KEY(projectId) })
       if (next.active) setReview(null)
       return true
     } catch (error) {
@@ -209,13 +218,13 @@ function AnnotationWorkbench() {
     if (autoDecideKey.current === key) return
     autoDecideKey.current = key
     setDeciding(true)
-    decideAnnotation()
+    decideAnnotation(projectId)
       .then((next) => applyState(next))
       .catch((error) => toast.push(errorMessage(error), 'danger'))
       .finally(() => setDeciding(false))
     // applyState 只依赖稳定的 queryClient。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state?.session_id, state?.frame?.name, state?.decision, state?.status, state?.active, state?.paused, review])
+  }, [state?.session_id, state?.frame?.name, state?.decision, state?.status, state?.active, state?.paused, review, projectId])
 
   const visibleTasks = useMemo(
     () => (filter === 'all' ? tasks : tasks.filter((task) => taskBucket(task) === filter)),
@@ -257,7 +266,7 @@ function AnnotationWorkbench() {
       ),
       confirmLabel: '开始标注',
       action: () => {
-        void run('正在打开第一家门市…', () => startAnnotation(ids)).then((ok) => {
+        void run('正在打开第一家门市…', () => startAnnotation(ids, projectId)).then((ok) => {
           if (ok) setSelected(new Set())
         })
       },
@@ -292,7 +301,7 @@ function AnnotationWorkbench() {
             target: target.trim() || undefined,
             hard_negative: hardNegative ? true : undefined,
             note: note.trim() || undefined,
-          }),
+          }, projectId),
         )
       },
     })
@@ -308,7 +317,7 @@ function AnnotationWorkbench() {
       ),
       confirmLabel: '完成并继续',
       action: () => {
-        void run('正在归档标注…', completeAnnotation, true)
+        void run('正在归档标注…', () => completeAnnotation(projectId), true)
       },
     })
   }
@@ -319,7 +328,7 @@ function AnnotationWorkbench() {
       description: <>将跳过当前门店，本次标注不会归档；之后可在任务中心重新处理。</>,
       confirmLabel: '跳过',
       action: () => {
-        void run('正在跳过…', () => skipAnnotation(''), true)
+        void run('正在跳过…', () => skipAnnotation('', projectId), true)
       },
     })
   }
@@ -330,7 +339,7 @@ function AnnotationWorkbench() {
       description: <>将结束本次人工标注；已归档的门店记录保留，未完成的门店不归档。</>,
       confirmLabel: '结束会话',
       action: () => {
-        void run('正在结束会话…', stopAnnotation, true)
+        void run('正在结束会话…', () => stopAnnotation(projectId), true)
       },
     })
   }
@@ -338,7 +347,7 @@ function AnnotationWorkbench() {
   const reject = (reason: string, detail: string) => {
     setRejectError('')
     void (async () => {
-      const ok = await run('正在标记不合格…', () => rejectAnnotation(reason, detail), true)
+      const ok = await run('正在标记不合格…', () => rejectAnnotation(reason, detail, projectId), true)
       if (ok) setRejectOpen(false)
       else setRejectError('标记失败，请重试')
     })()
@@ -373,9 +382,10 @@ function AnnotationWorkbench() {
     setStepCursor(0)
   }
 
-  const canvasUrl = review
+  const rawCanvasUrl = review
     ? activeStep?.before?.url ?? activeStep?.after?.url ?? ''
     : state?.frame?.url ?? ''
+  const canvasUrl = rawCanvasUrl.startsWith('/api/') ? projectApiPath(rawCanvasUrl, projectId) : rawCanvasUrl
   const canvasBox = review ? activeStep?.box_px ?? null : box
   const suggestionBox = review ? null : state?.suggestion?.box_px ?? null
   const canvasRevision = review ? `${review.session_id ?? ''}:${activeStep?.index ?? 0}` : state?.frame?.name ?? ''
@@ -618,7 +628,7 @@ function AnnotationWorkbench() {
                         disabled={formDisabled || deciding}
                         onClick={() => {
                           setDeciding(true)
-                          void run('正在生成系统判断…', decideAnnotation)
+                          void run('正在生成系统判断…', () => decideAnnotation(projectId))
                             .finally(() => setDeciding(false))
                         }}
                       >
@@ -629,7 +639,7 @@ function AnnotationWorkbench() {
                         variant="outline"
                         size="sm"
                         disabled={formDisabled}
-                        onClick={() => void run('正在刷新截图…', refreshAnnotation)}
+                        onClick={() => void run('正在刷新截图…', () => refreshAnnotation(projectId))}
                       >
                         刷新截图
                       </Button>
@@ -665,7 +675,7 @@ function AnnotationWorkbench() {
 
               {!review && active ? (
                 <div className="flex flex-wrap gap-2">
-                  <Button color="secondary" variant="outline" size="sm" disabled={busy} onClick={() => void run(paused ? '正在恢复…' : '正在暂停…', paused ? resumeAnnotation : pauseAnnotation)}>
+                  <Button color="secondary" variant="outline" size="sm" disabled={busy} onClick={() => void run(paused ? '正在恢复…' : '正在暂停…', () => paused ? resumeAnnotation(projectId) : pauseAnnotation(projectId))}>
                     {paused ? '恢复标注' : '暂停'}
                   </Button>
                   <Button color="primary" variant="outline" size="sm" disabled={busy || !liveSteps.length} onClick={complete}>
@@ -687,7 +697,7 @@ function AnnotationWorkbench() {
                     标记不合格
                   </Button>
                   {['error', 'open_failed', 'close_failed'].includes(state.status) ? (
-                    <Button color="secondary" variant="outline" size="sm" disabled={busy} onClick={() => void run('正在重试…', retryAnnotation)}>
+                    <Button color="secondary" variant="outline" size="sm" disabled={busy} onClick={() => void run('正在重试…', () => retryAnnotation(projectId))}>
                       重试
                     </Button>
                   ) : null}

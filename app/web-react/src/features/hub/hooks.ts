@@ -1,14 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchSharedHubStatus } from './api'
+import { projectQueryKey } from '../projects/scope'
 import type { HubAssignment, HubSharedStatus, HubWorker } from './types'
 
 /** 只有仍在设备侧等待下载/已完成下载的分配占用门店，与后端唯一索引一致。 */
 export const ACTIVE_ASSIGNMENT_STATUSES = new Set(['assigned', 'ready'])
 
-export function useHubSharedStatus() {
+export function useHubSharedStatus(projectId: string) {
   return useQuery({
-    queryKey: ['hub-shared-status'],
-    queryFn: ({ signal }) => fetchSharedHubStatus(signal),
+    queryKey: projectQueryKey(projectId, 'hub-shared-status'),
+    queryFn: ({ signal }) => fetchSharedHubStatus(signal, projectId),
+    enabled: Boolean(projectId),
     refetchInterval: 5_000,
     staleTime: 4_000,
   })

@@ -181,3 +181,13 @@
 | `shared_routes.py:124` | `POST /api/shared/worker/sync` | `sync` |
 | `shared_routes.py:132` | `GET /api/shared/worker/assignments/{assignment_id}/source` | `source` |
 | `shared_routes.py:136` | `PUT /api/shared/worker/assignments/{assignment_id}/result` | `receive` |
+
+## Issue #102 项目范围与兼容协议
+
+Hub 项目管理接口：`GET /api/projects[?include_archived=true]`、`GET /api/projects/{project_id}`、`POST /api/projects`、`PATCH /api/projects/{project_id}`、`POST /api/projects/{project_id}/archive`、`POST /api/projects/{project_id}/restore`。Worker 的列表和详情仅返回本机已有项目目录；独立端使用固定历史项目。
+
+Hub 业务列表读取 `project_id` 查询参数；写请求以 payload 中的 `project_id` 或批次/任务 ID 解析可信归属，并拒绝项目与资源不一致、未知或归档项目的写操作。项目 ID 是范围键，名称不参与身份判定。设备、连接和活动运行摘要仍按实例级状态管理，任务自身携带项目 ID。项目 API 不能代替当前 HTTP 鉴权机制。
+
+Worker 项目字段通过独立布尔能力 `supports_project_scope` 协商。双方均确认后，分配、批次目录、任务和轮次/历史摘要才携带项目字段；未协商或旧端连接时保持既有 wire shape，并限定到历史单项目兼容语义。接收端对已协商 DTO 严格拒绝未知字段和不一致归属，不凭版本号猜能力。离线 outbox 和旧分配按现有任务身份及 ACK 规则继续处理；未知历史归属不得映射到同名项目。
+
+数据库前向迁移把既有批次固定归入历史项目、保留原业务 ID，并将原素材选择迁入项目范围选择表；不按批次名、门店名或文件路径跨域匹配。若旧 Hub 不具备新 schema/协议理解能力，回滚由兼容性保护拒绝；具体旧版本二进制回滚、升级中断恢复及真实数据迁移仍需单独集成验证。

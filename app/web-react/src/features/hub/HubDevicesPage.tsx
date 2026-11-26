@@ -12,6 +12,8 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
+import { useProject } from '../projects/ProjectProvider'
+import { projectQueryKey } from '../projects/scope'
 import { archiveWorker, revokeWorker, saveUpdateRollout } from './api'
 import { deviceStateOf, formatTime } from './format'
 import { activeAssignmentsOf, isWorkerActive, useHubSharedStatus } from './hooks'
@@ -23,6 +25,7 @@ type ConfirmTarget = { kind: 'revoke' | 'archive'; worker: HubWorker } | null
 
 export function HubDevicesPage() {
   const role = useRole()
+  const { projectId } = useProject()
   const toast = useToast()
   const queryClient = useQueryClient()
   const [pairOpen, setPairOpen] = useState(false)
@@ -31,7 +34,7 @@ export function HubDevicesPage() {
   const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget>(null)
   const [confirmError, setConfirmError] = useState('')
 
-  const sharedQuery = useHubSharedStatus()
+  const sharedQuery = useHubSharedStatus(projectId)
   const workers = useMemo(() => sharedQuery.data?.workers ?? [], [sharedQuery.data])
   const assignments = useMemo(() => sharedQuery.data?.assignments ?? [], [sharedQuery.data])
 
@@ -55,9 +58,8 @@ export function HubDevicesPage() {
   const detailAssignments = detailWorker ? activeAssignmentsOf(sharedQuery.data, detailWorker.id) : []
 
   const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ['hub-shared-status'] })
-    void queryClient.invalidateQueries({ queryKey: ['hub-status'] })
-    void queryClient.invalidateQueries({ queryKey: ['hub-assignments'] })
+    void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-shared-status') })
+    void queryClient.invalidateQueries({ queryKey: ['project'] })
   }
 
   const revokeMutation = useMutation({

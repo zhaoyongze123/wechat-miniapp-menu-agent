@@ -8,6 +8,8 @@ import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
+import { useProject } from '../projects/ProjectProvider'
+import { projectQueryKey } from '../projects/scope'
 import { useRole } from '../../app/RoleProvider'
 import { cancelJob, pauseJob, resumeJob } from '../materials/api'
 import { pauseCapture, resumeCapture, terminateCapture } from '../worker/api'
@@ -42,6 +44,7 @@ const CONFIRM_COPY: Record<'terminate' | 'cancel', { title: string; description:
  * 本机采集仅 Worker/独立模式的当前有效轮次可控制；Hub 上的远程轮次只读。
  */
 export function ActiveTasksPanel({ onOpen }: ActiveTasksPanelProps) {
+  const { projectId } = useProject()
   const role = useRole()
   const toast = useToast()
   const queryClient = useQueryClient()
@@ -49,8 +52,9 @@ export function ActiveTasksPanel({ onOpen }: ActiveTasksPanelProps) {
   const [confirmError, setConfirmError] = useState('')
 
   const query = useQuery({
-    queryKey: ['tasks-active'],
-    queryFn: ({ signal }) => fetchActiveTasks(signal),
+    queryKey: projectQueryKey(projectId, 'tasks-active'),
+    queryFn: ({ signal }) => fetchActiveTasks(signal, projectId),
+    enabled: Boolean(projectId),
     refetchInterval: 5_000,
     staleTime: 4_000,
   })
@@ -62,9 +66,11 @@ export function ActiveTasksPanel({ onOpen }: ActiveTasksPanelProps) {
         if (action === 'resume') return resumeJob(task.id)
         return cancelJob(task.id)
       }
-      if (action === 'pause') return pauseCapture()
-      if (action === 'resume') return resumeCapture()
-      return terminateCapture()
+      if (!task.project_id) throw new Error('任务缺少项目归属，无法安全控制')
+      const projectId = task.project_id
+      if (action === 'pause') return pauseCapture(projectId)
+      if (action === 'resume') return resumeCapture(undefined, projectId)
+      return terminateCapture(projectId)
     },
     onSuccess: (_data, variables) => {
       const label = variables.action === 'pause' ? '已请求暂停'
@@ -73,8 +79,11 @@ export function ActiveTasksPanel({ onOpen }: ActiveTasksPanelProps) {
       toast.push(label, 'success')
       setConfirming(null)
       setConfirmError('')
-      void queryClient.invalidateQueries({ queryKey: ['tasks-active'] })
-      void queryClient.invalidateQueries({ queryKey: ['tasks-history'] })
+      void queryClient.invalidateQueries({ queryKey: projectQueryKey(variables.task.project_id ?? projectId, 'tasks-active') })
+      if (variables.task.project_id) {
+        void queryClient.invalidateQueries({ queryKey: ['project', variables.task.project_id, 'task-history'] })
+        void queryClient.invalidateQueries({ queryKey: ['project', variables.task.project_id, 'worker-status'] })
+      }
     },
     onError: (error: unknown) => {
       const message = errorMessage(error)

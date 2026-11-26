@@ -12,6 +12,8 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from menu_capture.projects.paths import project_batch_dir, project_store_dir
+
 
 def _batch_label(batch_name: str) -> str:
     """批次名称直接作为目录名；非法字符转义，空名回退到批次 ID。"""
@@ -24,7 +26,10 @@ def _store_segment(source_name: str) -> str:
     return re.sub(r"[\x00-\x1f/\\:]", "_", source_name).strip(" .") or "未命名来源"
 
 
-def batch_output_dir(output_root: str | Path, batch_id: str = "", batch_name: str = "") -> Path:
+def batch_output_dir(output_root: str | Path, batch_id: str = "", batch_name: str = "",
+                     *, project_code: str | None = None) -> Path:
+    if project_code is not None:
+        return project_batch_dir(output_root, project_code, batch_id)
     root = Path(output_root).expanduser().resolve()
     if not batch_id:
         return root
@@ -38,7 +43,12 @@ def batch_output_dir(output_root: str | Path, batch_id: str = "", batch_name: st
 
 
 def store_output_dir(output_root: str | Path, source_name: str, batch_id: str = "",
-                     batch_name: str = "", flat: bool = False) -> Path:
+                     batch_name: str = "", flat: bool = False, *,
+                     project_code: str | None = None, store_id: str = "") -> Path:
+    if project_code is not None:
+        return project_store_dir(output_root, project_code, batch_id, store_id, flat=flat)
+    if store_id:
+        raise ValueError("门店项目身份缺失")
     # flat 用于“保存目录即成品目录”的场景：门店直接作为一级子目录。
     parent = Path(output_root).expanduser().resolve() if flat else batch_output_dir(output_root, batch_id, batch_name)
     name = _store_segment(source_name)
@@ -51,8 +61,13 @@ def store_output_dir(output_root: str | Path, source_name: str, batch_id: str = 
     return parent / name
 
 
-def unqualified_store_dir(output_root: str | Path, source_name: str) -> Path:
+def unqualified_store_dir(output_root: str | Path, source_name: str, *,
+                          project_code: str | None = None, batch_id: str = "", store_id: str = "") -> Path:
     """不合格归档中该门店的目录；与 archive_unqualified 使用同一命名规则。"""
+    if project_code is not None:
+        return project_store_dir(output_root, project_code, batch_id, store_id)
+    if batch_id or store_id:
+        raise ValueError("门店项目身份缺失")
     return Path(output_root).expanduser().resolve() / _store_segment(source_name)[:120]
 
 
@@ -75,13 +90,15 @@ def retire_store_dir(directory: str | Path) -> Path | None:
 
 
 def archive_unqualified(output_root: str | Path, source_folder: str | Path, source_name: str, *,
-                        status: str, stage: str, message: str, code: str = "") -> Path:
+                        status: str, stage: str, message: str, code: str = "",
+                        project_code: str | None = None, batch_id: str = "", store_id: str = "") -> Path:
     """把不合格门店的原图整目录复制到不合格目录，并写一份人可读的门店信息。
 
     原图只复制不移动，原始素材目录保持不变，便于复查与重新采集。
     """
     root = Path(output_root).expanduser().resolve()
-    destination = unqualified_store_dir(root, source_name)
+    destination = unqualified_store_dir(root, source_name, project_code=project_code,
+                                        batch_id=batch_id, store_id=store_id)
     destination.mkdir(parents=True, exist_ok=True)
     source = Path(source_folder)
     copied = 0

@@ -14,6 +14,8 @@ import { formatTime, statusOf } from '../task-center/format'
 import { fetchTaskActions } from '../worker/api'
 import { formatStore } from '../hub/format'
 import { taskLastFrameUrl, taskSourceUrl } from './api'
+import { useProject } from '../projects/ProjectProvider'
+import { projectQueryKey } from '../projects/scope'
 import { bucketLabelOf, isRetryable } from './format'
 import type { PendingReviewRecord } from './types'
 
@@ -86,14 +88,15 @@ export function PendingReviewActionButtons({ record, onRerun, onReject, onReturn
  * 不用门店名或本地文件猜造记录，也不在前端推断审核资格。
  */
 export function PendingReviewContent({ record }: { record: PendingReviewRecord }) {
+  const { projectId } = useProject()
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null)
   const [section, setSection] = useState<DetailSection>('current')
   const taskId = record.task_id
   const runId = record.run_id ?? ''
   const status = statusOf(record.status)
   const previewItems = [
-    { src: taskSourceUrl(record.task_id), alt: '任务源图' },
-    { src: taskLastFrameUrl(record.task_id), alt: '最近画面' },
+    { src: taskSourceUrl(record.task_id, projectId), alt: '任务源图' },
+    { src: taskLastFrameUrl(record.task_id, projectId), alt: '最近画面' },
   ]
 
   // 切换门店时回到当前结果，避免看到上一家的历史。
@@ -102,15 +105,15 @@ export function PendingReviewContent({ record }: { record: PendingReviewRecord }
   }, [taskId])
 
   const historyQuery = useQuery({
-    queryKey: ['review-history', runId],
-    queryFn: ({ signal }) => fetchTaskDetail('capture', runId, signal),
-    enabled: section === 'history' && Boolean(runId),
+    queryKey: projectQueryKey(projectId, 'review-history', runId),
+    queryFn: ({ signal }) => fetchTaskDetail('capture', runId, signal, projectId),
+    enabled: section === 'history' && Boolean(runId && projectId),
     retry: false,
   })
   const actionsQuery = useQuery({
-    queryKey: ['review-actions', taskId],
-    queryFn: ({ signal }) => fetchTaskActions(taskId, null, signal),
-    enabled: section === 'diagnostics' && Boolean(taskId),
+    queryKey: projectQueryKey(projectId, 'review-actions', taskId),
+    queryFn: ({ signal }) => fetchTaskActions(taskId, null, signal, projectId),
+    enabled: section === 'diagnostics' && Boolean(taskId && projectId),
     retry: false,
   })
 
@@ -161,13 +164,13 @@ export function PendingReviewContent({ record }: { record: PendingReviewRecord }
               <h3 className="text-xs font-medium text-secondary">门店画面</h3>
               <div className="grid gap-3 sm:grid-cols-2">
                 <EvidenceImage
-                  src={taskSourceUrl(record.task_id)}
+                  src={taskSourceUrl(record.task_id, projectId)}
                   alt="任务源图"
                   caption={`${formatStore(record.store_name).name} · 源图`}
                   onOpen={setPreview}
                 />
                 <EvidenceImage
-                  src={taskLastFrameUrl(record.task_id)}
+                  src={taskLastFrameUrl(record.task_id, projectId)}
                   alt="最近画面"
                   caption={`${formatStore(record.store_name).name} · 最近画面`}
                   onOpen={setPreview}

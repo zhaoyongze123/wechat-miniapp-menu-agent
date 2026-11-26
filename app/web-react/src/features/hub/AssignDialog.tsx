@@ -11,6 +11,7 @@ import { isWorkerActive } from './hooks'
 import type { AssignConflict, HubSelectedTask, HubWorker } from './types'
 
 interface AssignDialogProps {
+  projectId: string
   open: boolean
   onOpenChange: (open: boolean) => void
   tasks: HubSelectedTask[]
@@ -38,7 +39,7 @@ function parseConflicts(value: unknown[] | null): AssignConflict[] {
  * 分配确认窗口：一次提交一组门店，服务端在同一事务里核对占用。
  * 409 表示整批未生效；窗口列出冲突门店、从本次选择中移除，并允许提交剩余部分。
  */
-export function AssignDialog({ open, onOpenChange, tasks, workers, onExclude, onAssigned }: AssignDialogProps) {
+export function AssignDialog({ projectId, open, onOpenChange, tasks, workers, onExclude, onAssigned }: AssignDialogProps) {
   const [workerId, setWorkerId] = useState('')
   const [excluded, setExcluded] = useState<Set<string>>(new Set())
   const [conflicts, setConflicts] = useState<AssignConflict[]>([])
@@ -68,7 +69,7 @@ export function AssignDialog({ open, onOpenChange, tasks, workers, onExclude, on
   }, [remaining])
 
   const mutation = useMutation({
-    mutationFn: (payload: { workerId: string; taskIds: string[] }) => assignTasks(payload.workerId, payload.taskIds),
+    mutationFn: (payload: { workerId: string; taskIds: string[] }) => assignTasks(payload.workerId, payload.taskIds, projectId),
     onSuccess: (result) => {
       const count = result.assignments?.length ?? remaining.length
       onAssigned(count, selectedWorker?.name ?? '采集电脑')

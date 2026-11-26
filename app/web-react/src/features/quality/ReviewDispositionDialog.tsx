@@ -12,6 +12,8 @@ import { fetchPendingReviews } from './api'
 import { useRejectionActions, useReviewActions } from './hooks'
 import { PendingReviewActionButtons, PendingReviewContent } from './PendingReviewDrawer'
 import { RejectPendingDialog } from './RejectPendingDialog'
+import { useProject } from '../projects/ProjectProvider'
+import { projectQueryKey } from '../projects/scope'
 import type { PendingReviewRecord } from './types'
 
 interface ReviewDispositionDialogProps {
@@ -30,6 +32,7 @@ interface ReviewDispositionDialogProps {
  */
 export function ReviewDispositionDialog({ open, taskId, storeName, onOpenChange }: ReviewDispositionDialogProps) {
   const queryClient = useQueryClient()
+  const { projectId } = useProject()
   const toast = useToast()
   const reviewActions = useReviewActions()
   const rejectionActions = useRejectionActions()
@@ -40,18 +43,19 @@ export function ReviewDispositionDialog({ open, taskId, storeName, onOpenChange 
 
   // 处置对象来自待检查队列本身，前端不根据任务字段推断是否可处置。
   const pendingQuery = useQuery({
-    queryKey: ['pending-review', taskId ?? ''],
-    queryFn: ({ signal }) => fetchPendingReviews([], '', signal),
-    enabled: open && Boolean(taskId),
+    queryKey: projectQueryKey(projectId || 'unselected', 'pending-review', taskId ?? ''),
+    queryFn: ({ signal }) => fetchPendingReviews([], '', signal, projectId),
+    enabled: open && Boolean(taskId && projectId),
     retry: false,
   })
   const record: PendingReviewRecord | null =
     pendingQuery.data?.records.find((item) => item.task_id === taskId) ?? null
 
   const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: ['task-detail'] })
-    void queryClient.invalidateQueries({ queryKey: ['quality'] })
-    void queryClient.invalidateQueries({ queryKey: ['pending-review'] })
+    if (!projectId) return
+    void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'task-detail') })
+    void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'quality') })
+    void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'pending-review') })
   }
 
   const confirmReject = (reason: string, detail: string) => {

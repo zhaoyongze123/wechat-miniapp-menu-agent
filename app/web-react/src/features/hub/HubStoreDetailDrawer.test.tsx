@@ -11,6 +11,7 @@ vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>()
   return { ...actual, fetchAssignmentRecords: vi.fn(), fetchResultFiles: vi.fn() }
 })
+vi.mock('../projects/ProjectProvider', () => ({ useProject: () => ({ projectId: 'project-test' }) }))
 
 const task: HubTask = {
   id: '785c4a931d02b9768c12',
@@ -71,12 +72,13 @@ describe('HubStoreDetailDrawer', () => {
     expect(screen.getByText('原始门店名称')).toBeInTheDocument()
     expect(screen.getByText(task.id)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '查看二维码' }))
-    expect(screen.getByAltText('任务二维码')).toHaveAttribute('src', `/api/tasks/${task.id}/source`)
+    expect(screen.getByAltText('任务二维码')).toHaveAttribute('src', `/api/tasks/${task.id}/source?project_id=project-test`)
     expect(await screen.findByText('采集电脑A')).toBeInTheDocument()
     expect(screen.queryByText('其他批次设备')).not.toBeInTheDocument()
     expect(fetchAssignmentRecords).toHaveBeenCalledWith(
       { workerId: '', phase: '', q: task.id, page: 1, size: 20 },
       expect.any(AbortSignal),
+      'project-test',
     )
   })
 

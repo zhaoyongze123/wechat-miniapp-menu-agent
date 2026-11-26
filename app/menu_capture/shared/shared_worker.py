@@ -20,9 +20,11 @@ from menu_capture.core.config import atomic_json
 from menu_capture.shared.shared import IMAGE_SUFFIXES, MAX_RESULT_SIZE, MAX_SOURCE_SIZE, REPORTED_RUN_STATUSES, safe_artifact
 from menu_capture.shared.shared_history import WorkerHistoryDelivery
 from menu_capture.storage.store import TaskStore, now
+from menu_capture.projects.service import LEGACY_ID
 
 
 TAILSCALE_IPV4 = ip_network("100.64.0.0/10")
+WORKER_CAPABILITIES = "project_scope,run_history,run_summary,software_status"
 
 
 def local_http_host(host: str) -> bool:
@@ -75,6 +77,8 @@ class SharedWorker:
         self._hub_reports_runs = False
         self._hub_reports_software = False
         self._hub_supports_history = False
+        # 该能力由本次配对 Hub 的同步响应明确协商，不能根据本机版本号推断。
+        self._hub_supports_project_scope = self.connection.get("supports_project_scope") is True
         # Hub 分发的版本元数据由更新服务消费；Hub 未启用时保持 None。
         self.hub_update_target: dict | None = None
         self.software_provider = None
@@ -85,7 +89,8 @@ class SharedWorker:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS worker_assignments (
                     id TEXT PRIMARY KEY, task_id TEXT NOT NULL, batch_id TEXT NOT NULL,
-                    batch_name TEXT NOT NULL, store TEXT NOT NULL, revision TEXT NOT NULL,
+                    batch_name TEXT NOT NULL, store TEXT NOT NULL, store_id TEXT NOT NULL DEFAULT '',
+                    revision TEXT NOT NULL,
                     snapshot_id TEXT NOT NULL, source_hash TEXT NOT NULL, source_suffix TEXT NOT NULL,
                     status TEXT NOT NULL, run_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
                     disposition TEXT NOT NULL DEFAULT '', shared_state TEXT NOT NULL DEFAULT '',
@@ -96,12 +101,36 @@ class SharedWorker:
                 CREATE TABLE IF NOT EXISTS worker_batches (
                     batch_id TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS worker_project_batches (
+                    worker_id TEXT NOT NULL, batch_id TEXT NOT NULL, project_id TEXT NOT NULL,
+                    snapshot_id TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    PRIMARY KEY(worker_id,batch_id)
+                );
+                CREATE TABLE IF NOT EXISTS worker_project_catalogue (
+                    worker_id TEXT NOT NULL, project_id TEXT NOT NULL, code TEXT NOT NULL,
+                    name TEXT NOT NULL, archived_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+                    PRIMARY KEY(worker_id,project_id)
+                );
             """)
             # 旧安装包的表没有共享端状态列，按需补齐，保留已有本机任务。
             columns = {row["name"] for row in db.execute("PRAGMA table_info(worker_assignments)")}
-            for name in ("shared_state", "shared_reject", "worker_id"):
+            for name in ("shared_state", "shared_reject", "worker_id", "project_id", "project_code", "store_id",
+                         "project_name"):
                 if name not in columns:
                     db.execute(f"ALTER TABLE worker_assignments ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+            # 旧待同步轮次仅在逐店分配能证明唯一设备身份时回填配对范围；混合或空身份保持未知。
+            db.execute("""
+                UPDATE worker_run_delivery SET worker_id=(
+                    SELECT MIN(a.worker_id) FROM worker_assignments a
+                    WHERE a.run_id=worker_run_delivery.run_id AND a.worker_id<>'')
+                WHERE worker_id='' AND EXISTS (
+                    SELECT 1 FROM worker_assignments a WHERE a.run_id=worker_run_delivery.run_id)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM worker_assignments a WHERE a.run_id=worker_run_delivery.run_id
+                      AND a.worker_id='')
+                  AND (SELECT COUNT(DISTINCT a.worker_id) FROM worker_assignments a
+                       WHERE a.run_id=worker_run_delivery.run_id AND a.worker_id<>'')=1
+            """)
 
         # 上次重新配对若在“凭证已替换、旧分配尚未归档”之间退出，这里补做归档，
         # 避免旧身份的任务被当成当前设备可执行/可上传分配。
@@ -150,7 +179,8 @@ class SharedWorker:
             if (not isinstance(data, dict) or not isinstance(data.get("token"), str)
                     or not isinstance(data.get("id"), str) or not data.get("token")):
                 raise ValueError("工作台返回了无效的配对结果")
-            connection = {"url": url, "token": data["token"], "name": data.get("name", name), "id": data["id"]}
+            connection = {"url": url, "token": data["token"], "name": data.get("name", name), "id": data["id"],
+                          "supports_project_scope": False}
             if previous and previous != connection["id"]:
                 # 归档标记与凭证一起原子落盘：归档前异常退出时，下次启动会补做。
                 connection["detach_from"] = previous
@@ -162,6 +192,7 @@ class SharedWorker:
                 self.connection = connection
                 self.online = True
                 self.error = ""
+                self._hub_supports_project_scope = False
             if connection.get("detach_from"):
                 self._detach_previous(connection["detach_from"])
                 with self._state_lock:
@@ -208,22 +239,42 @@ class SharedWorker:
     def _auth(connection: dict) -> dict:
         return {"Authorization": "Bearer " + connection["token"]}
 
+    @classmethod
+    def _capability_headers(cls, connection: dict) -> dict:
+        # 旧 Hub 忽略该提示头；新 Hub 仍须以响应 capability 决定是否允许扩展 body。
+        return cls._auth(connection) | {"X-Worker-Capabilities": WORKER_CAPABILITIES}
+
     @property
     def _headers(self) -> dict:
         return self._auth(self.connection)
 
-    def status(self) -> dict:
+    def status(self, project_id: str | None = None) -> dict:
         abandoned = int(self.connection.get("abandoned_pending") or 0)
+        if project_id is not None and project_id not in {row["id"] for row in self.projects()}:
+            raise ValueError("项目不存在或该采集端没有分配记录")
+        scoped = project_id is not None
         with self.store.connect() as db:
+            if scoped:
+                worker_filter = "(worker_id='' OR worker_id=?)"
+                params: tuple[object, ...] = (self._current_worker_id(),)
+                if self._hub_supports_project_scope:
+                    worker_filter += " AND project_id=?"
+                    params += (project_id,)
+            else:
+                worker_filter = "0"
+                params = ()
             assignments = [dict(row) for row in db.execute("""
-                SELECT id,task_id,batch_id,batch_name,store,revision,status,disposition FROM worker_assignments
-                WHERE status NOT IN ('completed','reclaimed') ORDER BY rowid
-            """)]
+                SELECT id,task_id,batch_id,batch_name,store,revision,status,disposition,
+                       project_id,project_code,project_name FROM worker_assignments
+                WHERE status NOT IN ('completed','reclaimed') AND """ + worker_filter + " ORDER BY rowid",
+                params)]
             assignments.extend(dict(row) for row in db.execute("""
-                SELECT id,task_id,batch_id,batch_name,store,revision,status,disposition FROM worker_assignments
-                WHERE status IN ('completed','reclaimed') ORDER BY created_at DESC,id LIMIT 100
-            """))
+                SELECT id,task_id,batch_id,batch_name,store,revision,status,disposition,
+                       project_id,project_code,project_name FROM worker_assignments
+                WHERE status IN ('completed','reclaimed') AND """ + worker_filter +
+                " ORDER BY created_at DESC,id LIMIT 100", params))
         return {"role": "worker", "paired": bool(self.connection), "online": self.online,
+                "supports_project_scope": self._hub_supports_project_scope,
                 "name": self.connection.get("name", ""), "error": self.error,
                 "history_error": self.history_error,
                 "credential_invalid": bool(self.connection.get("invalid")),
@@ -234,22 +285,64 @@ class SharedWorker:
                            "无法再用新凭证补传；请在旧设备身份下处理或联系管理员导出。") if abandoned else "",
                 "assignments": assignments}
 
-    def tasks(self) -> list[dict]:
-        """采集端只展示未结束的分配：结果一旦上传成功（completed）即代表共享端已收到。"""
+    def projects(self) -> list[dict]:
+        """返回当前配对 Hub 下本机可证明的项目，不从当前 UI 选择推断历史归属。"""
+        worker_id = self._current_worker_id()
+        if not worker_id:
+            return []
+        if not self._hub_supports_project_scope:
+            # 旧 Hub 不支持项目协议时，继续以固定历史兼容项目承载原单工作区流程。
+            with self.store.connect() as db:
+                row = db.execute("SELECT id,code,name,archived_at FROM projects WHERE id=?", (LEGACY_ID,)).fetchone()
+            return [dict(row)] if row else []
         with self.store.connect() as db:
+            projects = {row["id"]: dict(row) for row in db.execute("""
+                SELECT project_id AS id,code,name,archived_at FROM worker_project_catalogue
+                WHERE worker_id=?
+            """, (worker_id,))}
+            assignments = db.execute("""
+                SELECT project_id,project_code,project_name FROM worker_assignments
+                WHERE worker_id=? AND project_id<>''
+            """, (worker_id,)).fetchall()
+        for row in assignments:
+            project_id = row["project_id"]
+            if not project_id:
+                continue
+            current = projects.get(project_id)
+            if current is None:
+                projects[project_id] = {"id": project_id, "code": row["project_code"],
+                                        "name": row["project_name"], "archived_at": ""}
+        return sorted(projects.values(), key=lambda row: (row["code"].casefold(), row["id"]))
+
+    def tasks(self, project_id: str | None = None) -> list[dict]:
+        """采集端只展示未结束的分配：结果一旦上传成功（completed）即代表共享端已收到。"""
+        if self._hub_supports_project_scope and not project_id:
+            return []
+        if not self._hub_supports_project_scope and project_id not in (None, LEGACY_ID):
+            return []
+        with self.store.connect() as db:
+            project_filter = " AND a.project_id=?" if self._hub_supports_project_scope else ""
             rows = db.execute("""
                 SELECT t.*, a.batch_id, a.batch_name, a.revision AS version, a.snapshot_id,
-                       a.status AS assignment_status, a.shared_state, a.shared_reject
+                       a.status AS assignment_status, a.shared_state, a.shared_reject,
+                       a.project_id, a.project_code, a.project_name
                 FROM tasks t JOIN worker_assignments a ON a.task_id=t.id
                 WHERE a.status IN ('ready','pending_upload')
                   -- 重新配对后旧设备身份下的分配不能再被新凭证执行。
                   AND (a.worker_id='' OR a.worker_id=?)
                   AND a.rowid=(SELECT MAX(b.rowid) FROM worker_assignments b WHERE b.task_id=t.id)
                   -- 只展示所属批次当前发布快照的任务；首次同步前没有记录时保留旧行为。
-                  AND a.snapshot_id=COALESCE(
+                  AND a.snapshot_id=CASE WHEN ?=1 THEN COALESCE(
+                      (SELECT b.snapshot_id FROM worker_project_batches b
+                       WHERE b.worker_id=? AND b.batch_id=a.batch_id AND b.project_id=a.project_id), a.snapshot_id)
+                    ELSE COALESCE(
                       (SELECT b.snapshot_id FROM worker_batches b WHERE b.batch_id=a.batch_id), a.snapshot_id)
-                ORDER BY a.rowid
-            """, (self._current_worker_id(),)).fetchall()
+                    END
+                  AND (?=0 OR a.project_id<>'')
+            """ + project_filter + " ORDER BY a.rowid",
+                (self._current_worker_id(), int(self._hub_supports_project_scope),
+                 self._current_worker_id(), int(self._hub_supports_project_scope),
+                 *((project_id,) if self._hub_supports_project_scope else ()),)).fetchall()
         # 共享端已判定不合格/已采集/已退回的门店不再允许本机重跑。
         blocked = {"rejected", "captured", "returned"}
         return [dict(row) | {"runnable": row["assignment_status"] == "ready"
@@ -260,35 +353,96 @@ class SharedWorker:
 
     def source_root(self, task_id: str) -> str:
         with self.store.connect() as db:
-            row = db.execute("""
-                SELECT * FROM worker_assignments WHERE task_id=? AND status='ready' ORDER BY rowid DESC LIMIT 1
-            """, (task_id,)).fetchone()
+            if self._hub_supports_project_scope:
+                row = db.execute("""
+                    SELECT * FROM worker_assignments WHERE task_id=? AND status='ready' AND worker_id=?
+                    ORDER BY rowid DESC LIMIT 1
+                """, (task_id, self._current_worker_id())).fetchone()
+            else:
+                row = db.execute("""
+                    SELECT * FROM worker_assignments WHERE task_id=? AND status='ready'
+                      AND (worker_id='' OR worker_id=?) ORDER BY rowid DESC LIMIT 1
+                """, (task_id, self._current_worker_id())).fetchone()
         if not row:
             return ""
         path = self._source_path(row)
         return str(path.parent.parent) if path.is_file() else ""
 
-    def check_start(self, task_ids: list[str]) -> None:
+    def output_binding(self, task_id: str) -> dict | None:
+        """把 Worker 成品路径绑定到已缓存 assignment；不能从界面当前项目推断归属。"""
+        if not self._hub_supports_project_scope:
+            return None
+        with self.store.connect() as db:
+            row = db.execute("""
+                SELECT project_id,project_code,batch_id,store_id,task_id FROM worker_assignments
+                WHERE task_id=? AND worker_id=? AND project_id<>''
+                ORDER BY rowid DESC LIMIT 1
+            """, (task_id, self._current_worker_id())).fetchone()
+        if (not row or not row["project_code"] or not row["batch_id"]
+                or row["project_id"] not in {project["id"] for project in self.projects()}):
+            raise ValueError("无法从当前设备分配记录核实任务项目，拒绝使用共享输出路径")
+        return {"project_id": row["project_id"], "project_code": row["project_code"],
+                "batch_id": row["batch_id"], "store_id": row["store_id"] or row["task_id"]}
+
+    def check_start(self, task_ids: list[str], project_id: str | None = None) -> None:
         if self.connection.get("invalid"):
             raise ValueError("采集电脑的配对已失效，请联系管理员")
+        if self._hub_supports_project_scope and (not isinstance(project_id, str) or not project_id.strip()):
+            raise ValueError("请选择本机已分配的项目")
+        if not self._hub_supports_project_scope and project_id not in (None, LEGACY_ID):
+            raise ValueError("当前连接的工作台不支持项目范围")
         self.prepare_results()
         with self.store.connect() as db:
-            states = {row["task_id"]: row["shared_state"] for row in db.execute(
-                "SELECT task_id,shared_state FROM worker_assignments WHERE status='ready'")}
+            if self._hub_supports_project_scope:
+                rows = db.execute("""
+                    SELECT task_id,shared_state,project_id FROM worker_assignments
+                    WHERE status='ready' AND worker_id=? ORDER BY rowid
+                """, (self._current_worker_id(),)).fetchall()
+            else:
+                rows = db.execute("""
+                    SELECT task_id,shared_state,project_id FROM worker_assignments
+                    WHERE status='ready' AND (worker_id='' OR worker_id=?) ORDER BY rowid
+                """, (self._current_worker_id(),)).fetchall()
+        states = {row["task_id"]: row["shared_state"] for row in rows}
+        projects = {row["task_id"]: row["project_id"] for row in rows}
         if any(states.get(task_id) in {"rejected", "captured", "returned"} for task_id in task_ids):
             raise ValueError("有门店已在共享端完成或标记不合格，请刷新后重新选择")
+        if self._hub_supports_project_scope and any(projects.get(task_id) != project_id for task_id in task_ids):
+            raise ValueError("所选门店未全部属于当前项目，请刷新任务列表")
         if any(not self.source_root(task_id) for task_id in task_ids):
             raise ValueError("请只选择本机已下载、可离线采集的门店")
 
     def bind_run(self, db, run_id: str, task_ids: list[str]) -> None:
         # 与运行记录同一事务，退出或断电后仍知道哪次运行产出了结果。
-        db.executemany("UPDATE worker_assignments SET run_id=? WHERE task_id=? AND status='ready'",
-                       ((run_id, task_id) for task_id in task_ids))
+        if self._hub_supports_project_scope:
+            run = db.execute("SELECT project_id FROM runs WHERE id=?", (run_id,)).fetchone()
+            project_id = str(run["project_id"] or "") if run else ""
+            worker_id = self._current_worker_id()
+            if not project_id:
+                raise ValueError("项目模式下运行记录缺少固定项目身份")
+            for task_id in task_ids:
+                assignment = db.execute("""
+                    SELECT project_id FROM worker_assignments WHERE task_id=? AND status='ready' AND worker_id=?
+                    ORDER BY rowid DESC LIMIT 1
+                """, (task_id, worker_id)).fetchone()
+                if not assignment or assignment["project_id"] != project_id:
+                    raise ValueError("开跑时门店分配项目已变化，请刷新后重试")
+            db.executemany("UPDATE worker_assignments SET run_id=? WHERE task_id=? AND status='ready' AND worker_id=?",
+                           ((run_id, task_id, worker_id) for task_id in task_ids))
+        else:
+            db.executemany("UPDATE worker_assignments SET run_id=? WHERE task_id=? AND status='ready'"
+                           " AND (worker_id='' OR worker_id=?)",
+                           ((run_id, task_id, self._current_worker_id()) for task_id in task_ids))
+        # 历史投递绑定创建轮次时的配对身份；重配到另一 Hub 后不会把旧轮次误传过去。
+        db.execute("UPDATE worker_run_delivery SET worker_id=? WHERE run_id=?",
+                   (self._current_worker_id(), run_id))
 
     def _queue_result(self, assignment: dict, task: dict) -> None:
         path = self.outbox / (assignment["id"] + ".zip")
         if not path.exists():
             manifest = {key: assignment[key] for key in ("task_id", "snapshot_id", "source_hash")}
+            if self._hub_supports_project_scope and assignment.get("project_id"):
+                manifest["project_id"] = assignment["project_id"]
             manifest.update({key: task.get(key, "") for key in
                              ("stage", "message", "reject_reason", "reject_detail", "error_code")})
             manifest["status"] = "captured" if task["status"] == "captured" else "needs_review"
@@ -415,15 +569,54 @@ class SharedWorker:
         if assigned.get("source_suffix") not in IMAGE_SUFFIXES:
             raise ValueError("后台返回了不支持的二维码文件")
         worker_id = str(connection.get("id") or "")
+        project_fields = ("project_id", "project_code", "project_name")
+        project_scope = connection.get("supports_project_scope") is True
+        if project_scope:
+            if (not all(isinstance(assigned.get(key), str) and assigned[key].strip()
+                        for key in project_fields)
+                    or len(assigned["project_id"]) > 128 or len(assigned["project_code"]) > 48
+                    or len(assigned["project_name"]) > 80):
+                raise ValueError("项目能力已协商，但分配缺少有效项目身份")
+            project_id = assigned["project_id"].strip()
+            project_code = assigned["project_code"].strip()
+            project_name = assigned["project_name"].strip()
+            store_id = str(assigned.get("store_id") or assigned["task_id"]).strip()
+            if not store_id or len(store_id) > 256:
+                raise ValueError("项目分配缺少有效门店身份")
+        else:
+            if any(assigned.get(key) not in (None, "") for key in project_fields):
+                raise ValueError("后台返回了未协商的项目字段")
+            project_id = project_code = project_name = ""
+            store_id = ""
         path = self._source_path(assigned)
         self._cache_source(assigned, path, connection)
         with self.control_lock, self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            existing = db.execute("SELECT status FROM worker_assignments WHERE id=?",
+            # 同一 Hub 配对身份下，批次项目归属不可改变；未知旧记录不能用当前项目反向补猜。
+            if project_scope:
+                known_projects = {row["project_id"] for row in db.execute(
+                    "SELECT DISTINCT project_id FROM worker_assignments WHERE worker_id=? AND batch_id=?"
+                    " AND project_id<>''", (worker_id, assigned["batch_id"]))}
+                batch_project = db.execute(
+                    "SELECT project_id FROM worker_project_batches WHERE worker_id=? AND batch_id=?",
+                    (worker_id, assigned["batch_id"])).fetchone()
+                if (known_projects - {project_id}
+                        or batch_project and batch_project["project_id"] != project_id):
+                    raise ValueError("同一批次的项目归属与本机已保存事实不一致")
+            existing = db.execute("SELECT * FROM worker_assignments WHERE id=?",
                                   (assigned["id"],)).fetchone()
             if existing:
+                if project_scope and existing["project_id"] not in ("", project_id):
+                    raise ValueError("已保存分配的项目身份与后台返回不一致")
+                if project_scope and existing["store_id"] not in ("", store_id):
+                    raise ValueError("已保存分配的门店身份与后台返回不一致")
                 # 同一分配补下载：只恢复可采集状态，不重置已有任务结果；
                 # 旧设备身份下的分配不会因为迟到的同步响应被新设备接管。
+                if project_scope and (not existing["project_id"] or not existing["store_id"]):
+                    db.execute("UPDATE worker_assignments SET project_id=CASE WHEN project_id='' THEN ? ELSE project_id END,"
+                               "project_code=?,project_name=?,store_id=CASE WHEN store_id='' THEN ? ELSE store_id END,worker_id=?"
+                               " WHERE id=? AND worker_id IN ('',?)",
+                               (project_id, project_code, project_name, store_id, worker_id, assigned["id"], worker_id))
                 db.execute("UPDATE worker_assignments SET status='ready' WHERE id=? AND status='reclaimed'"
                            " AND (worker_id='' OR worker_id=?)", (assigned["id"], worker_id))
                 return
@@ -445,26 +638,40 @@ class SharedWorker:
             """, (assigned["task_id"], assigned["store"], str(path), assigned["source_hash"],
                   "shared:" + assigned["id"], now()))
             db.execute("""
-                INSERT INTO worker_assignments (id,task_id,batch_id,batch_name,store,revision,snapshot_id,
-                    source_hash,source_suffix,status,created_at,worker_id)
-                VALUES (:id,:task_id,:batch_id,:batch_name,:store,:revision,:snapshot_id,
-                    :source_hash,:source_suffix,'ready',:created_at,:worker_id)
-            """, {**assigned, "worker_id": worker_id})
+                INSERT INTO worker_assignments (id,task_id,batch_id,batch_name,store,store_id,revision,snapshot_id,
+                    source_hash,source_suffix,status,created_at,worker_id,project_id,project_code,project_name)
+                VALUES (:id,:task_id,:batch_id,:batch_name,:store,:store_id,:revision,:snapshot_id,
+                    :source_hash,:source_suffix,'ready',:created_at,:worker_id,:project_id,:project_code,:project_name)
+            """, {**assigned, "store_id": store_id, "worker_id": worker_id, "project_id": project_id,
+                  "project_code": project_code, "project_name": project_name})
+            if project_scope:
+                db.execute("""
+                    INSERT INTO worker_project_batches(worker_id,batch_id,project_id,snapshot_id,updated_at)
+                    VALUES(?,?,?,?,?) ON CONFLICT(worker_id,batch_id) DO UPDATE SET
+                        snapshot_id=excluded.snapshot_id,updated_at=excluded.updated_at
+                """, (worker_id, assigned["batch_id"], project_id, assigned["snapshot_id"], now()))
+                db.execute("""
+                    INSERT INTO worker_project_catalogue(worker_id,project_id,code,name,archived_at,updated_at)
+                    VALUES(?,?,?,?,?,?) ON CONFLICT(worker_id,project_id) DO NOTHING
+                """, (worker_id, project_id, project_code, project_name, "", now()))
 
-    def _run_summary(self) -> dict | None:
+    def _run_summary(self, *, include_project_scope: bool = False, worker_id: str = "") -> dict | None:
         run = self.store.latest_run()
         if not run or run["status"] not in REPORTED_RUN_STATUSES:
             return None
         total = len(run["task_ids"])
-        return {
+        summary = {
             "status": run["status"], "mode": run.get("capture_mode") or "",
             "processed": max(0, min(total, int(run["current_index"]))), "total": total,
         }
+        if include_project_scope:
+            summary["project_id"] = str(run.get("project_id") or "") or None
+        return summary
 
     def _heartbeat(self, connection: dict | None = None) -> set[str]:
         connection = connection or self.connection
         worker_id = str(connection.get("id") or "")
-        headers = self._auth(connection)
+        headers = self._capability_headers(connection)
         with self.store.connect() as db:
             ready = [row["id"] for row in db.execute(
                 "SELECT id FROM worker_assignments WHERE status='ready' AND (worker_id='' OR worker_id=?)",
@@ -473,7 +680,9 @@ class SharedWorker:
                 "SELECT COUNT(*) FROM worker_assignments WHERE status='pending_upload'"
                 " AND (worker_id='' OR worker_id=?)", (worker_id,)).fetchone()[0]
         active = None
-        summary = self._run_summary() if self._hub_reports_runs else None
+        scope_offered = connection.get("supports_project_scope") is True
+        summary = self._run_summary(include_project_scope=scope_offered, worker_id=worker_id) \
+            if self._hub_reports_runs else None
         software = None
         if self._hub_reports_software and self.software_provider is not None:
             try:
@@ -493,8 +702,16 @@ class SharedWorker:
                 del payload["software"]
                 self._hub_reports_software = False
                 response = self._http.post(self._url("/sync", connection), headers=headers, json=payload)
+            if response.status_code == 400 and isinstance(payload.get("run_summary"), dict) \
+                    and "project_id" in payload["run_summary"]:
+                payload["run_summary"].pop("project_id", None)
+                connection["supports_project_scope"] = False
+                self._hub_supports_project_scope = False
+                self._persist_connection()
+                response = self._http.post(self._url("/sync", connection), headers=headers, json=payload)
             if response.status_code == 400 and "run_summary" in payload:
                 del payload["run_summary"]
+                self._hub_reports_runs = False
                 response = self._http.post(self._url("/sync", connection), headers=headers, json=payload)
             response.raise_for_status()
             # 重新配对会替换 self.connection；旧凭证的迟到成功响应不得写入新连接的任务与状态。
@@ -504,6 +721,11 @@ class SharedWorker:
             self._hub_reports_runs = sync.get("supports_run_summary") is True
             self._hub_reports_software = sync.get("supports_software_status") is True
             self._hub_supports_history = sync.get("supports_run_history") is True
+            self._hub_supports_project_scope = sync.get("supports_project_scope") is True
+            connection["supports_project_scope"] = self._hub_supports_project_scope
+            with self._state_lock:
+                if self.connection is connection:
+                    self._persist_connection()
             target = sync.get("update_target")
             self.hub_update_target = target if isinstance(target, dict) else None
             active = sync["assignments"]
@@ -520,7 +742,7 @@ class SharedWorker:
                 return set()
             with self.control_lock:
                 self.prepare_results()
-                self._store_shared_state(sync)
+                self._store_shared_state(sync, worker_id)
                 with self.store.connect() as db:
                     local = {row["id"] for row in db.execute(
                         "SELECT id FROM worker_assignments WHERE worker_id='' OR worker_id=?", (worker_id,))}
@@ -542,11 +764,14 @@ class SharedWorker:
             return
         # 轮次同步失败不影响分配下载和截图补传，待下一次轮询继续。
         try:
-            report = self.history.pending_report()
+            report = self.history.pending_report(
+                include_project_scope=(connection.get("supports_project_scope") is True),
+                worker_id=str(connection.get("id") or ""),
+            )
             if report is None:
                 return
             response = self._http.put(self._url("/run-history", connection),
-                                      headers=self._auth(connection), json=report, timeout=5)
+                                      headers=self._capability_headers(connection), json=report, timeout=5)
             response.raise_for_status()
             if self.connection is not connection:
                 return
@@ -591,30 +816,125 @@ class SharedWorker:
                     (str(path), assigned["task_id"], assigned["id"], worker_id),
                 )
 
-    def _store_shared_state(self, sync: dict) -> None:
-        """落库共享端下发的当前快照与门店权威状态，供本机列表过滤和展示。"""
+    @staticmethod
+    def _validated_project(row: dict) -> dict:
+        if (not isinstance(row.get("id"), str) or not row["id"].strip() or len(row["id"]) > 128
+                or not isinstance(row.get("code"), str) or not row["code"].strip() or len(row["code"]) > 48
+                or not isinstance(row.get("name"), str) or not row["name"].strip() or len(row["name"]) > 80
+                or not isinstance(row.get("archived_at", ""), str)):
+            raise ValueError("后台返回了无效的项目目录")
+        return {"id": row["id"].strip(), "code": row["code"].strip(), "name": row["name"].strip(),
+                "archived_at": row.get("archived_at", "")}
+
+    def _store_shared_state(self, sync: dict, worker_id: str) -> None:
+        """落库共享端下发的状态与已协商的项目元数据，所有项目缓存绑定配对设备身份。"""
         stamp = now()
         batches = [row for row in sync.get("batches") or []
                    if isinstance(row, dict) and row.get("batch_id") and row.get("snapshot_id")]
+        assignments = [row for row in sync.get("assignments") or [] if isinstance(row, dict)]
+        projects: dict[str, dict] = {}
+        batch_projects: dict[str, str] = {}
+        project_scope = sync.get("supports_project_scope") is True
+        if project_scope:
+            for raw in sync.get("projects") or []:
+                if not isinstance(raw, dict):
+                    raise ValueError("后台返回了无效的项目目录")
+                project = self._validated_project(raw)
+                projects[project["id"]] = project
+            for assignment in assignments:
+                project = self._validated_project({
+                    "id": assignment.get("project_id"), "code": assignment.get("project_code"),
+                    "name": assignment.get("project_name"),
+                })
+                previous = projects.get(project["id"])
+                if previous and previous["code"] != project["code"]:
+                    raise ValueError("项目目录与分配快照中的 code 不一致")
+                projects.setdefault(project["id"], project)
+                batch_id = str(assignment.get("batch_id") or "")
+                if not batch_id:
+                    raise ValueError("项目分配缺少批次身份")
+                if batch_id in batch_projects and batch_projects[batch_id] != project["id"]:
+                    raise ValueError("后台把同一批次分配到了不同项目")
+                batch_projects[batch_id] = project["id"]
+            for batch in batches:
+                project_id = str(batch.get("project_id") or batch_projects.get(str(batch["batch_id"])) or "")
+                if not project_id:
+                    raise ValueError("项目范围同步的批次缺少归属项目")
+                if batch["batch_id"] in batch_projects and batch_projects[batch["batch_id"]] != project_id:
+                    raise ValueError("后台批次与分配的项目身份不一致")
+                batch_projects[batch["batch_id"]] = project_id
+                if project_id not in projects:
+                    raise ValueError("项目范围同步缺少批次所属项目元数据")
+        elif any(any(row.get(key) not in (None, "") for key in ("project_id", "project_code", "project_name"))
+                 for row in assignments):
+            raise ValueError("旧 Hub 在未协商项目能力时返回了项目字段")
         states = {str(key): value for key, value in (sync.get("states") or {}).items()
                   if isinstance(value, dict)}
         with self.store.connect() as db:
-            if batches:
+            if project_scope:
+                for batch_id, project_id in batch_projects.items():
+                    existing = db.execute(
+                        "SELECT project_id FROM worker_project_batches WHERE worker_id=? AND batch_id=?",
+                        (worker_id, batch_id)).fetchone()
+                    if existing and existing["project_id"] != project_id:
+                        raise ValueError("Hub 批次归属与本机已缓存项目不一致")
+                    known = {row["project_id"] for row in db.execute(
+                        "SELECT DISTINCT project_id FROM worker_assignments WHERE worker_id=? AND batch_id=?"
+                        " AND project_id<>''", (worker_id, batch_id))}
+                    if known - {project_id}:
+                        raise ValueError("Hub 批次归属与本机分配历史不一致")
+                for assignment in assignments:
+                    project_id = str(assignment["project_id"])
+                    store_id = str(assignment.get("store_id") or assignment.get("task_id") or "")
+                    existing = db.execute(
+                        "SELECT task_id,worker_id,project_id,store_id FROM worker_assignments WHERE id=?",
+                        (assignment["id"],)).fetchone()
+                    if not existing:
+                        continue
+                    if (existing["task_id"] != assignment["task_id"]
+                            or existing["worker_id"] not in ("", worker_id)
+                            or existing["project_id"] not in ("", project_id)
+                            or existing["store_id"] not in ("", store_id)):
+                        raise ValueError("后台分配与本机已保存身份不一致")
+                    # 仅以本次认证同步确认的同一 assignment 补齐旧 Worker 缺少的项目快照。
+                    db.execute("UPDATE worker_assignments SET worker_id=?,project_id=?,project_code=?,project_name=?,store_id=? "
+                               "WHERE id=? AND worker_id IN ('',?) AND project_id IN ('',?)",
+                               (worker_id, project_id, assignment["project_code"], assignment["project_name"], store_id,
+                                assignment["id"], worker_id, project_id))
+                db.executemany(
+                    "INSERT INTO worker_project_batches(worker_id,batch_id,project_id,snapshot_id,updated_at) "
+                    "VALUES(?,?,?,?,?) ON CONFLICT(worker_id,batch_id) DO UPDATE SET "
+                    "snapshot_id=excluded.snapshot_id,updated_at=excluded.updated_at",
+                    ((worker_id, row["batch_id"], batch_projects[row["batch_id"]], row["snapshot_id"], stamp)
+                     for row in batches))
+                db.executemany(
+                    "INSERT INTO worker_project_catalogue(worker_id,project_id,code,name,archived_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?) ON CONFLICT(worker_id,project_id) DO UPDATE SET "
+                    "code=excluded.code,name=excluded.name,archived_at=excluded.archived_at,updated_at=excluded.updated_at",
+                    ((worker_id, project["id"], project["code"], project["name"],
+                      project["archived_at"], stamp) for project in projects.values()))
+            elif batches:
                 db.executemany(
                     "INSERT INTO worker_batches(batch_id,snapshot_id,updated_at) VALUES(?,?,?) "
                     "ON CONFLICT(batch_id) DO UPDATE SET snapshot_id=excluded.snapshot_id,"
                     "updated_at=excluded.updated_at",
                     ((row["batch_id"], row["snapshot_id"], stamp) for row in batches))
             if states:
-                db.executemany(
-                    "UPDATE worker_assignments SET shared_state=?,shared_reject=? WHERE task_id=?",
-                    ((value.get("state", ""), value.get("reject_reason", ""), task_id)
-                     for task_id, value in states.items()))
+                if project_scope:
+                    db.executemany(
+                        "UPDATE worker_assignments SET shared_state=?,shared_reject=? "
+                        "WHERE task_id=? AND worker_id=?",
+                        ((value.get("state", ""), value.get("reject_reason", ""), task_id, worker_id)
+                         for task_id, value in states.items()))
+                else:
+                    db.executemany(
+                        "UPDATE worker_assignments SET shared_state=?,shared_reject=? WHERE task_id=?",
+                        ((value.get("state", ""), value.get("reject_reason", ""), task_id)
+                         for task_id, value in states.items()))
 
     def _upload_pending(self, connection: dict | None = None) -> None:
         connection = connection or self.connection
         worker_id = str(connection.get("id") or "")
-        headers = self._auth(connection)
         with self.store.connect() as db:
             pending = [row["id"] for row in db.execute(
                 "SELECT id FROM worker_assignments WHERE status='pending_upload'"
@@ -626,8 +946,9 @@ class SharedWorker:
             try:
                 with path.open("rb") as stream:
                     response = self._http.put(self._url(f"/assignments/{assignment_id}/result", connection),
-                                              headers=headers | {"Content-Type": "application/zip",
-                                                                 "Content-Length": str(path.stat().st_size)},
+                                              headers=self._capability_headers(connection) |
+                                              {"Content-Type": "application/zip",
+                                               "Content-Length": str(path.stat().st_size)},
                                               content=iter(lambda: stream.read(1024 * 1024), b""))
                 response.raise_for_status()
                 if self.connection is not connection:

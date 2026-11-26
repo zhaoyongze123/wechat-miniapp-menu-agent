@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
@@ -16,6 +16,8 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
+import { useProject } from '../projects/ProjectProvider'
+import { projectQueryKey } from '../projects/scope'
 import { addSelection, removeSelection } from '../hub/selection'
 import { fetchManualState, manualCapture, manualCommandContext, manualReject, manualSkip, pauseCapture, resumeCapture, retryTask, terminateCapture } from './api'
 import {
@@ -65,6 +67,8 @@ const SORTS: WorkerSort[] = ['source', 'recent', 'status']
 /** Windows 原生采集工作台：本机队列、全自动/半自动、运行控制与断线补传提示。 */
 export function WorkerWorkbenchPage() {
   const toast = useToast()
+  const { projectId } = useProject()
+  const previousProjectId = useRef(projectId)
   const refresh = useRefreshWorkerStatus()
   const { status: sharedStatus } = useRole()
   const statusQuery = useWorkerStatus(true)
@@ -134,8 +138,17 @@ export function WorkerWorkbenchPage() {
   const [commandError, setCommandError] = useState('')
   const [manualError, setManualError] = useState('')
 
+  useEffect(() => {
+    if (previousProjectId.current === projectId) return
+    previousProjectId.current = projectId
+    setSelected([])
+    setDetailTask(null)
+    setStartOpen(false)
+    setTerminateOpen(false)
+  }, [projectId])
+
   const terminate = useMutation({
-    mutationFn: terminateCapture,
+    mutationFn: () => terminateCapture(projectId),
     onSuccess: () => {
       toast.push('已终止当前批次，未处理门店仍在队列中', 'info')
       setTerminateOpen(false)
@@ -146,7 +159,7 @@ export function WorkerWorkbenchPage() {
   })
 
   const pause = useMutation({
-    mutationFn: pauseCapture,
+    mutationFn: () => pauseCapture(projectId),
     onSuccess: () => {
       toast.push('已请求暂停，当前门店完成后生效', 'info')
       refresh()
@@ -155,7 +168,7 @@ export function WorkerWorkbenchPage() {
   })
 
   const resume = useMutation({
-    mutationFn: (mode?: CaptureMode) => resumeCapture(mode),
+    mutationFn: (mode?: CaptureMode) => resumeCapture(mode, projectId),
     onSuccess: (_data, mode) => {
       toast.push(mode === 'manual' ? '已切换半自动并继续采集' : '已继续采集', 'success')
       setCommandError('')
@@ -165,7 +178,7 @@ export function WorkerWorkbenchPage() {
   })
 
   const retry = useMutation({
-    mutationFn: retryTask,
+    mutationFn: (taskId: string) => retryTask(taskId, projectId),
     onSuccess: () => {
       toast.push('已重新排队该门店', 'success')
       refresh()
@@ -174,9 +187,9 @@ export function WorkerWorkbenchPage() {
   })
 
   const manualQuery = useQuery({
-    queryKey: ['manual-control'],
-    queryFn: ({ signal }) => fetchManualState(signal),
-    enabled: running && run?.capture_mode === 'manual',
+    queryKey: projectQueryKey(projectId, 'manual-control'),
+    queryFn: ({ signal }) => fetchManualState(signal, projectId),
+    enabled: Boolean(projectId && running && run?.capture_mode === 'manual'),
     refetchInterval: 1_500,
     staleTime: 1_250,
   })
@@ -188,9 +201,9 @@ export function WorkerWorkbenchPage() {
       if (!manualContext || manualQuery.isError || Date.now() - manualQuery.dataUpdatedAt > 5_000) {
         throw new Error('当前状态已过期，请刷新后再操作')
       }
-      if (action === 'capture') return manualCapture(manualContext)
-      if (action === 'skip') return manualSkip(manualContext)
-      return manualReject(manualContext, action.reason, action.detail)
+      if (action === 'capture') return manualCapture(manualContext, projectId)
+      if (action === 'skip') return manualSkip(manualContext, projectId)
+      return manualReject(manualContext, action.reason, action.detail, projectId)
     },
     onSuccess: (result, action) => {
       setManualError('')
@@ -643,7 +656,7 @@ export function WorkerWorkbenchPage() {
         }}
       />
 
-      <WorkerSyncDialog open={syncOpen} onOpenChange={setSyncOpen} connection={connection} />
+      <WorkerSyncDialog open={syncOpen} onOpenChange={setSyncOpen} />
 
       <WorkerTaskDetailDrawer task={detailTask} debugView={debugView} onOpenChange={(open) => { if (!open) setDetailTask(null) }} />
 

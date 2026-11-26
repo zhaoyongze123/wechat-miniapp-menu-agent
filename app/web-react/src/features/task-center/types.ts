@@ -98,6 +98,8 @@ export interface ActiveTask {
   extra: Record<string, unknown>
   created_at?: string
   updated_at?: string
+  /** Hub 依据真实 batch/run 归属返回；用于从全局活动入口打开正确项目。 */
+  project_id?: string
 }
 
 export interface ActiveTasksResponse {

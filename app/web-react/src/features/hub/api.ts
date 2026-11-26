@@ -1,4 +1,5 @@
 import { apiFetch } from '../../api/client'
+import { projectApiPath } from '../projects/scope'
 import type {
   AssignmentPhase,
   AssignmentRecordsResponse,
@@ -16,7 +17,7 @@ import type {
  * Hub 队列读取与写入适配层。
  * 所有参数名与 Python 路由保持一致；不在前端复制分页、筛选或分配规则。
  */
-export function fetchHubStatus(params: HubQueueParams, signal?: AbortSignal): Promise<HubStatus> {
+export function fetchHubStatus(params: HubQueueParams, signal?: AbortSignal, projectId?: string): Promise<HubStatus> {
   const search = new URLSearchParams({
     queue_page: String(params.page),
     queue_size: String(params.size),
@@ -28,16 +29,19 @@ export function fetchHubStatus(params: HubQueueParams, signal?: AbortSignal): Pr
     selected: params.selected.join(','),
     include_events: params.includeEvents ? 'true' : 'false',
   })
-  return apiFetch<HubStatus>(`/api/status?${search.toString()}`, { signal })
+  const path = `/api/status?${search.toString()}`
+  return apiFetch<HubStatus>(projectId ? projectApiPath(path, projectId) : path, { signal })
 }
 
-export function fetchSharedHubStatus(signal?: AbortSignal): Promise<HubSharedStatus> {
-  return apiFetch<HubSharedStatus>('/api/shared/status?include_history=false', { signal })
+export function fetchSharedHubStatus(signal: AbortSignal | undefined, projectId: string): Promise<HubSharedStatus> {
+  const path = '/api/shared/status?include_history=false'
+  return apiFetch<HubSharedStatus>(projectApiPath(path, projectId), { signal })
 }
 
 export function fetchAssignmentRecords(
   filters: { workerId: string; phase: AssignmentPhase; q: string; page: number; size: number },
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  projectId: string,
 ): Promise<AssignmentRecordsResponse> {
   const search = new URLSearchParams({
     worker_id: filters.workerId,
@@ -46,27 +50,31 @@ export function fetchAssignmentRecords(
     page: String(filters.page),
     size: String(filters.size),
   })
-  return apiFetch<AssignmentRecordsResponse>(`/api/shared/assignments?${search.toString()}`, { signal })
+  const path = `/api/shared/assignments?${search.toString()}`
+  return apiFetch<AssignmentRecordsResponse>(projectApiPath(path, projectId), { signal })
 }
 
-export function assignTasks(workerId: string, taskIds: string[]): Promise<AssignResponse> {
-  return apiFetch<AssignResponse>('/api/shared/assignments', {
+export function assignTasks(workerId: string, taskIds: string[], projectId: string): Promise<AssignResponse> {
+  const path = projectApiPath('/api/shared/assignments', projectId)
+  return apiFetch<AssignResponse>(path, {
     method: 'POST',
-    json: { worker_id: workerId, task_ids: taskIds },
+    json: { worker_id: workerId, task_ids: taskIds, project_id: projectId },
   })
 }
 
-export function reclaimAssignments(assignmentIds: string[]): Promise<ReclaimResponse> {
-  return apiFetch<ReclaimResponse>('/api/shared/assignments/reclaim', {
+export function reclaimAssignments(assignmentIds: string[], projectId: string): Promise<ReclaimResponse> {
+  const path = projectApiPath('/api/shared/assignments/reclaim', projectId)
+  return apiFetch<ReclaimResponse>(path, {
     method: 'POST',
-    json: { assignment_ids: assignmentIds },
+    json: { assignment_ids: assignmentIds, project_id: projectId },
   })
 }
 
-export function reclaimAssignment(assignmentId: string): Promise<{ id: string; status: string }> {
+export function reclaimAssignment(assignmentId: string, projectId: string): Promise<{ id: string; status: string }> {
+  const path = `/api/shared/assignments/${encodeURIComponent(assignmentId)}/reclaim`
   return apiFetch<{ id: string; status: string }>(
-    `/api/shared/assignments/${encodeURIComponent(assignmentId)}/reclaim`,
-    { method: 'POST', json: {} },
+    projectApiPath(path, projectId),
+    { method: 'POST', json: { project_id: projectId } },
   )
 }
 
@@ -103,12 +111,14 @@ export function saveUpdateRollout(mode: 'all' | 'batch', workerIds: string[]): P
   })
 }
 
-export function fetchResultFiles(assignmentId: string, signal?: AbortSignal): Promise<ResultFilesResponse> {
-  return apiFetch<ResultFilesResponse>(`/api/shared/results/${encodeURIComponent(assignmentId)}/files`, { signal })
+export function fetchResultFiles(assignmentId: string, signal: AbortSignal | undefined, projectId: string): Promise<ResultFilesResponse> {
+  const path = `/api/shared/results/${encodeURIComponent(assignmentId)}/files`
+  return apiFetch<ResultFilesResponse>(projectApiPath(path, projectId), { signal })
 }
 
 /** 结果文件名可能含多级路径，逐段编码后拼回。 */
-export function resultFileUrl(assignmentId: string, relative: string): string {
+export function resultFileUrl(assignmentId: string, relative: string, projectId: string): string {
   const encoded = relative.split('/').map((segment) => encodeURIComponent(segment)).join('/')
-  return `/api/shared/results/${encodeURIComponent(assignmentId)}/files/${encoded}`
+  const path = `/api/shared/results/${encodeURIComponent(assignmentId)}/files/${encoded}`
+  return projectApiPath(path, projectId)
 }

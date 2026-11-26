@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
@@ -18,6 +18,8 @@ import { StatCard } from '../../components/StatCard'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
+import { useProject } from '../projects/ProjectProvider'
+import { projectQueryKey } from '../projects/scope'
 import { AssignDialog } from './AssignDialog'
 import { HubStoreDetailDrawer } from './HubStoreDetailDrawer'
 import { fetchHubStatus } from './api'
@@ -73,6 +75,8 @@ function parsePositiveInt(value: string | null, fallback: number): number {
 
 export function HubWorkbenchPage() {
   const role = useRole()
+  const { projectId } = useProject()
+  const previousProjectId = useRef(projectId)
   const toast = useToast()
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -84,6 +88,15 @@ export function HubWorkbenchPage() {
   const [assignOpen, setAssignOpen] = useState(false)
   const [selectedOpen, setSelectedOpen] = useState(false)
   const [detailTask, setDetailTask] = useState<HubTask | null>(null)
+
+  useEffect(() => {
+    if (previousProjectId.current === projectId) return
+    previousProjectId.current = projectId
+    setSelectedIds([])
+    setAssignOpen(false)
+    setSelectedOpen(false)
+    setDetailTask(null)
+  }, [projectId])
 
   // 一次性消费地址栏中的选择参数，后续翻页与筛选不再受其影响。
   useEffect(() => {
@@ -151,16 +164,16 @@ export function HubWorkbenchPage() {
   }, [queryText, q, updateQuery])
 
   const statusQuery = useQuery({
-    queryKey: ['hub-status', scope, batch, filter, sort, q, page, size, selectedIds.join(','), debugView],
+    queryKey: projectQueryKey(projectId, 'hub-status', scope, batch, filter, sort, q, page, size, selectedIds.join(','), debugView),
     queryFn: ({ signal }) =>
-      fetchHubStatus({ page, size, scope, batch, q, filter, sort, selected: selectedIds, includeEvents: debugView }, signal),
-    placeholderData: keepPreviousData,
-    enabled: role.role === 'hub',
+      fetchHubStatus({ page, size, scope, batch, q, filter, sort, selected: selectedIds, includeEvents: debugView }, signal, projectId),
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === projectId ? previous : undefined,
+    enabled: role.role === 'hub' && Boolean(projectId),
     refetchInterval: 10_000,
     staleTime: 4_000,
   })
 
-  const sharedQuery = useHubSharedStatus()
+  const sharedQuery = useHubSharedStatus(projectId)
   const assignmentMap = useMemo(() => activeAssignmentMap(sharedQuery.data), [sharedQuery.data])
   const workers = useMemo(() => sharedQuery.data?.workers ?? [], [sharedQuery.data])
 
@@ -221,11 +234,11 @@ export function HubWorkbenchPage() {
       setAssignOpen(false)
       setSelectedIds([])
       toast.push(`已向 ${workerName} 分配 ${count} 家门店`, 'success')
-      void queryClient.invalidateQueries({ queryKey: ['hub-status'] })
-      void queryClient.invalidateQueries({ queryKey: ['hub-shared-status'] })
-      void queryClient.invalidateQueries({ queryKey: ['hub-assignments'] })
+      void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-status') })
+      void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-shared-status') })
+      void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-assignments') })
     },
-    [queryClient, toast],
+    [projectId, queryClient, toast],
   )
 
   if (role.loading) {
@@ -622,7 +635,8 @@ export function HubWorkbenchPage() {
         onOpenChange={setAssignOpen}
         tasks={selectedTasks}
         workers={workers}
-        onExclude={(ids) => setSelectedIds((current) => removeSelection(current, ids))}
+            projectId={projectId}
+            onExclude={(ids) => setSelectedIds((current) => removeSelection(current, ids))}
         onAssigned={handleAssigned}
       />
 

@@ -20,6 +20,7 @@ from PIL import Image
 import pytest
 
 from menu_capture.api.server import create_app
+from menu_capture.projects.service import LEGACY_ID, create_project, ensure_legacy_project, resolve_task_project
 
 
 ADMIN = {"Authorization": "Basic " + base64.b64encode(b"admin:isolated-test").decode()}
@@ -39,11 +40,11 @@ def png(path: Path, color="white") -> Path:
     return path
 
 
-def wait_batch(materials, batch_id: str) -> dict:
+def wait_batch(materials, batch_id: str, project_id: str = LEGACY_ID) -> dict:
     """等待持久化素材分析 job 结束；批次状态只表示结果是否可用，不再承载运行态。"""
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
-        batch = materials.get_batch(batch_id)
+        batch = materials.get_batch(batch_id, project_id=project_id)
         job = batch.get("job")
         if job is None:
             return batch
@@ -58,6 +59,9 @@ def wait_batch(materials, batch_id: str) -> dict:
 
 def batch(app, folder, names, *, publish_names=None):
     materials = app.state.materials
+    with app.state.store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        ensure_legacy_project(db)
     materials.inspector = lambda _path: [
         {"box": {"x": 30, "y": 20, "width": 100, "height": 100},
          "payload": "https://wxaurl.cn/TEST"}
@@ -65,15 +69,16 @@ def batch(app, folder, names, *, publish_names=None):
     materials.ocr_reader = lambda _path: []
     for index, name in enumerate(names):
         png(folder / name / "code.png", ("red", "green", "blue", "white")[index])
-    entry = materials.create_local_batch(folder)
+    entry = materials.create_local_batch(folder, project_id=LEGACY_ID)
     batch_id = entry["batch_id"]
-    materials.start_analysis(batch_id)
-    finished = wait_batch(materials, batch_id)
+    materials.start_analysis(batch_id, project_id=LEGACY_ID)
+    finished = wait_batch(materials, batch_id, project_id=LEGACY_ID)
     assert finished["status"] == "completed", finished
     for item in finished["stores"]:
         if publish_names is None or item["source_name"] in publish_names:
-            materials.decide_store(batch_id, item["store_id"], "confirm", image_index=0, candidate_index=0)
-    materials.publish_snapshot(batch_id, description="首发", activate=False)
+            materials.decide_store(batch_id, item["store_id"], "confirm", image_index=0, candidate_index=0,
+                                   project_id=LEGACY_ID)
+    materials.publish_snapshot(batch_id, description="首发", activate=False, project_id=LEGACY_ID)
     return finished
 
 
@@ -106,9 +111,33 @@ def pair(hub, worker, name, link):
     return worker.connection["id"]
 
 
+def test_worker_last_run_summary_is_project_scoped(tmp_path):
+    app = create_app(tmp_path, role="hub", admin_password="isolated-test")
+    with app.state.store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        ensure_legacy_project(db)
+        other = create_project(db, "other", "其他项目")
+    hub = app.state.shared_hub
+    worker = hub.pair(hub.pairing_code()["code"], "电脑")
+    with app.state.store.connect() as db:
+        db.execute("INSERT INTO shared_worker_runs(worker_id,status,mode,processed,total,reported_at,project_id) "
+                   "VALUES(?,?,?,?,?,?,?)",
+                   (worker["id"], "running", "auto", 1, 3, "now", other["id"]))
+
+    assert hub.status(project_id=LEGACY_ID)["workers"][0]["last_run"] is None
+    assert hub.status(project_id=other["id"])["workers"][0]["last_run"]["project_id"] == other["id"]
+    with client_for(app, admin=True) as client:
+        assert client.get("/api/shared/status", params={"include_history": "false"}) \
+            .json()["workers"][0]["last_run"] is None
+
+
 def assign(hub, worker_id, tasks):
+    with hub.app.state.store.connect() as db:
+        owners = {resolve_task_project(db, task_id)["id"] for task_id in tasks}
+    if len(owners) != 1:
+        raise AssertionError("测试分配必须只涉及一个项目")
     return hub.post("/api/shared/assignments", headers=session(hub),
-                    json={"worker_id": worker_id, "task_ids": tasks})
+                    json={"worker_id": worker_id, "task_ids": tasks, "project_id": owners.pop()})
 
 
 def fake_store_result(worker, task_id, output):
@@ -155,10 +184,11 @@ def test_new_assignment_waits_for_old_run_before_replacing_task_path(tmp_path):
         old = assign(hub, worker_id, [task["id"]]).json()["assignments"][0]
         worker.poll()
         old_path = worker.store.get(task["id"])["source_path"]
-        worker.store.create_run("old-run", "automatic", [task["id"]])
+        worker.store.create_run("old-run", "automatic", [task["id"]], project_id=LEGACY_ID)
 
         reclaimed = hub.post(
-            "/api/shared/assignments/" + old["id"] + "/reclaim", headers=session(hub)
+            "/api/shared/assignments/" + old["id"] + "/reclaim?project_id=" + old["project_id"],
+            headers=session(hub)
         )
         assert reclaimed.status_code == 200
         fresh = assign(hub, worker_id, [task["id"]]).json()["assignments"][0]
@@ -201,45 +231,48 @@ def test_two_computers_continue_multiple_stores_offline_and_retry_after_restart(
         b_id = pair(hub, b, "电脑 B", link)
         assert assign(hub, a_id, [ids["门店 A"]]).status_code == 200
         assert assign(hub, b_id, [ids["门店 A"], ids["门店 C"]]).status_code == 409
-        assert len(hub.get("/api/shared/status").json()["assignments"]) == 1
+        assert len(hub.get("/api/shared/status", params={"project_id": LEGACY_ID}).json()["assignments"]) == 1
         remote_tasks = [ids["门店 B"], ids["门店 C"]]
         assert assign(hub, b_id, remote_tasks).status_code == 200
         a.poll()
         b.poll()
         b.poll()
         assert all(b.source_root(task_id) for task_id in remote_tasks)
-        worker_view = client_for(b_app).get("/api/status").json()
+        worker_view = client_for(b_app).get("/api/status", params={"project_id": LEGACY_ID}).json()
         assert {row["id"] for row in worker_view["tasks"]} == set(remote_tasks)
         assert not a.source_root(ids["门店 B"])
-        target = next(row for row in hub.get("/api/shared/status").json()["assignments"] if row["worker_id"] == b_id)
+        target = next(row for row in hub.get("/api/shared/status", params={"project_id": LEGACY_ID})
+                      .json()["assignments"] if row["worker_id"] == b_id)
         unauthenticated = client_for(hub_app)
         assert unauthenticated.get("/").status_code == 401
         assert unauthenticated.get("/healthz").status_code == 200
         assert hub.post("/api/capture/start", headers=session(hub),
-                        json={"mode": "manual", "task_ids": remote_tasks}).status_code == 409
+                        json={"mode": "manual", "task_ids": remote_tasks,
+                              "project_id": LEGACY_ID}).status_code == 409
         forbidden = hub.get(f"/api/shared/worker/assignments/{target['id']}/source", headers=a._headers)
         assert forbidden.status_code == 401
 
         link.available = False
-        b.check_start(remote_tasks)
-        b.store.create_run("offline-run", "automatic", remote_tasks, capture_mode="manual")
+        b.check_start(remote_tasks, project_id=LEGACY_ID)
+        b.store.create_run("offline-run", "automatic", remote_tasks, capture_mode="manual",
+                           project_id=LEGACY_ID)
         for index, task_id in enumerate(remote_tasks, 1):
             fake_store_result(b, task_id, b_root / "output" / task_id)
             b.store.update_run("offline-run", current_index=index)
             b.poll()
-        assert b.status()["pending_uploads"] == 2 and not b.status()["online"]
+        assert b.status(project_id=LEGACY_ID)["pending_uploads"] == 2 and not b.status()["online"]
         assert all(hub_app.state.store.get(task_id)["status"] == "pending" for task_id in remote_tasks)
         b.close()
 
         restarted = create_app(b_root, role="worker").state.shared_worker
         link.install(restarted)
-        assert restarted.status()["pending_uploads"] == 2
+        assert restarted.status(project_id=LEGACY_ID)["pending_uploads"] == 2
         link.available = True
         link.drop_result_response = True
         restarted.poll()
-        assert restarted.status()["pending_uploads"] == 2  # 第一个结果已落库，但响应丢失。
+        assert restarted.status(project_id=LEGACY_ID)["pending_uploads"] == 2  # 第一个结果已落库，但响应丢失。
         restarted.poll()
-        assert restarted.status()["pending_uploads"] == 0 and restarted.status()["online"]
+        assert restarted.status(project_id=LEGACY_ID)["pending_uploads"] == 0 and restarted.status()["online"]
         for task_id in remote_tasks:
             task = hub_app.state.store.get(task_id)
             assert task["status"] == "captured"
@@ -285,7 +318,8 @@ def test_result_syncs_observed_store_name_and_supports_task_query(tmp_path):
 
         # 按原始任务编号可检索到实际观察名称；旧结果（未带字段）默认为空字符串。
         records = app.state.shared_hub.assignment_records(
-            worker_id=worker_id, phase="", query=task["id"], page=1, size=20)
+            worker_id=worker_id, phase="", query=task["id"], page=1, size=20,
+            project_id=LEGACY_ID)
         assert records["records"][0]["observed_store_name"] == "门店 A 实际招牌"
         status = app.state.shared_hub.status()
         assert next(row for row in status["assignments"]
@@ -316,18 +350,22 @@ def test_rework_keeps_active_store_on_same_material_and_keeps_late_result_histor
 
         context = session(hub)
         active_rework = hub.post("/api/materials/rework/publish", headers=context,
+                                  params={"project_id": LEGACY_ID},
                                   json={"store_ids": [f"{batch_id}:{stores['门店 A']}"]}).json()
         assert active_rework["results"] and active_rework["errors"] == []
         assert owner.connection["id"] == old["worker_id"]
         # 门店 B 换版可照常进行，门店 A 的原始分配继续独占。
-        app.state.materials.decide_store(batch_id, stores["门店 B"], "confirm", image_index=0, candidate_index=0)
+        app.state.materials.decide_store(batch_id, stores["门店 B"], "confirm", image_index=0,
+                                         candidate_index=0, project_id=LEGACY_ID)
         other_rework = hub.post("/api/materials/rework/publish", headers=context,
+                                 params={"project_id": LEGACY_ID},
                                  json={"store_ids": [f"{batch_id}:{stores['门店 B']}"]}).json()
         assert other_rework["results"] and other_rework["errors"] == []
         current_id = next(row["id"] for row in app.state.materials.effective_capture_tasks()
                           if row["source_name"] == "门店 A")
         assert assign(hub, other.connection["id"], [current_id]).status_code == 409
-        assert hub.post(f"/api/shared/assignments/{old['id']}/reclaim", headers=context).status_code == 200
+        assert hub.post(f"/api/shared/assignments/{old['id']}/reclaim?project_id={old['project_id']}",
+                        headers=context).status_code == 200
         fresh = assign(hub, other.connection["id"], [current_id]).json()["assignments"][0]
         assert fresh["id"] != old["id"]
 
@@ -341,7 +379,9 @@ def test_rework_keeps_active_store_on_same_material_and_keeps_late_result_histor
         assert upload(owner, old, late).json()["disposition"] == "history"
         assert upload(owner, old, late).json()["disposition"] == "history"
         assert app.state.store.get(current_id)["status"] == "pending"
-        assert hub.get(f"/api/shared/results/{old['id']}/files/evidence.png").status_code == 200
+        result_path = f"/api/shared/results/{old['id']}/files/evidence.png"
+        assert hub.get(result_path, params={"project_id": old["project_id"]}).status_code == 200
+        assert hub.get(result_path, params={"project_id": "another-project"}).status_code == 404
         assert upload(other, fresh, result_zip(fresh)).json()["disposition"] == "accepted"
         assert app.state.store.get(current_id)["reject_reason"] == "store_closed"
         assert hub.get(f"/api/rejections/tasks/{current_id}/evidence").status_code == 200
@@ -379,13 +419,16 @@ def test_bulk_rework_publishes_each_original_batch_and_preserves_untouched_resul
             batch_id = entry["batch_id"]
             item = next(store for store in entry["stores"] if store["source_name"].startswith("返工"))
             store_id = item["store_id"]
-            materials.decide_store(batch_id, store_id, "skip", reject_reason="not_ordering")
+            materials.decide_store(batch_id, store_id, "skip", reject_reason="not_ordering", project_id=LEGACY_ID)
             returned = hub.post("/api/materials/rework/return", headers=context,
+                                params={"project_id": LEGACY_ID},
                                 json={"batch_id": batch_id, "store_id": store_id})
             assert returned.status_code == 200
-            materials.decide_store(batch_id, store_id, "confirm", image_index=0, candidate_index=0)
+            materials.decide_store(batch_id, store_id, "confirm", image_index=0, candidate_index=0,
+                                   project_id=LEGACY_ID)
             selected.append(f"{batch_id}:{store_id}")
-        published = hub.post("/api/materials/rework/publish", headers=context, json={"store_ids": selected}).json()
+        published = hub.post("/api/materials/rework/publish", headers=context, params={"project_id": LEGACY_ID},
+                             json={"store_ids": selected}).json()
         assert not published["errors"] and len(published["results"]) == 2
         records = hub.get("/api/capture/queue?batch_ids=all").json()["records"]
         expected = {entry["batch_id"] for entry in batches}
@@ -446,16 +489,25 @@ def test_run_history_keeps_device_identity_and_recovers_after_restart(tmp_path):
     a = create_app(a_root, role="worker").state.shared_worker
     b = create_app(tmp_path / "computer-b", role="worker").state.shared_worker
     with client_for(hub_app, admin=True) as hub:
+        batch(hub_app, tmp_path / "raw", ("门店 A", "门店 B"))
+        task_ids = {row["source_name"]: row["id"] for row in
+                    hub.get("/api/capture/queue", params={"project_id": LEGACY_ID}).json()["records"]}
         a_link = Link(hub)
         a_id = pair(hub, a, "电脑 A", a_link)
         b_id = pair(hub, b, "电脑 B", Link(hub))
-        a.store.create_run("same-id", "automatic", [], capture_mode="auto", name="第一轮")
-        b.store.create_run("same-id", "automatic", [], capture_mode="manual", name="第二轮")
+        assert assign(hub, a_id, [task_ids["门店 A"]]).status_code == 200
+        assert assign(hub, b_id, [task_ids["门店 B"]]).status_code == 200
+        a.poll()
+        b.poll()
+        a.store.create_run("same-id", "automatic", [task_ids["门店 A"]], capture_mode="auto",
+                           name="第一轮", project_id=LEGACY_ID)
+        b.store.create_run("same-id", "automatic", [task_ids["门店 B"]], capture_mode="manual",
+                           name="第二轮", project_id=LEGACY_ID)
         a_report = a.history.pending_report()
         a.poll()
         b.poll()
 
-        result = hub.get("/api/tasks/history", params={"kind": "capture"}).json()
+        result = hub.get("/api/tasks/history", params={"kind": "capture", "project_id": LEGACY_ID}).json()
         assert {row["id"] for row in result["records"]} == {f"{a_id}:same-id", f"{b_id}:same-id"}
         assert result["summary"]["total"] == result["summary"]["running"] == 2
 
@@ -476,17 +528,18 @@ def test_run_history_keeps_device_identity_and_recovers_after_restart(tmp_path):
         assert old_retry.status_code == 200
         assert hub.put("/api/shared/worker/run-history", json=a_report).status_code == 401
 
-        filtered = hub.get("/api/tasks/history", params={"kind": "capture", "worker_id": a_id}).json()
+        filtered = hub.get("/api/tasks/history", params={"kind": "capture", "worker_id": a_id,
+                                                          "project_id": LEGACY_ID}).json()
         assert filtered["summary"]["total"] == filtered["summary"]["completed"] == 1
         detail_url = f"/api/tasks/history/capture/{a_id}:same-id"
-        detail = hub.get(detail_url).json()
+        detail = hub.get(detail_url, params={"project_id": LEGACY_ID}).json()
         assert detail["title"] == "离线改名"
         assert detail["worker_name"] == "电脑 A"
         assert detail["can_rename"] is False
         assert detail["synced_at"]
 
         hub_app.state.shared_hub.edit_worker(a_id, "电脑 A 改名", "")
-        assert hub.get(detail_url).json()["worker_name"] == "电脑 A 改名"
+        assert hub.get(detail_url, params={"project_id": LEGACY_ID}).json()["worker_name"] == "电脑 A 改名"
     a.close()
     b.close()
 
@@ -501,7 +554,7 @@ def test_run_history_preserves_per_store_outcomes(tmp_path):
         worker_id = pair(hub, worker, "电脑 A", Link(hub))
         assert assign(hub, worker_id, ids).status_code == 200
         worker.poll()
-        worker.store.create_run("test-run", "automatic", ids, capture_mode="auto")
+        worker.store.create_run("test-run", "automatic", ids, capture_mode="auto", project_id=LEGACY_ID)
         worker.store.update(ids[0], capture_run_id="test-run", attempt_outcome="review",
                             status="needs_review", message="需要人工复核")
         worker.store.update_run("test-run", current_index=1)
@@ -533,19 +586,22 @@ def test_single_store_release_keeps_sibling_assignment_and_versions(tmp_path):
         worker_id = pair(hub, worker, "电脑 A", Link(hub))
         a_assignment, b_assignment = assign(hub, worker_id, [a["id"], b["id"]]).json()["assignments"]
         worker.poll()
-        assert {row["id"] for row in worker.tasks()} == {a["id"], b["id"]}
+        assert {row["id"] for row in worker.tasks(project_id=LEGACY_ID)} == {a["id"], b["id"]}
 
         returned = hub.post("/api/materials/rework/return", headers=session(hub),
+                            params={"project_id": LEGACY_ID},
                             json={"batch_id": batch_id, "store_id": a["store_id"]})
         assert returned.status_code == 200 and returned.json()["awaiting_publish"]
         assert assign(hub, worker_id, [a["id"]]).status_code == 409
         worker.poll()
-        assert [row["id"] for row in worker.tasks()] == [b["id"]]
+        assert [row["id"] for row in worker.tasks(project_id=LEGACY_ID)] == [b["id"]]
 
         # 同图重新确认之后仍锁定，发布只恢复 A 的资格。
-        materials.decide_store(batch_id, a["store_id"], "confirm", image_index=0, candidate_index=0)
-        assert next(row for row in materials.rework_records() if row["store_id"] == a["store_id"])["publishable"]
-        same = hub.post("/api/materials/rework/publish", headers=session(hub),
+        materials.decide_store(batch_id, a["store_id"], "confirm", image_index=0, candidate_index=0,
+                               project_id=LEGACY_ID)
+        assert next(row for row in materials.rework_records(project_id=LEGACY_ID)
+                    if row["store_id"] == a["store_id"])["publishable"]
+        same = hub.post("/api/materials/rework/publish", headers=session(hub), params={"project_id": LEGACY_ID},
                         json={"store_ids": [f"{batch_id}:{a['store_id']}"]}).json()
         assert not same["errors"]
         unchanged = {row["source_name"]: row for row in materials.effective_capture_tasks()}
@@ -555,8 +611,8 @@ def test_single_store_release_keeps_sibling_assignment_and_versions(tmp_path):
 
         # 正式发布尺寸不同的二维码只产生 A 的新版本。
         materials.decide_store(batch_id, a["store_id"], "confirm", image_index=0,
-                               box={"x": 25, "y": 20, "width": 60, "height": 60})
-        changed = hub.post("/api/materials/rework/publish", headers=session(hub),
+                               box={"x": 25, "y": 20, "width": 60, "height": 60}, project_id=LEGACY_ID)
+        changed = hub.post("/api/materials/rework/publish", headers=session(hub), params={"project_id": LEGACY_ID},
                            json={"store_ids": [f"{batch_id}:{a['store_id']}"]}).json()
         assert not changed["errors"]
         current = {row["source_name"]: row for row in materials.effective_capture_tasks()}
@@ -565,7 +621,7 @@ def test_single_store_release_keeps_sibling_assignment_and_versions(tmp_path):
         reassigned = assign(hub, worker_id, [current["门店 A"]["id"]]).json()["assignments"][0]
         assert reassigned["id"] != a_assignment["id"]
         worker.poll()
-        assert {row["id"] for row in worker.tasks()} == {current["门店 A"]["id"], b["id"]}
+        assert {row["id"] for row in worker.tasks(project_id=LEGACY_ID)} == {current["门店 A"]["id"], b["id"]}
         assert hub_app.state.shared_hub.assignment(worker_id, b_assignment["id"])["status"] in {"assigned", "ready"}
     worker.close()
 
@@ -595,7 +651,8 @@ def test_return_rejection_uses_originating_batch_and_archives_old_decision(tmp_p
                                rejected_at="2026-11-24T12:00:00+08:00")
         rejection = hub.get("/api/rejections").json()["records"][0]
         assert rejection["can_return_to_materials"]
-        returned = hub.post(f"/api/rejections/tasks/{task['id']}/return-to-materials", headers=session(hub))
+        returned = hub.post(f"/api/rejections/tasks/{task['id']}/return-to-materials", headers=session(hub),
+                            json={"project_id": LEGACY_ID})
         assert returned.status_code == 200, returned.text
         assert returned.json()["batch_id"] == created["batch_id"]
         effective = app.state.materials.effective_capture_tasks()[0]
@@ -622,7 +679,8 @@ def test_return_rejection_blocked_while_worker_owns_store(tmp_path):
             )
         assert app.state.shared_hub.active_task_ids([task["id"]]) == {task["id"]}
 
-        response = hub.post(f"/api/rejections/tasks/{task['id']}/return-to-materials", headers=session(hub))
+        response = hub.post(f"/api/rejections/tasks/{task['id']}/return-to-materials", headers=session(hub),
+                            json={"project_id": LEGACY_ID})
 
         assert response.status_code == 400, response.text
         assert "仍在采集电脑任务中" in response.text
@@ -640,7 +698,8 @@ def test_pending_review_exposes_return_eligibility_and_can_return(tmp_path):
         assert row["can_return_to_materials"] is True
         assert row["return_to_materials_disabled_reason"] == ""
 
-        returned = hub.post(f"/api/rejections/tasks/{task['id']}/return-to-materials", headers=session(hub))
+        returned = hub.post(f"/api/rejections/tasks/{task['id']}/return-to-materials", headers=session(hub),
+                            json={"project_id": LEGACY_ID})
 
         assert returned.status_code == 200, returned.text
         assert app.state.store.get(task["id"])["status"] == "blocked"

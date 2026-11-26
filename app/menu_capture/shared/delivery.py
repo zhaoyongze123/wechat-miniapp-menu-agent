@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import sys
+import stat
 import threading
 import time
 import unicodedata
@@ -32,6 +33,8 @@ from pathlib import Path
 from typing import Callable
 
 from menu_capture.capture.capture_results import store_state
+from menu_capture.projects.paths import project_batch_dir
+from menu_capture.projects.service import LEGACY_ID
 
 # 只认当前采集契约里的菜单截图，证据图、JSON、日志与临时文件不得进入交付目录。
 PAGE_PATTERN = re.compile(r"^page-\d+\.png$", re.IGNORECASE)
@@ -169,6 +172,7 @@ class DeliveryService:
         root: str = "",
         host_path: str = "",
         task_provider: Callable[[], list[dict]] | None = None,
+        project_provider: Callable[[str], dict] | None = None,
         poll_seconds: float = DEFAULT_POLL_SECONDS,
     ) -> None:
         self.data_root = Path(data_root)
@@ -178,6 +182,7 @@ class DeliveryService:
         self.root = Path(root) if root else None
         self.host_path = host_path.strip()
         self.task_provider = task_provider
+        self.project_provider = project_provider
         self.poll_seconds = max(1.0, float(poll_seconds))
         self.index_path = self.data_root / "delivery-index.json"
         self._lock = threading.RLock()
@@ -199,6 +204,7 @@ class DeliveryService:
             "content_digest": str(self._index.get("content_digest") or ""),
             "inventory": dict(self._index.get("inventory") or {}),
         }
+        self._project_snapshots: dict[str, dict] = dict(self._index.get("project_snapshots") or {})
 
     # ---------- 配置与状态 ----------
 
@@ -206,41 +212,122 @@ class DeliveryService:
     def configured(self) -> bool:
         return bool(self.root and self.host_path and self.root.is_absolute())
 
+    def _project(self, project_id: str | None) -> dict:
+        if not project_id:
+            raise ValueError("项目范围缺失")
+        if self.project_provider is None:
+            raise ValueError("项目目录服务不可用")
+        try:
+            project = self.project_provider(project_id)
+        except KeyError:
+            raise ValueError("项目不存在") from None
+        if not isinstance(project, dict) or project.get("id") != project_id:
+            raise ValueError("项目不存在")
+        return project
+
+    def _project_root(self, project_code: str) -> Path:
+        """在配置的 bind mount 根下校验并返回单项目合格目录。"""
+        if self.root is None:
+            raise ValueError("尚未配置宿主机交付目录")
+        projects_root = self.root / "项目"
+        try:
+            info = projects_root.lstat()
+        except FileNotFoundError:
+            info = None
+        if info is not None and (stat.S_ISLNK(info.st_mode)
+                                 or getattr(info, "st_file_attributes", 0) & 0x400
+                                 or not stat.S_ISDIR(info.st_mode)):
+            raise ValueError("项目交付根不能是符号链接或非目录")
+        anchor = project_batch_dir(projects_root, project_code, "0" * 32).parent
+        target = anchor / "合格"
+        try:
+            info = target.lstat()
+        except FileNotFoundError:
+            info = None
+        if info is not None and (stat.S_ISLNK(info.st_mode)
+                                 or getattr(info, "st_file_attributes", 0) & 0x400
+                                 or not stat.S_ISDIR(info.st_mode)):
+            raise ValueError("项目合格目录不能是符号链接或非目录")
+        if not _inside(target, self.root):
+            raise ValueError("项目交付目录超出配置的挂载根")
+        return target
+
+    def _project_root_error(self, project_code: str) -> str:
+        error = self._root_error()
+        if error:
+            return error
+        try:
+            target = self._project_root(project_code)
+        except ValueError as error:
+            return str(error)
+        if target.exists() and not os.access(target, os.W_OK):
+            return "项目交付目录不可写，请检查宿主机权限"
+        writable_parent = target.parent
+        while not writable_parent.exists() and writable_parent != writable_parent.parent:
+            writable_parent = writable_parent.parent
+        if not target.exists() and not os.access(writable_parent, os.W_OK):
+            return "项目交付目录所在位置不可写，请检查宿主机权限"
+        return ""
+
     @property
     def staging_root(self) -> Path:
-        mount = self.root.parent if self.root else self.data_root
+        mount = self.root if self.root else self.data_root
         return mount / ".menu-capture-staging"
 
     @property
     def trash_root(self) -> Path:
-        mount = self.root.parent if self.root else self.data_root
+        mount = self.root if self.root else self.data_root
         return mount / ".menu-capture-trash"
 
-    def open_supported(self) -> bool:
+    def open_supported(self, project_id: str | None = None) -> bool:
         """只有 Hub 与交付目录同机且平台支持文件管理器时才提供一键打开。"""
-        if not self.configured or not self.root or not self.root.is_dir():
+        if not self.configured or not self.root:
+            return False
+        try:
+            target = self._project_root(self._project(project_id)["code"]) if project_id else self.root
+        except ValueError:
+            return False
+        if not target.is_dir():
             return False
         if sys.platform not in {"win32", "darwin"}:
             return False
         # 容器里的 Linux 进程无法打开宿主机资源管理器，不能给用户假按钮。
         return not Path("/.dockerenv").exists()
 
-    def open_reason(self) -> str:
+    def open_reason(self, project_id: str | None = None) -> str:
         if not self.configured:
             return "尚未配置宿主机交付目录"
-        if not self.root or not self.root.is_dir():
+        if not self.root:
             return "交付目录当前不可访问"
-        if self.open_supported():
+        try:
+            target = self._project_root(self._project(project_id)["code"]) if project_id else self.root
+        except ValueError as error:
+            return str(error)
+        if not target.is_dir():
+            return "交付目录当前不可访问"
+        if self.open_supported(project_id):
             return ""
         return "共享后台运行在容器中，无法直接打开宿主机目录；请复制路径后在文件管理器打开"
 
-    def status(self) -> dict:
+    def status(self, project_id: str | None = None) -> dict:
+        project = self._project(project_id) if project_id else None
         with self._lock:
-            snapshot = dict(self._snapshot)
+            snapshot = dict(self._project_snapshots.get(project_id) or {}) if project_id else dict(self._snapshot)
+            if project_id and not snapshot:
+                snapshot = {
+                    "state": "initializing" if self.configured else "unconfigured", "message": "",
+                    "qualified": 0, "ready": 0, "pending": 0, "failed": 0, "images": 0, "bytes": 0,
+                    "last_sync_at": "", "generation": 0, "initialized": False,
+                    "initialized_at": "", "content_digest": "", "inventory": {},
+                }
             inventory = _inventory_view(snapshot.get("inventory"))
         configured = self.configured
         state, message = snapshot["state"], snapshot["message"]
-        root_error = self._root_error() if configured else "尚未配置宿主机交付目录"
+        root_error = (self._project_root_error(project["code"]) if project else self._root_error()) if configured else "尚未配置宿主机交付目录"
+        try:
+            container_root = str(self._project_root(project["code"]) if project else self.root) if self.root else ""
+        except ValueError:
+            container_root = ""
         if not configured:
             state, message = "unconfigured", "尚未配置宿主机交付目录，请由管理员完成挂载与路径设置"
         elif root_error:
@@ -250,10 +337,13 @@ class DeliveryService:
             "configured": configured,
             "state": state,
             "message": message,
-            "container_root": str(self.root) if self.root else "",
+            "container_root": container_root,
             "host_path": self.host_path,
-            "open_supported": self.open_supported(),
-            "open_reason": self.open_reason(),
+            "project_id": project_id or "",
+            "project_code": project["code"] if project else "",
+            "project_name": project["name"] if project else "",
+            "open_supported": self.open_supported(project_id),
+            "open_reason": self.open_reason(project_id),
             "counts": {
                 "qualified": snapshot["qualified"],
                 "ready": snapshot["ready"],
@@ -270,22 +360,29 @@ class DeliveryService:
             "initializing": state == "initializing",
         }
 
-    def reveal(self) -> dict:
-        if not self.open_supported() or self.root is None:
-            raise ValueError(self.open_reason())
+    def reveal(self, project_id: str | None = None) -> dict:
+        if not self.open_supported(project_id) or self.root is None:
+            raise ValueError(self.open_reason(project_id))
+        target = self._project_root(self._project(project_id)["code"]) if project_id else self.root
         if sys.platform == "win32":
-            os.startfile(self.root)  # noqa: S606 - 仅打开管理员配置的固定交付根
+            os.startfile(target)  # noqa: S606 - 仅打开管理员配置的固定交付根
         else:
             import subprocess
-            subprocess.run(["/usr/bin/open", str(self.root)], check=True)
+            subprocess.run(["/usr/bin/open", str(target)], check=True)
         return {"ok": True}
 
     # ---------- 查询 ----------
 
-    def stores(self, *, page: int = 1, size: int = 50, query: str = "", batch_id: str = "all") -> dict:
+    def stores(self, *, page: int = 1, size: int = 50, query: str = "", batch_id: str = "all",
+               project_id: str | None = None) -> dict:
+        if project_id:
+            self._project(project_id)
         with self._lock:
             records = list(self._records)
             batches = list(self._index.get("batch_options") or [])
+        if project_id:
+            records = [row for row in records if row.get("project_id") == project_id]
+            batches = [row for row in batches if row.get("project_id") == project_id]
         normalized = query.strip().casefold()
         rows = [
             row for row in records
@@ -303,7 +400,7 @@ class DeliveryService:
     def start(self) -> None:
         if self._thread is not None:
             return
-        if self.configured:
+        if self.configured and not self._root_error():
             self._clean_leftovers()
         self._thread = threading.Thread(target=self._loop, name="delivery-sync", daemon=True)
         self._thread.start()
@@ -315,7 +412,9 @@ class DeliveryService:
         if thread is not None:
             thread.join(timeout=5)
 
-    def trigger(self) -> None:
+    def trigger(self, project_id: str | None = None) -> None:
+        if project_id:
+            self._project(project_id)
         self._wake.set()
 
     def _loop(self) -> None:
@@ -345,7 +444,7 @@ class DeliveryService:
             return
 
         try:
-            desired, inventory = self._collect_records()
+            desired, inventory, unknown_batch_ids = self._collect_records()
         except Exception as error:  # noqa: BLE001 - 读取业务状态失败不能删除现有目录
             with self._lock:
                 self._snapshot.update(state="error", message=f"读取合格门店失败：{error}")
@@ -380,7 +479,10 @@ class DeliveryService:
 
         desired_keys = {record["key"] for record in desired}
         for key in list(self._index["stores"]):
-            if key not in desired_keys:
+            entry = self._index["stores"].get(key, {})
+            # v2 的无 scope 索引对应旧根目录；它没有项目归属，必须保留待核验。
+            if (entry.get("project_id") and key not in desired_keys
+                    and str(entry.get("batch_id") or "") not in unknown_batch_ids):
                 self._remove_entry(key)
 
         self._verify_slice(desired)
@@ -405,33 +507,64 @@ class DeliveryService:
                      str(right.get("updated_at") or ""))
         return left_key >= right_key
 
-    def _collect_tasks(self) -> tuple[dict[str, dict], set[str]]:
-        """按批次+门店选当前有效轮次；返回选中任务与非合格门店名（用于历史目录排除）。"""
+    def _collect_tasks(self) -> tuple[dict[str, dict], list[dict]]:
+        """只选择有权威项目归属的当前有效轮次，未知归属留待核验。"""
         tasks = list(self.task_provider() if self.task_provider is not None else [])
-        blocked_names: set[str] = set()
         chosen: dict[str, dict] = {}
+        unknown: list[dict] = []
+        projects: dict[str, dict | None] = {}
         for task in tasks:
-            if store_state(task) != "captured":
-                blocked_names.add(str(task.get("source_name") or "").strip())
+            project_id = str(task.get("project_id") or "").strip()
+            project_code = str(task.get("project_code") or "").strip()
+            if not project_id or not project_code:
+                unknown.append({
+                    "task_id": str(task.get("id") or ""),
+                    "batch_id": str(task.get("batch_id") or ""),
+                    "name": str(task.get("source_name") or task.get("batch_name") or "未知任务"),
+                    "reason": "任务缺少可核验的项目归属，待核验",
+                })
                 continue
-            identity = self._identity(task)
+            if self.project_provider is not None:
+                if project_id not in projects:
+                    try:
+                        projects[project_id] = self._project(project_id)
+                    except ValueError:
+                        projects[project_id] = None
+                project = projects[project_id]
+                if project is None:
+                    unknown.append({
+                        "task_id": str(task.get("id") or ""),
+                        "batch_id": str(task.get("batch_id") or ""),
+                        "name": str(task.get("source_name") or task.get("batch_name") or "未知任务"),
+                        "reason": "项目记录不存在，待核验",
+                    })
+                    continue
+                if project.get("code") != project_code:
+                    unknown.append({
+                        "task_id": str(task.get("id") or ""),
+                        "batch_id": str(task.get("batch_id") or ""),
+                        "name": str(task.get("source_name") or task.get("batch_name") or "未知任务"),
+                        "reason": "项目代码与权威项目记录不一致，待核验",
+                    })
+                    continue
+            if store_state(task) != "captured":
+                continue
+            identity = f"project:{project_id}|{self._identity(task)}"
             if identity not in chosen or self._newer(task, chosen[identity]):
                 chosen[identity] = task
-        return chosen, blocked_names
+        return chosen, unknown
 
-    def _collect_records(self) -> tuple[list[dict], dict]:
-        chosen, blocked_names = self._collect_tasks()
+    def _collect_records(self) -> tuple[list[dict], dict, set[str]]:
+        chosen, unknown = self._collect_tasks()
 
         records: list[dict] = []
         task_outputs: set[str] = set()
         discovered = {"shared_results": 0, "output": 0, "legacy_sources": 0}
         excluded: dict[str, int] = {}
         shared_seen: set[str] = set()
-        names: set[str] = set()
         for identity, task in chosen.items():
             record = self._task_record(task, identity)
             records.append(record)
-            names.add(record["store_name"])
             source_path = Path(record["output_dir"])
             task_outputs.add(str(source_path.resolve()))
             source = self._source_of(source_path)
@@ -442,7 +575,7 @@ class DeliveryService:
                 discovered[source] += 1
 
         # 历史目录只做资格核实：权威记录已覆盖的跳过，其余进入待核验清单，绝不凭文件系统直接纳入。
-        pending: list[dict] = []
+        pending: list[dict] = list(unknown)
         for source, base in (("output", self.output_root), ("legacy_sources", self.legacy_root)):
             groups: dict[str, list[tuple[Path, list[Path]]]] = {}
             for path, files in self._scan_legacy(base):
@@ -453,18 +586,15 @@ class DeliveryService:
                 if str(path.resolve()) in task_outputs:
                     continue
                 name = path.name
-                if name in names:
-                    excluded["已有当前有效轮次"] = excluded.get("已有当前有效轮次", 0) + 1
-                    continue
-                if name in blocked_names:
-                    excluded["业务状态不是合格"] = excluded.get("业务状态不是合格", 0) + 1
-                    continue
+                # 未知历史目录没有可信项目/批次 ID，不能靠门店名跨项目关联到当前任务。
                 groups.setdefault(name, []).append((path, files))
             for name, group in groups.items():
                 reason = "存在多轮历史目录，无法确认当前有效轮次" if len(group) > 1 else "缺少权威业务记录，待核验"
                 for folder, files in group:
                     pending.append({
                         "name": name,
+                        "task_id": "",
+                        "batch_id": "",
                         "directory": folder.name,
                         "source": source,
                         "images": len(files),
@@ -482,11 +612,12 @@ class DeliveryService:
             },
             "pending_verification": {
                 "count": len(pending),
-                "stores": len({item["name"] for item in pending}),
+                "stores": len({(item.get("batch_id", ""), item["name"]) for item in pending}),
                 "items": pending[:PENDING_ITEM_LIMIT],
             },
         }
-        return records, inventory
+        unknown_batch_ids = {str(item.get("batch_id") or "") for item in unknown if item.get("batch_id")}
+        return records, inventory, unknown_batch_ids
 
     def _source_of(self, path: Path) -> str:
         try:
@@ -512,12 +643,15 @@ class DeliveryService:
         files, reason = self._page_files(Path(str(task.get("output_dir") or "")))
         return {
             "key": identity,
+            "project_id": str(task["project_id"]),
+            "project_code": str(task["project_code"]),
+            "project_name": str(task.get("project_name") or task["project_code"]),
             "task_id": str(task.get("id") or ""),
             "batch_id": str(task.get("batch_id") or ""),
             "batch_name": str(task.get("batch_name") or task.get("batch_id") or ""),
             "store_name": str(task.get("source_name") or ""),
             "store_id": str(task.get("store_id") or ""),
-            "directory_name": self._allocate_name(identity, str(task.get("source_name") or ""),
+            "directory_name": self._allocate_name(str(task["project_id"]), identity, str(task.get("source_name") or ""),
                                                   str(task.get("store_id") or "")),
             "output_dir": str(task.get("output_dir") or ""),
             "task_updated_at": str(task.get("updated_at") or ""),
@@ -551,14 +685,16 @@ class DeliveryService:
             dirs[:] = []  # 已找到截图目录，不再深入其子目录
         return found
 
-    def _allocate_name(self, key: str, store_name: str, store_id: str) -> str:
+    def _allocate_name(self, project_id: str, key: str, store_name: str, store_id: str) -> str:
         base = safe_directory_name(store_name or store_id or "未命名门店")
+        prefix = f"project:{project_id}|"
         with self._lock:
             directories = self._index["directories"]
             existing = directories.get(key)
             if existing:
                 return existing
-            used = {_normalized(name) for other, name in directories.items() if other != key}
+            used = {_normalized(name) for other, name in directories.items()
+                    if other.startswith(prefix) and other != key}
             name = base
             if _normalized(name) in used:
                 suffix = safe_directory_name(store_id) if store_id else hashlib.sha1(key.encode()).hexdigest()[:6]
@@ -590,19 +726,43 @@ class DeliveryService:
             failure = self._index["failures"].get(key)
         return bool(failure and time.time() < float(failure.get("retry_at") or 0))
 
-    def _target(self, directory: str) -> Path:
-        assert self.root is not None
-        return self.root / directory
+    def _bump_generation(self, project_id: str | None = None) -> None:
+        self._index["generation"] = int(self._index.get("generation") or 0) + 1
+        if project_id:
+            generations = self._index.setdefault("project_generations", {})
+            generations[project_id] = int(generations.get(project_id) or 0) + 1
+        self._snapshot["generation"] = self._index["generation"]
+
+    def _target(self, directory: str, project_code: str) -> Path:
+        if not directory or safe_directory_name(directory) != directory or directory in {".", ".."}:
+            raise ValueError("交付门店目录名无效")
+        root = self._project_root(project_code)
+        target = root / directory
+        try:
+            info = target.lstat()
+        except FileNotFoundError:
+            info = None
+        if info is not None and (stat.S_ISLNK(info.st_mode)
+                                 or getattr(info, "st_file_attributes", 0) & 0x400
+                                 or not stat.S_ISDIR(info.st_mode)):
+            raise ValueError("交付门店目录不能是符号链接或非目录")
+        if not _inside(target, root):
+            raise ValueError("交付门店目录超出项目目录")
+        return target
 
     def _sync_store(self, record: dict) -> None:
         root = self.root
         assert root is not None
-        target = self._target(record["directory_name"])
+        target = self._target(record["directory_name"], record["project_code"])
         hashed = hashlib.sha1(record["key"].encode()).hexdigest()[:16]
         staging = self.staging_root / hashed
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
         staging.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # 目录由共享盘用户控制；创建后再校验，拒绝链接/reparse 替换。
+        self._project_root(record["project_code"])
+        target = self._target(record["directory_name"], record["project_code"])
         old = target if target.is_dir() else None
         try:
             # 整轮覆盖必须逐字节复制当前有效轮次的源文件；禁止按大小相同复用旧截图。
@@ -637,6 +797,9 @@ class DeliveryService:
             shutil.rmtree(staging, ignore_errors=True)
         with self._lock:
             self._index["stores"][record["key"]] = {
+                "project_id": record["project_id"],
+                "project_code": record["project_code"],
+                "project_name": record["project_name"],
                 "directory": record["directory_name"],
                 "store_name": record["store_name"],
                 "batch_id": record["batch_id"],
@@ -656,8 +819,7 @@ class DeliveryService:
                 "synced_at": _stamp(),
             }
             self._index["failures"].pop(record["key"], None)
-            self._index["generation"] = int(self._index.get("generation") or 0) + 1
-            self._snapshot["generation"] = self._index["generation"]
+            self._bump_generation(record["project_id"])
             self._snapshot["last_sync_at"] = _stamp()
             _atomic_json(self.index_path, self._index)
 
@@ -682,6 +844,9 @@ class DeliveryService:
             if entry:
                 entry["status"] = "pending"
                 entry["error"] = "业务轮次已变化，等待重新同步"
+                self._bump_generation(str(entry.get("project_id") or ""))
+            else:
+                self._bump_generation(self._project_id_from_key(key))
             self._fresh_at = 0.0
             _atomic_json(self.index_path, self._index)
 
@@ -697,23 +862,23 @@ class DeliveryService:
     def _remove_entry(self, key: str) -> None:
         with self._lock:
             entry = self._index["stores"].get(key)
-        if not entry or not entry.get("directory"):
+        if not entry or not entry.get("project_id") or not entry.get("project_code") or not entry.get("directory"):
+            # v2 的旧入口没有项目身份，留下交付根供人工核验，不能自动删移。
             return
-        target = self._target(str(entry.get("directory")))
         try:
+            target = self._target(str(entry.get("directory")), str(entry["project_code"]))
             if target.is_dir():
                 self.trash_root.mkdir(parents=True, exist_ok=True)
                 recycle = self.trash_root / f"{hashlib.sha1(key.encode()).hexdigest()[:16]}-{int(time.time() * 1000)}"
                 os.replace(target, recycle)
                 shutil.rmtree(recycle, ignore_errors=True)
-        except OSError as error:
+        except (OSError, ValueError) as error:
             self._record_failure(key, str(error) or "移出失败")
             return
         with self._lock:
             self._index["stores"].pop(key, None)
             self._index["failures"].pop(key, None)
-            self._index["generation"] = int(self._index.get("generation") or 0) + 1
-            self._snapshot["generation"] = self._index["generation"]
+            self._bump_generation(str(entry["project_id"]))
             self._snapshot["last_sync_at"] = _stamp()
             _atomic_json(self.index_path, self._index)
 
@@ -728,7 +893,15 @@ class DeliveryService:
             if entry:
                 entry["status"] = "failed"
                 entry["error"] = error
+            self._bump_generation(str((entry or {}).get("project_id") or self._project_id_from_key(key) or ""))
             _atomic_json(self.index_path, self._index)
+
+    @staticmethod
+    def _project_id_from_key(key: str) -> str:
+        prefix = "project:"
+        if key.startswith(prefix):
+            return key[len(prefix):].split("|", 1)[0]
+        return ""
 
     def _verify_slice(self, desired: list[dict]) -> None:
         """每轮抽检一小批已同步目录，逐文件比对内容摘要：成品被同尺寸篡改或源已变化都能发现。"""
@@ -742,7 +915,7 @@ class DeliveryService:
             entry = self._index["stores"].get(record["key"])
             if not entry:
                 continue
-            target = self._target(record["directory_name"])
+            target = self._target(record["directory_name"], record["project_code"])
             expected = dict(entry.get("digests") or {})
             actual: dict[str, str] = {}
             if target.is_dir():
@@ -772,40 +945,79 @@ class DeliveryService:
         with self._lock:
             stores = self._index["stores"]
             failures = self._index["failures"]
-            ready_keys = [record["key"] for record in desired
-                          if stores.get(record["key"], {}).get("status") == "ready"]
-            images = sum(len(stores[key].get("files", [])) for key in ready_keys)
-            size = sum(int(stores[key].get("bytes") or 0) for key in ready_keys)
-            failed = len([record for record in desired if record["key"] in failures])
-            pending = len([record for record in desired
-                           if record["key"] not in ready_keys and record["key"] not in failures])
-            state = "synced"
-            message = "全部成品已同步"
-            if failed:
-                state, message = "partial", f"{failed} 家门店同步失败，目录可能不完整"
-            elif pending:
-                state, message = "syncing", f"{pending} 家门店待同步"
-            elif not self._snapshot["initialized"]:
-                message = "初始化完成"
-            initialized = bool(self._snapshot["initialized"]) or (not pending and not failed)
-            initialized_at = self._snapshot["initialized_at"]
-            if initialized and not initialized_at:
-                initialized_at = _stamp()
-            digest = hashlib.sha256()
-            for key in sorted(ready_keys):
-                digest.update(f"{key}\0{stores[key].get('content_digest', '')}\n".encode())
-            content_digest = digest.hexdigest() if ready_keys else ""
-            self._snapshot.update(
-                state=state, message=message, qualified=len(desired), ready=len(ready_keys),
-                pending=pending, failed=failed, images=images, bytes=size, initialized=initialized,
-                initialized_at=initialized_at, content_digest=content_digest,
-                inventory={**inventory, "verified": {
-                    "stores": len(ready_keys), "images": images, "bytes": size,
-                    "content_digest": content_digest}},
-            )
+            def summarize(rows: list[dict], previous: dict, current_inventory: dict, generation: int) -> dict:
+                ready_keys = [record["key"] for record in rows
+                              if stores.get(record["key"], {}).get("status") == "ready"]
+                images = sum(len(stores[key].get("files", [])) for key in ready_keys)
+                size = sum(int(stores[key].get("bytes") or 0) for key in ready_keys)
+                failed = len([record for record in rows if record["key"] in failures])
+                pending = len([record for record in rows
+                               if record["key"] not in ready_keys and record["key"] not in failures])
+                state, message = "synced", "全部成品已同步"
+                if failed:
+                    state, message = "partial", f"{failed} 家门店同步失败，目录可能不完整"
+                elif pending:
+                    state, message = "syncing", f"{pending} 家门店待同步"
+                elif not previous.get("initialized"):
+                    message = "初始化完成"
+                initialized = bool(previous.get("initialized")) or (not pending and not failed)
+                initialized_at = str(previous.get("initialized_at") or "")
+                if initialized and not initialized_at:
+                    initialized_at = _stamp()
+                digest = hashlib.sha256()
+                for key in sorted(ready_keys):
+                    digest.update(f"{key}\0{stores[key].get('content_digest', '')}\n".encode())
+                content_digest = digest.hexdigest() if ready_keys else ""
+                synced = [str(stores[key].get("synced_at") or "") for key in ready_keys]
+                return {
+                    "state": state, "message": message, "qualified": len(rows), "ready": len(ready_keys),
+                    "pending": pending, "failed": failed, "images": images, "bytes": size,
+                    "initialized": initialized, "initialized_at": initialized_at,
+                    "last_sync_at": max(synced, default=str(previous.get("last_sync_at") or "")),
+                    "generation": generation, "content_digest": content_digest,
+                    "inventory": {**current_inventory, "verified": {
+                        "stores": len(ready_keys), "images": images, "bytes": size,
+                        "content_digest": content_digest}},
+                }
+
+            self._snapshot.update(summarize(
+                desired, self._snapshot, inventory, int(self._index.get("generation") or 0)))
+            grouped: dict[str, list[dict]] = {}
+            for record in desired:
+                grouped.setdefault(record["project_id"], []).append(record)
+            known_projects = set(grouped) | set(self._project_snapshots)
+            for entry in stores.values():
+                if entry.get("project_id"):
+                    known_projects.add(str(entry["project_id"]))
+            try:
+                legacy = self._project(LEGACY_ID)
+            except ValueError:
+                legacy = None
+            if legacy:
+                known_projects.add(LEGACY_ID)
+            project_generations = self._index.setdefault("project_generations", {})
+            for project_id in known_projects:
+                rows = grouped.get(project_id, [])
+                previous = self._project_snapshots.get(project_id, {})
+                source_counts = {source: len([row for row in rows if row["source"] == source])
+                                 for source in ("shared_results", "output", "legacy_sources")}
+                pending_items = (inventory.get("pending_verification") or {}).get("items", []) if project_id == LEGACY_ID else []
+                project_inventory = {
+                    "discovered": {**source_counts, "total": sum(source_counts.values())},
+                    "included": len(rows), "legacy_included": 0,
+                    "excluded": {"count": 0, "reasons": []},
+                    "pending_verification": {
+                        "count": (inventory.get("pending_verification") or {}).get("count", 0) if project_id == LEGACY_ID else 0,
+                        "stores": (inventory.get("pending_verification") or {}).get("stores", 0) if project_id == LEGACY_ID else 0,
+                        "items": pending_items,
+                    },
+                }
+                self._project_snapshots[project_id] = summarize(
+                    rows, previous, project_inventory, int(project_generations.get(project_id) or 0))
+
             self._records = [{
                 **{key: record[key] for key in (
-                    "task_id", "batch_id", "batch_name", "store_name", "directory_name",
+                    "project_id", "project_code", "project_name", "task_id", "batch_id", "batch_name", "store_name", "directory_name",
                     "ready", "reason", "source", "legacy")},
                 "status": stores.get(record["key"], {}).get("status", "pending"),
                 "error": stores.get(record["key"], {}).get("error", ""),
@@ -813,23 +1025,34 @@ class DeliveryService:
                 "bytes": int(stores.get(record["key"], {}).get("bytes") or 0),
                 "synced_at": stores.get(record["key"], {}).get("synced_at", ""),
             } for record in desired]
-            batch_names = sorted({(record["batch_id"], record["batch_name"]) for record in desired})
+            batch_names = sorted({(record["project_id"], record["project_code"], record["batch_id"], record["batch_name"])
+                                  for record in desired})
             self._index["inventory"] = self._snapshot["inventory"]
-            self._index["initialized_at"] = initialized_at
-            self._index["content_digest"] = content_digest
+            self._index["initialized_at"] = self._snapshot["initialized_at"]
+            self._index["content_digest"] = self._snapshot["content_digest"]
+            self._index["project_snapshots"] = self._project_snapshots
             if self._names_dirty:
                 self._names_dirty = False
                 _atomic_json(self.index_path, self._index)
-            self._index["batch_options"] = [{"batch_id": batch_id, "name": name}
-                                            for batch_id, name in batch_names]
+            self._index["batch_options"] = [{"project_id": project_id, "project_code": project_code,
+                                              "batch_id": batch_id, "name": name}
+                                             for project_id, project_code, batch_id, name in batch_names]
             _atomic_json(self.index_path, self._index)
 
     def _root_error(self) -> str:
-        """校验交付根；宿主机 bind mount 存在时自动创建一级“合格”目录。"""
+        """校验管理员配置的 bind mount 根；不触碰既有根下的旧目录。"""
         if not self.root:
             return "尚未配置宿主机交付目录"
         if not self.root.parent.is_dir():
             return "交付目录所在挂载不存在或已失效，已暂停写入"
+        try:
+            info = self.root.lstat()
+        except FileNotFoundError:
+            info = None
+        if info is not None and (stat.S_ISLNK(info.st_mode)
+                                 or getattr(info, "st_file_attributes", 0) & 0x400
+                                 or not stat.S_ISDIR(info.st_mode)):
+            return "交付挂载根不能是符号链接或非目录"
         try:
             self.root.mkdir(parents=True, exist_ok=True)
         except OSError as error:
@@ -841,7 +1064,7 @@ class DeliveryService:
     def _clean_leftovers(self) -> None:
         for folder in (self.staging_root, self.trash_root):
             try:
-                if folder.is_dir():
+                if folder.is_dir() and not folder.is_symlink():
                     shutil.rmtree(folder, ignore_errors=True)
             except OSError:
                 pass
@@ -854,8 +1077,11 @@ class DeliveryService:
         if not isinstance(data, dict):
             data = {}
         return {
-            "version": 2,
+            # v2 entries have no project identity and remain untouched until reviewed.
+            "version": 3,
             "generation": int(data.get("generation") or 0),
+            "project_generations": dict(data.get("project_generations") or {}),
+            "project_snapshots": dict(data.get("project_snapshots") or {}),
             "directories": dict(data.get("directories") or {}),
             "stores": dict(data.get("stores") or {}),
             "failures": dict(data.get("failures") or {}),

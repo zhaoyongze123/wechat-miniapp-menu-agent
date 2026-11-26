@@ -6,6 +6,7 @@ import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDialog } from '../../components/AppDialog'
 import { AppDrawer } from '../../components/AppDrawer'
+import { useUnsavedChanges } from '../../components/UnsavedChangesProvider'
 import { ImagePreview } from '../../components/ImagePreview'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -24,6 +25,7 @@ import {
   normalizeDecision,
 } from './format'
 import { useStore, useStoreActions } from './hooks'
+import { useProject } from '../projects/ProjectProvider'
 import { ManualQrCanvas } from './ManualQrCanvas'
 import type { Box, MaterialStoreDetail, MaterialStoreSummary, QrCandidate, UploadMode } from './types'
 import { formatStore } from '../hub/format'
@@ -55,6 +57,7 @@ export function StoreDetailDrawer({
 }: StoreDetailDrawerProps) {
   const [hasDraft, setHasDraft] = useState(false)
   const [guardOpen, setGuardOpen] = useState(false)
+  useUnsavedChanges(open && hasDraft, '门店选码或补图尚未保存，切换项目后这些修改将丢失。')
   const pendingAction = useRef<(() => void) | null>(null)
   const saveBeforeLeave = useRef(false)
   const saveSelection = useRef<(() => void) | null>(null)
@@ -216,6 +219,7 @@ interface StoreDetailBodyProps {
 }
 
 function StoreDetailBody({ batchId, batchStatus, detail, onDirtyChange, onDecisionSaved, saveActionRef }: StoreDetailBodyProps) {
+  const { projectId } = useProject()
   const toast = useToast()
   const { decide, reanalyze, supplement } = useStoreActions(batchId, detail.store_id)
   const decision = normalizeDecision(detail.decision)
@@ -413,7 +417,7 @@ function StoreDetailBody({ batchId, batchStatus, detail, onDirtyChange, onDecisi
           <div className="mt-3 flex items-start gap-3">
             {detail.selected.candidate_index !== null ? (
               <img
-                src={storeSelectedUrl(batchId, detail.store_id)}
+                src={storeSelectedUrl(batchId, detail.store_id, projectId)}
                 alt="已确认二维码"
                 className="h-20 w-20 rounded-lg border border-subtle bg-surface object-contain"
               />
@@ -535,7 +539,7 @@ function StoreDetailBody({ batchId, batchStatus, detail, onDirtyChange, onDecisi
 
             {manualMode && image ? (
               <ManualQrCanvas
-                imageUrl={storeImageUrl(batchId, detail.store_id, imageIndex)}
+                imageUrl={storeImageUrl(batchId, detail.store_id, imageIndex, projectId)}
                 box={manualBox}
                 onChange={setManualBox}
                 disabled={!canEdit || decision !== 'pending'}
@@ -572,7 +576,7 @@ function StoreDetailBody({ batchId, batchStatus, detail, onDirtyChange, onDecisi
                       aria-pressed={active}
                     >
                       <img
-                        src={storeCandidateUrl(batchId, detail.store_id, imageIndex, candidate.candidate_index)}
+                        src={storeCandidateUrl(batchId, detail.store_id, imageIndex, candidate.candidate_index, projectId)}
                         alt={`候选二维码 ${candidate.candidate_index + 1}`}
                         className="h-16 w-16 shrink-0 rounded-lg border border-subtle bg-surface object-contain"
                         loading="lazy"
@@ -702,11 +706,11 @@ function StoreDetailBody({ batchId, batchStatus, detail, onDirtyChange, onDecisi
       </AppDialog>
       <ImagePreview
         open={previewImageIndex !== null}
-        src={previewImageIndex === null ? '' : storeImageUrl(batchId, detail.store_id, previewImageIndex)}
+        src={previewImageIndex === null ? '' : storeImageUrl(batchId, detail.store_id, previewImageIndex, projectId)}
         alt={previewImageIndex === null ? '' : `${formatStore(detail.source_name).name} · 原图 ${previewImageIndex + 1}`}
         caption={previewImageIndex === null ? '' : `${formatStore(detail.source_name).name} · 原图 ${previewImageIndex + 1}`}
         items={detail.images.map((_, index) => ({
-          src: storeImageUrl(batchId, detail.store_id, index),
+          src: storeImageUrl(batchId, detail.store_id, index, projectId),
           alt: `${formatStore(detail.source_name).name} · 原图 ${index + 1}`,
         }))}
         initialIndex={previewImageIndex ?? 0}

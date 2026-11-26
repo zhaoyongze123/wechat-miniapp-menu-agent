@@ -9,6 +9,8 @@ import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { formatStore, formatTime } from '../hub/format'
 import { statusOf } from '../task-center/format'
+import { useProject } from '../projects/ProjectProvider'
+import { projectApiPath } from '../projects/scope'
 import { captureEvidenceUrl, taskSourceUrl } from './api'
 import {
   canContinueMaterials,
@@ -52,18 +54,19 @@ export function RejectionDetailDrawer({
   onRetry,
   onContinue,
 }: RejectionDetailDrawerProps) {
+  const { projectId } = useProject()
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null)
   const status = statusOf(record?.status)
   const previewItems =
     record && record.source_type === 'capture' && record.task_id
       ? [
-          { src: captureEvidenceUrl(record.task_id), alt: '不合格证据' },
-          { src: taskSourceUrl(record.task_id), alt: '任务源图' },
+          { src: captureEvidenceUrl(record.task_id, projectId), alt: '不合格证据' },
+          { src: taskSourceUrl(record.task_id, projectId), alt: '任务源图' },
         ]
       : record && record.source_type === 'materials' && record.batch_id && record.store_id
         ? [
             {
-              src: `/api/materials/batches/${encodeURIComponent(record.batch_id)}/stores/${encodeURIComponent(record.store_id)}/selected`,
+              src: projectApiPath(`/api/materials/batches/${encodeURIComponent(record.batch_id)}/stores/${encodeURIComponent(record.store_id)}/selected`, projectId),
               alt: '当前使用的候选二维码',
             },
           ]
@@ -194,13 +197,13 @@ export function RejectionDetailDrawer({
                 {record.source_type === 'capture' && record.task_id ? (
                   <>
                     <EvidenceImage
-                      src={captureEvidenceUrl(record.task_id)}
+                      src={captureEvidenceUrl(record.task_id, projectId)}
                       alt="不合格证据"
                       caption={`${formatStore(record.store_name).name} · 不合格证据`}
                       onOpen={setPreview}
                     />
                     <EvidenceImage
-                      src={taskSourceUrl(record.task_id)}
+                      src={taskSourceUrl(record.task_id, projectId)}
                       alt="任务源图"
                       caption={`${formatStore(record.store_name).name} · 任务源图`}
                       onOpen={setPreview}
@@ -208,7 +211,7 @@ export function RejectionDetailDrawer({
                   </>
                 ) : record.source_type === 'materials' && record.batch_id && record.store_id ? (
                   <EvidenceImage
-                    src={`/api/materials/batches/${encodeURIComponent(record.batch_id)}/stores/${encodeURIComponent(record.store_id)}/selected`}
+                    src={projectApiPath(`/api/materials/batches/${encodeURIComponent(record.batch_id)}/stores/${encodeURIComponent(record.store_id)}/selected`, projectId)}
                     alt="当前使用的候选二维码"
                     caption={`${formatStore(record.store_name).name} · 当前使用的候选二维码`}
                     onOpen={setPreview}

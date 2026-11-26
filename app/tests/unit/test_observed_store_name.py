@@ -181,7 +181,8 @@ def _seed_result(hub: SharedHub, assignment_id: str, task_id: str, disposition: 
                  observed: str, received_at: str) -> None:
     with hub.store.connect() as db:
         db.execute(
-            "INSERT INTO shared_assignments VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO shared_assignments(id,task_id,worker_id,batch_id,batch_name,store,revision,snapshot_id,"
+            "source_hash,source_suffix,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (assignment_id, task_id, "w" * 32, "b" * 32, "批次", task_id, "v1", "snap", "hash",
              ".png", "completed", "2026-01-01T00:00:00+00:00"),
         )

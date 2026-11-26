@@ -180,6 +180,8 @@ class AnnotationSession:
         self.sample_root = Path(sample_root) if sample_root else Path(root) / "素材" / "规则样本"
         self._lock = threading.RLock()
         self.session_id: str | None = None
+        # 会话建立时固定项目归属，后续按钮和截图读取都依据该快照校验。
+        self.project_id = ""
         self.status = "idle"
         self.message = ""
         self.task_ids: list[str] = []
@@ -231,6 +233,7 @@ class AnnotationSession:
             store_steps = [step for step in self.steps if step.get("task_id") == task_id]
             return {
                 "session_id": self.session_id,
+                "project_id": self.project_id,
                 "active": self.active,
                 "paused": self.status == "paused",
                 "status": self.status,
@@ -273,7 +276,7 @@ class AnnotationSession:
         settings = self.configs.load()
         return Path(settings.output_dir).expanduser().resolve() / ANNOTATION_SESSIONS_DIR
 
-    def history(self, task_id: str) -> dict:
+    def history(self, task_id: str, *, project_id: str | None = None) -> dict:
         """回看某店已确认点击的实际效果，当前会话和已落盘的历史会话都可用。"""
         task = self.store.get(task_id)
         with self._lock:
@@ -281,7 +284,8 @@ class AnnotationSession:
             active_work_dir = Path(self.work_dir).resolve() if self.work_dir else None
             session_id = self.session_id
             started_at, finished_at = self.started_at, self.finished_at
-        steps = [self._public_step(step) for step in current]
+            current_project = self.project_id
+        steps = [self._public_step(step) for step in current] if project_id is None or current_project == project_id else []
         if steps:
             return {
                 "task": {"id": task["id"], "source_name": task["source_name"]},
@@ -330,6 +334,8 @@ class AnnotationSession:
                     snapshot = json.loads(session_file.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     snapshot = {}
+            if project_id is not None and snapshot.get("project_id") != project_id:
+                continue
             return {
                 "task": {"id": task["id"], "source_name": task["source_name"]},
                 "session_id": directory.name,
@@ -344,18 +350,18 @@ class AnnotationSession:
         return {"task": {"id": task["id"], "source_name": task["source_name"]},
                 "session_id": None, "steps": [], "started_at": None, "finished_at": None}
 
-    def start(self, task_ids: list[str]) -> dict:
+    def start(self, task_ids: list[str], *, project_id: str = "") -> dict:
         # 与安装任务共享同一把锁：安装开始时不会再有新的标注会话挤进空闲窗口。
         gate = getattr(self, "update_gate", None)
         blocker = getattr(self, "update_blocked", None)
         if gate is None:
-            return self._start_session(task_ids)
+            return self._start_session(task_ids, project_id)
         with gate:
             if blocker is not None and blocker():
                 raise AnnotationError("更新安装进行中，已暂停人工标注")
-            return self._start_session(task_ids)
+            return self._start_session(task_ids, project_id)
 
-    def _start_session(self, task_ids: list[str]) -> dict:
+    def _start_session(self, task_ids: list[str], project_id: str = "") -> dict:
         # 上一轮“完成本店”的后台推进可能仍在收尾，先等它结束再复用执行器。
         self._advance_cancel.set()
         self._wait_advance()
@@ -391,6 +397,7 @@ class AnnotationSession:
             run_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
             run_dir.chmod(0o700)
             self.session_id = session_id
+            self.project_id = project_id
             self.status = "starting"
             self.message = "正在连接 Windows 微信窗口" if native else "正在启动 UiPath 并确认微信安全起点"
             self.task_ids = ordered

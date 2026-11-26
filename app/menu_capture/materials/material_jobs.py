@@ -195,13 +195,50 @@ class JobStore:
             row["queue_position"] = 0
         return rows
 
-    def history(self, limit: int = 500) -> list[dict]:
-        """全部素材分析任务记录，供任务中心历史页使用。"""
+    def for_project(self, project_id: str, *, active: bool = True, limit: int = 20,
+                    batch_id: str = "") -> list[dict]:
+        """按批次外键过滤项目任务，再分页；任务名和展示文本不参与归属。"""
+        where = ["b.project_id=?"]
+        params: list[object] = [project_id]
+        if batch_id:
+            where.append("j.batch_id=?")
+            params.append(batch_id)
+        if active:
+            marks = ",".join("?" for _ in OPEN_STATUSES)
+            where.append(f"j.status IN ({marks})")
+            params.extend(OPEN_STATUSES)
+            ordering = "j.created_at,j.rowid"
+        else:
+            where.append("j.status IN ('completed','failed','cancelled')")
+            ordering = "j.finished_at DESC,j.rowid DESC"
         with self.task_store.connect() as db:
             rows = [dict(row) for row in db.execute(
-                "SELECT * FROM material_jobs ORDER BY created_at DESC, rowid DESC LIMIT ?",
-                (max(1, int(limit)),),
+                "SELECT j.* FROM material_jobs j JOIN material_batches b ON b.id=j.batch_id WHERE "
+                + " AND ".join(where) + f" ORDER BY {ordering} LIMIT ?",
+                (*params, max(1, int(limit))),
             )]
+            queued = [row["id"] for row in db.execute(
+                "SELECT j.id FROM material_jobs j JOIN material_batches b ON b.id=j.batch_id "
+                "WHERE b.project_id=? AND j.status='queued' ORDER BY j.created_at,j.rowid", (project_id,)
+            )]
+        positions = {job_id: index + 1 for index, job_id in enumerate(queued)}
+        for row in rows:
+            row["counts"] = self.counts(row["id"])
+            row["queue_position"] = positions.get(row["id"], 0)
+            row["eta_seconds"] = self.eta(row)
+        return rows
+
+    def history(self, limit: int = 500, *, project_id: str | None = None) -> list[dict]:
+        """素材分析历史先按项目批次外键过滤，再限量。"""
+        with self.task_store.connect() as db:
+            if project_id is None:
+                query = "SELECT * FROM material_jobs ORDER BY created_at DESC,rowid DESC LIMIT ?"
+                params = (max(1, int(limit)),)
+            else:
+                query = ("SELECT j.* FROM material_jobs j JOIN material_batches b ON b.id=j.batch_id "
+                         "WHERE b.project_id=? ORDER BY j.created_at DESC,j.rowid DESC LIMIT ?")
+                params = (project_id, max(1, int(limit)))
+            rows = [dict(row) for row in db.execute(query, params)]
         for row in rows:
             row["counts"] = self.counts(row["id"])
         return rows

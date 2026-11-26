@@ -9,6 +9,7 @@ const { push } = vi.hoisted(() => ({ push: vi.fn() }))
 
 vi.mock('../../api/client', () => ({ apiFetch: vi.fn() }))
 vi.mock('../task-center/api', () => ({ fetchActiveTasks: vi.fn(), fetchTaskDetail: vi.fn() }))
+vi.mock('../projects/ProjectProvider', () => ({ useProject: () => ({ projectId: 'project-test' }) }))
 vi.mock('../../components/ToastProvider', () => ({ useToast: () => ({ push }) }))
 
 const manualState = {
@@ -86,7 +87,7 @@ describe('NotificationRuntime 远程控制提醒', () => {
   it('远程页不请求受限接口，后台无桌面通知权限也能在音频激活后提醒且只提醒一次', async () => {
     renderRuntime()
 
-    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/manual/state', expect.any(Object)))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/manual/state?project_id=project-test', expect.any(Object)))
     // 音频未激活时播放失败，不登记声音事件，也不依赖桌面通知权限。
     await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
     await new Promise((resolve) => setTimeout(resolve, 50))

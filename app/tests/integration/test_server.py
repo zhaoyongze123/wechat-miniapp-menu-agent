@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from menu_capture.api.server import create_app
+from menu_capture.projects.service import LEGACY_ID
 from menu_capture.storage.store import TaskStore
 
 
@@ -206,9 +207,9 @@ def test_materials_history_detail_counts_match_list(tmp_path: Path) -> None:
     stamp = "2026-11-23T10:00:00+08:00"
     with store.connect() as db:
         db.execute(
-            "INSERT INTO material_batches(id,source_kind,source_root,status,created_at,updated_at,name) "
-            "VALUES(?,?,?,?,?,?,?)",
-            ("batch-a", "folder", str(tmp_path / "src"), "released", stamp, stamp, "演示批次"),
+            "INSERT INTO material_batches(id,source_kind,source_root,status,created_at,updated_at,name,project_id) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            ("batch-a", "folder", str(tmp_path / "src"), "released", stamp, stamp, "演示批次", LEGACY_ID),
         )
         db.execute(
             "INSERT INTO material_jobs(id,batch_id,kind,status,total_stores,done_stores,failed_stores,"

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
@@ -17,6 +17,8 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
+import { useProject } from '../projects/ProjectProvider'
+import { projectQueryKey } from '../projects/scope'
 import { AssignmentDetailDrawer } from './AssignmentDetailDrawer'
 import { fetchAssignmentRecords, reclaimAssignments } from './api'
 import { assignmentStatusOf, deviceStateOf, formatStore } from './format'
@@ -50,6 +52,7 @@ function isReclaimable(record: AssignmentRecord): boolean {
 
 export function HubAssignmentsPage() {
   const role = useRole()
+  const { projectId } = useProject()
   const toast = useToast()
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -58,6 +61,16 @@ export function HubAssignmentsPage() {
   const [confirm, setConfirm] = useState<{ ids: string[]; label: string } | null>(null)
   const [confirmError, setConfirmError] = useState('')
   const [reclaimResult, setReclaimResult] = useState<ReclaimResponse | null>(null)
+  const previousProjectId = useRef(projectId)
+
+  useEffect(() => {
+    if (previousProjectId.current === projectId) return
+    previousProjectId.current = projectId
+    setSelected([])
+    setDetailId(null)
+    setConfirm(null)
+    setReclaimResult(null)
+  }, [projectId])
 
   const workerId = searchParams.get('worker') ?? ''
   const fromDevices = searchParams.get('from') === 'devices'
@@ -93,14 +106,14 @@ export function HubAssignmentsPage() {
     return () => window.clearTimeout(timer)
   }, [queryText, q, updateQuery])
 
-  const sharedQuery = useHubSharedStatus()
+  const sharedQuery = useHubSharedStatus(projectId)
   const workers = useMemo(() => sharedQuery.data?.workers ?? [], [sharedQuery.data])
 
   const recordsQuery = useQuery({
-    queryKey: ['hub-assignments', workerId, phase, q, page, size],
-    queryFn: ({ signal }) => fetchAssignmentRecords({ workerId, phase, q, page, size }, signal),
-    placeholderData: keepPreviousData,
-    enabled: role.role === 'hub',
+    queryKey: projectQueryKey(projectId, 'hub-assignments', workerId, phase, q, page, size),
+    queryFn: ({ signal }) => fetchAssignmentRecords({ workerId, phase, q, page, size }, signal, projectId),
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === projectId ? previous : undefined,
+    enabled: role.role === 'hub' && Boolean(projectId),
     refetchInterval: 10_000,
     staleTime: 4_000,
   })
@@ -144,13 +157,13 @@ export function HubAssignmentsPage() {
   }, [reclaimableRecords, reclaimResult])
 
   const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ['hub-assignments'] })
-    void queryClient.invalidateQueries({ queryKey: ['hub-status'] })
-    void queryClient.invalidateQueries({ queryKey: ['hub-shared-status'] })
+    void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-assignments') })
+    void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-status') })
+    void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-shared-status') })
   }
 
   const mutation = useMutation({
-    mutationFn: (ids: string[]) => reclaimAssignments(ids),
+    mutationFn: (ids: string[]) => reclaimAssignments(ids, projectId),
     onSuccess: (result) => {
       setConfirm(null)
       setConfirmError('')
@@ -506,7 +519,7 @@ export function HubAssignmentsPage() {
                       清除筛选
                     </Button>
                   ) : (
-                    <Link className="text-sm text-default underline-offset-2 hover:underline" to="/workbench">
+                    <Link className="text-sm text-default underline-offset-2 hover:underline" to={`/workbench?project=${encodeURIComponent(projectId)}`}>
                       去分配门店
                     </Link>
                   )
@@ -518,6 +531,7 @@ export function HubAssignmentsPage() {
       </ListPageLayout>
 
       <AssignmentDetailDrawer
+        projectId={projectId}
         record={detailRecord}
         onOpenChange={(open) => {
           if (!open) setDetailId(null)

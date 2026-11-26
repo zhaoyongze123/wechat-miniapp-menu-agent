@@ -5,6 +5,7 @@ import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox'
 import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDialog } from '../../components/AppDialog'
+import { useUnsavedChanges } from '../../components/UnsavedChangesProvider'
 import { ConfirmActionDialog } from '../../components/ConfirmActionDialog'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -237,6 +238,10 @@ function EditBatchDialog({ batch, onClose }: { batch: MaterialBatch; onClose: ()
   const [name, setName] = useState(batch.name)
   const [description, setDescription] = useState(batch.description)
   const [error, setError] = useState('')
+  useUnsavedChanges(
+    name !== batch.name || description !== batch.description,
+    '批次资料尚未保存，切换项目后当前修改将丢失。',
+  )
 
   useEffect(() => {
     setName(batch.name)
