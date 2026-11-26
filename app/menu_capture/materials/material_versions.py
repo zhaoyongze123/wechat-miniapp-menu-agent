@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 
 from menu_capture.storage.store import TaskStore, now
+from menu_capture.projects.service import assert_batch_scope, get_project, select_version
 
 
 class MaterialVersions:
@@ -77,6 +78,20 @@ class MaterialVersions:
                 ).fetchone()
         return self.public(dict(row), root, active_id=row["id"]) if row else None
 
+    def active_project(self, project_id: str) -> dict | None:
+        """项目选择只读取项目事实源，不读取全局 input_dir 或回退到其他快照。"""
+        with self.store.connect() as db:
+            get_project(db, project_id)
+            row = db.execute(
+                "SELECT v.*, b.name, b.created_at FROM project_material_selection s "
+                "JOIN material_versions v ON v.id=s.version_id "
+                "JOIN material_batches b ON b.id=v.batch_id "
+                "WHERE s.project_id=? AND b.project_id=s.project_id AND b.deleted_at=''", (project_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return self.public(dict(row), self.published_root / row["snapshot_id"], active_id=row["id"])
+
     def public(self, row: dict, root: Path, active_id: str | None = None) -> dict:
         return {
             "release_id": row["id"], "batch_id": row["batch_id"], "batch_name": self.batch_name(row),
@@ -85,8 +100,17 @@ class MaterialVersions:
             "active": row["id"] == active_id,
         }
 
-    def list(self, batch_id: str, root: Path, *, include_deleted: bool = False) -> list[dict]:
-        current = self.active(root)
+    def list(self, batch_id: str, root: Path, *, include_deleted: bool = False,
+             project_id: str | None = None) -> list[dict]:
+        if project_id is not None:
+            with self.store.connect() as db:
+                batch = db.execute("SELECT project_id,deleted_at FROM material_batches WHERE id=?", (batch_id,)).fetchone()
+                get_project(db, project_id)
+                if not batch or batch["project_id"] != project_id or (batch["deleted_at"] and not include_deleted):
+                    return []
+            current = self.active_project(project_id)
+        else:
+            current = self.active(root)
         return [self.public(row, root, current["release_id"] if current else None)
                 for row in self.records(batch_id, include_deleted=include_deleted)]
 
@@ -125,7 +149,9 @@ class MaterialVersions:
 
     @staticmethod
     def remember(db, batch_id: str, name: str, version: str, snapshot_id: str,
-                 description: str, count: int, *, activate: bool = True) -> str:
+                 description: str, count: int, *, activate: bool = True, project_id: str | None = None) -> str:
+        if project_id is not None:
+            assert_batch_scope(db, project_id, batch_id, write=True)
         batch = db.execute("SELECT deleted_at FROM material_batches WHERE id=?", (batch_id,)).fetchone()
         if batch is None or batch["deleted_at"]:
             raise ValueError("回收站批次不能发布或选用")
@@ -141,8 +167,11 @@ class MaterialVersions:
         db.execute("UPDATE material_batches SET name=?,snapshot_id=?,updated_at=? WHERE id=?",
                    (name, snapshot_id, now(), batch_id))
         if activate:
-            db.execute("INSERT INTO material_selection VALUES(1,?) ON CONFLICT(singleton) DO UPDATE SET version_id=excluded.version_id",
-                       (version_id,))
+            if project_id is not None:
+                select_version(db, project_id, version_id)
+            else:
+                db.execute("INSERT INTO material_selection VALUES(1,?) ON CONFLICT(singleton) DO UPDATE SET version_id=excluded.version_id",
+                           (version_id,))
         return version_id
 
     def changes(self, batch_id: str, snapshot_id: str) -> dict:
