@@ -157,7 +157,8 @@ jobs:
           compression-level: 0
 
   hub:
-    needs: [changes]
+    # Registry publication follows successful source gates; Windows packing remains parallel.
+    needs: [changes, checks]
     if: ${{ needs.changes.outputs.build == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
