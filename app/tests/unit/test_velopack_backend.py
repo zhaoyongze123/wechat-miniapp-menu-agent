@@ -194,18 +194,18 @@ def test_download_record_distinguishes_sdk_full_fallback(tmp_path, monkeypatch):
 
     # SDK 内部 delta 失败回退 full：产物等于签名 full，必须标记 signed-full。
     (packages / name).write_bytes(full)
-    _record_downloaded_package(backend, target, delta_used=True)
+    _record_downloaded_package(backend, target, delta_used=True, baseline_signed=True)
     assert backend.verified_package(version, commit)["source"] == "signed-full"
 
     # 真正的差分重建产物：标记 signed-delta-rebuild。
     (packages / name).write_bytes(_nupkg(version=version, commit=commit, payload=b"rebuilt"))
-    _record_downloaded_package(backend, target, delta_used=True)
+    _record_downloaded_package(backend, target, delta_used=True, baseline_signed=True)
     assert backend.verified_package(version, commit)["source"] == "signed-delta-rebuild"
 
     # 非 delta 路径却与签名 full 不一致：无既有可信记录时必须拒绝。
     backend._records_path().unlink()
     with pytest.raises(ValueError):
-        _record_downloaded_package(backend, target, delta_used=False)
+        _record_downloaded_package(backend, target, delta_used=False, baseline_signed=True)
 
 
 def test_records_reject_unknown_schema_source_and_bad_names(tmp_path, monkeypatch):
@@ -422,6 +422,97 @@ def test_worker_retry_reuses_verified_rebuilt_target(tmp_path, monkeypatch):
     assert backend.verified_package(target_version, target_commit)["source"] == "unsigned-delta-rebuild"
 
 
+def test_delta_rebuild_trust_never_exceeds_weakest_input(tmp_path, monkeypatch):
+    from menu_capture.updates.velopack_worker import _record_downloaded_package
+
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
+    version, commit = "0.5.2", "a" * 40
+    packages = tmp_path / "packages"
+    packages.mkdir()
+    monkeypatch.setenv("MENU_CAPTURE_VELOPACK_PACKAGES", str(packages))
+    backend = VelopackBackend("owner/repo", tmp_path / "data")
+    name = f"Yipu.MenuCapture-{version}-full.nupkg"
+    rebuilt = _nupkg(version=version, commit=commit, payload=b"rebuilt")
+    (packages / name).write_bytes(rebuilt)
+    target = {"version": version, "git_commit": commit,
+              "full": {"name": name, "size": 1, "sha256": "0" * 64},
+              "trust": {"mode": "ed25519"}}
+    # 目标已签名，但基线未签名：重建信任不得升为 signed。
+    _record_downloaded_package(backend, target, delta_used=True, baseline_signed=False)
+    assert backend.verified_package(version, commit)["source"] == "unsigned-delta-rebuild"
+
+
+def test_unsigned_records_require_explicit_opt_in(tmp_path, monkeypatch):
+    version, commit = "0.5.2", "a" * 40
+    packages = tmp_path / "packages"
+    packages.mkdir()
+    monkeypatch.setenv("MENU_CAPTURE_VELOPACK_PACKAGES", str(packages))
+    backend = VelopackBackend("owner/repo", tmp_path / "data")
+    name = f"Yipu.MenuCapture-{version}-full.nupkg"
+    raw = _nupkg(version=version, commit=commit)
+    (packages / name).write_bytes(raw)
+    backend.record_verified_package(version=version, commit=commit, name=name,
+                                    size=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
+                                    source="unsigned-full")
+    monkeypatch.delenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", raising=False)
+    assert backend.verified_package(version, commit) is None
+    monkeypatch.setattr(backend, "fetch_release_manifest", _no_network)
+    with pytest.raises(AssertionError, match="不应访问网络"):
+        backend.prepare_recovery_package(version, commit, {"version": "0.5.3"})
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
+    assert backend.verified_package(version, commit) is not None
+
+
+def test_apply_pending_rejects_wrong_sdk_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
+    backend = VelopackBackend("owner/repo", tmp_path / "data")
+    monkeypatch.setattr(backend, "available", lambda: True)
+    target = {"version": "0.5.2", "git_commit": "a" * 40,
+              "pack_id": "Yipu.MenuCapture",
+              "full": {"name": "Yipu.MenuCapture-0.5.2-full.nupkg"},
+              "trust": {"mode": "unsigned"}}
+
+    class FakeManager:
+        def __init__(self):
+            self.applied = False
+
+        def get_update_pending_restart(self):
+            return SimpleNamespace(Version="0.5.1", PackageId="Yipu.MenuCapture",
+                                   Type="Full", FileName="other.nupkg",
+                                   SHA256="", Size=1)
+
+        def wait_exit_then_apply_updates(self, *_args, **_kwargs):
+            self.applied = True
+
+    manager = FakeManager()
+    monkeypatch.setattr(backend, "manager", lambda channel, version: manager)
+    with pytest.raises(ValueError):
+        backend.apply_pending(target, channel="stable")
+    assert manager.applied is False
+
+
+def test_prepare_recovery_rejects_reparse_recovery_parent(tmp_path, monkeypatch):
+    version, commit = "0.5.1", "a" * 40
+    packages = tmp_path / "packages"
+    packages.mkdir()
+    monkeypatch.setenv("MENU_CAPTURE_VELOPACK_PACKAGES", str(packages))
+    backend = VelopackBackend("owner/repo", tmp_path / "data")
+    name = f"Yipu.MenuCapture-{version}-full.nupkg"
+    raw = _nupkg(version=version, commit=commit)
+    digest = hashlib.sha256(raw).hexdigest()
+    backend.record_verified_package(version=version, commit=commit, name=name,
+                                    size=len(raw), sha256=digest, source="signed-full")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / name).write_bytes(raw)
+    recovery_root = backend._recovery_root()
+    recovery_root.mkdir(parents=True)
+    (recovery_root / f"{version}-{digest[:12]}").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(backend, "fetch_release_manifest", _no_network)
+    with pytest.raises(AssertionError, match="不应访问网络"):
+        backend.prepare_recovery_package(version, commit, {"version": "0.5.2"})
+
+
 def test_trusted_base_requires_version_name_and_digest(tmp_path, monkeypatch):
     from menu_capture.updates.velopack_worker import _trusted_base
 
@@ -429,7 +520,8 @@ def test_trusted_base_requires_version_name_and_digest(tmp_path, monkeypatch):
     backend, packages, name, raw, digest = _setup_backend(
         tmp_path, monkeypatch, version="0.5.2", commit=commit,
     )
-    recovery = {"commit": commit, "name": name, "size": len(raw), "sha256": digest}
+    recovery = {"commit": commit, "name": name, "size": len(raw), "sha256": digest,
+                "record_source": "signed-full"}
     ok = SimpleNamespace(BaseRelease=SimpleNamespace(Version="0.5.2", FileName=name),
                          DeltasToTarget=[object()])
     assert _trusted_base(ok, backend, recovery, "0.5.2")

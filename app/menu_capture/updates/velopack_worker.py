@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,10 @@ def _percent(value: Any) -> int:
 
 def _trusted_base(info: Any, backend: Any, recovery: dict, current_version: str) -> bool:
     """SDK 差分基线必须在调用 download_updates 前核验来源与实际摘要，不能只比版本号。"""
+    record_source = str(recovery.get("record_source") or "")
+    if (not record_source.startswith("signed-")
+            and os.environ.get("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE") != "1"):
+        return False
     base = getattr(info, "BaseRelease", None)
     deltas = list(getattr(info, "DeltasToTarget", None) or [])
     if base is None or not deltas or str(getattr(base, "Version", "")) != str(current_version):
@@ -44,7 +49,8 @@ def _trusted_base(info: Any, backend: Any, recovery: dict, current_version: str)
     })
 
 
-def _record_downloaded_package(backend: Any, target: dict, *, delta_used: bool) -> None:
+def _record_downloaded_package(backend: Any, target: dict, *, delta_used: bool,
+                               baseline_signed: bool) -> None:
     """只记录可证明来源的产物：签名 full，或已核验基线+签名 delta 的重建结果。"""
     from menu_capture.updates.velopack_identity import require_inner_manifest
 
@@ -57,11 +63,14 @@ def _record_downloaded_package(backend: Any, target: dict, *, delta_used: bool) 
     if existing is not None and backend.package_matches(path, existing):
         return
     identity = backend.package_identity(path)
-    signed = str((target.get("trust") or {}).get("mode") or "") == "ed25519"
+    target_signed = str((target.get("trust") or {}).get("mode") or "") == "ed25519"
     if identity["size"] == target["full"]["size"] and identity["sha256"] == target["full"]["sha256"]:
-        source = "signed-full" if signed else "unsigned-full"
+        # 产物与签名 Full 实际字节一致，才可按目标签名标为 signed-full。
+        source = "signed-full" if target_signed else "unsigned-full"
     elif delta_used:
         require_inner_manifest(path, version=target["version"], commit=target["git_commit"])
+        # 重建信任不得高于最弱输入：目标与基线都必须是签名来源。
+        signed = target_signed and baseline_signed
         source = "signed-delta-rebuild" if signed else "unsigned-delta-rebuild"
     else:
         raise ValueError("下载结果与正式发布身份不一致")
@@ -109,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
                 or str(current_release.get("version") or "") != current_version):
             raise ValueError("无法确定当前安装版本与 commit，不能准备可信回滚包")
         recovery = backend.prepare_recovery_package(current_version, current_commit, target)
+        baseline_signed = str(recovery.get("record_source") or "").startswith("signed-")
 
         # 差分基线必须与当前运行版本、恢复包身份及实际摘要完全一致，否则走官方全量。
         allowed = {(item["name"], item["sha256"], item["size"]) for item in target["deltas"]}
@@ -132,7 +142,8 @@ def main(argv: list[str] | None = None) -> int:
 
         _write_progress(progress_path, {"stage": "downloading", "percent": 0})
         manager.download_updates(info, on_progress)
-        _record_downloaded_package(backend, target, delta_used=delta_trusted)
+        _record_downloaded_package(backend, target, delta_used=delta_trusted,
+                                   baseline_signed=baseline_signed)
         _write_progress(progress_path, {"stage": "completed", "percent": 100})
         return 0
     except Exception as exc:  # noqa: BLE001 - 子进程必须把失败原因交给父进程展示

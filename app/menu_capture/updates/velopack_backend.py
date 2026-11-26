@@ -213,6 +213,11 @@ class VelopackBackend:
         record = self._read_records().get(str(version))
         if not self._valid_record(record) or record.get("commit") != str(commit):
             return None
+        # unsigned 记录只在开发放行开关打开时可复用，避免开发包在正式模式下
+        # 被继续当作目标缓存、Delta 基线或恢复包依据。
+        if (str(record.get("source") or "").startswith("unsigned-")
+                and os.environ.get("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE") != "1"):
+            return None
         return record
 
     def package_identity(self, path: Path) -> dict:
@@ -315,17 +320,23 @@ class VelopackBackend:
         recovery_root = self._recovery_root()
         if recovery_root.exists() and (_is_reparse(recovery_root) or not recovery_root.is_dir()):
             raise VelopackError("恢复包目录不可信")
+        packages_root = self._packages_dir()
+        if packages_root.exists() and (_is_reparse(packages_root) or not packages_root.is_dir()):
+            raise VelopackError("packages 目录不可信")
         # 1) 已验证产物记录优先：只接受与记录实际摘要逐字节一致的本地包或恢复副本。
         record = self.verified_package(previous_version, previous_commit)
         package: Path | None = None
         source: dict | None = None
         if record is not None:
             for candidate, kind in (
-                (self._packages_dir() / record["name"], "local-packages"),
+                (packages_root / record["name"], "local-packages"),
                 (recovery_root / f"{previous_version}-{record['sha256'][:12]}" / record["name"],
                  "recovery-cache"),
             ):
-                if self.package_matches(candidate, record):
+                direct = kind == "recovery-cache"
+                root = recovery_root if direct else packages_root
+                if (self._safe_package_path(candidate, root, direct_child=direct)
+                        and self.package_matches(candidate, record)):
                     package = candidate
                     source = {"type": kind, "verified_by": str(record.get("source") or "")}
                     break
@@ -347,16 +358,21 @@ class VelopackBackend:
             published = {"commit": previous_commit, "name": full["name"],
                          "size": full["size"], "sha256": full["sha256"]}
             for candidate, kind in (
-                (self._packages_dir() / full["name"], "local-packages"),
+                (packages_root / full["name"], "local-packages"),
                 (recovery_root / f"{previous_version}-{full['sha256'][:12]}" / full["name"],
                  "recovery-cache"),
             ):
-                if self.package_matches(candidate, published):
+                direct = kind == "recovery-cache"
+                root = recovery_root if direct else packages_root
+                if (self._safe_package_path(candidate, root, direct_child=direct)
+                        and self.package_matches(candidate, published)):
                     package = candidate
                     source = {"type": kind, "url": full["url"], "tag": f"v{previous_version}"}
                     break
             if package is None:
                 recovery_tmp = recovery_root / ".download"
+                if recovery_tmp.exists() and (_is_reparse(recovery_tmp) or not recovery_tmp.is_dir()):
+                    raise VelopackError("恢复包临时目录不可信")
                 recovery_tmp.mkdir(parents=True, exist_ok=True)
                 package = self._download_verified(full, recovery_tmp / full["name"])
                 source = {"type": "official-release", "url": full["url"],
@@ -410,6 +426,7 @@ class VelopackBackend:
             "name": name, "size": size, "sha256": digest,
             # 这里的 source 只表示存放位置；可信来源记录在身份记录的 source 字段。
             "path": str(destination), "source": source,
+            "record_source": str(record.get("source") or ""),
             "inner_manifest": {
                 "version": str(inner.get("version") or ""),
                 "commit": str(inner.get("git_commit") or ""),
@@ -418,16 +435,34 @@ class VelopackBackend:
             },
         }
 
+    def _safe_package_path(self, path: Path, root: Path, *, direct_child: bool) -> bool:
+        """受管根、直接父目录与文件本身都不允许是链接或重解析点。"""
+        if _is_reparse(path) or _is_reparse(root) or not root.is_dir():
+            return False
+        try:
+            if direct_child:
+                parent = path.parent
+                return (not _is_reparse(parent) and parent.is_dir()
+                        and parent.resolve().parent == root.resolve())
+            return path.parent.resolve() == root.resolve()
+        except OSError:
+            return False
+
     def require_recovery_package(self, asset: dict) -> Path:
         validate_local_asset(asset, version=asset.get("version"), commit=asset.get("commit"))
-        root = self._recovery_root().resolve()
+        root = self._recovery_root()
+        if _is_reparse(root) or not root.is_dir():
+            raise VelopackError("恢复包根目录不可信")
         path = Path(asset["path"])
+        if not self._safe_package_path(path, root, direct_child=True):
+            raise VelopackError("恢复包目录或文件不可信")
+        resolved_root = root.resolve()
+        resolved = path.resolve()
         try:
-            resolved = path.resolve()
-            resolved.relative_to(root)
-        except (OSError, ValueError) as exc:
+            resolved.relative_to(resolved_root)
+        except ValueError as exc:
             raise VelopackError("恢复包路径不在专属恢复目录") from exc
-        if path.is_symlink() or not resolved.is_file() or resolved.stat().st_size != asset["size"]:
+        if not resolved.is_file() or resolved.stat().st_size != asset["size"]:
             raise VelopackError("恢复包不存在或大小不一致")
         return resolved
 
@@ -556,6 +591,7 @@ class VelopackBackend:
 
     def _require_pending_package(self, target: dict, identity: dict) -> dict:
         """本地待安装包必须与已验证产物记录逐字节一致；无记录一律拒绝。"""
+        require_local_asset(identity, target)
         root = self._packages_dir()
         if _is_reparse(root) or not root.is_dir():
             raise VelopackError("packages 目录不可信")
@@ -601,7 +637,6 @@ class VelopackBackend:
     def verify_pending(self, target: dict, channel: str) -> dict:
         require_publisher_trust(target)
         pending = self.pending_restart(channel)
-        require_local_asset(pending, target)
         return self._require_pending_package(target, pending)
 
     def download(
