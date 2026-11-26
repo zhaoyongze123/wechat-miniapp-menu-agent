@@ -158,17 +158,28 @@ python3 deploy/tools/workspace_audit.py --repo <主仓路径> --json # 机器可
 
 | 指标 | 治理前 | 治理后 |
 | --- | --- | --- |
-| 主仓 | `D:\menu-agent`，`bf03388`，落后 145 个提交 | `9e2b88b`，领先 0 / 落后 0（`fetch` + `merge --ff-only`） |
+| 主仓 | `D:\menu-agent`，`bf03388`，落后 145 个提交 | `ab41f69`，领先 0 / 落后 0 |
+| 主仓体积 | 51.9 GB | **25.90 GB**（迁出 `data` 20.32 GB 后预计约 5.6 GB） |
 | 注册 Worktree | 3（主仓 + #105 + #103） | 2（主仓 + #103 活跃区） |
-| 旧治理分支 | `chore/105-storage-governance @ a165f1a`，PR #107 | 本地与远端分支已删除，PR #107 关闭；补丁归档 |
-| 保护 | `work/` 未跟踪 | `work/` 全量备份至 `archive/development/issue105-workdir/`（234,200,210 字节一致） |
+| 历史快照 | issue88 36.47 GB + Hub 迁移 40.89 GB | 核验后删除，释放 **77.95 GB** |
+| 废弃副本 | `hub-data` 4.83 GB、`_archive`+`输出` 4.77 GB、交付归档 3.28 GB、`UFS_Menu_Scraper` 13.81 GB | 已回收 |
+| D 盘可用 | 225.90 GB（Phase 2 前）、233.07 GB（本阶段前） | **337.82 GB**（累计 +111.92 GB，本阶段 +104.75 GB） |
 
-主仓同步不触及生产：Worker 0.3.4 从 `runtime/MenuCapture/releases/0.3.4` 运行，数据在 `data/MenuCapture`，两者均未被 Git 跟踪；同步后 `/healthz` 返回 200。
+核验依据：
+
+- issue88 快照：`worker-data` 99,935 个文件仅 5 个独有，分别为 SQLite raw copy（与现役库逐条一致）和 0.3.1 安装包（GitHub Releases 可下载）；`hub-volume` 53,067 个文件全部存在于现役卷（现役多 32,394 个）；回滚包与 `runtime/releases/0.3.1` 重复。
+- Hub 迁移快照：`hub-ready/data` 完全被 `legacy-backup/data` 包含；`legacy-sources` 全部覆盖；`output` 的 60 个差异仅为 Unicode 拼写差异，字节数吻合；`data` 独有 380 个 debug 日志（780 KB）。提取 Hub DB（4,332 任务）与迁移前 DB（2,441 任务，`integrity_check=ok`）至 `backups/database/`。
+- `hub-data`：4,365 个文件与现役卷 `/v/data/materials/published` 完全一致，容器与计划任务均无引用。
+- `UFS_Menu_Scraper`：素材 9,095 个文件全部覆盖；任务库即迁移前 2,441 任务集；动作证据 2,579 个文件全部覆盖；8 个引用任务与 2 个失效任务导出 XML 后注销。
+- 交付归档：`prod-backup-0.1.2` 仅 237 MB 动作证据未被现役数据覆盖（归档并去重至 200 MB）；0.3.0/0.3.1/0.3.4 安装包均在 GitHub Releases。
+
+保留：`D:\MenuCapture` 7.29 GB（正式交付）、`backup/issue88-a-034` 0.14 GB（#88 验收）、`work/` 0.22 GB（#101 活跃）。
 
 ### 剩余风险与未完成项
 
-1. `D:\menu-agent\UFS_Menu_Scraper`（13.76 GB，含素材）与 `UFS_Menu_Capture_CrossPlatform`（5.8 MB）仍在主仓内，被计划任务的 `.venv` 入口引用；已按规范加入本机 `.git/info/exclude` 过渡防误提交，待 #101 生产迁移窗口移出并修正计划任务引用。
-2. `archive/legacy/mac-legacy-runner/data/materials`（4.2 GB）未与生产 Hub 做逐哈希比对，暂按独有业务数据保留，不自动删除。
-3. `D:\menu-agent-backups\issue88-*`、`D:\handoff\menu-hub-migration-*` 与 `D:\menu-agent\hub-data` 按 30 天保留期继续观察，尚未证明可回收。
-4. Windows Worker `/api/version` 响应缓慢为既有问题；另有 0.3.3 残留 updater 进程（PID 23880），均未在本次重启或清理。
-5. `/private/tmp/menu-agent-issue101` 与 `issue102` 属未关闭 Issue，Issue 结束后按第 4 节回收。
+1. `data` 20.32 GB 是主仓降到 20 GB 以内的最后一项；`MENU_CAPTURE_HOME`（机器级环境变量）指向 `D:\menu-agent\data\MenuCapture`，需在维护窗口内停 Worker、迁数据、改环境变量、启动并验证采集/同步/审核/交付。
+2. `runtime` 4.38 GB 为现役 Inno 0.3.4 运行目录，Velopack v0.4.0 验收通过后再清理旧版本。
+3. `D:\menu-agent-backups\pre-0.4.0-*`（2.65 GB）为发布 Agent 今日创建的 v0.4.0 迁移回滚点，按 30 天保留期由发布流程管理。
+4. 执行偏差：`backup\20261120-pre-align`（44 MB，11-20 未提交快照）在批量清理中未归档即被删除，无卷影副本或其它副本可恢复；内容为旧布局未提交脚本与工作区补丁，不含业务数据、素材或凭证。
+5. `archive/legacy/mac-legacy-runner/data/materials`（4.2 GB）未与生产 Hub 逐哈希比对，按独有业务数据保留，不自动删除。
+6. Windows Worker `/api/version` 响应缓慢、0.3.3 残留 updater（PID 23880）为既有问题；`/private/tmp/menu-agent-issue101`、`issue102` 属未关闭 Issue。
