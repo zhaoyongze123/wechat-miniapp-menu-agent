@@ -937,6 +937,7 @@ class UpdateService:
             "releases": self._preview_releases(),
             "downloads": self._preview_downloads(),
             "logs": self._preview_logs(),
+            "recovery": self._preview_recovery(),
         }
         blocked, reason = self._cleanup_block()
         return {
@@ -1067,8 +1068,9 @@ class UpdateService:
             raise ValueError("清理参数无效")
         if str(payload.get("confirm") or "") != CLEANUP_CONFIRM:
             raise ValueError("清理必须提交确认标记")
-        scopes = payload.get("scopes") or ["releases", "downloads", "logs"]
-        if not isinstance(scopes, list) or not scopes or set(scopes) - {"releases", "downloads", "logs"}:
+        scopes = payload.get("scopes") or ["releases", "downloads", "logs", "recovery"]
+        if (not isinstance(scopes, list) or not scopes
+                or set(scopes) - {"releases", "downloads", "logs", "recovery"}):
             raise ValueError("清理范围无效")
         # 闸门探测会读取安装执行器状态，文件遍历与删除可能持续数十秒，
         # 两者都不能在持 self._lock 时执行，否则会与安装启动交叉持锁并阻塞状态接口。
@@ -1087,6 +1089,8 @@ class UpdateService:
                     self._cleanup_releases(deleted, failures)
                 elif scope == "downloads":
                     self._cleanup_downloads(deleted, failures)
+                elif scope == "recovery":
+                    self._cleanup_recovery(deleted, failures)
                 else:
                     self._cleanup_logs(deleted, failures)
             freed = sum(int(row.get("size_bytes") or 0) for row in deleted)
@@ -1160,6 +1164,54 @@ class UpdateService:
                 failures.append({"scope": "downloads", "version": version, "error": str(exc)})
                 continue
             deleted.append({"scope": "downloads", "version": version, "size_bytes": size})
+
+    def _preview_recovery(self) -> dict:
+        """回滚包治理：保留最新一份，其余历史完整包列入清理预览。"""
+        root = self.data_dir / "recovery"
+        if not root.is_dir() or _is_reparse(root):
+            return {"supported": True, "reason": "恢复包目录尚未生成", "kept": [],
+                    "items": [], "reclaimable_bytes": 0}
+        found: list[tuple[float, Path]] = []
+        for directory in root.iterdir():
+            if (directory.name.startswith(".") or directory.is_symlink()
+                    or not directory.is_dir() or _is_reparse(directory)
+                    or not _has_regular_nupkg(directory)):
+                continue
+            try:
+                found.append((directory.stat().st_mtime, directory))
+            except OSError:
+                continue
+        found.sort(key=lambda item: item[0], reverse=True)
+        keep = found[0][1].name if found else ""
+        items = [
+            {"name": directory.name, "path": str(directory), "size_bytes": _tree_size(directory)}
+            for _mtime, directory in found[1:]
+        ]
+        return {
+            "supported": True,
+            "reason": "保留最新一份回滚包；其余历史完整包可清理",
+            "kept": [keep] if keep else [],
+            "items": items,
+            "reclaimable_bytes": sum(item["size_bytes"] for item in items),
+        }
+
+    def _cleanup_recovery(self, deleted: list[dict], failures: list[dict]) -> None:
+        root = self.data_dir / "recovery"
+        for item in self._preview_recovery()["items"]:
+            path = Path(item["path"])
+            try:
+                if not root.is_dir() or _is_reparse(root):
+                    raise ValueError("恢复包目录不可信")
+                resolved_root = root.resolve(strict=True)
+                if (path.is_symlink() or _is_reparse(path) or not path.is_dir()
+                        or path.resolve(strict=True).parent != resolved_root):
+                    raise ValueError("恢复包目录不可信")
+                size = _tree_size(path)
+                shutil.rmtree(path)
+            except (OSError, ValueError) as exc:
+                failures.append({"scope": "recovery", "name": str(item["name"]), "error": str(exc)})
+                continue
+            deleted.append({"scope": "recovery", "name": str(item["name"]), "size_bytes": size})
 
     def _cleanup_logs(self, deleted: list[dict], failures: list[dict]) -> None:
         for item in self._preview_logs()["items"]:
@@ -2371,6 +2423,17 @@ def _is_reparse(path: Path) -> bool:
     except OSError:
         return False
     return bool(getattr(info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _has_regular_nupkg(directory: Path) -> bool:
+    """恢复包目录必须包含普通 .nupkg，避免把基线快照等文件误当回滚包清理。"""
+    try:
+        return any(
+            path.is_file() and not path.is_symlink() and path.name.endswith(".nupkg")
+            for path in directory.iterdir()
+        )
+    except OSError:
+        return False
 
 
 def _tree_size(directory: Path) -> int:

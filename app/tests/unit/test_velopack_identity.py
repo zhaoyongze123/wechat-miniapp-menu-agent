@@ -1,9 +1,14 @@
 import hashlib
+import json
+import zipfile
 from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
-from menu_capture.updates.velopack_identity import require_target, sdk_asset_identity, validate_extension, require_unsigned_opt_in
+from menu_capture.updates.velopack_identity import (
+    require_inner_manifest, require_local_asset, require_target, require_unsigned_opt_in,
+    sdk_asset_identity, validate_extension,
+)
 
 REPO = "owner/repo"
 VERSION = "0.4.0"
@@ -82,3 +87,30 @@ def test_unsigned_explicit_opt_in(monkeypatch):
     target["trust"] = {"mode": "invalid"}
     with pytest.raises(ValueError):
         require_unsigned_opt_in(target)
+
+
+def test_local_asset_allows_empty_digest_but_checks_identity():
+    target = validate(fixture())
+    full = target["full"]
+
+    def asset(file_name=full["name"], version=VERSION):
+        return SimpleNamespace(Version=version, PackageId=target["pack_id"], Type="Full",
+                               FileName=file_name, SHA256="", Size=123)
+
+    require_local_asset(sdk_asset_identity(asset()), target)
+    with pytest.raises(ValueError):
+        require_local_asset(sdk_asset_identity(asset(file_name="other.nupkg")), target)
+    with pytest.raises(ValueError):
+        require_local_asset(sdk_asset_identity(asset(version="9.9.9")), target)
+
+
+def test_inner_manifest_is_consistency_check_only(tmp_path):
+    nupkg = tmp_path / "full.nupkg"
+    with zipfile.ZipFile(nupkg, "w") as archive:
+        archive.writestr("lib/net45/release-manifest.json",
+                         json.dumps({"version": VERSION, "git_commit": COMMIT}))
+    assert require_inner_manifest(nupkg, version=VERSION, commit=COMMIT)["version"] == VERSION
+    with pytest.raises(ValueError):
+        require_inner_manifest(nupkg, version="9.9.9", commit=COMMIT)
+    with pytest.raises(ValueError):
+        require_inner_manifest(nupkg, version=VERSION, commit="b" * 40)

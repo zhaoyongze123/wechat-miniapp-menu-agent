@@ -103,12 +103,28 @@ def sdk_asset_identity(asset):
 
 
 def require_target(actual, target):
+    """远程发布资产：必须与已签名清单的版本、文件名、摘要和大小完全一致。"""
     full = target["full"]
     expected = {"version": target["version"], "pack_id": target["pack_id"],
                 "type": "Full", "file_name": full["name"],
                 "sha256": full["sha256"], "size": full["size"]}
     if not isinstance(actual, dict) or any(actual.get(key) != value for key, value in expected.items()):
         raise ValueError("SDK 目标包与正式发布身份不一致")
+
+
+def require_local_asset(actual, target):
+    """本地待安装/恢复包的身份形状校验。
+
+    SDK 对本地资产返回空摘要、Size 为实际文件大小，因此这里不能与发布 sha256/size 比对；
+    实际摘要必须由调用方对照已验证产物身份记录另行核验，本函数不授予任何信任。
+    """
+    full = target["full"]
+    expected = {"version": target["version"], "pack_id": target["pack_id"],
+                "type": "Full", "file_name": full["name"]}
+    if not isinstance(actual, dict) or any(actual.get(key) != value for key, value in expected.items()):
+        raise ValueError("SDK 本地包与正式发布身份不一致")
+    if type(actual.get("size")) is not int or actual["size"] <= 0:
+        raise ValueError("SDK 本地包大小无效")
 
 
 def validate_local_asset(asset, *, version, commit):
@@ -132,6 +148,15 @@ def validate_local_asset(asset, *, version, commit):
     if not isinstance(asset.get("inner_manifest"), dict):
         raise ValueError("恢复包内部发布清单缺失")
     return asset
+
+
+def require_inner_manifest(nupkg: Path, *, version: str, commit: str) -> dict:
+    """包内清单只作附加一致性检查；调用方必须另行核验实际摘要来源，不能据此授予信任。"""
+    manifest = inner_release_manifest(nupkg)
+    if (str(manifest.get("version") or "") != str(version)
+            or str(manifest.get("git_commit") or "") != str(commit)):
+        raise ValueError("包内部发布清单与目标身份不一致")
+    return manifest
 
 
 def inner_release_manifest(nupkg: Path) -> dict:

@@ -1090,6 +1090,34 @@ def test_cleanup_downloads_keeps_pending_install_artifact(tmp_path):
     assert (service.download_dir / "0.3.0" / "MenuCapture-0.3.0.exe").is_file()
 
 
+def test_cleanup_recovery_keeps_newest_rollback_package(tmp_path):
+    service = UpdateService(tmp_path, role="worker", platform="windows", machine="AMD64")
+    recovery_root = service.data_dir / "recovery"
+    older = recovery_root / "0.5.1-aaaaaaaaaaaa"
+    newer = recovery_root / "0.5.2-bbbbbbbbbbbb"
+    for directory in (older, newer):
+        directory.mkdir(parents=True)
+        (directory / "full.nupkg").write_bytes(b"x" * 32)
+    # 基线快照与临时目录不能被当成回滚包。
+    (recovery_root / "baseline-20260101000000-deadbeef.sqlite3").write_bytes(b"db")
+    staging = recovery_root / ".download"
+    staging.mkdir()
+    (staging / "partial.nupkg").write_bytes(b"partial")
+    stale = time.time() - 3600
+    os.utime(older, (stale, stale))
+
+    preview = service.storage_preview()["scopes"]["recovery"]
+    assert [item["name"] for item in preview["items"]] == [older.name]
+    assert preview["kept"] == [newer.name]
+
+    result = service.cleanup({"confirm": "cleanup", "scopes": ["recovery"]})
+    assert [row["name"] for row in result["deleted"]] == [older.name]
+    assert not older.exists()
+    assert newer.is_dir()
+    assert staging.is_dir()
+    assert (recovery_root / "baseline-20260101000000-deadbeef.sqlite3").is_file()
+
+
 def test_cleanup_logs_only_prunes_old_cli_transcripts(tmp_path):
     service = UpdateService(tmp_path, role="worker", platform="windows", machine="AMD64")
     cli_dir = service.data_dir / "debug-logs" / "cli"
