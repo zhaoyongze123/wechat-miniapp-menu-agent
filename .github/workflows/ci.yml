@@ -1,0 +1,65 @@
+# Deliberately manual during rollout. Enable pull_request after authorized runner validation.
+name: Lightweight CI
+on:
+  workflow_dispatch:
+    inputs:
+      force_full:
+        description: Run all source checks (never builds installers or images)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: lightweight-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      base_ref: ${{ steps.detect.outputs.base_ref }}
+      head: ${{ steps.detect.outputs.head }}
+      risk: ${{ steps.detect.outputs.risk }}
+      docs_only: ${{ steps.detect.outputs.docs_only }}
+      frontend: ${{ steps.detect.outputs.frontend }}
+      backend: ${{ steps.detect.outputs.backend }}
+      prompts: ${{ steps.detect.outputs.prompts }}
+      runtime_deps: ${{ steps.detect.outputs.runtime_deps }}
+      packaging: ${{ steps.detect.outputs.packaging }}
+      hub_deploy: ${{ steps.detect.outputs.hub_deploy }}
+      hub_regression: ${{ steps.detect.outputs.hub_regression }}
+      release_needed: ${{ steps.detect.outputs.release_needed }}
+      build: ${{ steps.detect.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate impact policy
+        run: python3 -m unittest discover -s deploy/tools -p test_change_plan.py
+      - name: Analyze branch against main merge-base
+        id: detect
+        env:
+          FORCE_FULL: ${{ inputs.force_full }}
+        run: |
+          args=()
+          if [[ "$FORCE_FULL" == "true" ]]; then args+=(--force-full); fi
+          python3 deploy/tools/change_plan.py --mode pr "${args[@]}"
+  checks:
+    needs: changes
+    uses: ./.github/workflows/source-checks.yml
+    with:
+      frontend: ${{ needs.changes.outputs.frontend == 'true' }}
+      static_frontend: ${{ needs.changes.outputs.frontend == 'true' }}
+      backend: ${{ needs.changes.outputs.backend == 'true' }}
+      windows_contract: ${{ needs.changes.outputs.packaging == 'true' }}
+      hub_updater: ${{ needs.changes.outputs.hub_deploy == 'true' }}
+  ci-gate:
+    if: always()
+    needs: [changes, checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PLAN_RESULT: ${{ needs.changes.result }}
+      CHECK_RESULT: ${{ needs.checks.result }}
+    steps:
+      - run: test "$PLAN_RESULT" = success && test "$CHECK_RESULT" = success
