@@ -743,6 +743,8 @@ try {
         '--packTitle', '菜单采集工作台',
         '--packAuthors', '意谱科技',
         '--releaseNotes', $releaseNotes,
+        # Portable ZIP is not part of the signed Release asset contract.
+        '--noPortable',
         '-c', $channel,
         '--outputDir', $packDir
     )
