@@ -90,6 +90,13 @@ class Fetcher:
             raise OSError("network down")
         if "api.github.com" in url:
             return 200, {"ETag": '"v1"'}, json.dumps(self.releases).encode()
+        if "/releases/latest/download/" in url:
+            # 正式渠道静态入口：只有最新正式版本清单；缺失清单按真实 404 处理。
+            tags = [tag for tag in self.manifests if not Version.parse(tag).is_prerelease]
+            if not tags:
+                return 404, {}, b""
+            tag = max(tags, key=Version.parse)
+            return 200, {}, json.dumps(self.manifests[tag], ensure_ascii=False).encode()
         if url.endswith("update-manifest.json"):
             tag = url.split("/releases/download/")[1].split("/")[0]
             body = json.dumps(self.manifests[tag], ensure_ascii=False).encode()
@@ -98,7 +105,7 @@ class Fetcher:
 
 
 class BlockingFetcher(Fetcher):
-    """模拟慢网络：在 GitHub 列表请求处阻塞，用于验证状态查询不被锁阻塞。"""
+    """模拟慢网络：在首个发布发现请求处阻塞，用于验证状态查询不被锁阻塞。"""
 
     def __init__(self, releases, manifests):
         super().__init__(releases, manifests)
@@ -106,7 +113,7 @@ class BlockingFetcher(Fetcher):
         self.release_event = threading.Event()
 
     def __call__(self, url, headers, timeout):
-        if "api.github.com" in url:
+        if "api.github.com" in url or "/releases/latest/download/" in url:
             self.entered.set()
             self.release_event.wait(5)
         return super().__call__(url, headers, timeout)
@@ -215,6 +222,19 @@ def test_stable_channel_ignores_rc_and_draft(tmp_path):
     assert all("v0.4.0" not in url and "v0.5.0" not in url for url in fetcher.calls)
 
 
+def test_stable_channel_uses_static_manifest_without_github_api(tmp_path):
+    payload = manifest("0.3.0")
+    rel = release("v0.3.0", manifest=payload)
+    fetcher = Fetcher([rel], {"v0.3.0": payload})
+    service = make_service(tmp_path, [rel], {"v0.3.0": payload}, fetcher=fetcher)
+
+    status = service.check(force=True)
+
+    assert status["latest"]["version"] == "0.3.0"
+    # 正式渠道只请求固定静态清单，不触碰 GitHub REST API。
+    assert fetcher.calls == [f"https://github.com/{REPO}/releases/latest/download/update-manifest.json"]
+
+
 def test_preview_channel_can_use_rc(tmp_path):
     stable = release("v0.3.0", manifest=manifest("0.3.0"))
     rc = release("v0.4.0-rc.1", manifest=manifest("0.4.0-rc.1", "preview"), prerelease=True)
@@ -248,39 +268,45 @@ def test_preview_channel_accepts_newer_stable(tmp_path):
     assert status["update_available"] is True
 
 
-def test_missing_manifest_is_not_offered(tmp_path):
+def test_missing_manifest_is_reported_as_check_failure(tmp_path):
+    # 静态入口下没有清单意味着固定地址 404，不能把该 Release 当作可更新版本。
     rel = release("v0.3.0", manifest=None, missing_manifest=True)
     service = make_service(tmp_path, [rel], {}, fetcher=Fetcher([rel], {}))
 
     status = service.check(force=True)
 
-    assert status["latest"]["eligible"] is False
-    assert "update-manifest.json" in status["latest"]["reason"]
+    assert status["latest"] is None
+    assert "HTTP 404" in status["error"]
     assert status["update_available"] is False
 
 
 def test_manifest_is_required_to_match_tag_and_assets(tmp_path):
     bad = manifest("0.3.0")
     bad["assets"][0]["sha256"] = "not-a-sha"
+    with pytest.raises(ValueError, match="SHA-256"):
+        updates_module._validate_manifest(bad, "v0.3.0", "stable", None)
     rel = release("v0.3.0", manifest=bad)
     service = make_service(tmp_path, [rel], {"v0.3.0": bad}, fetcher=Fetcher([rel], {"v0.3.0": bad}))
 
     status = service.check(force=True)
 
-    assert status["latest"]["eligible"] is False
-    assert "SHA-256" in status["latest"]["reason"]
+    # 静态入口只接受完整可信清单；校验失败的清单整体丢弃，不把半成品当可更新版本。
+    assert status["latest"] is None
+    assert "SHA-256" in status["error"]
 
 
 def test_wrong_platform_asset_is_rejected(tmp_path):
     bad = manifest("0.3.0")
     bad["assets"][0]["platform"] = "linux"
+    with pytest.raises(ValueError, match="平台"):
+        updates_module._validate_manifest(bad, "v0.3.0", "stable", None)
     rel = release("v0.3.0", manifest=bad)
     service = make_service(tmp_path, [rel], {"v0.3.0": bad}, fetcher=Fetcher([rel], {"v0.3.0": bad}))
 
     status = service.check(force=True)
 
-    assert status["latest"]["eligible"] is False
-    assert "平台" in status["latest"]["reason"]
+    assert status["latest"] is None
+    assert "平台" in status["error"]
 
 
 def test_older_release_never_offers_downgrade(tmp_path):
@@ -462,8 +488,8 @@ def test_manual_check_reuses_inflight_request(tmp_path):
     second.join(5)
 
     assert not first.is_alive() and not second.is_alive()
-    api_calls = [url for url in fetcher.calls if "api.github.com" in url]
-    assert len(api_calls) == 1
+    manifest_calls = [url for url in fetcher.calls if "update-manifest.json" in url]
+    assert len(manifest_calls) == 1
     assert second_results[0]["latest"]["version"] == "0.3.0"
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -39,6 +40,7 @@ ENV_CURRENT = "MENU_CAPTURE_VELOPACK_CURRENT"
 ENV_PACKAGES = "MENU_CAPTURE_VELOPACK_PACKAGES"
 DOWNLOAD_PROGRESS = "update-download-progress.json"
 DOWNLOAD_TIMEOUT_SECONDS = 1800
+_VERSION_TEXT_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 
 
 class VelopackError(RuntimeError):
@@ -303,7 +305,7 @@ class VelopackBackend:
             FileName=asset["name"], SHA1="", SHA256=asset["sha256"],
             Size=int(asset["size"]), NotesMarkdown="", NotesHtml="",
         )
-        self.manager(recovery_channel).wait_exit_then_apply_updates(
+        self.manager(recovery_channel, str(asset.get("version") or "")).wait_exit_then_apply_updates(
             old, silent=True, restart=True, restart_args=None,
         )
 
@@ -333,25 +335,39 @@ class VelopackBackend:
             IsPortable=False,
         )
 
-    def manager(self, channel: str | None = None):
+    def _static_base_url(self, version: str | None) -> str:
+        """正式渠道静态源：固定到已验证版本目录，避免下载期间新发布导致索引与包不一致。"""
+        prefix = f"https://github.com/{self.repository}/releases/"
+        if not version:
+            # 仅本地操作（读取待安装包、应用已下载包）会省略版本；这些操作不访问网络。
+            return prefix + "latest/download/"
+        if not _VERSION_TEXT_RE.fullmatch(str(version)):
+            raise VelopackError("更新目标版本号无效")
+        return f"{prefix}download/v{version}/"
+
+    def manager(self, channel: str | None = None, version: str | None = None):
         import velopack
 
         selected = channel or self.channel
-        source = velopack.GithubSource(
-            f"https://github.com/{self.repository}",
-            None,
-            selected == "preview",
-        )
+        if selected == "preview":
+            # 预览渠道包含预发布版本，只能走 Release 列表发现；正式渠道不依赖 REST API。
+            source = velopack.GithubSource(
+                f"https://github.com/{self.repository}",
+                None,
+                True,
+            )
+        else:
+            source = velopack.HttpSource(self._static_base_url(version))
         # AllowVersionDowngrade 保持关闭：降级只用于显式回滚，不参与日常更新检查。
         options = velopack.UpdateOptions(False, 10, channel_name(selected))
         return velopack.UpdateManager(source, options, self.locator())
 
     # ---------- 版本发现与下载 ----------
 
-    def check(self, channel: str | None = None) -> dict | None:
+    def check(self, channel: str | None = None, version: str | None = None) -> dict | None:
         """返回 SDK 选中的目标版本；没有任何适用更新时返回 None。"""
         try:
-            info = self.manager(channel).check_for_updates()
+            info = self.manager(channel, version).check_for_updates()
         except Exception as exc:  # noqa: BLE001 - 网络/解析失败统一呈现为检查失败
             raise VelopackError(f"Velopack 检查更新失败：{exc}") from exc
         if info is None:
@@ -505,7 +521,7 @@ class VelopackBackend:
         if not self.available():
             raise VelopackError("当前不是 Velopack 安装环境")
         require_publisher_trust(target)
-        manager = self.manager(channel)
+        manager = self.manager(channel, str(target.get("version") or ""))
         asset = manager.get_update_pending_restart()
         if asset is None:
             raise VelopackError("没有已下载完成的更新包")

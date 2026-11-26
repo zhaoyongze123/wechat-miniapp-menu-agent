@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
         require_publisher_trust(target)
 
         backend = VelopackBackend(args.repo, progress_path.parent, channel=args.channel)
-        manager = backend.manager(args.channel)
+        manager = backend.manager(args.channel, args.version)
         info = manager.check_for_updates()
         if info is None or info.IsDowngrade:
             raise ValueError("发布源没有合法的升级目标")

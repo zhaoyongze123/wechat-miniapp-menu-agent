@@ -34,6 +34,42 @@ def test_apply_requires_available_install_layout(tmp_path: Path):
         backend.apply_pending({}, channel="stable")
 
 
+def test_stable_channel_uses_versioned_http_source(tmp_path, monkeypatch):
+    created: dict[str, object] = {}
+
+    class FakeHttpSource:
+        def __init__(self, url):
+            created["kind"] = "http"
+            created["url"] = url
+
+    class FakeGithubSource:
+        def __init__(self, url, token, prerelease):
+            created["kind"] = "github"
+            created["url"] = url
+            created["prerelease"] = prerelease
+
+    fake = SimpleNamespace(
+        HttpSource=FakeHttpSource, GithubSource=FakeGithubSource,
+        UpdateOptions=lambda *args: None, UpdateManager=lambda *args: "manager",
+    )
+    monkeypatch.setitem(sys.modules, "velopack", fake)
+    backend = VelopackBackend("owner/repo", tmp_path)
+    monkeypatch.setattr(backend, "locator", lambda: None)
+
+    assert backend.manager("stable", "0.5.1") == "manager"
+    assert created == {
+        "kind": "http",
+        "url": "https://github.com/owner/repo/releases/download/v0.5.1/",
+    }
+
+    backend.manager("preview")
+    assert created["kind"] == "github"
+    assert created["prerelease"] is True
+
+    with pytest.raises(VelopackError):
+        backend.manager("stable", "../0.5.1")
+
+
 def test_download_reports_failure_without_python_module(tmp_path: Path, monkeypatch):
     (tmp_path / "app").mkdir()
     backend = VelopackBackend(
