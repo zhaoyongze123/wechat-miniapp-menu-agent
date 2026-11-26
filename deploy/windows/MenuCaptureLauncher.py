@@ -280,13 +280,13 @@ def _apply_pending(data_root: Path, version: str, worker: subprocess.Popen) -> b
 
 def _apply_rollback(data_root: Path, version: str) -> int:
     """显式回滚：校验数据库结构未变后，用 Update.exe 应用本地同版本 full 包。"""
-    from menu_capture.updates.update_install import schema_fingerprint
+    from menu_capture.updates.update_install import rollback_schema_matches
 
     baseline_path = data_root / "data" / "update-schema-baseline.json"
     try:
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-        if baseline.get("schema") != schema_fingerprint(data_root / "data"):
-            _message("数据库结构已变化，自动回滚可能让旧版本无法读取数据，已停止。请人工确认后处理。")
+        if not rollback_schema_matches(data_root / "data", baseline, version):
+            _message("数据库结构快照不可用、版本不匹配或结构已变化，已停止回滚。请人工确认后处理。")
             return 2
     except (OSError, ValueError):
         _message("缺少可核对的数据结构快照，已停止自动回滚。请人工确认。")

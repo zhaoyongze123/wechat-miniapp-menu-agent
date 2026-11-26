@@ -12,6 +12,7 @@ import json
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -40,22 +41,33 @@ def _write_json(path: Path, payload: Any) -> None:
     temp.replace(path)
 
 
-def schema_fingerprint(data_dir: Path) -> list:
-    """记录数据库结构，用于回滚前判断新版本是否已经改动过存储。"""
+def schema_fingerprint(data_dir: Path) -> dict | None:
+    """只读记录 SQLite 结构；缺失、损坏或不可读均不得作为可回滚基线。"""
     db_path = Path(data_dir) / "tasks.sqlite3"
-    if not db_path.is_file():
-        return []
     try:
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as db:
-            tables = [row[0] for row in db.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+        if not db_path.is_file():
+            return None
+        with closing(sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
+            db.execute("BEGIN")
+            objects = [list(row) for row in db.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                "ORDER BY type, name"
             )]
-            return [
-                [table, [row[1] for row in db.execute(f'PRAGMA table_info("{table}")')]]
-                for table in tables
-            ]
-    except sqlite3.Error:
-        return []
+            if not any(row[0] == "table" and not row[1].startswith("sqlite_") for row in objects):
+                return None
+            user_version = db.execute("PRAGMA user_version").fetchone()[0]
+            return {"user_version": user_version, "objects": objects}
+    except (OSError, sqlite3.Error, ValueError):
+        return None
+
+
+def rollback_schema_matches(data_dir: Path, baseline: dict, version: str) -> bool:
+    """只允许与已记录的旧版本及有效结构快照严格匹配。"""
+    if not isinstance(baseline, dict) or baseline.get("version") != version:
+        return False
+    before = baseline.get("schema")
+    after = schema_fingerprint(data_dir)
+    return isinstance(before, dict) and after is not None and before == after
 
 
 def _age_seconds(text: str, fallback: Path | None = None) -> float | None:
@@ -257,9 +269,12 @@ class InstallController:
                 acquired_fs = True
             try:
                 # 回滚兼容判断基线：记录切换前数据库结构，供显式回滚前比对。
+                schema = schema_fingerprint(self.data_dir)
+                if schema is None:
+                    raise ValueError("无法读取有效数据库结构，拒绝自动安装")
                 _write_json(self.baseline_path, {
                     "version": previous,
-                    "schema": schema_fingerprint(self.data_dir),
+                    "schema": schema,
                     "captured_at": _utc_now(),
                 })
                 self.backend.request_apply(version)

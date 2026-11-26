@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
-from menu_capture.updates.update_install import InstallController
+from menu_capture.updates.update_install import InstallController, rollback_schema_matches, schema_fingerprint
 
 
 class FakeBackend:
@@ -32,6 +34,9 @@ class FakeBackend:
 
 def make_controller(tmp_path: Path, *, current: str = "0.3.4", idle: bool = True,
                     pending: dict | None = None, supported: bool = True):
+    with closing(sqlite3.connect(tmp_path / "tasks.sqlite3")) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY)")
+        db.commit()
     backend = FakeBackend(tmp_path, pending or {"version": "0.4.0"})
     controller = InstallController(
         data_dir=tmp_path,
@@ -118,3 +123,60 @@ def test_refresh_marks_stalled_after_timeout(tmp_path: Path):
     (tmp_path / "update-install.json").write_text(json.dumps(journal), encoding="utf-8")
     assert controller.active() is False
     assert controller.status()["status"] == "failed"
+
+
+def test_schema_missing_and_corrupt(tmp_path):
+    assert schema_fingerprint(tmp_path) is None
+    (tmp_path / "tasks.sqlite3").write_bytes(b"not a sqlite database")
+    assert schema_fingerprint(tmp_path) is None
+    assert not rollback_schema_matches(tmp_path, {"version": "0.3.4", "schema": None}, "0.3.4")
+
+
+def test_schema_baseline_and_data(tmp_path):
+    with closing(sqlite3.connect(tmp_path / "tasks.sqlite3")) as db:
+        db.execute("CREATE TABLE tasks (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        db.commit()
+        before = schema_fingerprint(tmp_path)
+        baseline = {"version": "0.3.4", "schema": json.loads(json.dumps(before))}
+        db.execute("INSERT INTO tasks VALUES (1, 'test')")
+        db.commit()
+        assert rollback_schema_matches(tmp_path, baseline, "0.3.4")
+        assert not rollback_schema_matches(tmp_path, baseline, "0.3.3")
+        assert not rollback_schema_matches(tmp_path, {"version": "0.3.4", "schema": []}, "0.3.4")
+        db.execute("CREATE INDEX by_name ON tasks(name)")
+        db.commit()
+        assert not rollback_schema_matches(tmp_path, baseline, "0.3.4")
+
+
+def test_schema_version_change(tmp_path):
+    with closing(sqlite3.connect(tmp_path / "tasks.sqlite3")) as db:
+        db.execute("CREATE TABLE tasks (id INTEGER)")
+        db.commit()
+        before = schema_fingerprint(tmp_path)
+        db.execute("PRAGMA user_version = 2")
+        db.commit()
+        assert before != schema_fingerprint(tmp_path)
+
+
+def test_schema_empty_database(tmp_path):
+    with closing(sqlite3.connect(tmp_path / "tasks.sqlite3")):
+        pass
+    assert schema_fingerprint(tmp_path) is None
+
+
+def test_schema_uri_reserved_characters(tmp_path):
+    root = tmp_path / "data # test"
+    root.mkdir()
+    with closing(sqlite3.connect(root / "tasks.sqlite3")) as db:
+        db.execute("CREATE TABLE tasks (id INTEGER)")
+        db.commit()
+    assert schema_fingerprint(root) is not None
+
+
+def test_start_rejects_invalid_schema_before_request(tmp_path):
+    controller, backend = make_controller(tmp_path)
+    (tmp_path / "tasks.sqlite3").write_bytes(b"broken")
+    with pytest.raises(ValueError, match="无法读取有效数据库结构"):
+        controller.start("0.4.0", "0.4.0")
+    assert backend.requests == []
+    assert not controller.active()

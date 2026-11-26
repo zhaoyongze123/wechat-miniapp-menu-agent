@@ -743,3 +743,30 @@ def test_wait_timeout_must_be_positive_integer(tmp_path: Path, value: str) -> No
 
 def test_wait_timeout_defaults_to_180(tmp_path: Path) -> None:
     assert Config({"HUB_UPDATE_TOKEN": TOKEN}).wait_timeout == 180
+
+
+@pytest.mark.parametrize("wait_result,last_error,expected", [
+    (258, 0, True), (0, 0, False), (0xffffffff, 0, True), (258, 87, False), (258, 5, True),
+])
+def test_windows_pid_liveness_uses_read_only_native_query(monkeypatch, wait_result, last_error, expected):
+    import ctypes
+    from types import SimpleNamespace
+
+    closed = []
+
+    def open_process(access, inherit, pid):
+        assert (access, inherit, pid) == (0x00100000, False, 1234)
+        return 44 if last_error == 0 else 0
+
+    kernel32 = SimpleNamespace(
+        OpenProcess=open_process,
+        WaitForSingleObject=lambda handle, timeout: wait_result,
+        CloseHandle=lambda handle: closed.append(handle) or True,
+    )
+    monkeypatch.setattr(hub_updater, "os", SimpleNamespace(
+        name="nt", kill=lambda *_: pytest.fail("os.kill must not be called"),
+    ))
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: last_error, raising=False)
+    assert hub_updater._pid_alive(1234) is expected
+    assert closed == ([44] if last_error == 0 else [])
