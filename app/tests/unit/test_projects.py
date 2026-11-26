@@ -75,3 +75,32 @@ def test_no_silent_backfill_after_migration(db):
         migrate_projects(db)
     db.rollback()
     assert db.execute("SELECT COUNT(*) FROM material_batches").fetchone() == (2,)
+
+
+def test_project_crud_selection_and_bulk_scope(db):
+    from menu_capture.projects import service
+
+    db.execute("BEGIN IMMEDIATE")
+    migrate_projects(db)
+    p = create_project(db, 'Q4', 'Q4')
+    db.execute("INSERT INTO material_batches VALUES('b3','','t',?)", (p['id'],))
+    db.execute("INSERT INTO material_versions VALUES('v3','b3')")
+    select_version(db, p['id'], 'v3')
+    assert service.selected_version(db, LEGACY_ID) == 'v1'
+    assert service.selected_version(db, p['id']) == 'v3'
+    with pytest.raises(ProjectConflict):
+        service.assert_batch_set(db, p['id'], ['b1', 'b3'], write=True)
+    service.assert_batch_set(db, p['id'], ['b3'], write=True)
+    assert service.clear_selection(db, p['id'], 'b3')
+    assert service.selected_version(db, LEGACY_ID) == 'v1'
+    changed = service.update_project(db, p['id'], name='Renamed')
+    assert changed['code'] == 'Q4'
+    with pytest.raises(ProjectConflict):
+        service.archive_project(db, p['id'], blockers=lambda *_: ['待补传'])
+    assert not service.get_project(db, p['id'])['archived_at']
+    archived = service.archive_project(db, p['id'], blockers=lambda *_: [])
+    assert archived['archived_at']
+    assert service.archive_project(db, p['id'], blockers=lambda *_: ['busy']) == archived
+    assert len(service.list_projects(db)) == 1
+    assert len(service.list_projects(db, include_archived=True)) == 2
+    assert not service.restore_project(db, p['id'])['archived_at']
