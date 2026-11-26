@@ -80,10 +80,14 @@ def _output_contract() -> str:
         "输出契约（固定协议，必须完全遵守；不合规会被拒绝并要求重写）\n"
         '1. 每轮只输出一个 tool_call：<tool_call>{"name":"computer_use","arguments":{...}}</tool_call>。\n'
         "   不要输出多个 tool_call，不要用自然语言描述动作，不要把 action 写成函数调用形式。\n"
-        "2. arguments 只能包含动作表为该动作列出的字段（外加第 4 条的可选附带字段）。"
-        "禁止添加其他未列出的字段，禁止编造页面信息或坐标。\n"
+        "2. arguments = 动作表字段 + observed_store_name（与动作字段同级，每轮必填）。"
+        "observed_store_name 写本轮页面明确显示的门店名称（≤40 字，含品牌与分店）；本轮没有新的名称信息写 null（保留此前名称）；\n"
+        "确认此前名称错误时写空字符串撤销。缺失该键视为格式违规。除上述字段外禁止添加其他字段，禁止编造页面信息或坐标。\n"
         f"3. 坐标统一使用当前截图的 {size}x{size} 归一化空间，左上角为 (0,0)，取值 0..{size - 1}。\n"
         f"4. {observation}\n"
+        "5. 完整示例（observed_store_name 与动作字段同级写在 arguments 内）：\n"
+        '   <tool_call>{"name":"computer_use","arguments":{"action":"left_click","coordinate":[500,420],"reason":"点击开始点餐进入菜单","target_name":"开始点餐","observed_store_name":null}}</tool_call>\n'
+        '   <tool_call>{"name":"computer_use","arguments":{"action":"terminate","outcome":"success","reason":"已进入菜单且菜品价格可见","menu_box":[50,150,950,950],"observed_store_name":"东方饺子王（北礼士路店）"}}</tool_call>\n'
         "动作表：\n"
         f"{actions}\n"
         "任何字段缺失、类型错误、越界或多余字段都视为格式违规。"
