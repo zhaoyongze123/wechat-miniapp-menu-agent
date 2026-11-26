@@ -252,6 +252,23 @@ class DeliveryService:
             raise ValueError("项目交付目录超出配置的挂载根")
         return target
 
+    def _host_path_for(self, project: dict | None) -> str:
+        """宿主机展示路径：当前项目时指向该项目实际合格目录，避免展示全局根。"""
+        if not self.host_path:
+            return ""
+        if project is None or self.root is None:
+            return self.host_path
+        try:
+            relative = self._project_root(project["code"]).relative_to(self.root)
+        except (ValueError, OSError):
+            return self.host_path
+        parts = [part for part in relative.parts if part not in {"", "."}]
+        if not parts:
+            return self.host_path
+        # 沿用在配置里写入的分隔符风格，复制到文件管理器后不会出现混合斜杠。
+        separator = "\\" if "\\" in self.host_path else "/"
+        return separator.join([self.host_path.rstrip("\\/"), *parts])
+
     def _project_root_error(self, project_code: str) -> str:
         error = self._root_error()
         if error:
@@ -338,7 +355,7 @@ class DeliveryService:
             "state": state,
             "message": message,
             "container_root": container_root,
-            "host_path": self.host_path,
+            "host_path": self._host_path_for(project),
             "project_id": project_id or "",
             "project_code": project["code"] if project else "",
             "project_name": project["name"] if project else "",

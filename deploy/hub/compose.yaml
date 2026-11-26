@@ -17,10 +17,10 @@ services:
       # 宿主机更新执行器地址与令牌：未配置时设置页只展示原因，不提供安装入口。
       HUB_UPDATE_URL: "${HUB_UPDATE_URL:-}"
       HUB_UPDATE_TOKEN: "${HUB_UPDATE_TOKEN:-}"
-      # 合格成品目录：宿主机挂载根内的“合格”目录，由服务自动创建并维护。
+      # 合格成品目录：挂载根本身，由服务在其下按 项目/<code>/合格 生成交付路径。
       # 首次部署会自动初始化历史存量，无需重新采集；未自定义时落在 compose 同级的 delivery 目录。
-      MENU_CAPTURE_DELIVERY_ROOT: "/var/lib/menu-delivery/合格"
-      MENU_CAPTURE_DELIVERY_HOST_PATH: "${MENU_CAPTURE_DELIVERY_MOUNT:-./delivery}/合格"
+      MENU_CAPTURE_DELIVERY_ROOT: "/var/lib/menu-delivery"
+      MENU_CAPTURE_DELIVERY_HOST_PATH: "${MENU_CAPTURE_DELIVERY_MOUNT:-./delivery}"
       MENU_CAPTURE_DELIVERY_POLL_SECONDS: "${MENU_CAPTURE_DELIVERY_POLL_SECONDS:-5}"
     extra_hosts:
       # 执行器跑在宿主机，容器通过 host-gateway 访问；仍需执行器令牌与来源网段校验。
@@ -30,7 +30,7 @@ services:
     volumes:
       - hub-data:/var/lib/menu-capture
       # 交付目录必须是 Bind Mount：命名卷在宿主机上不可见，无法作为成品交付目录。
-      # 生产建议设置 MENU_CAPTURE_DELIVERY_MOUNT=D:/MenuCapture，最终交付路径为 D:/MenuCapture/合格。
+      # 生产设置 MENU_CAPTURE_DELIVERY_MOUNT=D:/MenuCapture，最终交付路径为 D:/MenuCapture/项目/<code>/合格。
       # 暂存与回收目录位于挂载根下（.menu-capture-staging/.menu-capture-trash），不进入交付目录。
       - "${MENU_CAPTURE_DELIVERY_MOUNT:-./delivery}:/var/lib/menu-delivery"
     read_only: true

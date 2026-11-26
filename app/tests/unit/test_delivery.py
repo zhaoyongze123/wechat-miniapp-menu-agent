@@ -31,7 +31,7 @@ def _service(tmp_path: Path, tasks: list[dict], *, configured: bool = True) -> D
     if configured:
         # 模拟宿主机 bind mount 已存在；交付根由服务在挂载内创建。
         host.mkdir(parents=True, exist_ok=True)
-    root = str(host / "合格") if configured else ""
+    root = str(host) if configured else ""
     projects = {
         "p-q3": {"id": "p-q3", "code": "Q3", "name": "项目 Q3"},
         "p-q4": {"id": "p-q4", "code": "Q4", "name": "项目 Q4"},
@@ -39,7 +39,7 @@ def _service(tmp_path: Path, tasks: list[dict], *, configured: bool = True) -> D
     return DeliveryService(
         tmp_path / "data",
         root=root,
-        host_path="D:\\MenuCapture\\合格" if configured else "",
+        host_path="D:\\MenuCapture" if configured else "",
         task_provider=lambda: list(tasks),
         project_provider=lambda project_id: projects[project_id],
     )
@@ -62,7 +62,7 @@ def test_sync_copies_only_menu_pages_and_reports_counts(tmp_path):
 
     service.reconcile()
 
-    target = tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A"
+    target = tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A"
     assert sorted(path.name for path in target.iterdir()) == [
         "page-0001.png", "page-0002.png", "page-0003.png",
     ]
@@ -88,7 +88,7 @@ def test_recapture_replaces_directory_without_stale_pages(tmp_path):
     task["updated_at"] = "2026-11-25T01:00:00+00:00"
     service.reconcile()
 
-    target = tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A"
+    target = tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A"
     assert sorted(path.name for path in target.iterdir()) == [
         f"page-{index:04d}.png" for index in range(1, 7)
     ]
@@ -98,17 +98,17 @@ def test_rejected_or_returned_store_is_removed(tmp_path):
     task = _task(tmp_path, task_id="a1", batch="b1", store="E02412", name="门店 A")
     service = _service(tmp_path, [task])
     service.reconcile()
-    assert (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A").is_dir()
+    assert (tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A").is_dir()
 
     task["reject_reason"] = "二维码无法识别"
     service.reconcile()
-    assert not (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A").exists()
+    assert not (tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A").exists()
     assert service.status()["counts"]["qualified"] == 0
 
     # 撤销不合格后自动恢复。
     task.pop("reject_reason")
     service.reconcile()
-    assert (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A").is_dir()
+    assert (tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A").is_dir()
 
 
 def test_qualified_but_missing_screenshots_is_pending_not_fake_ready(tmp_path):
@@ -120,7 +120,7 @@ def test_qualified_but_missing_screenshots_is_pending_not_fake_ready(tmp_path):
         path.unlink()
     service.reconcile()
 
-    assert not (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A").exists()
+    assert not (tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A").exists()
     status = service.status()
     assert status["counts"]["qualified"] == 1
     assert status["counts"]["ready"] == 0
@@ -139,9 +139,9 @@ def test_same_store_in_different_batches_stays_independent(tmp_path):
     service.reconcile()
 
     # 门店身份是批次 + 门店，目录名只是展示名称：同名跨批次不能互相覆盖。
-    names = sorted(path.name for path in (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格").iterdir())
+    names = sorted(path.name for path in (tmp_path / "host" / "项目" / "Q3" / "合格").iterdir())
     assert len(names) == 2
-    assert all((tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / name).is_dir() for name in names)
+    assert all((tmp_path / "host" / "项目" / "Q3" / "合格" / name).is_dir() for name in names)
     assert service.status()["counts"]["qualified"] == 2
 
 
@@ -154,9 +154,9 @@ def test_same_batch_rerun_keeps_only_latest_round(tmp_path):
 
     service.reconcile()
 
-    names = sorted(path.name for path in (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格").iterdir())
+    names = sorted(path.name for path in (tmp_path / "host" / "项目" / "Q3" / "合格").iterdir())
     assert names == ["门店 A"]
-    target = tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A"
+    target = tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A"
     assert sorted(path.name for path in target.iterdir()) == [
         "page-0001.png", "page-0002.png", "page-0003.png",
     ]
@@ -170,7 +170,7 @@ def test_same_store_name_with_different_ids_stays_independent(tmp_path):
 
     service.reconcile()
 
-    names = sorted(path.name for path in (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格").iterdir())
+    names = sorted(path.name for path in (tmp_path / "host" / "项目" / "Q3" / "合格").iterdir())
     assert len(names) == 2
     assert service.status()["counts"]["ready"] == 2
 
@@ -184,8 +184,8 @@ def test_same_store_in_two_projects_has_scoped_paths_and_status(tmp_path):
 
     service.reconcile()
 
-    q3 = tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "同名门店"
-    q4 = tmp_path / "host" / "合格" / "项目" / "Q4" / "合格" / "同名门店"
+    q3 = tmp_path / "host" / "项目" / "Q3" / "合格" / "同名门店"
+    q4 = tmp_path / "host" / "项目" / "Q4" / "合格" / "同名门店"
     assert q3.is_dir() and q4.is_dir()
     assert service.status("p-q3")["counts"]["qualified"] == 1
     assert service.status("p-q4")["counts"]["qualified"] == 1
@@ -209,7 +209,7 @@ def test_task_without_project_identity_is_pending_and_never_projected(tmp_path):
 
     service.reconcile()
 
-    assert not (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "待核验门店").exists()
+    assert not (tmp_path / "host" / "项目" / "Q3" / "合格" / "待核验门店").exists()
     assert service.status()["counts"]["qualified"] == 0
     pending = service.status()["inventory"]["pending_verification"]
     assert pending["count"] == 1
@@ -220,7 +220,7 @@ def test_lost_project_metadata_preserves_existing_projection_for_review(tmp_path
     task = _task(tmp_path, task_id="a1", batch="b1", store="E02412", name="待核验门店")
     service = _service(tmp_path, [task])
     service.reconcile()
-    target = tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "待核验门店"
+    target = tmp_path / "host" / "项目" / "Q3" / "合格" / "待核验门店"
     assert target.is_dir()
 
     task.pop("project_id")
@@ -261,7 +261,7 @@ def test_symlink_project_root_is_rejected_without_writing_outside_mount(tmp_path
     service = _service(tmp_path, [task])
     outside = tmp_path / "outside"
     outside.mkdir()
-    projects_root = tmp_path / "host" / "合格" / "项目"
+    projects_root = tmp_path / "host" / "项目"
     projects_root.parent.mkdir(parents=True, exist_ok=True)
     try:
         projects_root.symlink_to(outside, target_is_directory=True)
@@ -290,11 +290,11 @@ def test_manually_deleted_delivery_file_is_repaired(tmp_path):
     task = _task(tmp_path, task_id="a1", batch="b1", store="E02412", name="门店 A")
     service = _service(tmp_path, [task])
     service.reconcile()
-    (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A" / "page-0002.png").unlink()
+    (tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A" / "page-0002.png").unlink()
 
     service.reconcile()
 
-    assert (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A" / "page-0002.png").is_file()
+    assert (tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A" / "page-0002.png").is_file()
     # 修复只重建目录，业务状态（任务数据）不被修改。
     assert task["status"] == "captured"
     assert "reject_reason" not in task
@@ -312,7 +312,7 @@ def test_directory_names_are_windows_safe_and_stable_across_restart(tmp_path):
     restarted.reconcile()
 
     assert restarted.stores()["items"][0]["directory_name"] == name
-    assert (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / name).is_dir()
+    assert (tmp_path / "host" / "项目" / "Q3" / "合格" / name).is_dir()
 
 
 def _legacy_dir(base: Path, store: str, pages: int = 2, *, batch: str = "") -> Path:
@@ -331,7 +331,7 @@ def test_legacy_output_without_business_record_goes_pending(tmp_path):
     service.reconcile()
 
     # 文件系统不是第二事实源：没有权威业务记录的历史目录不得直接进入交付目录。
-    assert not (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 L").exists()
+    assert not (tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 L").exists()
     status = service.status()
     assert status["counts"]["qualified"] == 0
     assert status["inventory"]["discovered"]["output"] == 1
@@ -350,7 +350,7 @@ def test_legacy_directory_with_same_name_is_not_linked_to_other_project_state(tm
 
     service.reconcile()
 
-    assert not (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A").exists()
+    assert not (tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A").exists()
     status = service.status()
     assert status["counts"]["qualified"] == 0
     assert status["inventory"]["excluded"]["reasons"] == []
@@ -365,13 +365,13 @@ def test_deleted_batch_legacy_directory_is_not_reincluded(tmp_path):
     tasks = [task]
     service = _service(tmp_path, tasks)
     service.reconcile()
-    assert (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A").is_dir()
+    assert (tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A").is_dir()
 
     # 批次被删除后当前有效任务消失，历史目录不能把门店重新带回合格目录。
     tasks.clear()
     service.reconcile()
 
-    assert not (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A").exists()
+    assert not (tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A").exists()
     status = service.status()
     assert status["counts"]["qualified"] == 0
     assert status["inventory"]["pending_verification"]["count"] == 1
@@ -384,7 +384,7 @@ def test_ambiguous_legacy_rounds_are_reported_not_guessed(tmp_path):
 
     service.reconcile()
 
-    assert not (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 M").exists()
+    assert not (tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 M").exists()
     status = service.status()
     assert status["counts"]["ready"] == 0
     pending = status["inventory"]["pending_verification"]
@@ -401,8 +401,8 @@ def test_legacy_sources_only_pending_valid_menu_screenshots(tmp_path):
 
     service.reconcile()
 
-    assert not (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 S").exists()
-    assert not (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "坏图门店").exists()
+    assert not (tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 S").exists()
+    assert not (tmp_path / "host" / "项目" / "Q3" / "合格" / "坏图门店").exists()
     status = service.status()
     assert status["inventory"]["discovered"]["legacy_sources"] == 2
     assert status["inventory"]["excluded"]["reasons"] == [{"reason": "非有效菜单截图", "count": 1}]
@@ -419,7 +419,7 @@ def test_restart_resumes_initialization_from_persisted_index(tmp_path):
     restarted.reconcile()
 
     assert restarted.status()["generation"] == generation
-    assert (tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A" / "page-0002.png").is_file()
+    assert (tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A" / "page-0002.png").is_file()
 
 
 def test_reveal_is_rejected_when_hub_runs_in_container(tmp_path, monkeypatch):
@@ -460,7 +460,7 @@ def test_same_size_different_content_is_never_reused(tmp_path):
     task = _task(tmp_path, task_id="a1", batch="b1", store="E02412", name="门店 A", pages=2)
     service = _service(tmp_path, [task])
     service.reconcile()
-    target = tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A"
+    target = tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A"
 
     # 模拟重采：文件名与大小完全相同，但画面内容不同。
     output = Path(task["output_dir"])
@@ -480,7 +480,7 @@ def test_same_size_tampering_of_delivered_file_is_detected(tmp_path):
     task = _task(tmp_path, task_id="a1", batch="b1", store="E02412", name="门店 A", pages=2)
     service = _service(tmp_path, [task])
     service.reconcile()
-    delivered = tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A" / "page-0001.png"
+    delivered = tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A" / "page-0001.png"
     original = delivered.read_bytes()
     delivered.write_bytes(original[:8] + b"Y" * (len(original) - 8))
 
@@ -494,7 +494,7 @@ def test_publish_is_abandoned_when_round_changes_mid_sync(tmp_path, monkeypatch)
     task = _task(tmp_path, task_id="a1", batch="b1", store="E02412", name="门店 A", pages=2)
     service = _service(tmp_path, [task])
     service.reconcile()
-    target = tmp_path / "host" / "合格" / "项目" / "Q3" / "合格" / "门店 A"
+    target = tmp_path / "host" / "项目" / "Q3" / "合格" / "门店 A"
     before = (target / "page-0001.png").read_bytes()
 
     output = Path(task["output_dir"])
