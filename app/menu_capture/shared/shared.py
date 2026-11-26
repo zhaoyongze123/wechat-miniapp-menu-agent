@@ -531,7 +531,7 @@ class SharedHub:
             raise SharedConflict("发布二维码已缺失或变化，请检查素材并重新分配")
         return source
 
-    def assign(self, worker_id: str, task_ids: list[str]) -> dict:
+    def assign(self, worker_id: str, task_ids: list[str], *, project_id: str | None = None) -> dict:
         if (not isinstance(task_ids, list) or not 1 <= len(task_ids) <= 300
                 or any(not isinstance(value, str) or not value for value in task_ids)):
             raise ValueError("请选择 1 至 300 家已发布门店")
@@ -558,6 +558,15 @@ class SharedHub:
             db.execute("BEGIN IMMEDIATE")
             if self._worker(db, worker_id)["revoked_at"]:
                 raise SharedConflict("采集电脑已解除配对，请选择有效设备")
+            if project_id is not None:
+                from menu_capture.projects.service import ProjectConflict, ProjectNotFound, assert_batch_set
+
+                try:
+                    assert_batch_set(db, project_id,
+                                     [task["batch_id"] for task, _ in selected], write=True)
+                except (ProjectConflict, ProjectNotFound) as exc:
+                    raise SharedConflict(str(exc)) from exc
+            # Reconcile must always see every project's effective tasks.
             self._reconcile_assignments(db, self._store_index(effective))
             # 在同一个写事务核对占用，整次提交全部通过后才生成分配记录。
             for task, _ in selected:
@@ -583,7 +592,9 @@ class SharedHub:
                     "source_hash": task["source_hash"], "source_suffix": suffix, "status": "assigned",
                     "created_at": stamp,
                 }
-                db.execute("INSERT INTO shared_assignments VALUES(:id,:task_id,:worker_id,:batch_id,:batch_name,"
+                db.execute("INSERT INTO shared_assignments(id,task_id,worker_id,batch_id,batch_name,store,"
+                           "revision,snapshot_id,source_hash,source_suffix,status,created_at) "
+                           "VALUES(:id,:task_id,:worker_id,:batch_id,:batch_name,"
                            ":store,:revision,:snapshot_id,:source_hash,:source_suffix,:status,:created_at)", record)
                 rows.append(record)
             db.executemany(
