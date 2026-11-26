@@ -381,21 +381,27 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
           MIN_SUPPORTED: ${{ inputs.min_supported_version }}
+          MENU_CAPTURE_RELEASE_SIGNING_KEY: ${{ secrets.MENU_CAPTURE_RELEASE_SIGNING_KEY }}
         run: |
           tag="v$VERSION"
           channel="stable"
           case "$VERSION" in *-*) channel="preview" ;; esac
+          # 与 app/uv.lock 一致；该临时环境只用于清单签名，不保存私钥或签名环境。
+          python3 -m venv "$RUNNER_TEMP/manifest-signing"
+          "$RUNNER_TEMP/manifest-signing/bin/python" -m pip install --disable-pip-version-check 'cryptography==46.0.7'
           hub=$(find release-assets -maxdepth 1 -name 'menu-capture-hub-*.tar.gz' -print -quit)
           test -n "$hub" && test -s "$hub.sha256"
           hub_name=$(basename "$hub")
           hub_sha=$(cut -d' ' -f1 < "$hub.sha256")
           hub_size=$(stat -c%s "$hub")
-          python3 - "$tag" "$channel" "$GITHUB_SHA" "$MIN_SUPPORTED" \
+          "$RUNNER_TEMP/manifest-signing/bin/python" - "$tag" "$channel" "$GITHUB_SHA" "$MIN_SUPPORTED" \
             "$hub_name" "$hub_size" "$hub_sha" <<'PY'
           import hashlib, json, os, sys
           from pathlib import Path
           from urllib.parse import quote
+          sys.path.insert(0, "app")
           sys.path.insert(0, "deploy/windows")
+          from menu_capture.updates.velopack_trust import sign_manifest, signing_key_from_env
           from velopack_assets import release_assets
           (tag, channel, commit, min_version, hub_name, hub_size, hub_sha) = sys.argv[1:8]
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}"
@@ -411,10 +417,9 @@ jobs:
                       "url": f"{base}/{quote(name, safe='')}"}
           extension = {
               "schema_version": 1, "pack_id": "Yipu.MenuCapture", "platform": "windows", "arch": "x64",
-              "channel": f"win-x64-{channel}", "version": version, "git_commit": commit,
+              "channel": f"win-x64-{channel}", "version": version, "git_commit": commit, "tag": tag,
               "setup": vp_asset(setup_name), "full": vp_asset(full_name),
               "deltas": [vp_asset(name) for name in rest], "index": vp_asset(index_name),
-              "trust": {"mode": "unsigned"},
           }
           # OCI 是 hub_image 的可选扩展：摘要文件缺失或非法时只影响分层拉取，
           # 完整归档资产照常发布，旧客户端完全不受影响。
@@ -443,6 +448,8 @@ jobs:
               "assets": [hub_asset],
               "velopack": extension,
           }
+          # 密钥缺失、信任根未固定或签名不匹配均终止发布，不生成 unsigned 清单。
+          manifest = sign_manifest(manifest, signing_key_from_env())
           with open("release-assets/update-manifest.json", "w", encoding="utf-8") as handle:
               json.dump(manifest, handle, ensure_ascii=False, indent=2)
           PY

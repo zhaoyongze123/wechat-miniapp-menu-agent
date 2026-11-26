@@ -1,10 +1,11 @@
-"""Windows 安装入口：授权、空闲闸门与 Velopack 应用请求。
+"""Windows 安装入口：授权、空闲闸门与受控安装事务。
 
 设计边界：
 - 真正的包选择、差分重建、下载与应用由 Velopack SDK 完成，本模块不再自带安装器/版本指针；
 - 本模块只负责业务安全：目标版本一致性、空闲校验、一次授权消费、事务互斥与状态落盘；
+- 安装前必须准备可信旧版恢复包；无法核验或无法留存时拒绝自动安装；
 - 应用更新会替换整个 `current` 目录，因此不能由运行中的业务进程自行结束自己：
-  控制器只登记应用请求，由启动器在确认业务空闲并正常停止 Worker 后调用 SDK 应用更新。
+  控制器只登记事务，由外部恢复协调器与启动器在确认业务空闲后完成停止、应用与恢复。
 """
 from __future__ import annotations
 
@@ -12,17 +13,19 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from menu_capture.updates.install_transaction import ACTIVE, InstallTransaction, TransactionError
+from menu_capture.updates.velopack_identity import require_publisher_trust
 
 # 超时仅作为诊断提示，不作为解除安装互斥的证据。
 MAX_ACTIVE_SECONDS = 900
 ACTIVE_STATUSES = ACTIVE
-STALLED_MESSAGE = "安装长时间无进展，保留业务闸门，请检查更新器及恢复协调器"
+STALLED_MESSAGE = "安装长时间无进展，保留业务闸门，请检查外部恢复协调器"
 
 
 def _utc_now() -> str:
@@ -72,6 +75,13 @@ def rollback_schema_matches(data_dir: Path, baseline: dict, version: str) -> boo
     return isinstance(before, dict) and after is not None and before == after
 
 
+def release_commit(app_root: Path | None = None) -> str:
+    """读取当前运行目录的发布 commit；缺失时返回空串，由调用方拒绝安装。"""
+    root = Path(app_root) if app_root is not None else Path(__file__).resolve().parents[3]
+    payload = _read_json(root / "release-manifest.json", {})
+    return str(payload.get("git_commit") or "").strip() if isinstance(payload, dict) else ""
+
+
 def _age_seconds(text: str, fallback: Path | None = None) -> float | None:
     value = str(text or "")
     if value:
@@ -92,7 +102,7 @@ def _age_seconds(text: str, fallback: Path | None = None) -> float | None:
 
 
 class InstallController:
-    """服务端安装入口：授权、状态机与应用请求；不再启动自研安装进程。"""
+    """服务端安装入口：授权、状态机与事务登记；不启动自研安装进程。"""
 
     def __init__(
         self,
@@ -108,11 +118,13 @@ class InstallController:
         authorization_check: Callable[[str], bool] | None = None,
         authorization_release: Callable[[str], None] | None = None,
         filesystem_lock: threading.Lock | None = None,
+        current_commit: Callable[[], str] | None = None,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.backend = backend
         self.latest_provider = latest_provider
         self.current_version = current_version
+        self.current_commit = current_commit or release_commit
         self.idle_check = idle_check
         self.role = role
         self.platform = platform
@@ -160,7 +172,7 @@ class InstallController:
                   "applying": "installing", "recovery_required": "verifying"}.get(state, state)
         payload = {
             "supported": self.supported,
-            "reason": "" if self.supported else "安全恢复协调器尚未就绪或未显式启用安装",
+            "reason": "" if self.supported else "外部恢复协调器与 Windows 原生验收尚未完成，安装保持关闭",
             "active": state in ACTIVE,
             "stalled": stalled,
             **journal,
@@ -172,7 +184,7 @@ class InstallController:
         return payload
 
     def recover(self) -> None:
-        # 只有独立恢复协调器能根据进程、包与健康证据完成事务。
+        # 只有外部恢复协调器能根据进程、包与健康证据完成事务。
         # Worker 启动或 GET 查询不能以版本相等、超时作为成功或失败的依据。
         return None
 
@@ -186,6 +198,18 @@ class InstallController:
             idle, reason = self.idle_check()
             if not idle:
                 raise ValueError(reason or "采集或标注仍在执行，不能关闭")
+
+    def authorize_recovery_shutdown(self, transaction_id: str, target_version: str) -> None:
+        """只允许持有协调令牌的本机启动器在候选版本验证阶段请求有序关闭。"""
+        with self._lock:
+            journal = self.transaction.read()
+            if (not transaction_id or journal.get("transaction_id") != transaction_id
+                    or journal.get("status") != "verifying"
+                    or journal.get("target_version") != target_version):
+                raise ValueError("恢复关闭请求不对应当前验证事务")
+            idle, reason = self.idle_check()
+            if not idle:
+                raise ValueError(reason or "采集或标注仍在执行，不能为恢复关闭")
 
     def _is_stalled(self, journal: dict) -> bool:
         if str(journal.get("status") or "") not in ACTIVE_STATUSES:
@@ -207,24 +231,31 @@ class InstallController:
         if not isinstance(latest, dict) or not latest.get("eligible") or str(latest.get("version") or "") != version:
             raise ValueError("目标版本不是当前可更新的最新版本")
         previous = str(self.current_version() or "").strip()
-        if not previous:
-            raise ValueError("无法确定当前运行版本，拒绝自动安装")
+        previous_commit = str(self.current_commit() or "").strip()
+        if not previous or not previous_commit:
+            raise ValueError("无法确定当前运行版本或 commit，拒绝自动安装")
         from menu_capture.updates.updates import Version
 
         target = Version.parse(version)
         if target <= Version.parse(previous):
             raise ValueError("目标版本必须高于当前版本")
         channel = "preview" if target.is_prerelease else "stable"
-        # 锁外确认 SDK 已下载完成目标版本；下载状态不能只信本地记录。
+        extension = latest.get("velopack")
+        if not isinstance(extension, dict) or extension.get("version") != version:
+            raise ValueError("缺少已验证的发布目标")
+        require_publisher_trust(extension)
+
+        # 锁外完成网络与长哈希：SDK 待安装校验、可信旧包定位/复制/复验。
         try:
-            extension = latest.get("velopack")
-            if not isinstance(extension, dict) or extension.get("version") != version:
-                raise ValueError("缺少已验证的发布目标")
             pending = self.backend.verify_pending(extension, channel)
         except Exception as exc:  # noqa: BLE001
             raise ValueError(f"读取待安装更新失败：{exc}") from exc
         if not pending or str(pending.get("version")) != version:
             raise ValueError("更新包尚未下载完成或版本不一致，请先下载并校验")
+        try:
+            recovery = self.backend.prepare_recovery_package(previous, previous_commit, extension)
+        except Exception as exc:  # noqa: BLE001 - 恢复能力不可用必须拒绝，不能先开始再找退路
+            raise ValueError(f"无法准备可信旧版恢复包：{exc}") from exc
 
         with self._lock:
             journal = self.transaction.read()
@@ -246,13 +277,24 @@ class InstallController:
                     raise ValueError("存储清理进行中，请稍后重试")
                 acquired_fs = True
             try:
-                # 回滚兼容判断基线：记录切换前数据库结构，供显式回滚前比对。
                 schema = schema_fingerprint(self.data_dir)
                 if schema is None:
                     raise ValueError("无法读取有效数据库结构，拒绝自动安装")
+                # 恢复包已在锁外复制并复验；这里只确认身份未变化，避免长时间持锁。
+                self.backend.require_recovery_package(recovery)
+                from menu_capture.updates import recovery as recovery_probe
+
+                snapshot_path = (self.data_dir / "recovery"
+                                 / f"baseline-{time.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}.sqlite3")
+                snapshot = recovery_probe.snapshot_database(self.data_dir, snapshot_path)
                 self.transaction.create(
-                    previous_version=previous, target_version=version, channel=channel,
-                    schema_baseline=schema, target_asset=dict(extension),
+                    previous_version=previous, previous_commit=previous_commit,
+                    target_version=version, target_commit=extension["git_commit"],
+                    channel=channel,
+                    schema_baseline={"version": previous, "schema": schema, "snapshot": snapshot},
+                    target_asset=dict(extension), recovery_asset=dict(recovery),
+                    authorization={"claimed_at": _utc_now(), "claimed_by": self.role}
+                    if claimed else {},
                 )
             except BaseException:
                 self._release_claim(claimed, version)

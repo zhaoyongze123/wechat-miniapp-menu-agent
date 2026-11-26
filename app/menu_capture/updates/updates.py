@@ -26,7 +26,8 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from menu_capture.updates.velopack_identity import require_target, require_unsigned_opt_in, validate_extension
+from menu_capture.updates.velopack_identity import require_publisher_trust, require_target, validate_extension
+from menu_capture.updates.velopack_trust import release_policy_from_manifest
 
 DEFAULT_REPOSITORY = "zhaoyongze123/wechat-miniapp-menu-agent"
 CHANNELS = {"stable", "preview"}
@@ -358,6 +359,7 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
         extension["velopack"] = validate_extension(
             manifest["velopack"], version=version, commit=str(manifest.get("git_commit") or ""),
             channel=manifest_channel, repository=repository, tag=tag, published=known,
+            release_policy=release_policy_from_manifest(manifest),
         )
     return {
         **extension,
@@ -644,6 +646,7 @@ class UpdateService:
                 extension = validate_extension(
                     latest["velopack"], version=str(latest["version"]), commit=str(latest.get("git_commit") or ""),
                     channel=manifest_channel, repository=self.repository, tag=tag,
+                    release_policy=latest["velopack"].get("release_policy"),
                 )
             except (ValueError, TypeError):
                 return None
@@ -1200,8 +1203,9 @@ class UpdateService:
                     target = validate_extension(
                         latest.get("velopack"), version=version, commit=str(latest.get("git_commit") or ""),
                         channel=channel, repository=self.repository, tag=str(latest.get("tag") or f"v{version}"),
+                        release_policy=(latest.get("velopack") or {}).get("release_policy"),
                     )
-                    require_unsigned_opt_in(target)
+                    require_publisher_trust(target)
                     asset = {
                         "kind": VELOPACK_ASSET_KIND,
                         "name": target["full"]["name"],
@@ -1628,6 +1632,7 @@ class UpdateService:
                 target = validate_extension(
                     latest.get("velopack"), version=version, commit=str(latest.get("git_commit") or ""),
                     channel=channel, repository=self.repository, tag=str(latest.get("tag") or f"v{version}"),
+                    release_policy=(latest.get("velopack") or {}).get("release_policy"),
                 )
                 self.backend.verify_pending(target, channel)
                 return True

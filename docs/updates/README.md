@@ -80,7 +80,7 @@ Issue #32 最新正文已把产品形态收敛为「一次授权完成更新」�
 - `hub_image` 可带可选 `registry`（固定 `ghcr.io/<org>/<repo>`）与 `digest`（`sha256:<64 位十六进制>`），用于 OCI 分层拉取；任一字段非法只丢弃这两个可选字段，完整归档资产仍然可用，旧客户端完全不受影响。
 - 缺少清单或校验失败时仍展示该 Release，但标记不可更新并说明原因，不静默回退到旧版本。
 
-SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Release 语义；后续如引入签名/发布证明，必须在此文档与实现中显式升级，不能把摘要当作唯一真实性依据。
+SHA-256 只证明完整性。Windows Velopack 发布还要求 Ed25519 发布者签名，签名绑定版本、渠道、commit、最低支持版本、回滚策略、完整资产清单以及 Velopack full/delta/index 身份；客户端只信任代码内固定公钥，缺签名、未知密钥或外层策略不一致时拒绝更新。正式发布密钥由受控发布环境注入，绝不提交私钥或用 unsigned 产物代替。当前客户端固定公钥表尚未配置，因此正式签名发布和安装均 fail-closed，属于发布启用阻断项。
 
 ### Windows 增量更新（Velopack）
 
@@ -88,9 +88,10 @@ Windows 的差分、重建与安装已交给 Velopack，不再由本项目生成
 
 - 构建期用 `vpk pack` 生成 `Setup.exe`、full/delta `.nupkg` 与 `releases.win-x64-<channel>.json`；有历史正式包时由 `vpk download github` 取回并由 vpk 自动生成增量。
 - 客户端用 Velopack Python SDK 的 `UpdateManager` 发现、下载与应用更新；SDK 负责版本选择、差分计算、包重建与全量兜底。
-- 新发布清单的 `assets` 保留 `hub_image`，顶层 `velopack` 扩展记录 setup/full/deltas/index 的实际名称、大小、SHA-256、URL、pack ID、版本、commit 与渠道。禁止将 Velopack Setup 声明为旧 `windows_installer`。下载前后核对 SDK 资产身份及实际完整包摘要；未验证差分链当前拒绝，官方全量兜底仍待实机接入。
+- 新发布清单的 `assets` 保留 `hub_image`，顶层 `velopack` 扩展记录 setup/full/deltas/index 的实际名称、大小、SHA-256、URL、pack ID、版本、commit、tag 与渠道，并由完整清单签名绑定。禁止将 Velopack Setup 声明为旧 `windows_installer`。下载前后核对 SDK 资产身份及实际完整包摘要；仅由 Velopack 官方 SDK 选择 delta 或 full 并执行重建，不实现自制补丁应用。
 - 渠道固定为 `win-x64-stable` / `win-x64-preview`，平台与架构编码在通道名中，避免跨平台误装。
 - 首次迁移到 Velopack 的版本没有历史 Velopack 包，按全量迁移处理；之后才由框架生成真实增量。
+- 当前正式 v0.3.4 清单仍是 Inno/文件补丁契约，只有 `windows_installer`，没有 Velopack full 包或签名；它不能成为该执行器的 OTA 恢复基线。首次切换必须经过独立验证的完整安装迁移，随后基于已签名的 Velopack 版本验证增量；不得把旧版改写或伪装成 Velopack 发布。
 
 ## 受控下载
 
@@ -106,13 +107,15 @@ Windows 的差分、重建与安装已交给 Velopack，不再由本项目生成
 
 ## Windows 安装执行器（Velopack，当前开发门禁）
 
-- PR #103 尚未完成独立恢复协调器与真实 SDK/Windows 集成验证；安装能力暂时关闭，即使设置 `MENU_CAPTURE_ALLOW_SELF_UPDATE=1` 也不得启用未验证的切换。
-- 下载及资产身份验证与安装权限分离。签名验证未接入时只允许明确标记 unsigned 的资产且运维显式设置 `MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE=1`；摘要不是发布者签名，未知签名模式拒绝。
+- PR #103 已实现独立于 `current` 的恢复看门狗、SDK 更新交接、候选版本隔离数据库验证与恢复门禁；但当前开发机不具备 Windows 原生运行环境，尚未完成真实 SDK/Windows 安装与切换验证，故 `install_supported=false`，`MENU_CAPTURE_ALLOW_SELF_UPDATE=1` 不能绕过门禁。
+- 下载及资产身份验证与安装权限分离。正式资产必须具有有效的 Ed25519 签名并匹配客户端固定公钥；`MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE=1` 仅是显式开发/测试豁免，不是生产回退路径。发布清单缺签名、信任根未配置、签名错误或未知签名模式均拒绝。
 - `data/update-install.json` 为唯一安装事务事实源，事务带 schema_version、transaction_id、目标发布资产身份、数据库结构基线。跨进程短时锁与原子替换保护状态迁移；陈旧请求不得覆盖新事务。
 - Worker 关闭入口仅接受本机 HTTP POST、协调令牌、合法 stopping 事务及匹配目标版本；重新检查采集和标注空闲。旧 update-apply-request、update-apply-state、rollback-request 不再驱动安装。
 - 超时只用于诊断，不解除业务闸门；仅版本字符串相等不能完成安装。未知状态和损坏记录保持恢复阻断。
-- 仍须在独立于 current 的恢复协调器中实现实际进程退出、目标构建及健康检查、可信旧包留存与恢复、Windows 原生锁及 SDK 验证。直接 `--rollback-to` 已禁用。
-- 真实 Windows 验收、依赖锁定和迁移收口完成后，才可恢复运维显式启用的安装能力。历史 Inno 验收不构成新框架通过证据。
+- 恢复看门狗位于 `data/recovery`，必须先复制自当前受信发布并完成 nonce/PID/创建时间 ready 握手。它只在协调器确证退出且事务长时间无进展时写入 `recovery_required`，不自行解包、切换目录或回滚。
+- 验证候选版本时，使用 SQLite backup API（包含 WAL 已提交事务）创建与生产数据目录隔离的副本；缺少主库、数据库清单为空、复制失败、结构或核心业务表行数不一致均拒绝成功。真实数据只在隔离验证通过且后续业务健康门禁满足时才允许完成事务。
+- 回滚前要求候选 Worker 通过受控本机 API 确认关闭，并验证 Job Object 进程树退出且业务端口释放。停止失败或进程状态未知时保持 `recovery_required`，不得启动 updater。
+- 直接 `--rollback-to` 已禁用。真实 Windows 验收、固定发布公钥引导、数据库迁移兼容及 Inno 迁移收口完成前，不恢复生产自动安装。历史 Inno 验收不构成新框架通过证据。
 
 ## Hub 镜像更新执行器（宿主机，需显式部署）
 

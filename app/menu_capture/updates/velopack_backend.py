@@ -8,17 +8,24 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from menu_capture.updates.velopack_identity import require_full_file, require_target, require_unsigned_opt_in, sdk_asset_identity
+from menu_capture.updates.velopack_identity import (
+    inner_release_manifest, require_full_file, require_publisher_trust, require_target,
+    sdk_asset_identity, validate_extension, validate_local_asset,
+)
+from menu_capture.updates.velopack_trust import release_policy_from_manifest
 
 # 与 vpk 打包参数保持一致：独立安装目录，避免与旧 Inno Setup 安装目录及默认数据目录混淆。
 PACK_ID = "Yipu.MenuCapture"
@@ -120,6 +127,175 @@ class VelopackBackend:
         root = self._root_dir()
         return (root / "packages") if root is not None else (self.data_dir / "velopack-packages")
 
+    def _recovery_root(self) -> Path:
+        # 恢复包必须放在 current/packages 之外，避免版本清理删除唯一退路。
+        return self.data_dir / "recovery"
+
+    # ---------- 可信恢复包 ----------
+
+    @staticmethod
+    def _http_open(url: str):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        return opener.open(url, timeout=120)
+
+    def fetch_release_manifest(self, version: str, channel: str) -> dict:
+        url = (f"https://github.com/{self.repository}/releases/download/"
+               f"v{version}/update-manifest.json")
+        try:
+            with self._http_open(url) as response:
+                body = response.read(2 * 1024 * 1024 + 1)
+        except Exception as exc:  # noqa: BLE001 - 网络错误统一呈现为不可验证恢复来源
+            raise VelopackError(f"无法读取旧版正式发布清单：{exc}") from exc
+        if len(body) > 2 * 1024 * 1024:
+            raise VelopackError("旧版正式发布清单超出大小上限")
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeError, ValueError) as exc:
+            raise VelopackError("旧版正式发布清单无法解析") from exc
+        if not isinstance(payload, dict):
+            raise VelopackError("旧版正式发布清单格式无效")
+        if (str(payload.get("version") or "") != version
+                or str(payload.get("channel") or "") != channel):
+            raise VelopackError("旧版正式发布清单版本或渠道不一致")
+        return payload
+
+    def _download_verified(self, asset: dict, destination: Path) -> Path:
+        partial = destination.with_suffix(destination.suffix + ".partial")
+        partial.unlink(missing_ok=True)
+        try:
+            with self._http_open(asset["url"]) as response, partial.open("wb") as stream:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    stream.write(chunk)
+                    if partial.stat().st_size > asset["size"]:
+                        raise VelopackError("恢复包下载超出声明大小")
+                stream.flush()
+                os.fsync(stream.fileno())
+            if partial.stat().st_size != asset["size"]:
+                raise VelopackError("恢复包下载大小不一致")
+            with partial.open("rb") as stream:
+                if hashlib.file_digest(stream, "sha256").hexdigest() != asset["sha256"]:
+                    raise VelopackError("恢复包下载 SHA-256 不一致")
+            os.replace(partial, destination)
+            return destination
+        finally:
+            partial.unlink(missing_ok=True)
+
+    def prepare_recovery_package(self, previous_version: str, previous_commit: str,
+                                 target: dict) -> dict:
+        """从上一版正式 Release 核验并复制旧 full 包；无法证明身份则拒绝。"""
+        channel = "preview" if str(target.get("channel") or "").endswith("preview") else "stable"
+        manifest = self.fetch_release_manifest(previous_version, channel)
+        if str(manifest.get("git_commit") or "") != previous_commit:
+            raise VelopackError("旧版正式发布 commit 与当前运行版本不一致")
+        raw = manifest.get("velopack")
+        if not isinstance(raw, dict):
+            raise VelopackError("旧版正式发布缺少 Velopack 扩展")
+        extension = validate_extension(
+            raw, version=previous_version, commit=previous_commit, channel=channel,
+            repository=self.repository, tag=f"v{previous_version}",
+            release_policy=release_policy_from_manifest(manifest),
+        )
+        require_publisher_trust(extension)
+        full = extension["full"]
+        local = self._packages_dir() / full["name"]
+        if local.is_file() and local.stat().st_size == full["size"]:
+            with local.open("rb") as stream:
+                if hashlib.file_digest(stream, "sha256").hexdigest() == full["sha256"]:
+                    source = {"type": "local-packages", "url": full["url"],
+                              "tag": f"v{previous_version}"}
+                    package = local
+                else:
+                    package = None
+        else:
+            package = None
+        if package is None:
+            recovery_tmp = self._recovery_root() / ".download"
+            recovery_tmp.mkdir(parents=True, exist_ok=True)
+            package = self._download_verified(full, recovery_tmp / full["name"])
+            source = {"type": "official-release", "url": full["url"],
+                      "tag": f"v{previous_version}"}
+        inner = inner_release_manifest(package)
+        if (str(inner.get("version") or "") != previous_version
+                or str(inner.get("git_commit") or "") != previous_commit):
+            raise VelopackError("恢复包内部发布清单与正式发布身份不一致")
+        destination_dir = self._recovery_root() / f"{previous_version}-{full['sha256'][:12]}"
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = destination_dir / full["name"]
+        if not destination.is_file() or destination.stat().st_size != full["size"]:
+            temp = destination.with_suffix(destination.suffix + ".tmp")
+            shutil.copyfile(package, temp)
+            os.replace(temp, destination)
+        with destination.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != full["sha256"]:
+                raise VelopackError("恢复包复制后 SHA-256 不一致")
+        try:
+            os.chmod(destination, 0o444)
+        except OSError:
+            pass
+        return {
+            "version": previous_version, "commit": previous_commit,
+            "name": full["name"], "size": full["size"], "sha256": full["sha256"],
+            "path": str(destination), "source": source,
+            "inner_manifest": {
+                "version": str(inner.get("version") or ""),
+                "commit": str(inner.get("git_commit") or ""),
+                "frontend_entry": str(inner.get("frontend_entry") or ""),
+                "frontend_sha256": str(inner.get("frontend_sha256") or ""),
+            },
+        }
+
+    def require_recovery_package(self, asset: dict) -> Path:
+        validate_local_asset(asset, version=asset.get("version"), commit=asset.get("commit"))
+        root = self._recovery_root().resolve()
+        path = Path(asset["path"])
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root)
+        except (OSError, ValueError) as exc:
+            raise VelopackError("恢复包路径不在专属恢复目录") from exc
+        if path.is_symlink() or not resolved.is_file() or resolved.stat().st_size != asset["size"]:
+            raise VelopackError("恢复包不存在或大小不一致")
+        return resolved
+
+    def verify_recovery_package(self, asset: dict) -> Path:
+        path = self.require_recovery_package(asset)
+        with path.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != asset["sha256"]:
+                raise VelopackError("恢复包 SHA-256 不一致")
+        inner = inner_release_manifest(path)
+        if (str(inner.get("version") or "") != asset["version"]
+                or str(inner.get("git_commit") or "") != asset["commit"]):
+            raise VelopackError("恢复包内部发布清单已变化")
+        return path
+
+    def rollback(self, asset: dict, *, channel: str) -> None:
+        """仅供外部恢复协调器在复核数据库与包后调用；使用官方 updater 应用旧 full 包。"""
+        if not self.available():
+            raise VelopackError("当前不是 Velopack 安装环境")
+        package = self.verify_recovery_package(asset)
+        # 官方 updater 从 packages 目录按文件名取包；先复制并再次校验。
+        target_path = self._packages_dir() / asset["name"]
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        temp = target_path.with_suffix(target_path.suffix + ".tmp")
+        shutil.copyfile(package, temp)
+        os.replace(temp, target_path)
+        with target_path.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != asset["sha256"]:
+                raise VelopackError("回滚包复制后 SHA-256 不一致")
+        import velopack
+
+        old = velopack.VelopackAsset(
+            PackageId=PACK_ID, Version=asset["version"], Type="Full",
+            FileName=asset["name"], SHA1="", SHA256=asset["sha256"],
+            Size=int(asset["size"]), NotesMarkdown="", NotesHtml="",
+        )
+        self.manager(channel).wait_exit_then_apply_updates(
+            old, silent=True, restart=True, restart_args=None,
+        )
+
     def available(self) -> bool:
         """仅 Windows、已安装 velopack 且能定位安装布局时启用。"""
         if sys.platform != "win32":
@@ -191,7 +367,7 @@ class VelopackBackend:
         return sdk_asset_identity(asset)
 
     def verify_pending(self, target: dict, channel: str) -> dict:
-        require_unsigned_opt_in(target)
+        require_publisher_trust(target)
         pending = self.pending_restart(channel)
         require_target(pending, target)
         require_full_file(self._packages_dir(), target)
@@ -218,7 +394,7 @@ class VelopackBackend:
             if not isinstance(target, dict) or target.get("version") != version:
                 return {"status": "failed", "message": "缺少已验证的下载目标"}
             try:
-                require_unsigned_opt_in(target)
+                require_publisher_trust(target)
             except ValueError as exc:
                 return {"status": "failed", "message": str(exc)}
             progress_path = self.progress_path.with_name(
@@ -317,11 +493,14 @@ class VelopackBackend:
         """仅供独立恢复协调器完成所有事务门禁后调用；此处再次核验实际包。"""
         if not self.available():
             raise VelopackError("当前不是 Velopack 安装环境")
-        require_unsigned_opt_in(target)
+        require_publisher_trust(target)
         manager = self.manager(channel)
         asset = manager.get_update_pending_restart()
         if asset is None:
             raise VelopackError("没有已下载完成的更新包")
         require_target(sdk_asset_identity(asset), target)
         require_full_file(self._packages_dir(), target)
-        manager.wait_exit_then_apply_updates(asset, silent=False, restart=True)
+        # 启动器在调用后必须走正常退出路径，由官方 Update.exe 完成应用与重启。
+        manager.wait_exit_then_apply_updates(
+            asset, silent=True, restart=True, restart_args=None,
+        )

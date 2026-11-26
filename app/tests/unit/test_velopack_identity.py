@@ -16,7 +16,7 @@ def fixture():
         return {"name": name, "size": len(BODY), "sha256": hashlib.sha256(BODY).hexdigest(),
                 "url": f"https://github.com/{REPO}/releases/download/v{VERSION}/{name}"}
     return {"schema_version": 1, "pack_id": "Yipu.MenuCapture", "platform": "windows", "arch": "x64",
-            "channel": "win-x64-stable", "version": VERSION, "git_commit": COMMIT,
+            "channel": "win-x64-stable", "version": VERSION, "git_commit": COMMIT, "tag": f"v{VERSION}",
             "setup": asset("Setup.exe"), "full": asset("full.nupkg"), "deltas": [asset("delta.nupkg")],
             "index": asset("releases.win-x64-stable.json"), "trust": {"mode": "unsigned"}}
 
@@ -62,7 +62,7 @@ def test_github_identity():
 def test_sdk_and_bytes(tmp_path):
     target = validate(fixture())
     full = target["full"]
-    asset = SimpleNamespace(Version=VERSION, PackageId=target["pack_id"], FileName=full["name"],
+    asset = SimpleNamespace(Version=VERSION, PackageId=target["pack_id"], Type="Full", FileName=full["name"],
                             SHA256=full["sha256"], Size=full["size"])
     require_target(sdk_asset_identity(asset), target)
     path = tmp_path / full["name"]

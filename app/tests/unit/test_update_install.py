@@ -34,6 +34,18 @@ class FakeBackend:
     def read_apply_state(self) -> dict:
         return dict(self.apply_state)
 
+    def prepare_recovery_package(self, previous_version: str, previous_commit: str, target: dict) -> dict:
+        path = self.data_dir / "recovery" / "old.nupkg"
+        return {
+            "version": previous_version, "commit": previous_commit, "name": path.name,
+            "size": 1, "sha256": "c" * 64, "path": str(path),
+            "source": {"type": "test"},
+            "inner_manifest": {"version": previous_version, "commit": previous_commit},
+        }
+
+    def require_recovery_package(self, asset: dict) -> Path:
+        return Path(asset["path"])
+
 
 def make_controller(tmp_path: Path, *, current: str = "0.3.4", idle: bool = True,
                     pending: dict | None = None, supported: bool = True):
@@ -41,11 +53,17 @@ def make_controller(tmp_path: Path, *, current: str = "0.3.4", idle: bool = True
         db.execute("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY)")
         db.commit()
     backend = FakeBackend(tmp_path, pending or {"version": "0.4.0"})
+    extension = {
+        "version": "0.4.0", "git_commit": "b" * 40, "tag": "v0.4.0",
+        "trust": {"mode": "unsigned"}, "full": {"name": "full.nupkg"},
+    }
     controller = InstallController(
         data_dir=tmp_path,
         backend=backend,
-        latest_provider=lambda: {"eligible": True, "version": "0.4.0", "velopack": {"version": "0.4.0"}},
+        latest_provider=lambda: {"eligible": True, "version": "0.4.0", "git_commit": "b" * 40,
+                                 "velopack": extension},
         current_version=lambda: current,
+        current_commit=lambda: "a" * 40,
         idle_check=lambda: (idle, "" if idle else "采集正在执行"),
         role="worker",
         platform="windows",
@@ -54,6 +72,11 @@ def make_controller(tmp_path: Path, *, current: str = "0.3.4", idle: bool = True
         authorization_release=lambda version: None,
     )
     return controller, backend
+
+
+@pytest.fixture(autouse=True)
+def allow_unsigned_test_assets(monkeypatch):
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
 
 
 def test_unsupported_outside_worker(tmp_path: Path):
@@ -133,7 +156,9 @@ def test_shutdown_requires_bound_stopping_transaction(tmp_path):
     tid = row["transaction_id"]
     with pytest.raises(ValueError):
         controller.authorize_shutdown(tid, "0.4.0")
-    controller.transaction.transition(tid, "prepared", "stopping")
+    controller.transaction.claim(tid, "prepared", owner_token="owner", pid=123,
+                                 process_started_at=10.5, phase="stopping")
+    controller.transaction.transition(tid, "prepared", "stopping", owner_token="owner")
     with pytest.raises(ValueError):
         controller.authorize_shutdown("stale", "0.4.0")
     with pytest.raises(ValueError):
@@ -142,6 +167,25 @@ def test_shutdown_requires_bound_stopping_transaction(tmp_path):
     controller.idle_check = lambda: (False, "采集正在执行")
     with pytest.raises(ValueError, match="采集正在执行"):
         controller.authorize_shutdown(tid, "0.4.0")
+
+
+def test_recovery_shutdown_requires_verifying_target_and_idle_worker(tmp_path):
+    controller, _ = make_controller(tmp_path)
+    controller.start("0.4.0", "0.4.0")
+    row = controller.transaction.read()
+    tid = row["transaction_id"]
+    controller.transaction.claim(tid, "prepared", owner_token="owner", pid=123,
+                                 process_started_at=10.5, phase="stopping")
+    for before, after in (("prepared", "stopping"), ("stopping", "applying"), ("applying", "verifying")):
+        controller.transaction.transition(tid, before, after, owner_token="owner")
+    with pytest.raises(ValueError):
+        controller.authorize_recovery_shutdown("stale", "0.4.0")
+    with pytest.raises(ValueError):
+        controller.authorize_recovery_shutdown(tid, "0.4.1")
+    controller.authorize_recovery_shutdown(tid, "0.4.0")
+    controller.idle_check = lambda: (False, "采集正在执行")
+    with pytest.raises(ValueError, match="采集正在执行"):
+        controller.authorize_recovery_shutdown(tid, "0.4.0")
 
 
 def test_corrupt_journal_blocks_retry(tmp_path):

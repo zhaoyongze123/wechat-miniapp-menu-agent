@@ -290,8 +290,15 @@ try {
     $launcherVenv = Join-Path $stage 'launcher-venv'
     Invoke-Checked $python @('-m', 'venv', $launcherVenv)
     $launcherPython = Join-Path $launcherVenv 'Scripts\python.exe'
+    # 构建工具同样由 uv.lock 锁定；禁止在这里安装未固定版本的最新 PyInstaller。
+    $buildRequirements = Join-Path $stage 'launcher-requirements.txt'
+    Invoke-Checked $uv @(
+        'export', '--project', $runner, '--locked', '--only-group', 'build',
+        '--no-emit-project', '--output-file', $buildRequirements
+    )
     Invoke-Checked $launcherPython @(
-        '-m', 'pip', 'install', '--disable-pip-version-check', '--no-cache-dir', 'pyinstaller', 'velopack==1.2.161'
+        '-m', 'pip', 'install', '--disable-pip-version-check', '--no-cache-dir',
+        '--require-hashes', '-r', $buildRequirements
     )
     $launcherDist = Join-Path $stage 'launcher-dist'
     # 启动器只负责拉起并守护本地服务；显式排除运行时已自带的大模块，避免在 _internal 中重复打包。
@@ -311,6 +318,13 @@ try {
         throw 'PyInstaller did not produce MenuCapture.exe.'
     }
     Copy-Item -Path (Join-Path $launcherDir '*') -Destination $bundle -Recurse -Force
+
+    # 更新前会把协调器复制到业务安装目录之外；源文件必须随同一发布包交付。
+    $watchdogSource = Join-Path $PSScriptRoot 'update-watchdog.ps1'
+    if (-not (Test-Path -LiteralPath $watchdogSource -PathType Leaf)) {
+        throw "Missing external recovery coordinator: $watchdogSource"
+    }
+    Copy-Item -LiteralPath $watchdogSource -Destination (Join-Path $bundle 'update-watchdog.ps1') -Force
 
     # Velopack CLI 固定 1.2.161：已预装时只校验版本，缺失时按锁定版本安装，避免产物行为漂移。
     $vpkCommand = Get-Command 'vpk' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1

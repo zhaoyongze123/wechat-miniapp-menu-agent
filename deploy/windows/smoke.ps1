@@ -52,24 +52,19 @@ function Invoke-Health {
 }
 
 function Stop-TestWorker {
-    $tokenPath = Join-Path $homePath 'data\launcher-token'
-    if (Test-Path -LiteralPath $tokenPath) {
-        $token = (Get-Content -LiteralPath $tokenPath -Raw).Trim()
-        try {
-            Invoke-RestMethod "http://127.0.0.1:$Port/api/internal/shutdown" -Method Post `
-                -Headers @{ 'X-Coordinator-Token' = $token } -UseBasicParsing -TimeoutSec 5 | Out-Null
-        } catch {}
-    }
+    $launcher = Join-Path $installRoot 'MenuCapture.exe'
+    if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { return }
+    $stop = Start-Process -FilePath $launcher -ArgumentList '--stop' -Wait -PassThru -WindowStyle Hidden
+    if ($stop.ExitCode -ne 0) { throw "Launcher refused a verified graceful stop (exit $($stop.ExitCode))." }
     $prefix = "$installRoot\current\"
-    for ($i = 0; $i -lt 60; $i++) {
-        $alive = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
-            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) }
-        if (-not $alive) { break }
+    for ($i = 0; $i -lt 120; $i++) {
+        $alive = @(Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
+            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
+        $listening = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
+        if ($alive.Count -eq 0 -and $listening.Count -eq 0) { return }
         Start-Sleep -Seconds 1
     }
-    Get-CimInstance Win32_Process -Filter "Name = 'MenuCapture.exe'" |
-        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($installRoot, [StringComparison]::OrdinalIgnoreCase) } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    throw 'Launcher did not prove that its Worker process tree and port had stopped; refusing force termination.'
 }
 
 try {
@@ -128,10 +123,18 @@ try {
     Get-ChildItem -LiteralPath $keep -File | ForEach-Object { Get-Content -LiteralPath $_.FullName -Tail 200 }
     throw
 } finally {
-    Stop-TestWorker
-    $updater = Join-Path $installRoot 'Update.exe'
-    if (Test-Path -LiteralPath $updater) {
-        Start-Process -FilePath $updater -ArgumentList 'uninstall', '-s' -Wait -ErrorAction SilentlyContinue
+    $stopped = $false
+    try {
+        Stop-TestWorker
+        $stopped = $true
+    } catch {
+        Write-Host "Test instance retained because graceful stop was not verified: $_"
+    }
+    if ($stopped) {
+        $updater = Join-Path $installRoot 'Update.exe'
+        if (Test-Path -LiteralPath $updater) {
+            Start-Process -FilePath $updater -ArgumentList 'uninstall', '-s' -Wait -ErrorAction SilentlyContinue
+        }
     }
     $env:LOCALAPPDATA = $originalLocalData
     $env:MENU_CAPTURE_HOME = $originalHome

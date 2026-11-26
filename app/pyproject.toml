@@ -19,10 +19,20 @@ dependencies = [
   "pyobjc-framework-Vision>=11,<13; sys_platform == 'darwin'",
   "pyobjc-framework-ApplicationServices>=11,<13; sys_platform == 'darwin'",
   "screeninfo>=0.8.1,<1",
+  # Windows 更新由 Velopack Python SDK 承担；其他平台不安装，避免影响 Hub/单机模式。
+  "velopack==1.2.161; sys_platform == 'win32'",
+  # 发布者签名只使用成熟密码学库，不自行实现算法。
+  "cryptography>=45,<47",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8,<10"]
+dev = ["pytest>=8,<10", "cryptography>=45,<47"]
+# Windows 构建机专用：PyInstaller 与 Velopack SDK 由 uv.lock 锁定，构建脚本不再裸装最新版。
+build = [
+  "pyinstaller>=6.11,<7",
+  "velopack==1.2.161; sys_platform == 'win32'",
+  "cryptography>=45,<47",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

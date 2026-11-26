@@ -39,15 +39,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from menu_capture.updates.velopack_backend import VelopackBackend
         from menu_capture.updates.velopack_identity import (
-            require_full_file, require_target, require_unsigned_opt_in, sdk_asset_identity, validate_extension,
+            require_full_file, require_publisher_trust, require_target, sdk_asset_identity, validate_extension,
         )
 
         raw = json.loads(args.target_json)
         target = validate_extension(
             raw, version=args.version, commit=str(raw.get("git_commit") or ""),
-            channel=args.channel, repository=args.repo, tag=f"v{args.version}",
+            channel=args.channel, repository=args.repo,
+            tag=str(raw.get("tag") or f"v{args.version}"),
         )
-        require_unsigned_opt_in(target)
+        require_publisher_trust(target)
 
         backend = VelopackBackend(args.repo, progress_path.parent, channel=args.channel)
         manager = backend.manager(args.channel)
@@ -56,10 +57,13 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("发布源没有合法的升级目标")
         require_target(sdk_asset_identity(info.TargetFullRelease), target)
         allowed = {(item["name"], item["sha256"], item["size"]) for item in target["deltas"]}
-        for delta in info.DeltasToTarget or []:
-            item = sdk_asset_identity(delta)
-            if (item["file_name"], item["sha256"], item["size"]) not in allowed:
-                raise ValueError("差分链包含未经当前 Release 核验的资产，需使用官方完整包回退")
+        deltas = list(info.DeltasToTarget or [])
+        if any((sdk_asset_identity(item)["file_name"], sdk_asset_identity(item)["sha256"],
+                sdk_asset_identity(item)["size"]) not in allowed for item in deltas):
+            # 未经本次 Release 核验的历史差分链不直接信任；改用官方全量包路径。
+            import velopack
+
+            info = velopack.UpdateInfo(info.TargetFullRelease, [], False)
 
         def on_progress(progress: Any = 0, *_args: Any, **_kwargs: Any) -> None:
             _write_progress(progress_path, {"stage": "downloading", "percent": _percent(progress)})
