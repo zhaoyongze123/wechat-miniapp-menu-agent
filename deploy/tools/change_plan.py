@@ -64,6 +64,8 @@ def classify(files: list[str], *, force_full: bool = False, uncertain: bool = Fa
             risk = max(risk, 2)
         elif path in LOWER_RISK_BACKEND:
             plan["backend"] = True
+            if path.startswith("app/menu_capture/desktop/"):
+                plan["packaging"] = True
             risk = max(risk, 2)
         else:
             risk = 3
