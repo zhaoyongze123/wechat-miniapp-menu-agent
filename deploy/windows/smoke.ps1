@@ -52,7 +52,7 @@ function Invoke-Health {
 }
 
 function Stop-TestWorker {
-    $launcher = Join-Path $installRoot 'MenuCapture.exe'
+    $launcher = Join-Path $installRoot 'current\MenuCapture.exe'
     if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { return }
     $stop = Start-Process -FilePath $launcher -ArgumentList '--stop' -Wait -PassThru -WindowStyle Hidden
     if ($stop.ExitCode -ne 0) { throw "Launcher refused a verified graceful stop (exit $($stop.ExitCode))." }
@@ -69,12 +69,11 @@ function Stop-TestWorker {
 
 try {
     Write-Host "安装 Velopack 包：$Setup"
-    $install = Start-Process -FilePath $Setup -ArgumentList '--silent' -Wait -PassThru
+    $install = Start-Process -FilePath $Setup -ArgumentList '--silent', '--installto', $installRoot -Wait -PassThru
     if ($install.ExitCode -ne 0) { throw "Setup.exe 退出码 $($install.ExitCode)。" }
 
     foreach ($path in @(
         (Join-Path $installRoot 'Update.exe'),
-        (Join-Path $installRoot 'MenuCapture.exe'),
         (Join-Path $installRoot 'current\MenuCapture.exe'),
         (Join-Path $installRoot 'current\python\python.exe'),
         (Join-Path $installRoot 'current\app\menu_capture\api\server.py'),
@@ -85,8 +84,9 @@ try {
     $installed = (Get-Content -LiteralPath (Join-Path $installRoot 'current\sq.version') -Raw).Trim()
     if ($installed -notmatch [regex]::Escape($Version)) { throw "sq.version=$installed，期望 $Version。" }
 
-    # Velopack Setup 默认会拉起应用；--silent 下显式启动稳定 stub，验证快捷方式/登录入口所用路径。
-    Start-Process -FilePath (Join-Path $installRoot 'MenuCapture.exe') -WindowStyle Hidden
+    # Velopack Setup --silent 下显式启动 current\MenuCapture.exe（或根 stub）。
+    $launcherExe = Join-Path $installRoot 'current\MenuCapture.exe'
+    Start-Process -FilePath $launcherExe -WindowStyle Hidden
     Invoke-Health -Expected $Version
     $worker = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
         Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$installRoot\current\", [StringComparison]::OrdinalIgnoreCase) } |
@@ -98,7 +98,7 @@ try {
 
     Stop-TestWorker
     # 再次启动验证单实例与重启恢复；不重复安装。
-    Start-Process -FilePath (Join-Path $installRoot 'MenuCapture.exe') -WindowStyle Hidden
+    Start-Process -FilePath $launcherExe -WindowStyle Hidden
     Invoke-Health -Expected $Version
     Write-Host '重启恢复通过。'
 

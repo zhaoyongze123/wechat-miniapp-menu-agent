@@ -151,8 +151,17 @@ def _ensure_autostart(data_root: Path) -> None:
     if not startup.is_dir():
         return
     link = startup / "菜单采集后台.lnk"
-    target = _install_root() / "MenuCapture.exe"
-    if link.exists() or not target.is_file():
+    # Velopack 在安装根生成的 stub 文件名跟随 --packTitle（菜单采集工作台.exe），
+    # 兼容直接以 MenuCapture.exe 命名或回退到 current/MenuCapture.exe。
+    target = next(
+        (candidate for candidate in (
+            _install_root() / "菜单采集工作台.exe",
+            _install_root() / "MenuCapture.exe",
+            _current_dir() / "MenuCapture.exe",
+        ) if candidate.is_file()),
+        None,
+    )
+    if link.exists() or target is None:
         return
     script = (
         "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{link}');"
@@ -921,12 +930,12 @@ def main(argv: list[str] | None = None) -> int:
     if "--rollback-to" in args:
         _message("直接版本切换已禁用，请通过受控恢复流程处理。")
         return 2
-    if "--stop" in args:
-        return _request_launcher_stop(data_root)
-    # 启动器是 PyInstaller 入口，业务模块位于同目录的 app/；显式加入导入路径。
+    # 启动器是 PyInstaller 入口，业务模块位于同目录的 app/；--stop 也需要导入 recovery，必须先加入路径。
     app_dir = current / "app"
     if app_dir.is_dir() and str(app_dir) not in sys.path:
         sys.path.insert(0, str(app_dir))
+    if "--stop" in args:
+        return _request_launcher_stop(data_root)
     _run_velopack_hooks(data_root)
     acquired, handle = _acquire_mutex()
     if not acquired:
