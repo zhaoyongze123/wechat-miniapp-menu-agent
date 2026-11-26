@@ -22,7 +22,7 @@ interface ProjectContextValue {
 const ProjectContext = createContext<ProjectContextValue | null>(null)
 const PROJECT_PREFERENCE_PREFIX = 'menu-capture.project-preference.v1'
 const BUSINESS_PATHS = new Set([
-  '/workbench', '/materials', '/rejections', '/task-center', '/assignments', '/annotation', '/devices',
+  '/workbench', '/materials', '/rejections', '/task-center', '/assignments', '/annotation',
 ])
 
 function preferenceKey(role: string, instanceName?: string): string {

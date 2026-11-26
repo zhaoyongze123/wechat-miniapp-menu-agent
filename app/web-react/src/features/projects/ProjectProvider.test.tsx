@@ -62,10 +62,10 @@ describe('ProjectProvider', () => {
     await waitFor(() => expect(screen.getByTestId('selected-project')).toHaveAttribute('data-search', '?project=project-b'))
   })
 
-  it('treats the device page as project scoped and writes its default project into the URL', async () => {
+  it('keeps device management global while showing the default project as context', async () => {
     renderProvider('/devices')
     await waitFor(() => expect(screen.getByTestId('selected-project')).toHaveTextContent('project-a'))
-    await waitFor(() => expect(screen.getByTestId('selected-project')).toHaveAttribute('data-search', '?project=project-a'))
+    expect(screen.getByTestId('selected-project')).toHaveAttribute('data-search', '')
   })
 
   it('rejects unknown explicit project IDs instead of silently falling back', async () => {
