@@ -1,0 +1,147 @@
+# Reusable source checks only: no product packages, registry writes or deployment.
+name: Source checks
+on:
+  workflow_call:
+    inputs:
+      frontend:
+        type: boolean
+        default: false
+      static_frontend:
+        type: boolean
+        default: false
+      backend:
+        type: boolean
+        default: false
+      windows_contract:
+        type: boolean
+        default: false
+      hub_updater:
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  react-web:
+    if: ${{ inputs.frontend || inputs.static_frontend }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        if: ${{ inputs.frontend }}
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/web-react/package-lock.json
+      - name: 校验 React 底座、单测与提交的构建产物
+        if: ${{ inputs.frontend }}
+        working-directory: app/web-react
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm run lint:design
+          npm test
+          npm run build
+          if [ -n "$(git status --porcelain ../web/react)" ]; then
+            echo "web/react 产物与源码不一致，请本地重新构建并提交"
+            git status --short ../web/react
+            exit 1
+          fi
+      - name: 未影响前端，复用已提交产物
+        if: ${{ !inputs.frontend }}
+        run: echo 'Reuse committed frontend; verify static entry and manifest.'
+      - name: 校验旧前端已清理且发布产物自包含
+        working-directory: app
+        run: |
+          legacy=$(find web -maxdepth 1 -type f \( -name '*.js' -o -name '*.css' -o -name 'index.html' \) -print)
+          if [ -d web/vue ]; then legacy="$legacy web/vue"; fi
+          if [ -d web-ui ]; then legacy="$legacy web-ui"; fi
+          if [ -n "$legacy" ]; then
+            echo "旧前端文件仍在仓库中，请完成清理："
+            echo "$legacy"
+            exit 1
+          fi
+          test -s web/react/index.html
+          if grep -Eq 'https?://|/react/assets/|__CAPTURE_TOKEN__' web/react/index.html; then
+            echo "React 入口包含外部依赖、迁移期资源前缀或旧令牌占位符"
+            exit 1
+          fi
+          test -s web/react/.vite/manifest.json
+
+  backend-check:
+    if: ${{ inputs.backend }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.3'
+          enable-cache: true
+          cache-dependency-glob: 'app/uv.lock'
+      - name: Ruff 门禁（配置见 pyproject.toml）
+        working-directory: app
+        run: uvx ruff@0.17.6 check --no-cache .
+      - name: 全量通用测试（unit / integration / contract）
+        working-directory: app
+        run: |
+          uv sync --frozen --python 3.12
+          # 不再手工维护文件名清单：新增测试随目录自动纳入门禁。
+          uv run --frozen pytest -q tests/unit tests/integration tests/contract
+
+  windows-contract:
+    if: ${{ inputs.windows_contract }}
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.3'
+          enable-cache: true
+          cache-dependency-glob: 'app/uv.lock'
+      - name: Windows 原生执行契约
+        shell: pwsh
+        working-directory: app
+        run: |
+          uv sync --frozen --python 3.12
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # 通用单测、集成测试与目录级契约已在后端门禁全量执行；这里只补充 Windows 本机行为。
+          uv run --frozen pytest -q --basetemp (Join-Path $env:RUNNER_TEMP 'mc-py') tests/contract
+  hub-updater:
+    if: ${{ inputs.hub_updater }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hub 更新执行器契约单测
+        run: |
+          python3 -m venv "$RUNNER_TEMP/updater-venv"
+          "$RUNNER_TEMP/updater-venv/bin/pip" install --quiet pytest
+          "$RUNNER_TEMP/updater-venv/bin/python" -m pytest -q deploy/hub-update/test_hub_updater.py
+  gate:
+    if: always()
+    needs: [react-web, backend-check, windows-contract, hub-updater]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify required checks (including expected skips)
+        env:
+          REACT_REQUIRED: ${{ inputs.frontend || inputs.static_frontend }}
+          REACT_RESULT: ${{ needs.react-web.result }}
+          BACKEND_REQUIRED: ${{ inputs.backend }}
+          BACKEND_RESULT: ${{ needs.backend-check.result }}
+          WINDOWS_REQUIRED: ${{ inputs.windows_contract }}
+          WINDOWS_RESULT: ${{ needs.windows-contract.result }}
+          HUB_REQUIRED: ${{ inputs.hub_updater }}
+          HUB_RESULT: ${{ needs.hub-updater.result }}
+        run: |
+          set -euo pipefail
+          for job in REACT BACKEND WINDOWS HUB; do
+            required="${job}_REQUIRED"
+            result="${job}_RESULT"
+            expected=skipped
+            if [[ "${!required}" == "true" ]]; then expected=success; fi
+            echo "$job required=${!required} result=${!result}" >> "$GITHUB_STEP_SUMMARY"
+            [[ "${!result}" == "$expected" ]] || exit 1
+          done
