@@ -19,6 +19,9 @@ class FakeBackend:
         self.cleared = 0
         self.apply_state: dict = {}
 
+    def verify_pending(self, target, channel):
+        return self.pending
+
     def pending_restart(self, channel=None):
         return dict(self.pending) if self.pending else None
 
@@ -41,7 +44,7 @@ def make_controller(tmp_path: Path, *, current: str = "0.3.4", idle: bool = True
     controller = InstallController(
         data_dir=tmp_path,
         backend=backend,
-        latest_provider=lambda: {"eligible": True, "version": "0.4.0"},
+        latest_provider=lambda: {"eligible": True, "version": "0.4.0", "velopack": {"version": "0.4.0"}},
         current_version=lambda: current,
         idle_check=lambda: (idle, "" if idle else "采集正在执行"),
         role="worker",

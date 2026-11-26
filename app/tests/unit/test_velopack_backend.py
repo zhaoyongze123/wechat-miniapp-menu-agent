@@ -28,39 +28,19 @@ def test_backend_is_unavailable_outside_windows(tmp_path: Path):
     assert backend.pending_restart() is None
 
 
-def test_apply_request_and_state_round_trip(tmp_path: Path):
-    backend = VelopackBackend("owner/repo", tmp_path)
-    backend.request_apply("0.4.0")
-    request = backend.read_apply_request()
-    assert request["version"] == "0.4.0"
-    assert request["channel"] == "stable"
-
-    backend.write_apply_state("failed", "0.4.0", message="未下载", error="missing")
-    state = backend.read_apply_state()
-    assert state == {
-        "status": "failed",
-        "version": "0.4.0",
-        "message": "未下载",
-        "error": "missing",
-        "updated_at": state["updated_at"],
-    }
-
-    backend.clear_apply_request()
-    assert backend.read_apply_request() is None
-
-
 def test_apply_requires_available_install_layout(tmp_path: Path):
     backend = VelopackBackend("owner/repo", tmp_path)
     with pytest.raises(VelopackError, match="Velopack 安装环境"):
-        backend.apply_pending("0.4.0")
+        backend.apply_pending({}, channel="stable")
 
 
-def test_download_reports_failure_without_python_module(tmp_path: Path):
+def test_download_reports_failure_without_python_module(tmp_path: Path, monkeypatch):
     (tmp_path / "app").mkdir()
     backend = VelopackBackend(
         "owner/repo", tmp_path, python="/nonexistent/python", app_dir=tmp_path,
     )
-    result = backend.download("0.4.0", timeout=10)
+    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
+    result = backend.download("0.4.0", target={"version": "0.4.0", "trust": {"mode": "unsigned"}}, timeout=10)
     assert result["status"] == "failed"
     assert "无法启动下载进程" in result["message"]
     assert not list(tmp_path.glob("update-download-progress-*.json"))
@@ -122,20 +102,8 @@ def test_download_refuses_retry_while_previous_process_alive(tmp_path):
     assert "尚未退出" in result["message"]
 
 
-def test_preview_apply_uses_same_manager_and_asset(tmp_path, monkeypatch):
+def test_download_requires_bound_target(tmp_path):
     backend = VelopackBackend("owner/repo", tmp_path)
-    asset = SimpleNamespace(Version="0.4.0-rc.1", FileName="target.nupkg", SHA256="a" * 64, Size=4)
-    applied = []
-    manager = SimpleNamespace(get_update_pending_restart=lambda: asset, apply_updates_and_restart=applied.append)
-    channels = []
-    monkeypatch.setattr(backend, "available", lambda: True)
-    def make_manager(channel=None):
-        channels.append(channel)
-        return manager
-    monkeypatch.setattr(backend, "manager", make_manager)
-    backend.request_apply("0.4.0-rc.1", channel="preview")
-    assert backend.read_apply_request()["channel"] == "preview"
-    result = backend.apply_pending("0.4.0-rc.1", channel="preview")
-    assert channels == ["preview"]
-    assert applied == [asset]
-    assert result["version"] == "0.4.0-rc.1"
+    result = backend.download("0.4.0")
+    assert result["status"] == "failed"
+    assert "目标" in result["message"]

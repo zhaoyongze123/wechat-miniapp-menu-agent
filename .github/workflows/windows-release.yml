@@ -385,23 +385,37 @@ jobs:
           tag="v$VERSION"
           channel="stable"
           case "$VERSION" in *-*) channel="preview" ;; esac
-          exe=$(find release-assets -maxdepth 1 -name '*-Setup.exe' -print -quit)
           hub=$(find release-assets -maxdepth 1 -name 'menu-capture-hub-*.tar.gz' -print -quit)
-          # 与 Windows 构建共用真实索引解析器，校验渠道、完整包、差分包及其摘要。
-          python3 deploy/windows/velopack_assets.py release-assets "$VERSION" >/dev/null
-          test -n "$exe" && test -n "$hub"
-          test -s "$exe.sha256" && test -s "$hub.sha256"
-          exe_name=$(basename "$exe"); hub_name=$(basename "$hub")
-          exe_sha=$(cut -d' ' -f1 < "$exe.sha256")
+          test -n "$hub" && test -s "$hub.sha256"
+          hub_name=$(basename "$hub")
           hub_sha=$(cut -d' ' -f1 < "$hub.sha256")
-          exe_size=$(stat -c%s "$exe")
           hub_size=$(stat -c%s "$hub")
           python3 - "$tag" "$channel" "$GITHUB_SHA" "$MIN_SUPPORTED" \
-            "$exe_name" "$exe_size" "$exe_sha" "$hub_name" "$hub_size" "$hub_sha" <<'PY'
-          import json, os, sys
-          (tag, channel, commit, min_version, exe_name, exe_size, exe_sha,
-           hub_name, hub_size, hub_sha) = sys.argv[1:11]
+            "$hub_name" "$hub_size" "$hub_sha" <<'PY'
+          import hashlib, json, os, sys
+          from pathlib import Path
+          from urllib.parse import quote
+          sys.path.insert(0, "deploy/windows")
+          from velopack_assets import release_assets
+          (tag, channel, commit, min_version, hub_name, hub_size, hub_sha) = sys.argv[1:8]
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}"
+          root = Path("release-assets")
+          version = tag.lstrip("v")
+          setup_name, full_name, *rest = release_assets(root, version)
+          index_name = rest.pop()
+          def vp_asset(name):
+              path = root / name
+              with path.open("rb") as stream:
+                  digest = hashlib.file_digest(stream, "sha256").hexdigest()
+              return {"name": name, "size": path.stat().st_size, "sha256": digest,
+                      "url": f"{base}/{quote(name, safe='')}"}
+          extension = {
+              "schema_version": 1, "pack_id": "Yipu.MenuCapture", "platform": "windows", "arch": "x64",
+              "channel": f"win-x64-{channel}", "version": version, "git_commit": commit,
+              "setup": vp_asset(setup_name), "full": vp_asset(full_name),
+              "deltas": [vp_asset(name) for name in rest], "index": vp_asset(index_name),
+              "trust": {"mode": "unsigned"},
+          }
           # OCI 是 hub_image 的可选扩展：摘要文件缺失或非法时只影响分层拉取，
           # 完整归档资产照常发布，旧客户端完全不受影响。
           oci = {}
@@ -426,12 +440,8 @@ jobs:
               "built_at": os.popen("date -u +%Y-%m-%dT%H:%M:%SZ").read().strip(),
               "min_supported_version": min_version,
               "rollback": "supported",
-              "assets": [
-                  {"kind": "windows_installer", "name": exe_name, "size": int(exe_size),
-                   "sha256": exe_sha, "url": f"{base}/{exe_name}",
-                   "platform": "windows", "arch": "x64"},
-                  hub_asset,
-              ],
+              "assets": [hub_asset],
+              "velopack": extension,
           }
           with open("release-assets/update-manifest.json", "w", encoding="utf-8") as handle:
               json.dump(manifest, handle, ensure_ascii=False, indent=2)

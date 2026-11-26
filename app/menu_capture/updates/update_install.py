@@ -217,7 +217,10 @@ class InstallController:
         channel = "preview" if target.is_prerelease else "stable"
         # 锁外确认 SDK 已下载完成目标版本；下载状态不能只信本地记录。
         try:
-            pending = self.backend.pending_restart(channel)
+            extension = latest.get("velopack")
+            if not isinstance(extension, dict) or extension.get("version") != version:
+                raise ValueError("缺少已验证的发布目标")
+            pending = self.backend.verify_pending(extension, channel)
         except Exception as exc:  # noqa: BLE001
             raise ValueError(f"读取待安装更新失败：{exc}") from exc
         if not pending or str(pending.get("version")) != version:
@@ -249,7 +252,7 @@ class InstallController:
                     raise ValueError("无法读取有效数据库结构，拒绝自动安装")
                 self.transaction.create(
                     previous_version=previous, target_version=version, channel=channel,
-                    schema_baseline=schema, target_asset=dict(pending),
+                    schema_baseline=schema, target_asset=dict(extension),
                 )
             except BaseException:
                 self._release_claim(claimed, version)

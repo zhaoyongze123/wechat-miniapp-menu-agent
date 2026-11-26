@@ -18,6 +18,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from menu_capture.updates.velopack_identity import require_full_file, require_target, require_unsigned_opt_in, sdk_asset_identity
+
 # 与 vpk 打包参数保持一致：独立安装目录，避免与旧 Inno Setup 安装目录及默认数据目录混淆。
 PACK_ID = "Yipu.MenuCapture"
 VELOPACK_VERSION = "1.2.161"
@@ -28,8 +30,6 @@ DEFAULT_CHANNEL = "stable"
 ENV_ROOT = "MENU_CAPTURE_VELOPACK_ROOT"
 ENV_CURRENT = "MENU_CAPTURE_VELOPACK_CURRENT"
 ENV_PACKAGES = "MENU_CAPTURE_VELOPACK_PACKAGES"
-APPLY_REQUEST = "update-apply-request.json"
-APPLY_STATE = "update-apply-state.json"
 DOWNLOAD_PROGRESS = "update-download-progress.json"
 DOWNLOAD_TIMEOUT_SECONDS = 1800
 
@@ -81,8 +81,6 @@ class VelopackBackend:
         # 下载子进程必须使用打包内的 Python，确保能导入 velopack 原生模块。
         self.python = python or sys.executable
         self.app_dir = Path(app_dir) if app_dir is not None else Path(__file__).resolve().parents[2]
-        self.request_path = self.data_dir / APPLY_REQUEST
-        self.apply_state_path = self.data_dir / APPLY_STATE
         self.progress_path = self.data_dir / DOWNLOAD_PROGRESS
         self._download_lock = threading.Lock()
         self._download_process: subprocess.Popen | None = None
@@ -173,10 +171,8 @@ class VelopackBackend:
             return None
         asset = info.TargetFullRelease
         release = {
-            "version": str(asset.Version),
+            **sdk_asset_identity(asset),
             "notes": str(asset.NotesMarkdown or ""),
-            "sha256": str(asset.SHA256 or "").lower(),
-            "size": int(asset.Size or 0),
             "is_downgrade": bool(info.IsDowngrade),
             "deltas": len(list(info.DeltasToTarget or [])),
         }
@@ -192,18 +188,21 @@ class VelopackBackend:
             raise VelopackError(f"读取待安装更新失败：{exc}") from exc
         if asset is None:
             return None
-        return {
-            "version": str(asset.Version),
-            "file_name": str(asset.FileName),
-            "sha256": str(asset.SHA256 or "").lower(),
-            "size": int(asset.Size or 0),
-        }
+        return sdk_asset_identity(asset)
+
+    def verify_pending(self, target: dict, channel: str) -> dict:
+        require_unsigned_opt_in(target)
+        pending = self.pending_restart(channel)
+        require_target(pending, target)
+        require_full_file(self._packages_dir(), target)
+        return pending
 
     def download(
         self,
         version: str,
         *,
         channel: str | None = None,
+        target: dict | None = None,
         progress: Callable[[dict], None] | None = None,
         cancel=None,
         timeout: float = DOWNLOAD_TIMEOUT_SECONDS,
@@ -216,11 +215,17 @@ class VelopackBackend:
             if previous is not None and previous.poll() is None:
                 return {"status": "failed", "message": "上次下载进程尚未退出，暂不能重试"}
             self._download_process = None
+            if not isinstance(target, dict) or target.get("version") != version:
+                return {"status": "failed", "message": "缺少已验证的下载目标"}
+            try:
+                require_unsigned_opt_in(target)
+            except ValueError as exc:
+                return {"status": "failed", "message": str(exc)}
             progress_path = self.progress_path.with_name(
                 f"{self.progress_path.stem}-{uuid.uuid4().hex}.json"
             )
             try:
-                return self._download(version, channel, progress, cancel, timeout, progress_path)
+                return self._download(version, channel, target, progress, cancel, timeout, progress_path)
             finally:
                 process = self._download_process
                 if process is None or process.poll() is not None:
@@ -233,7 +238,7 @@ class VelopackBackend:
         finally:
             self._download_lock.release()
 
-    def _download(self, version, channel, progress, cancel, timeout, progress_path: Path) -> dict:
+    def _download(self, version, channel, target, progress, cancel, timeout, progress_path: Path) -> dict:
         selected = channel or self.channel
         command = [
             self.python, "-m", "menu_capture.updates.velopack_worker",
@@ -241,6 +246,7 @@ class VelopackBackend:
             "--channel", selected,
             "--version", str(version),
             "--progress", str(progress_path),
+            "--target-json", json.dumps(target, ensure_ascii=False, separators=(",", ":")),
         ]
         _write_json(progress_path, {"stage": "starting", "percent": 0})
         kwargs: dict[str, Any] = {
@@ -283,6 +289,10 @@ class VelopackBackend:
                 self._terminate(process)
         state = _read_json(progress_path, {})
         if process.returncode == 0 and str(state.get("stage") or "") == "completed":
+            try:
+                self.verify_pending(target, selected)
+            except Exception as exc:
+                return {"status": "failed", "message": str(exc)}
             return {"status": "completed", "message": f"已下载并校验 {version}"}
         message = str(state.get("error") or "") or f"下载进程退出码 {process.returncode}"
         return {"status": "failed", "message": message}
@@ -303,60 +313,15 @@ class VelopackBackend:
                 return process.poll() is not None
         return process.poll() is not None
 
-    # ---------- 应用更新请求（由启动器执行真正切换） ----------
-
-    def request_apply(self, version: str, *, channel: str | None = None) -> None:
-        """只登记应用请求；真正退出、切换与重启由启动器完成，避免自进程被强制结束。"""
-        selected = channel or self.channel
-        channel_name(selected)
-        _write_json(self.request_path, {
-            "version": str(version),
-            "channel": selected,
-            "requested_at": _utc_now(),
-            "requested_by_pid": os.getpid(),
-        })
-
-    def read_apply_request(self) -> dict | None:
-        data = _read_json(self.request_path, None)
-        return data if isinstance(data, dict) and data.get("version") else None
-
-    def clear_apply_request(self) -> None:
-        try:
-            self.request_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    def read_apply_state(self) -> dict:
-        data = _read_json(self.apply_state_path, {})
-        return data if isinstance(data, dict) else {}
-
-    def write_apply_state(self, status: str, version: str, message: str = "", error: str = "") -> None:
-        _write_json(self.apply_state_path, {
-            "status": status,
-            "version": str(version),
-            "message": message,
-            "error": error,
-            "updated_at": _utc_now(),
-        })
-
-    def apply_pending(self, expected_version: str, *, channel: str | None = None) -> dict:
-        """启动器使用同一 Manager 和同一资产对象核对并提交应用。"""
+    def apply_pending(self, target: dict, *, channel: str) -> None:
+        """仅供独立恢复协调器完成所有事务门禁后调用；此处再次核验实际包。"""
         if not self.available():
             raise VelopackError("当前不是 Velopack 安装环境")
+        require_unsigned_opt_in(target)
         manager = self.manager(channel)
         asset = manager.get_update_pending_restart()
         if asset is None:
             raise VelopackError("没有已下载完成的更新包")
-        if str(asset.Version) != str(expected_version):
-            raise VelopackError(
-                f"待安装版本 {asset.Version} 与请求版本 {expected_version} 不一致"
-            )
-        pending = {
-            "version": str(asset.Version),
-            "file_name": str(asset.FileName),
-            "sha256": str(asset.SHA256 or "").lower(),
-            "size": int(asset.Size or 0),
-        }
-        self.write_apply_state("applying", expected_version, "正在应用更新并重启")
-        manager.apply_updates_and_restart(asset)
-        return pending
+        require_target(sdk_asset_identity(asset), target)
+        require_full_file(self._packages_dir(), target)
+        manager.wait_exit_then_apply_updates(asset, silent=False, restart=True)

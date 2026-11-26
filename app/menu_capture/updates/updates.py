@@ -26,10 +26,12 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from menu_capture.updates.velopack_identity import require_target, require_unsigned_opt_in, validate_extension
+
 DEFAULT_REPOSITORY = "zhaoyongze123/wechat-miniapp-menu-agent"
 CHANNELS = {"stable", "preview"}
 ASSET_KINDS = {"windows_installer", "hub_image"}
-# Windows 交付由 Velopack 负责差分与安装；清单仍保留 windows_installer 作为发布身份与回退来源。
+# Velopack 扩展与旧 windows_installer 互斥，旧采集端不会自动运行新版 Setup。
 VELOPACK_ASSET_KIND = "velopack"
 ALLOWED_ASSET_HOSTS = {
     "github.com",
@@ -151,12 +153,15 @@ def _meets_min_supported(latest: dict, current: str) -> bool:
         return False
 
 
-def _update_available(latest: dict | None, current: str, platform: str, arch: str) -> bool:
+def _update_available(latest: dict | None, current: str, platform: str, arch: str, *, velopack: bool = False) -> bool:
     if not latest or not latest.get("eligible") or not current:
         return False
     if not is_newer(str(latest.get("version") or ""), current):
         return False
-    if not _has_asset_for_platform(latest, platform, arch):
+    if velopack and platform == "windows":
+        if arch != "x64" or not isinstance(latest.get("velopack"), dict):
+            return False
+    elif not _has_asset_for_platform(latest, platform, arch):
         return False
     return _meets_min_supported(latest, current)
 
@@ -278,7 +283,8 @@ def _normalize_oci(item: dict) -> dict | None:
     return {"registry": registry, "digest": digest}
 
 
-def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: list[dict]) -> dict:
+def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: list[dict],
+                       repository: str = DEFAULT_REPOSITORY) -> dict:
     if not isinstance(manifest, dict):
         raise ValueError("发布清单格式无效")
     version = str(manifest.get("version") or "")
@@ -345,7 +351,16 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
             if oci is not None:
                 asset.update(oci)
         assets.append(asset)
+    extension = {}
+    if "velopack" in manifest:
+        if "windows_installer" in seen:
+            raise ValueError("Velopack 发布不得声明旧版 windows_installer")
+        extension["velopack"] = validate_extension(
+            manifest["velopack"], version=version, commit=str(manifest.get("git_commit") or ""),
+            channel=manifest_channel, repository=repository, tag=tag, published=known,
+        )
     return {
+        **extension,
         "version": version,
         "channel": manifest_channel,
         "git_commit": str(manifest.get("git_commit") or ""),
@@ -500,7 +515,7 @@ class UpdateService:
             "channel": preferences.get("channel", "stable"),
             "preferences": preferences,
             "latest": latest,
-            "update_available": _update_available(latest, current, self.platform, self.local_arch),
+            "update_available": _update_available(latest, current, self.platform, self.local_arch, velopack=self._velopack_mode()),
             "last_checked": _iso(cache.get("checked_at")),
             # 元数据来源：github 为本机检查，hub 为共享后台分发；默认不伪装。
             "source": str(cache.get("source") or "github"),
@@ -619,6 +634,20 @@ class UpdateService:
                 _safe_asset_url(str(asset.get("url") or ""), tag)
             except ValueError:
                 return None
+        if "velopack" in latest:
+            # Windows 下载前直接核验正式 Release，不把 Hub 缓存当成包信任凭据。
+            if self.backend is not None:
+                return None
+            try:
+                if "windows_installer" in seen:
+                    return None
+                extension = validate_extension(
+                    latest["velopack"], version=str(latest["version"]), commit=str(latest.get("git_commit") or ""),
+                    channel=manifest_channel, repository=self.repository, tag=tag,
+                )
+            except (ValueError, TypeError):
+                return None
+            return {**latest, "velopack": extension}, checked_at
         return {**latest}, checked_at
 
     def save_preferences(self, payload: dict) -> dict:
@@ -1158,7 +1187,7 @@ class UpdateService:
                     raise ValueError("已有下载任务正在运行")
                 latest = self._cache.get("latest")
                 current = self.current_version()
-                if not isinstance(latest, dict) or not _update_available(latest, current, self.platform, self.local_arch):
+                if not isinstance(latest, dict) or not _update_available(latest, current, self.platform, self.local_arch, velopack=self._velopack_mode()):
                     raise ValueError("当前没有可下载的更新，请先检查更新并确认平台、架构匹配")
                 if self._oci_delivery(latest) is not None:
                     raise ValueError("当前宿主执行器支持镜像分层拉取，无需下载完整镜像归档")
@@ -1168,16 +1197,21 @@ class UpdateService:
                 if velopack:
                     # preview 用户也可选择较新的正式版；SDK 应读取目标版本的实际发布渠道。
                     channel = "preview" if Version.parse(version).is_prerelease else "stable"
-                    # SDK 的版本选择必须与已验证清单一致；不一致时拒绝，避免装错版本。
-                    self._verify_velopack_target(version, channel)
+                    target = validate_extension(
+                        latest.get("velopack"), version=version, commit=str(latest.get("git_commit") or ""),
+                        channel=channel, repository=self.repository, tag=str(latest.get("tag") or f"v{version}"),
+                    )
+                    require_unsigned_opt_in(target)
                     asset = {
                         "kind": VELOPACK_ASSET_KIND,
-                        "name": f"velopack-{version}",
+                        "name": target["full"]["name"],
                         "arch": self.local_arch,
-                        "sha256": "",
+                        "sha256": target["full"]["sha256"],
                         "size": 0,
                     }
                 else:
+                    if self.backend is not None:
+                        raise ValueError("Velopack 运行时不可用，禁止回退旧安装机制")
                     full_asset = _downloadable_asset(latest, self.platform, self.local_arch)
                     if full_asset is None:
                         raise ValueError("发布清单中没有与本机平台和架构匹配的资产")
@@ -1211,7 +1245,7 @@ class UpdateService:
                 if velopack:
                     thread = threading.Thread(
                         target=self._run_velopack_download,
-                        args=(version, channel, self._download_cancel),
+                        args=(version, channel, target, self._download_cancel),
                         name="menu-capture-velopack-download",
                         daemon=True,
                     )
@@ -1226,35 +1260,26 @@ class UpdateService:
         thread.start()
         return self.download_status()
 
-    def _verify_velopack_target(self, version: str, channel: str) -> None:
-        """核对 SDK 的版本选择与已验证清单一致；失败按检查错误抛出，不静默改版本。"""
-        try:
-            release = self.backend.check(channel)
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError(f"无法通过 Velopack 核对发布版本：{exc}") from exc
-        if release is None:
-            raise ValueError("Velopack 发布源没有可用更新，请重新检查更新")
-        if str(release.get("version") or "") != version:
-            raise ValueError(
-                f"发布源版本 {release.get('version')} 与已验证清单 {version} 不一致，已拒绝下载"
-            )
+    def _verify_velopack_target(self, target: dict, channel: str) -> None:
+        """网络校验在下载线程内执行，不持服务状态锁。"""
+        release = self.backend.check(channel)
+        if release is None or release.get("is_downgrade"):
+            raise ValueError("Velopack 没有合法的升级目标")
+        require_target(release, target)
 
-    def _run_velopack_download(self, version: str, channel: str, cancel: threading.Event) -> None:
-        """调用 SDK 下载；进度写入既有下载状态，取消即终止下载子进程。"""
+    def _run_velopack_download(self, version: str, channel: str, target: dict, cancel: threading.Event) -> None:
         try:
+            self._verify_velopack_target(target, channel)
             result = self.backend.download(
-                version,
-                channel=channel,
-                progress=lambda state: self._report_velopack_progress(state),
-                cancel=cancel,
+                version, channel=channel, target=target,
+                progress=self._report_velopack_progress, cancel=cancel,
             )
-        except Exception as exc:  # noqa: BLE001 - 下载失败必须如实落盘
+        except Exception as exc:
             result = {"status": "failed", "message": str(exc) or "下载失败"}
         with self._lock:
             try:
                 status = str(result.get("status") or "failed")
                 if status == "completed":
-                    # SDK 只报告处理百分比，不代表实际网络下载字节数。
                     self._report_velopack_progress({"percent": 100})
                     self._finish_download("completed")
                 elif status == "cancelled":
@@ -1262,7 +1287,6 @@ class UpdateService:
                 else:
                     self._finish_download("failed", error=str(result.get("message") or "下载失败"))
             finally:
-                # 最终状态落盘后才允许新下载覆盖状态。
                 self._downloading = False
                 self._download_cancel = None
 
@@ -1377,7 +1401,7 @@ class UpdateService:
         current = self.current_version()
         with self._lock:
             latest = self._cache.get("latest")
-            if not isinstance(latest, dict) or not _update_available(latest, current, self.platform, self.local_arch):
+            if not isinstance(latest, dict) or not _update_available(latest, current, self.platform, self.local_arch, velopack=self._velopack_mode()):
                 raise ValueError("当前没有可用的新版本")
             version = str(latest.get("version") or "")
             if not version:
@@ -1598,13 +1622,17 @@ class UpdateService:
 
     def _downloaded_artifact_ready(self, version: str) -> bool:
         if self._velopack_mode():
-            # SDK 管理下载与校验；进程重启后仍以“待安装资产版本”为唯一事实源。
             try:
+                latest = self._cache.get("latest") or {}
                 channel = "preview" if Version.parse(version).is_prerelease else "stable"
-                pending = self.backend.pending_restart(channel)
-            except Exception:  # noqa: BLE001 - 探测失败按未就绪处理
+                target = validate_extension(
+                    latest.get("velopack"), version=version, commit=str(latest.get("git_commit") or ""),
+                    channel=channel, repository=self.repository, tag=str(latest.get("tag") or f"v{version}"),
+                )
+                self.backend.verify_pending(target, channel)
+                return True
+            except Exception:
                 return False
-            return bool(pending) and str(pending.get("version")) == version
         state = dict(self._download_state)
         name = str(state.get("asset_name") or "")
         if state.get("status") != "completed" or state.get("version") != version:
@@ -2102,7 +2130,7 @@ class UpdateService:
             state = dict(self._download_state)
         if not isinstance(latest, dict):
             return
-        if not _update_available(latest, self.current_version(), self.platform, self.local_arch):
+        if not _update_available(latest, self.current_version(), self.platform, self.local_arch, velopack=self._velopack_mode()):
             return
         version = str(latest.get("version") or "")
         if state.get("status") == "completed" and state.get("version") == version:
@@ -2154,7 +2182,7 @@ class UpdateService:
             if status != 200:
                 raise ValueError(f"发布清单下载失败（HTTP {status}）")
             manifest = json.loads(body.decode("utf-8"))
-            checked = _validate_manifest(manifest, tag, channel, raw_assets)
+            checked = _validate_manifest(manifest, tag, channel, raw_assets, self.repository)
         except Exception as exc:
             base["reason"] = str(exc) or "发布清单校验失败"
             return base
