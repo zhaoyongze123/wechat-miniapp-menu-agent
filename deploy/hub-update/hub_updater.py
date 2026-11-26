@@ -630,7 +630,9 @@ class HubUpdater:
             "--entrypoint", "python", image, "-c", SCHEMA_PROBE, "/hub-data",
         ], 30)
         if code != 0:
-            raise UpdateError("无法通过只读容器读取 Hub 数据库架构，已拒绝回滚判定")
+            # 保留探针输出，回滚被拒绝时能直接定位是镜像、挂载还是 SQLite 读取失败。
+            detail = " ".join((output or "").split())[:400]
+            raise UpdateError(f"无法通过只读容器读取 Hub 数据库架构，已拒绝回滚判定：{detail}")
         try:
             payload = json.loads(output)
             tables: dict[str, dict] = {}
