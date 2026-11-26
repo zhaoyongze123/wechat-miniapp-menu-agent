@@ -1,14 +1,20 @@
-﻿# Velopack 隔离验收：安装、启动、版本/健康核验、数据保留与卸载。
-# 不验证增量（增量由 vpk 生成，需两个正式包，另行在专用 Windows 环境执行）。
+﻿# Velopack 隔离验收：安装或覆盖升级、启动、版本与 commit、设备身份、数据库、数据保留与卸载。
+# 覆盖升级通过 -PreviousSetup 指定已发布基线；不验证增量（增量由 vpk 生成，另行验证）。
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Setup,
     [Parameter(Mandatory)][string]$Version,
+    # 可选覆盖升级：先安装该已发布基线的 Setup，再用 $Setup 在同一安装目录覆盖升级。
+    [string]$PreviousSetup = '',
+    [string]$PreviousVersion = '',
+    # 可选：校验 /api/version 的 commit 是否为产物真实构建 commit。
+    [string]$Commit = '',
     [int]$Port = 8765
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $Setup = (Resolve-Path $Setup).Path
+if ($PreviousSetup) { $PreviousSetup = (Resolve-Path $PreviousSetup).Path }
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $existingStartup = Join-Path ([Environment]::GetFolderPath('Startup')) '菜单采集后台.lnk'
 if ((Test-Path -LiteralPath $existingStartup) -or
@@ -36,19 +42,50 @@ foreach ($file in Get-ChildItem -LiteralPath $homePath -Recurse -File -Force) {
 }
 
 function Invoke-Health {
-    param([string]$Expected)
+    param([string]$Expected = '', [string]$ExpectedCommit = '')
     $url = "http://127.0.0.1:$Port/healthz"
     for ($i = 0; $i -lt 90; $i++) {
         try {
             $health = Invoke-RestMethod $url -UseBasicParsing -TimeoutSec 2
             if ($health.ok -and $health.role -eq 'worker') {
                 $info = Invoke-RestMethod "http://127.0.0.1:$Port/api/version" -UseBasicParsing -TimeoutSec 2
-                if ($info.version -eq $Expected) { return }
+                if ((!$Expected -or $info.version -eq $Expected) -and (!$ExpectedCommit -or $info.commit -eq $ExpectedCommit)) {
+                    return $info
+                }
             }
         } catch {}
         Start-Sleep -Seconds 1
     }
-    throw "Worker 未在端口 $Port 上以版本 $Expected 健康启动。"
+    throw "Worker 未在端口 $Port 上以版本 $Expected（commit $ExpectedCommit）健康启动。"
+}
+
+function Get-DeviceId {
+    return (Invoke-RestMethod "http://127.0.0.1:$Port/api/manual/state" -UseBasicParsing -TimeoutSec 5).device_id
+}
+
+function Assert-Layout {
+    foreach ($path in @(
+        (Join-Path $installRoot 'Update.exe'),
+        (Join-Path $installRoot 'current\MenuCapture.exe'),
+        (Join-Path $installRoot 'current\python\python.exe'),
+        (Join-Path $installRoot 'current\app\menu_capture\api\server.py'),
+        (Join-Path $installRoot 'current\sq.version')
+    )) {
+        if (-not (Test-Path -LiteralPath $path)) { throw "安装布局缺少：$path" }
+    }
+    return (Get-Content -LiteralPath (Join-Path $installRoot 'current\sq.version') -Raw).Trim()
+}
+
+function Assert-Database {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { throw "缺少数据库：$Path" }
+    # 使用安装包自带运行时只读校验，避免依赖本机 sqlite3。
+    $python = Join-Path $installRoot 'current\python\python.exe'
+    $result = & $python -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute("pragma integrity_check").fetchone()[0]); print(len(c.execute("select name from sqlite_master where type=''table''").fetchall()))' $Path
+    if ($LASTEXITCODE -ne 0) { throw '数据库校验脚本执行失败。' }
+    $lines = @($result)
+    if ($lines[0] -ne 'ok') { throw "数据库完整性检查失败：$($lines[0])" }
+    if ([int]$lines[1] -le 0) { throw '数据库中没有任何表。' }
 }
 
 function Stop-TestWorker {
@@ -68,38 +105,53 @@ function Stop-TestWorker {
 }
 
 try {
+    if ($PreviousSetup) {
+        # 覆盖升级验收：先安装已发布基线并运行一次，形成业务数据、数据库与设备身份对照。
+        Write-Host "安装基线 Velopack 包：$PreviousSetup"
+        $prevInstall = Start-Process -FilePath $PreviousSetup -ArgumentList '--silent', '--installto', $installRoot -Wait -PassThru
+        if ($prevInstall.ExitCode -ne 0) { throw "基线 Setup.exe 退出码 $($prevInstall.ExitCode)。" }
+        $prevSq = Assert-Layout
+        if ($PreviousVersion -and $prevSq -notmatch [regex]::Escape($PreviousVersion)) {
+            throw "基线 sq.version=$prevSq，期望 $PreviousVersion。"
+        }
+        Start-Process -FilePath (Join-Path $installRoot 'current\MenuCapture.exe') -WindowStyle Hidden
+        $prevInfo = Invoke-Health -Expected $PreviousVersion
+        $deviceBefore = Get-DeviceId
+        Assert-Database -Path (Join-Path $homePath 'data\tasks.sqlite3')
+        Write-Host "基线版本 $($prevInfo.version) 运行通过，设备身份 $deviceBefore。"
+        Stop-TestWorker
+    }
+
     Write-Host "安装 Velopack 包：$Setup"
     $install = Start-Process -FilePath $Setup -ArgumentList '--silent', '--installto', $installRoot -Wait -PassThru
     if ($install.ExitCode -ne 0) { throw "Setup.exe 退出码 $($install.ExitCode)。" }
 
-    foreach ($path in @(
-        (Join-Path $installRoot 'Update.exe'),
-        (Join-Path $installRoot 'current\MenuCapture.exe'),
-        (Join-Path $installRoot 'current\python\python.exe'),
-        (Join-Path $installRoot 'current\app\menu_capture\api\server.py'),
-        (Join-Path $installRoot 'current\sq.version')
-    )) {
-        if (-not (Test-Path -LiteralPath $path)) { throw "安装布局缺少：$path" }
-    }
-    $installed = (Get-Content -LiteralPath (Join-Path $installRoot 'current\sq.version') -Raw).Trim()
+    $installed = Assert-Layout
     if ($installed -notmatch [regex]::Escape($Version)) { throw "sq.version=$installed，期望 $Version。" }
 
     # Velopack Setup --silent 下显式启动 current\MenuCapture.exe（或根 stub）。
     $launcherExe = Join-Path $installRoot 'current\MenuCapture.exe'
     Start-Process -FilePath $launcherExe -WindowStyle Hidden
-    Invoke-Health -Expected $Version
+    $info = Invoke-Health -Expected $Version -ExpectedCommit $Commit
     $worker = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
         Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$installRoot\current\", [StringComparison]::OrdinalIgnoreCase) } |
         Select-Object -First 1
     if (-not $worker) { throw 'Worker 不是从 current 目录启动。' }
     $startup = Join-Path ([Environment]::GetFolderPath('Startup')) '菜单采集后台.lnk'
     if (-not (Test-Path -LiteralPath $startup)) { throw '首次运行未创建登录启动快捷方式。' }
-    Write-Host "版本 $Version 启动通过，Worker PID $($worker.ProcessId)。"
+    Write-Host "版本 $($info.version)（commit $($info.commit)）启动通过，Worker PID $($worker.ProcessId)。"
+
+    if ($PreviousSetup) {
+        $deviceAfter = Get-DeviceId
+        if ($deviceAfter -ne $deviceBefore) { throw "覆盖升级改变了设备身份：$deviceBefore -> $deviceAfter" }
+        Assert-Database -Path (Join-Path $homePath 'data\tasks.sqlite3')
+        Write-Host '覆盖升级后设备身份与数据库校验通过。'
+    }
 
     Stop-TestWorker
     # 再次启动验证单实例与重启恢复；不重复安装。
     Start-Process -FilePath $launcherExe -WindowStyle Hidden
-    Invoke-Health -Expected $Version
+    Invoke-Health -Expected $Version -ExpectedCommit $Commit | Out-Null
     Write-Host '重启恢复通过。'
 
     if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne 'preserve') { throw '安装/重启改动了业务数据。' }
@@ -109,7 +161,11 @@ try {
             throw "安装/重启改动了 $($entry.Key)。"
         }
     }
-    Write-Host "Velopack 安装、启动、版本核验、重启恢复与数据保留验收通过。"
+    if ($PreviousSetup) {
+        Write-Host 'Velopack 覆盖升级、启动、版本与 commit、设备身份、数据库、重启恢复与数据保留验收通过。'
+    } else {
+        Write-Host "Velopack 安装、启动、版本核验、重启恢复与数据保留验收通过。"
+    }
 } catch {
     $keep = Join-Path $tempRoot ('menu-capture-smoke-logs-' + (Get-Date -Format 'yyyyMMddHHmmss'))
     $null = New-Item -ItemType Directory -Path $keep -Force
