@@ -1,6 +1,6 @@
 # 软件更新与版本生命周期（Issue #32）
 
-本目录记录应用内更新的发布契约、安全边界与当前实施阶段。更新发现、清单校验、偏好、审计、受控下载已实现；Windows 安装、切换与回滚执行器已通过隔离环境验收，前端按服务端能力显示安装入口（默认未启用自动安装，见下节）。Hub 镜像更新执行器已实现并通过隔离 Compose 验收（含真实 v0.2.2 跨版本回滚）；历史版本/下载缓存/日志清理与 Hub 镜像保留策略已实现（先预览、确认后删除）；多设备状态汇总与版本元数据分发已实现，批量推广仍待实施。
+本目录记录应用内更新的发布契约、安全边界与当前实施阶段。更新发现、清单校验、偏好、审计、受控下载已实现；旧 Inno Windows 执行器曾通过隔离环境验收；新 Velopack 执行器尚未通过真实安装、切换与回滚验收，当前安全门禁关闭自动安装。Hub 镜像更新执行器已实现并通过隔离 Compose 验收（含真实 v0.2.2 跨版本回滚）；历史版本/下载缓存/日志清理与 Hub 镜像保留策略已实现（先预览、确认后删除）；多设备状态汇总与版本元数据分发已实现，批量推广仍待实施。
 
 Issue #32 最新正文已把产品形态收敛为「一次授权完成更新」：用户只需点击一次“立即更新”，系统负责下载、校验、等待采集结束、安装、重启、重连与健康检查；技术细节下沉到高级设置。本目录按该形态记录契约，并明确取消 Hub 远程触发安装与多设备分批安装编排。
 
@@ -88,7 +88,7 @@ Windows 的差分、重建与安装已交给 Velopack，不再由本项目生成
 
 - 构建期用 `vpk pack` 生成 `Setup.exe`、full/delta `.nupkg` 与 `releases.win-x64-<channel>.json`；有历史正式包时由 `vpk download github` 取回并由 vpk 自动生成增量。
 - 客户端用 Velopack Python SDK 的 `UpdateManager` 发现、下载与应用更新；SDK 负责版本选择、差分计算、包重建与全量兜底。
-- 发布清单仍保留 `windows_installer` 资产，用于固定仓库、正式 Release、版本、commit 与 SHA-256 身份核对；安装前要求 SDK 选中的版本与已验证清单一致，不一致即拒绝。
+- 新发布清单的 `assets` 保留 `hub_image`，顶层 `velopack` 扩展记录 setup/full/deltas/index 的实际名称、大小、SHA-256、URL、pack ID、版本、commit 与渠道。禁止将 Velopack Setup 声明为旧 `windows_installer`。下载前后核对 SDK 资产身份及实际完整包摘要；未验证差分链当前拒绝，官方全量兜底仍待实机接入。
 - 渠道固定为 `win-x64-stable` / `win-x64-preview`，平台与架构编码在通道名中，避免跨平台误装。
 - 首次迁移到 Velopack 的版本没有历史 Velopack 包，按全量迁移处理；之后才由框架生成真实增量。
 
@@ -104,24 +104,15 @@ Windows 的差分、重建与安装已交给 Velopack，不再由本项目生成
 - 同一时刻只允许一个下载任务；进程重启后把未完成的下载如实标记为“已中断”，不会假装仍在下载。
 - 完成后只上报文件路径与校验结果，不执行安装、切换或重启；这些能力由下一节的独立执行器负责。
 
-## Windows 安装执行器（Velopack，需显式启用）
+## Windows 安装执行器（Velopack，当前开发门禁）
 
-- 仅 Windows Worker、能定位 Velopack 安装布局（`Update.exe`、`current`、`packages`），且运维设置
-  `MENU_CAPTURE_ALLOW_SELF_UPDATE=1` 时，能力接口才把 `install` 上报为可用；未完成真实 Windows 升级验收前不默认开启。
-- `POST /api/updates/install` 启动安装，必须提交与目标版本一致的 `confirm`；`GET /api/updates/install` 返回安装状态。
-- 控制器只做业务校验：目标版本必须是当前可选最新版本、SDK 已下载完成同一版本、当前版本更高、空闲且授权未被撤销。
-- 安装不再启动自研安装器或改版本指针：控制器写 `data/update-apply-request.json`，由 `MenuCapture.exe`
-  启动器在确认 Worker 空闲后正常停止 Worker，再调用 SDK 应用更新并重启。
-- 更新会替换整个 `current` 目录；启动器必须在应用前等待 Worker 正常退出，不能依赖 Velopack 强制结束进程，
-  否则会中断正在采集的任务。Worker 未在时限内退出时取消本次切换并如实报错。
-- 数据库结构基线写入 `data/update-schema-baseline.json`；显式回滚前比对当前结构，若新版本已执行迁移则阻止自动回滚。
-- 授权、空闲闸门、安装互斥与安装中拒绝新采集/标注的规则保持不变；`MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE` 不再参与
-  Windows 交付判断，发布者真实性继续由固定仓库的正式 Release 语义 + 包摘要核对保证。
-- 状态收尾以实际运行版本为唯一事实源：重启后运行版本等于目标版本即 `completed`；启动器明确失败或长时间无进展则 `failed`，
-  不会长期停在 `restarting`。
-- 单进程内串行化安装启动，同一时刻只允许一个安装请求。
-- 设置中心按 `GET /api/updates/install` 的真实能力显示安装入口；下载完成且能力可用时提供"安装并重启"。
-- 隔离验收使用 `deploy/windows/smoke.ps1`，覆盖 Velopack 安装布局、启动、版本/健康核验、单实例重启与数据保留。
+- PR #103 尚未完成独立恢复协调器与真实 SDK/Windows 集成验证；安装能力暂时关闭，即使设置 `MENU_CAPTURE_ALLOW_SELF_UPDATE=1` 也不得启用未验证的切换。
+- 下载及资产身份验证与安装权限分离。签名验证未接入时只允许明确标记 unsigned 的资产且运维显式设置 `MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE=1`；摘要不是发布者签名，未知签名模式拒绝。
+- `data/update-install.json` 为唯一安装事务事实源，事务带 schema_version、transaction_id、目标发布资产身份、数据库结构基线。跨进程短时锁与原子替换保护状态迁移；陈旧请求不得覆盖新事务。
+- Worker 关闭入口仅接受本机 HTTP POST、协调令牌、合法 stopping 事务及匹配目标版本；重新检查采集和标注空闲。旧 update-apply-request、update-apply-state、rollback-request 不再驱动安装。
+- 超时只用于诊断，不解除业务闸门；仅版本字符串相等不能完成安装。未知状态和损坏记录保持恢复阻断。
+- 仍须在独立于 current 的恢复协调器中实现实际进程退出、目标构建及健康检查、可信旧包留存与恢复、Windows 原生锁及 SDK 验证。直接 `--rollback-to` 已禁用。
+- 真实 Windows 验收、依赖锁定和迁移收口完成后，才可恢复运维显式启用的安装能力。历史 Inno 验收不构成新框架通过证据。
 
 ## Hub 镜像更新执行器（宿主机，需显式部署）
 
@@ -199,19 +190,10 @@ Windows 的差分、重建与安装已交给 Velopack，不再由本项目生成
 
 以下命令均在隔离环境先演练，生产解冻前不得直接执行。
 
-1. **首次接入更新执行器（旧版 → 支持 OTA 的版本）**：旧版没有安装入口，仍需按传统方式部署一次。
-   从 Inno Setup 迁移到 Velopack 时先停止并卸载旧采集端，再运行新版 `Setup.exe`；首个 Velopack 正式版本
-   必须把 `min_supported_version` 设为该版本号，旧客户端只会提示手动迁移，不会把 `Setup.exe` 当作兼容安装包
-   自动执行。升级后确认 `current\sq.version`、`release-manifest.json` 与 `/api/version` 一致，再启用
-   `MENU_CAPTURE_ALLOW_SELF_UPDATE=1`。Hub 侧额外部署 `deploy/hub-update/hub_updater.py` 并配置
-   `HUB_UPDATE_*` 变量，未配置时设置页只显示原因。
-2. **日常升级**：Hub 在设置中心检查 → 下载 → 确认安装；Worker 由 Hub 分批推送目标版本后在本机
-   确认安装。采集中/标注中会被安全闸门拒绝，等待任务结束或安全暂停后重试。
-3. **升级前备份**：保留当前及最近两个可回滚版本、数据目录、设备凭据与待上传结果；不修改生产
-   数据库结构。
-4. **回滚**：Windows 使用 `MenuCapture.exe --rollback-to <版本>`，由 Velopack 的 `Update.exe apply`
-   安装本机保留的同版本 full 包；执行前比对数据库结构指纹，若新版本已迁移则阻止并提示人工确认。
-   Hub 使用执行器 `POST /rollback`，回滚目标不健康时会自动切回回滚前版本。
+1. **首次 Inno → Velopack 迁移**：记录并保护实际 MENU_CAPTURE_HOME、设备身份、配置、数据库和待补传数据；确认业务空闲后停止旧 Worker 与登录入口，保留旧程序和可恢复资料。独立安装经验证的新 Setup，复用原数据目录，核对版本、commit、配对和数据后再清理旧入口。失败恢复旧入口，不先卸载旧版。新 Setup 不进入旧 windows_installer 清单，全局 min_supported_version 不为迁移而抬高。
+2. **日常升级**：Hub 保持受控更新；Windows 真实安装和恢复验证完成前仅允许检查/受控下载，不启用自动切换。暂停但未结束的业务轮次也阻止安装。
+3. **升级前备份**：保留可信旧版完整包、配置、数据、设备身份与待补传结果。结构一致不等于数据语义一定兼容。
+4. **回滚**：Windows 直接切换入口已禁用，独立恢复协调器未完成时转人工恢复；不得猜测旧包或运行未经核验的 Update.exe 命令。Hub 使用执行器 POST /rollback。
 5. **存储清理**：先 `GET /api/updates/cleanup` 预览，再以 `confirm: "cleanup"` 确认；安装/下载
    期间拒绝清理。Hub 镜像与归档执行 `python3 hub_retention.py --keep 3` 预览，确认后加
    `--apply --confirm prune`。绝不删除数据卷、Docker 容器或业务素材。
@@ -250,7 +232,7 @@ Windows 的差分、重建与安装已交给 Velopack，不再由本项目生成
 - 保留数量可配置（2–5，默认 3，含当前版本）：清点与清理始终优先保护运行中、当前、待安装与回滚目标。
 - 受控下载：资产匹配、磁盘预检、断点续传、进度展示、取消、SHA-256 校验与下载审计。
 - Windows 安装执行器：安装前重校验、路径与签名校验、空闲闸门、独立进程静默安装（显式 `/DIR`）、目标版本文件/清单/前端哈希与角色核对、事务异常恢复、迁移感知回滚；需显式启用。
-- Windows OTA 隔离验收已覆盖应用内安装及回滚。前端安装入口须由服务端显式启用。 [隔离验收记录](https://github.com/zhaoyongze123/wechat-miniapp-menu-agent/actions/runs/45438329640)
+- 旧 Inno OTA 隔离验收已覆盖应用内安装及回滚；该证据不适用于新 Velopack 框架。当前 Windows 自动安装能力关闭。 [隔离验收记录](https://github.com/zhaoyongze123/wechat-miniapp-menu-agent/actions/runs/45438329640)
 - Windows 增量更新：`vpk` 在构建期基于历史正式 full 包生成 delta；客户端由 Velopack SDK 完成差分下载、重建与全量兜底。首次迁移版本按全量处理。
 - 存储治理：`GET/POST /api/updates/cleanup` 提供只读预览与确认后删除；按配置保留当前/运行中/最近多个
   版本并保护待安装下载包，安装/下载期间拒绝清理；设置中心提供存储治理面板。
@@ -274,7 +256,7 @@ Windows 的差分、重建与安装已交给 Velopack，不再由本项目生成
 | 一次授权完成更新 | 已实现 | `POST /api/updates/update` 一次授权串联下载、等待空闲、安装、重启与健康检查；`flow` 统一进度；页面关闭后服务端继续；可取消/重试 |
 | 立即安装 | 已实现 | 需显式启用执行器；下载产物与清单、签名状态、空闲闸门均重校验 |
 | 空闲后更新（安排/取消） | 已实现 | 持久化安排，后台等待采集/标注结束；执行器二次校验；可随时取消，不强行结束任务 |
-| 回滚 | 已实现 | Windows 版本目录回滚 + Hub 执行器回滚；数据库结构指纹不兼容时转人工恢复 |
+| 回滚 | 部分完成 | Hub 执行器回滚；Windows Velopack 独立恢复协调器及可信旧包恢复待验证 |
 | 更新记录 | 已实现 | `data/update-history.jsonl`，含检查/偏好/下载/安装/安排/清理结果 |
 | 多设备状态汇总 | 已实现 | Worker 上报版本与更新状态，Hub 汇总区分未上报/离线/已下载/等待空闲/安装成功 |
 | 集中分批推广范围 | 已实现 | `GET/PUT /api/shared/update-rollout` 控制目标版本分发范围；不含远程安装 |
