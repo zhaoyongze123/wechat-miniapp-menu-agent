@@ -1,9 +1,14 @@
 import hashlib
+import json
+import zipfile
 from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
-from menu_capture.updates.velopack_identity import require_full_file, require_target, sdk_asset_identity, validate_extension, require_unsigned_opt_in
+from menu_capture.updates.velopack_identity import (
+    require_inner_manifest, require_local_asset, require_target, require_unsigned_opt_in,
+    sdk_asset_identity, validate_extension,
+)
 
 REPO = "owner/repo"
 VERSION = "0.4.0"
@@ -59,22 +64,17 @@ def test_github_identity():
         validate(target, published)
 
 
-def test_sdk_and_bytes(tmp_path):
+def test_sdk_identity_matches_target():
+    # 包级完整性由官方 SDK 负责；这里只校验 SDK 目标与已签名发布身份一致。
     target = validate(fixture())
     full = target["full"]
     asset = SimpleNamespace(Version=VERSION, PackageId=target["pack_id"], Type="Full", FileName=full["name"],
                             SHA256=full["sha256"], Size=full["size"])
     require_target(sdk_asset_identity(asset), target)
-    path = tmp_path / full["name"]
-    path.write_bytes(BODY)
-    assert require_full_file(tmp_path, target) == path
     wrong = deepcopy(target)
     wrong["full"]["sha256"] = "0"*64
     with pytest.raises(ValueError):
         require_target(sdk_asset_identity(asset), wrong)
-    path.write_bytes(b"x"*len(BODY))
-    with pytest.raises(ValueError):
-        require_full_file(tmp_path, target)
 
 
 def test_unsigned_explicit_opt_in(monkeypatch):
@@ -87,3 +87,30 @@ def test_unsigned_explicit_opt_in(monkeypatch):
     target["trust"] = {"mode": "invalid"}
     with pytest.raises(ValueError):
         require_unsigned_opt_in(target)
+
+
+def test_local_asset_allows_empty_digest_but_checks_identity():
+    target = validate(fixture())
+    full = target["full"]
+
+    def asset(file_name=full["name"], version=VERSION):
+        return SimpleNamespace(Version=version, PackageId=target["pack_id"], Type="Full",
+                               FileName=file_name, SHA256="", Size=123)
+
+    require_local_asset(sdk_asset_identity(asset()), target)
+    with pytest.raises(ValueError):
+        require_local_asset(sdk_asset_identity(asset(file_name="other.nupkg")), target)
+    with pytest.raises(ValueError):
+        require_local_asset(sdk_asset_identity(asset(version="9.9.9")), target)
+
+
+def test_inner_manifest_is_consistency_check_only(tmp_path):
+    nupkg = tmp_path / "full.nupkg"
+    with zipfile.ZipFile(nupkg, "w") as archive:
+        archive.writestr("lib/net45/release-manifest.json",
+                         json.dumps({"version": VERSION, "git_commit": COMMIT}))
+    assert require_inner_manifest(nupkg, version=VERSION, commit=COMMIT)["version"] == VERSION
+    with pytest.raises(ValueError):
+        require_inner_manifest(nupkg, version="9.9.9", commit=COMMIT)
+    with pytest.raises(ValueError):
+        require_inner_manifest(nupkg, version=VERSION, commit="b" * 40)
