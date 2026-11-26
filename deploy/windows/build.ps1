@@ -332,16 +332,16 @@ try {
     Copy-Item -LiteralPath $watchdogSource -Destination (Join-Path $bundle 'update-watchdog.ps1') -Force
 
     # Velopack CLI 固定 1.2.161：已预装时只校验版本，缺失时按锁定版本安装，避免产物行为漂移。
+    $dotnet = Find-BuildCommand 'dotnet.exe' (Join-Path $env:ProgramFiles 'dotnet\dotnet.exe')
     $vpkCommand = Get-Command 'vpk' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($vpkCommand) {
         $vpk = $vpkCommand.Source
     } else {
-        $dotnet = Find-BuildCommand 'dotnet.exe' (Join-Path $env:ProgramFiles 'dotnet\dotnet.exe')
         Invoke-Checked $dotnet @('tool', 'install', '-g', 'vpk', '--version', '1.2.161')
         $vpk = Join-Path $env:USERPROFILE '.dotnet\tools\vpk.exe'
     }
-    $vpkVersion = (& $vpk --version | Out-String).Trim()
-    if ($vpkVersion -notmatch '1\.2\.161') { throw "vpk must be 1.2.161, found '$vpkVersion'." }
+    $toolList = (& $dotnet tool list -g | Out-String)
+    if ($toolList -notmatch '(?m)^\s*vpk\s+1\.2\.161\b') { throw "vpk must be 1.2.161; installed tools:`n$toolList" }
 
     $releaseNotes = Join-Path $stage 'release-notes.md'
     [IO.File]::WriteAllText($releaseNotes, (Get-ReleaseNotes $Version), $utf8NoBom)

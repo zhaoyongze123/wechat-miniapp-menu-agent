@@ -109,9 +109,9 @@ jobs:
           }
           $vpk = Join-Path $env:USERPROFILE '.dotnet\tools\vpk.exe'
           if (-not (Test-Path -LiteralPath $vpk)) { throw 'vpk 未安装到预期位置。' }
-          $reported = (& $vpk --version | Out-String).Trim()
-          Write-Host "vpk $reported"
-          if ($reported -notmatch '1\.2\.161') { throw "vpk 版本不是 1.2.161：$reported" }
+          $toolList = (& dotnet tool list -g | Out-String)
+          Write-Host $toolList
+          if ($toolList -notmatch '(?m)^\s*vpk\s+1\.2\.161\b') { throw "vpk 版本不是 1.2.161" }
           # 后续脚本按 PATH 解析 vpk；同一作业内保持一致。
           "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
       - name: 构建 Windows x64 安装包（Velopack）

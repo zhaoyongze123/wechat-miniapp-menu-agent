@@ -67,7 +67,7 @@ COMPOSE_WAIT_MIN_VERSION = (2, 17, 0)
 # 使用 `up --wait` 后容器健康检查已由 Compose 等待，应用层核验只需一个有限窗口。
 APP_VERIFY_TIMEOUT_SECONDS = 30
 DEFAULT_WAIT_TIMEOUT_SECONDS = 180
-SCHEMA_PROBE = r'''import json, pathlib, sqlite3, sys
+SCHEMA_PROBE = r'''import json, pathlib, shutil, sqlite3, sys
 def q(value): return '"' + value.replace('"', '""') + '"'
 root = pathlib.Path(sys.argv[1])
 data = root / 'data'
@@ -75,9 +75,25 @@ path = data / 'tasks.sqlite3'
 if data.is_symlink() or path.is_symlink(): raise RuntimeError('Hub 数据库路径不能是符号链接')
 if not path.exists(): print(json.dumps({'exists': False, 'tables': [], 'objects': []}))
 else:
-    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5)
-    db.execute('PRAGMA query_only=ON')
-    db.execute('BEGIN')
+    def open_ro(db_path):
+        conn = sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True, timeout=5)
+        conn.execute('PRAGMA query_only=ON')
+        conn.execute('BEGIN')
+        return conn
+    try:
+        db = open_ro(path)
+    except sqlite3.OperationalError:
+        # WAL 模式在只读挂载卷上无法创建/映射 -shm；复制到容器临时 tmpfs 只读探测，绝不写入源卷。
+        tmp = pathlib.Path('/tmp/schema-probe')
+        tmp.mkdir(parents=True, exist_ok=True)
+        dst = tmp / 'tasks.sqlite3'
+        shutil.copyfile(path, dst)
+        wal = pathlib.Path(str(path) + '-wal')
+        if wal.is_file():
+            shutil.copyfile(wal, pathlib.Path(str(dst) + '-wal'))
+        db = sqlite3.connect(str(dst), timeout=5)
+        db.execute('PRAGMA query_only=ON')
+        db.execute('BEGIN')
     tables = []
     for name, sql in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name"):
         indexes = []
@@ -607,7 +623,9 @@ class HubUpdater:
         image = self._schema_probe_image()
         mount = f"type=volume,source={self.config.data_volume},target=/hub-data,volume-nocopy,readonly"
         code, output = self.run([
-            "docker", "run", "--rm", "--pull=never", "--network", "none", "--read-only", "--cap-drop=ALL",
+            "docker", "run", "--rm", "--pull=never", "--network", "none", "--read-only",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
+            "--cap-drop=ALL",
             "--security-opt=no-new-privileges", "--mount", mount,
             "--entrypoint", "python", image, "-c", SCHEMA_PROBE, "/hub-data",
         ], 30)
