@@ -19,10 +19,10 @@ class FakeBackend:
         self.cleared = 0
         self.apply_state: dict = {}
 
-    def pending_restart(self):
+    def pending_restart(self, channel=None):
         return dict(self.pending) if self.pending else None
 
-    def request_apply(self, version: str) -> None:
+    def request_apply(self, version: str, *, channel=None) -> None:
         self.requests.append(version)
 
     def clear_apply_request(self) -> None:

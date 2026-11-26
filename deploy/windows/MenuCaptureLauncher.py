@@ -243,15 +243,16 @@ def _request_worker_shutdown(data_root: Path, timeout: float = WORKER_STOP_TIMEO
 
 # ---------- 更新应用 ----------
 
-def _apply_pending(data_root: Path, version: str, worker: subprocess.Popen) -> bool:
+def _apply_pending(data_root: Path, version: str, worker: subprocess.Popen, channel: str) -> bool:
     from menu_capture.updates.velopack_backend import VelopackBackend
 
     backend = VelopackBackend(
         "zhaoyongze123/wechat-miniapp-menu-agent", data_root / "data",
+        channel=channel,
         python=str(_current_dir() / "python" / "python.exe"),
         app_dir=_current_dir() / "app",
     )
-    pending = backend.pending_restart()
+    pending = backend.pending_restart(channel)
     if not pending or str(pending.get("version")) != version:
         backend.write_apply_state("failed", version, "没有与请求版本一致的已下载更新包")
         backend.clear_apply_request()
@@ -269,7 +270,7 @@ def _apply_pending(data_root: Path, version: str, worker: subprocess.Popen) -> b
     backend.write_apply_state("applying", version, "Worker 已停止，正在应用更新")
     try:
         # 该调用会启动 Update.exe 并等待本进程退出后替换 current；返回后必须立即退出。
-        backend.apply_pending(version)
+        backend.apply_pending(version, channel=channel)
     except Exception as exc:  # noqa: BLE001 - 应用失败时恢复 Worker，不进入半更新状态
         backend.write_apply_state("failed", version, f"应用更新失败：{exc}")
         backend.clear_apply_request()
@@ -360,7 +361,12 @@ def main(argv: list[str] | None = None) -> int:
                 except (OSError, ValueError):
                     request = {}
                 version = str(request.get("version") or "")
-                if version and _apply_pending(data_root, version, worker):
+                channel = str(request.get("channel") or "")
+                if not version or channel not in {"stable", "preview"}:
+                    _log(data_root, "安装请求缺少有效版本或渠道，拒绝应用")
+                    backend_state.unlink(missing_ok=True)
+                    continue
+                if _apply_pending(data_root, version, worker, channel):
                     _log(data_root, f"更新 {version} 已交给 Velopack，启动器退出")
                     return 0
                 worker = _start_worker(data_root, token) if worker.poll() is not None else worker

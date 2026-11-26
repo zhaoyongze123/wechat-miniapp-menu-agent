@@ -585,7 +585,7 @@ class UpdateService:
         # Worker 只采纳与自身渠道一致、且新鲜的分发结果。
         if manifest_channel not in CHANNELS or str(target.get("channel") or "") != channel:
             return None
-        if manifest_channel != channel:
+        if manifest_channel != ("preview" if version.is_prerelease else "stable"):
             return None
         if channel == "stable" and version.is_prerelease:
             return None
@@ -1166,6 +1166,8 @@ class UpdateService:
                 channel = str(self._preferences.get("channel") or "stable")
                 velopack = self._velopack_mode()
                 if velopack:
+                    # preview 用户也可选择较新的正式版；SDK 应读取目标版本的实际发布渠道。
+                    channel = "preview" if Version.parse(version).is_prerelease else "stable"
                     # SDK 的版本选择必须与已验证清单一致；不一致时拒绝，避免装错版本。
                     self._verify_velopack_target(version, channel)
                     asset = {
@@ -1598,7 +1600,8 @@ class UpdateService:
         if self._velopack_mode():
             # SDK 管理下载与校验；进程重启后仍以“待安装资产版本”为唯一事实源。
             try:
-                pending = self.backend.pending_restart()
+                channel = "preview" if Version.parse(version).is_prerelease else "stable"
+                pending = self.backend.pending_restart(channel)
             except Exception:  # noqa: BLE001 - 探测失败按未就绪处理
                 return False
             return bool(pending) and str(pending.get("version")) == version

@@ -122,7 +122,7 @@ jobs:
         run: |
           $version = $env:BUILD_VERSION
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME -replace '^v', '' }
-          # 产物只包含本次版本：Setup、full/delta nupkg 与 releases.win-x64-stable.json；
+          # 产物只包含本次版本：Setup、full/delta nupkg 与对应渠道的 releases JSON；
           # 历史包仅用于生成 delta，由构建脚本在临时目录下载，不进入发布资产。
           ./deploy/windows/build.ps1 -Version $version
       - uses: actions/upload-artifact@v4
@@ -387,10 +387,9 @@ jobs:
           case "$VERSION" in *-*) channel="preview" ;; esac
           exe=$(find release-assets -maxdepth 1 -name '*-Setup.exe' -print -quit)
           hub=$(find release-assets -maxdepth 1 -name 'menu-capture-hub-*.tar.gz' -print -quit)
-          releases_json=$(find release-assets -maxdepth 1 -name 'releases.win-*.json' -print -quit)
-          full=$(find release-assets -maxdepth 1 -name "*-$VERSION-*-full.nupkg" -print -quit)
-          # Velopack 客户端需要 Setup、通道索引与完整包同时存在，缺一不可。
-          test -n "$exe" && test -n "$hub" && test -n "$releases_json" && test -n "$full"
+          # 与 Windows 构建共用真实索引解析器，校验渠道、完整包、差分包及其摘要。
+          python3 deploy/windows/velopack_assets.py release-assets "$VERSION" >/dev/null
+          test -n "$exe" && test -n "$hub"
           test -s "$exe.sha256" && test -s "$hub.sha256"
           exe_name=$(basename "$exe"); hub_name=$(basename "$hub")
           exe_sha=$(cut -d' ' -f1 < "$exe.sha256")
@@ -444,6 +443,8 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           tag="v$VERSION"
+          prerelease=false
+          case "$VERSION" in *-*) prerelease=true ;; esac
           if gh release view "$tag" >/dev/null 2>&1; then
             is_draft=$(gh release view "$tag" --json isDraft --jq .isDraft)
             if [ "$is_draft" != "true" ]; then
@@ -451,11 +452,12 @@ jobs:
               exit 1
             fi
             gh release upload "$tag" release-assets/* --clobber
-            gh release edit "$tag" --title "MenuCapture $VERSION" --target "$GITHUB_SHA"
+            gh release edit "$tag" --title "MenuCapture $VERSION" --target "$GITHUB_SHA" --prerelease="$prerelease"
           else
             gh release create "$tag" release-assets/* \
               --target "$GITHUB_SHA" \
               --draft \
+              --prerelease="$prerelease" \
               --title "MenuCapture $VERSION" \
               --generate-notes
           fi

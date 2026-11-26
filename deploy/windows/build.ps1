@@ -10,6 +10,7 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$channel = if ($Version -match '-') { 'win-x64-preview' } else { 'win-x64-stable' }
 Set-Item Env:UV_PYTHON_DOWNLOADS never
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $runner = Join-Path $repo 'app'
@@ -136,6 +137,7 @@ $Output = (Resolve-Path $Output).Path
 $conflicts = @(
     Get-ChildItem -LiteralPath $Output -Filter '*-Setup.exe' -File -ErrorAction SilentlyContinue
     Get-ChildItem -LiteralPath $Output -Filter "*-$Version-*.nupkg" -File -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath $Output -Filter "releases.$channel.json" -File -ErrorAction SilentlyContinue
 )
 if ($conflicts.Count -gt 0) { throw "Installer already exists: $($conflicts[0].FullName)" }
 # Windows 工具链对长路径仍有限制；构建目录放在短路径下，避免 node_modules 深层文件打包失败。
@@ -332,13 +334,17 @@ try {
     $downloadArgs = @(
         'download', 'github',
         '--repoUrl', 'https://github.com/zhaoyongze123/wechat-miniapp-menu-agent',
+        '--channel', $channel,
         '--outputDir', $packDir
     )
+    if ($channel -eq 'win-x64-preview') { $downloadArgs += '--pre' }
     if ($token) { $downloadArgs += @('--token', $token) }
     & $vpk @downloadArgs
     if ($LASTEXITCODE -ne 0) {
-        # 首次迁移到 Velopack 时仓库里还没有历史包，属于正常情况：本次按全量迁移处理，后续版本才会产生 delta。
-        Write-Warning "没有可复用的历史 Velopack 包（vpk download 退出码 $LASTEXITCODE），本次仅生成完整包。"
+        # SDK 失败可能是首次发布，也可能是网络/认证错误；不把失败当作已确认无历史包。
+        Write-Warning "历史包获取失败（channel=$channel，vpk download 退出码 $LASTEXITCODE）；本次仅保证生成完整包，请检查上方日志。"
+        Remove-Item -LiteralPath $packDir -Recurse -Force
+        $null = New-Item -ItemType Directory -Path $packDir
     }
 
     Invoke-Checked $vpk @(
@@ -350,27 +356,22 @@ try {
         '--packTitle', '菜单采集工作台',
         '--packAuthors', '意谱科技',
         '--releaseNotes', $releaseNotes,
-        '-c', 'win-x64-stable',
+        '-c', $channel,
         '--outputDir', $packDir
     )
 
-    # 只发布本次版本的产物：Setup、full/delta nupkg 与通道索引；下载的历史基线包留在临时目录。
-    $products = @(
-        Get-ChildItem -LiteralPath $packDir -Filter '*-Setup.exe' -File -ErrorAction SilentlyContinue
-        Get-ChildItem -LiteralPath $packDir -Filter "*-$Version-*.nupkg" -File -ErrorAction SilentlyContinue
-        Get-ChildItem -LiteralPath $packDir -Filter 'releases.win-x64-stable.json' -File -ErrorAction SilentlyContinue
+    # 复用同一索引解析器选择本次资产；不依赖 vpk 文件名的通道后缀。
+    $assetJson = Invoke-Checked $python @(
+        '-B', (Join-Path $PSScriptRoot 'velopack_assets.py'), $packDir, $Version
     )
-    if (-not ($products | Where-Object { $_.Name -like '*-Setup.exe' })) {
-        throw 'vpk pack did not produce a Setup.exe.'
-    }
-    if (-not ($products | Where-Object { $_.Name -like "*-$Version-*-full.nupkg" })) {
-        throw "vpk pack did not produce a full package for $Version."
-    }
-    foreach ($file in $products) {
-        $target = Join-Path $Output $file.Name
-        Copy-Item -LiteralPath $file.FullName -Destination $target -Force
+    $products = @($assetJson | ConvertFrom-Json)
+    foreach ($name in $products) {
+        $source = Join-Path $packDir $name
+        $target = Join-Path $Output $name
+        if (Test-Path -LiteralPath $target) { throw "Artifact already exists: $target" }
+        Copy-Item -LiteralPath $source -Destination $target
         $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
-        Set-Content -LiteralPath "$target.sha256" -Value "$hash  $($file.Name)" -Encoding ASCII
+        Set-Content -LiteralPath "$target.sha256" -Value "$hash  $name" -Encoding ASCII
         Write-Host "Artifact: $target"
     }
     if ($BundleOutput) {

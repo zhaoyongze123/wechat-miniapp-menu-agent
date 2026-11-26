@@ -182,12 +182,12 @@ class VelopackBackend:
         }
         return release
 
-    def pending_restart(self) -> dict | None:
+    def pending_restart(self, channel: str | None = None) -> dict | None:
         """返回已下载并可应用的资产；没有时返回 None。"""
         if not self.available():
             return None
         try:
-            asset = self.manager().get_update_pending_restart()
+            asset = self.manager(channel).get_update_pending_restart()
         except Exception as exc:  # noqa: BLE001
             raise VelopackError(f"读取待安装更新失败：{exc}") from exc
         if asset is None:
@@ -305,11 +305,13 @@ class VelopackBackend:
 
     # ---------- 应用更新请求（由启动器执行真正切换） ----------
 
-    def request_apply(self, version: str) -> None:
+    def request_apply(self, version: str, *, channel: str | None = None) -> None:
         """只登记应用请求；真正退出、切换与重启由启动器完成，避免自进程被强制结束。"""
+        selected = channel or self.channel
+        channel_name(selected)
         _write_json(self.request_path, {
             "version": str(version),
-            "channel": self.channel,
+            "channel": selected,
             "requested_at": _utc_now(),
             "requested_by_pid": os.getpid(),
         })
@@ -337,26 +339,24 @@ class VelopackBackend:
             "updated_at": _utc_now(),
         })
 
-    def apply_pending(self, expected_version: str) -> dict:
-        """启动器调用：应用已下载的更新并重启。返回前会挂起等待当前进程退出。"""
+    def apply_pending(self, expected_version: str, *, channel: str | None = None) -> dict:
+        """启动器使用同一 Manager 和同一资产对象核对并提交应用。"""
         if not self.available():
             raise VelopackError("当前不是 Velopack 安装环境")
-        pending = self.pending_restart()
-        if pending is None:
-            raise VelopackError("没有已下载完成的更新包")
-        if str(pending.get("version")) != str(expected_version):
-            raise VelopackError(
-                f"待安装版本 {pending.get('version')} 与请求版本 {expected_version} 不一致"
-            )
-        manager = self.manager()
-        self.write_apply_state("applying", expected_version, "正在应用更新并重启")
-        # 调用方（启动器）此时已正常停止 Worker，current 内没有在写业务的进程；
-        # apply_updates_and_restart 会启动 Update.exe 等待本进程退出后替换 current 并重启。
-        manager.apply_updates_and_restart(self._pending_asset())
-        return pending
-
-    def _pending_asset(self):
-        asset = self.manager().get_update_pending_restart()
+        manager = self.manager(channel)
+        asset = manager.get_update_pending_restart()
         if asset is None:
-            raise VelopackError("待安装更新包已消失")
-        return asset
+            raise VelopackError("没有已下载完成的更新包")
+        if str(asset.Version) != str(expected_version):
+            raise VelopackError(
+                f"待安装版本 {asset.Version} 与请求版本 {expected_version} 不一致"
+            )
+        pending = {
+            "version": str(asset.Version),
+            "file_name": str(asset.FileName),
+            "sha256": str(asset.SHA256 or "").lower(),
+            "size": int(asset.Size or 0),
+        }
+        self.write_apply_state("applying", expected_version, "正在应用更新并重启")
+        manager.apply_updates_and_restart(asset)
+        return pending

@@ -237,11 +237,13 @@ class InstallController:
             raise ValueError("无法确定当前运行版本，拒绝自动安装")
         from menu_capture.updates.updates import Version
 
-        if Version.parse(version) <= Version.parse(previous):
+        target = Version.parse(version)
+        if target <= Version.parse(previous):
             raise ValueError("目标版本必须高于当前版本")
+        channel = "preview" if target.is_prerelease else "stable"
         # 锁外确认 SDK 已下载完成目标版本；下载状态不能只信本地记录。
         try:
-            pending = self.backend.pending_restart()
+            pending = self.backend.pending_restart(channel)
         except Exception as exc:  # noqa: BLE001
             raise ValueError(f"读取待安装更新失败：{exc}") from exc
         if not pending or str(pending.get("version")) != version:
@@ -277,11 +279,12 @@ class InstallController:
                     "schema": schema,
                     "captured_at": _utc_now(),
                 })
-                self.backend.request_apply(version)
+                self.backend.request_apply(version, channel=channel)
                 _write_json(self.journal_path, {
                     "status": "restarting",
                     "target_version": version,
                     "previous_version": previous,
+                    "channel": channel,
                     "started_at": _utc_now(),
                     "updated_at": _utc_now(),
                     "finished_at": "",

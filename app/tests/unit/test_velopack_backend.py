@@ -120,3 +120,22 @@ def test_download_refuses_retry_while_previous_process_alive(tmp_path):
     result = backend.download("0.4.0")
     assert result["status"] == "failed"
     assert "尚未退出" in result["message"]
+
+
+def test_preview_apply_uses_same_manager_and_asset(tmp_path, monkeypatch):
+    backend = VelopackBackend("owner/repo", tmp_path)
+    asset = SimpleNamespace(Version="0.4.0-rc.1", FileName="target.nupkg", SHA256="a" * 64, Size=4)
+    applied = []
+    manager = SimpleNamespace(get_update_pending_restart=lambda: asset, apply_updates_and_restart=applied.append)
+    channels = []
+    monkeypatch.setattr(backend, "available", lambda: True)
+    def make_manager(channel=None):
+        channels.append(channel)
+        return manager
+    monkeypatch.setattr(backend, "manager", make_manager)
+    backend.request_apply("0.4.0-rc.1", channel="preview")
+    assert backend.read_apply_request()["channel"] == "preview"
+    result = backend.apply_pending("0.4.0-rc.1", channel="preview")
+    assert channels == ["preview"]
+    assert applied == [asset]
+    assert result["version"] == "0.4.0-rc.1"
