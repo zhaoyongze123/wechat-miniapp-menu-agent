@@ -197,7 +197,7 @@ Windows 的差分、重建与安装已交给 Velopack，不再由本项目生成
 
 1. **首次 Inno → Velopack 迁移**：记录并保护实际 MENU_CAPTURE_HOME、设备身份、配置、数据库和待补传数据；确认业务空闲后停止旧 Worker 与登录入口，保留旧程序和可恢复资料。独立安装经验证的新 Setup，复用原数据目录，核对版本、commit、配对和数据后再清理旧入口。失败恢复旧入口，不先卸载旧版。新 Setup 不进入旧 windows_installer 清单，全局 min_supported_version 不为迁移而抬高。
 2. **日常升级**：Hub 保持受控更新；Windows 真实安装和恢复验证完成前仅允许检查/受控下载，不启用自动切换。暂停但未结束的业务轮次也阻止安装。
-3. **升级前备份**：保留可信旧版完整包、配置、数据、设备身份与待补传结果。结构一致不等于数据语义一定兼容。
+3. **升级前备份（禁止整卷打包素材目录）**：只对核心 SQLite 数据库执行一致性备份（`sqlite3.backup`）并保留配置文件、设备身份与可信旧版完整包；**严禁**全量复制或 `tar` 打包 `materials`、`outputs`、`screenshots` 或整份 Docker 数据卷（升级与 `docker compose up -d` 不会改动既有媒体素材）。结构一致不等于数据语义一定兼容。
 4. **回滚与 `current` 外受控人工恢复 SOP**：Windows 直接切换入口已禁用。当新启动器完全无法启动或事务进入 `recovery_required` 时，运维在 `current` 之外按以下顺序执行受控人工恢复（不得解包或手工覆盖 `current`）：
    1. **确认进程与更新器均已停止**：核对 `MenuCapture.exe`、`python.exe`（业务 Worker）与 `<install_root>\Update.exe` 均已退出，且业务端口（默认 `8765`）未被占用；若 `Update.exe` 仍在运行则等待其结束，禁止并发干预。
    2. **审计事务与数据库基线**：读取 `<data_root>\data\update-install.json`（确认 `transaction_id`、`previous_version`、`previous_commit`、`recovery_asset` 与 `schema_baseline.snapshot.sha256`）及 `<data_root>\recovery\watchdog.log`；对当前 `<data_root>\data\tasks.sqlite3` 做只读 SQLite backup 后比对 SHA-256。若数据库已发生前向变更或存在待补传/新增业务数据，必须先备份整份 `<data_root>\data` 并评估兼容性，禁止盲目覆盖。

@@ -18,6 +18,7 @@
 
 - 默认在独立分支或 Worktree 工作；生产切换、发布与合并需要维护者确认。
 - 严禁中断正在运行的生产采集，禁止改动生产数据库、素材与截图目录。
+- **备份红线**：升级或迁移前严禁整卷打包或全量复制大体积素材/截图目录（如 `materials`、`outputs`、`screenshots`、整个 Docker 数据卷），只对核心 SQLite 数据库执行一致性备份（`sqlite3.backup`）并备份必要的配置与设备身份 JSON。
 - 开发、测试与清理必须在隔离目录、端口和数据副本上进行。
 - 不提交密钥、本机配置、运行数据、截图与日志（见 `.gitignore`）。
 - 每台设备只保留一个主仓，主仓只同步 `main` 和管理 Git 引用；Worktree 统一放在 `ma-workspace/development/worktrees/issue-<编号>-<简名>`，禁止建在 `/tmp`、盘根或源码目录旁。Issue 结束、PR 合并且无独有内容后必须回收。完整规则见 [跨平台工作区治理](docs/workspace-governance.md)。
