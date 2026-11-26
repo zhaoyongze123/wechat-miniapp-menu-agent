@@ -9,6 +9,7 @@ import re
 
 from menu_capture.core.config import atomic_json
 from menu_capture.materials.materials import _now
+from menu_capture.projects.service import assert_writable, resolve_batch_project
 
 
 _ACTIVE_BATCH_STATES = {"uploading", "queued", "analyzing"}
@@ -20,50 +21,91 @@ class BatchManager:
         self.service = service
         self._recover_purge_staging()
 
-    def list(self, *, deleted: bool = False) -> list[dict]:
+    def list(self, *, deleted: bool = False, project_id: str | None = None) -> list[dict]:
         predicate = "deleted_at!=''" if deleted else "deleted_at=''"
+        params = ()
+        if project_id is not None:
+            predicate += " AND project_id=?"
+            params = (project_id,)
         with self.service.task_store.connect() as db:
             batches = [dict(row) for row in db.execute(
-                f"SELECT * FROM material_batches WHERE {predicate} ORDER BY created_at DESC,id DESC"
+                f"SELECT * FROM material_batches WHERE {predicate} ORDER BY created_at DESC,id DESC", params
             )]
         return [self.service._batch_summary(batch) for batch in batches]
 
-    def update(self, batch_id: str, *, name: str, description: str = "") -> dict:
+    def update(self, batch_id: str, *, name: str, description: str = "", project_id: str | None = None) -> dict:
         name, description = self.service._batch_metadata(name, description)
         with self.service._publish_lock, self.service._lock:
             batch = self.service._batch_row(batch_id)
             with self.service.task_store.connect() as db:
+                self._assert_scope(db, batch_id, project_id, write=True)
                 db.execute("UPDATE material_batches SET name=?,description=?,updated_at=? WHERE id=? AND deleted_at=''",
                            (name, description, _now(), batch_id))
             return self._readable(batch_id)
 
-    def delete(self, batch_id: str) -> dict:
+    def delete(self, batch_id: str, *, project_id: str | None = None) -> dict:
         # 活跃任务先快速拒绝，避免等 worker 完成后才意外删除刚结束的批次。
         initial = self.service._batch_row(batch_id)
         if initial["status"] in _ACTIVE_BATCH_STATES or self.service.jobs.open_job(batch_id):
             raise ValueError("批次正在分析或上传")
         with self.service._publish_lock, self.service._worker_lock, self.service._lock:
+            with self.service.task_store.connect() as db:
+                self._assert_scope(db, batch_id, project_id, write=True)
             batch = self.service._batch_row(batch_id)
             summary = self.summary(batch)
             if not summary["can_delete"]:
                 raise ValueError(summary["delete_block_reason"])
             with self.service.task_store.connect() as db:
+                self._assert_scope(db, batch_id, project_id, write=True)
                 db.execute("UPDATE material_batches SET deleted_at=?,updated_at=? WHERE id=? AND deleted_at=''",
                            (_now(), _now(), batch_id))
             return self._readable(batch_id, include_deleted=True)
 
-    def restore(self, batch_id: str) -> dict:
+    def restore(self, batch_id: str, *, project_id: str | None = None) -> dict:
         with self.service._publish_lock, self.service._worker_lock, self.service._lock:
             batch = self.service._batch_row(batch_id, include_deleted=True)
             if not batch["deleted_at"]:
                 raise ValueError("该批次不在回收站")
             with self.service.task_store.connect() as db:
+                self._assert_scope(db, batch_id, project_id, write=True, include_deleted=True)
                 db.execute("UPDATE material_batches SET deleted_at='',updated_at=? WHERE id=?", (_now(), batch_id))
             return self._readable(batch_id)
 
-    def clear_selection(self, *, batch_id: str | None = None) -> dict:
+    def clear_selection(self, *, batch_id: str | None = None, project_id: str | None = None) -> dict:
         """清空当前素材版本选择及输入目录；保留发布快照、版本和采集任务。"""
         with self.service._publish_lock, self.service._worker_lock, self.service._lock:
+            if self.service.role == "hub":
+                if not project_id:
+                    raise ValueError("清除选择必须指定项目")
+                with self.service.task_store.connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    assert_writable(db, project_id)
+                    selection = db.execute(
+                        "SELECT s.version_id,v.batch_id,v.snapshot_id FROM project_material_selection s "
+                        "JOIN material_versions v ON v.id=s.version_id "
+                        "JOIN material_batches b ON b.id=v.batch_id "
+                        "WHERE s.project_id=? AND b.project_id=s.project_id AND b.deleted_at=''",
+                        (project_id,),
+                    ).fetchone()
+                    active = dict(selection) if selection else None
+                    if active is None:
+                        if batch_id:
+                            self._assert_scope(db, batch_id, project_id, write=True)
+                            raise ValueError("指定批次不是此项目当前选用版本")
+                        return {"ok": True, "cleared": False, "batch_id": None}
+                    if batch_id and batch_id != active["batch_id"]:
+                        raise ValueError("指定批次不是此项目当前选用版本")
+                    running = db.execute(
+                        "SELECT 1 FROM runs r WHERE r.status NOT IN ('completed','terminated','stopped','failed','cancelled') "
+                        "AND (r.project_id=? OR EXISTS (SELECT 1 FROM capture_run_results c "
+                        "WHERE c.run_id=r.id AND c.project_id=?)) LIMIT 1",
+                        (project_id, project_id),
+                    ).fetchone()
+                    if running:
+                        raise ValueError("仍有运行中或可恢复的采集轮次引用此项目")
+                    db.execute("DELETE FROM project_material_selection WHERE project_id=? AND version_id=?",
+                               (project_id, active["version_id"]))
+                return {"ok": True, "cleared": True, "batch_id": active["batch_id"]}
             config = self.service.configs.load()
             input_dir = config.input_dir
             current_root = Path(input_dir).expanduser().resolve() if input_dir else None
@@ -99,10 +141,12 @@ class BatchManager:
                 raise
             return {"ok": True, "cleared": True, "batch_id": active["batch_id"]}
 
-    def purge(self, batch_id: str) -> dict:
+    def purge(self, batch_id: str, *, project_id: str | None = None) -> dict:
         """仅清除无发布、无任何运行引用的回收站批次及程序托管目录。"""
         with self.service._publish_lock, self.service._worker_lock, self.service._lock:
             batch = self.service._batch_row(batch_id, include_deleted=True)
+            with self.service.task_store.connect() as db:
+                self._assert_scope(db, batch_id, project_id, write=True, include_deleted=True)
             if not batch["deleted_at"]:
                 raise ValueError("只能彻底删除回收站中的批次")
             if batch["status"] in _ACTIVE_BATCH_STATES or self.service.jobs.open_job(batch_id):
@@ -201,13 +245,22 @@ class BatchManager:
         with self.service.task_store.connect() as db:
             versions_count = db.execute("SELECT COUNT(*) FROM material_versions WHERE batch_id=?", (batch_id,)).fetchone()[0]
             run_rows = db.execute("SELECT status FROM runs WHERE material_batch_id=?", (batch_id,)).fetchall()
-            selected = db.execute("SELECT v.snapshot_id FROM material_selection s JOIN material_versions v "
-                                  "ON v.id=s.version_id WHERE s.singleton=1 AND v.batch_id=?",
-                                  (batch_id,)).fetchone()
-        config_root = Path(self.service.configs.load().input_dir).expanduser().resolve()
+            project_id = batch.get("project_id") or ""
+            if project_id:
+                selected = db.execute("SELECT v.snapshot_id FROM project_material_selection s JOIN material_versions v "
+                                      "ON v.id=s.version_id WHERE s.project_id=? AND v.batch_id=?",
+                                      (project_id, batch_id)).fetchone()
+            else:
+                selected = db.execute("SELECT v.snapshot_id FROM material_selection s JOIN material_versions v "
+                                      "ON v.id=s.version_id WHERE s.singleton=1 AND v.batch_id=?",
+                                      (batch_id,)).fetchone()
         selected_snapshot = selected["snapshot_id"] if selected else ""
-        expected_root = (self.service.published_root / selected_snapshot).resolve() if selected_snapshot else None
-        current_active = bool(expected_root and config_root == expected_root)
+        if self.service.role == "hub":
+            current_active = bool(selected_snapshot)
+        else:
+            config_root = Path(self.service.configs.load().input_dir).expanduser().resolve()
+            expected_root = (self.service.published_root / selected_snapshot).resolve() if selected_snapshot else None
+            current_active = bool(expected_root and config_root == expected_root)
         return {
             "versions_count": versions_count,
             "recoverable_run": any(row["status"] not in _TERMINAL_RUN_STATES for row in run_rows),
@@ -218,6 +271,17 @@ class BatchManager:
     def _readable(self, batch_id: str, *, include_deleted: bool = False) -> dict:
         batch = self.service._batch_row(batch_id, include_deleted=include_deleted)
         return self.service._batch_summary(batch)
+
+    def _assert_scope(self, db, batch_id: str, project_id: str | None, *, write: bool,
+                      include_deleted: bool = False) -> dict:
+        owner = resolve_batch_project(db, batch_id, include_deleted=include_deleted)
+        if self.service.role == "hub" and not project_id:
+            raise ValueError("项目范围缺失")
+        if project_id is not None and project_id != owner["id"]:
+            raise ValueError("素材批次不属于当前项目")
+        if write:
+            assert_writable(db, owner["id"])
+        return owner
 
     @staticmethod
     def _write_journal(path: Path, journal: dict) -> None:

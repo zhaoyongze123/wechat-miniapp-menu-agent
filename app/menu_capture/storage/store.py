@@ -47,13 +47,15 @@ class TaskStore:
                     id TEXT PRIMARY KEY, mode TEXT NOT NULL, status TEXT NOT NULL,
                     task_ids TEXT NOT NULL, current_index INTEGER NOT NULL DEFAULT 0,
                     current_task_id TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, name TEXT NOT NULL DEFAULT ''
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+                    project_id TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS capture_run_results (
                     run_id TEXT NOT NULL, task_id TEXT NOT NULL, store_name TEXT NOT NULL,
                     batch_id TEXT NOT NULL DEFAULT '', batch_name TEXT NOT NULL DEFAULT '',
                     version TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '',
                     reject_reason TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '',
+                    project_id TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY(run_id, task_id)
                 );
                 CREATE TABLE IF NOT EXISTS run_actions (
@@ -83,9 +85,41 @@ class TaskStore:
             """)
 
         with self.connect() as db:
+            # 项目归属只从轮次逐店的批次快照回填。旧任务若没有可核实批次，保持未知。
+            for table, column in (("runs", "project_id"), ("capture_run_results", "project_id")):
+                if column not in {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='material_batches'").fetchone():
+                batch_columns = {row["name"] for row in db.execute("PRAGMA table_info(material_batches)")}
+                if "project_id" in batch_columns:
+                    db.execute("""UPDATE capture_run_results SET project_id=(
+                        SELECT b.project_id FROM material_batches b
+                        WHERE b.id=capture_run_results.batch_id)
+                        WHERE project_id='' AND batch_id<>'' AND EXISTS (
+                            SELECT 1 FROM material_batches b WHERE b.id=capture_run_results.batch_id
+                              AND b.project_id IS NOT NULL AND b.project_id<>'')""")
+                    db.execute("""UPDATE runs SET project_id=(
+                        SELECT MIN(c.project_id) FROM capture_run_results c WHERE c.run_id=runs.id
+                          AND c.project_id<>'')
+                        WHERE project_id='' AND EXISTS (
+                            SELECT 1 FROM capture_run_results c WHERE c.run_id=runs.id)
+                          AND NOT EXISTS (
+                            SELECT 1 FROM capture_run_results c WHERE c.run_id=runs.id
+                              AND c.project_id='')
+                          AND (SELECT COUNT(DISTINCT c.project_id) FROM capture_run_results c
+                               WHERE c.run_id=runs.id AND c.project_id<>'')=1""")
+            db.execute("CREATE INDEX IF NOT EXISTS capture_run_project ON capture_run_results(project_id,run_id)")
             for column in ("material_version_id", "material_batch_id", "material_version", "material_snapshot"):
                 if column not in {row["name"] for row in db.execute("PRAGMA table_info(runs)")}:
                     db.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='material_batches'").fetchone():
+                batch_columns = {row["name"] for row in db.execute("PRAGMA table_info(material_batches)")}
+                if "project_id" in batch_columns:
+                    db.execute("""UPDATE runs SET project_id=(SELECT b.project_id FROM material_batches b
+                        WHERE b.id=runs.material_batch_id)
+                        WHERE project_id='' AND material_batch_id<>'' AND EXISTS (
+                            SELECT 1 FROM material_batches b WHERE b.id=runs.material_batch_id
+                              AND b.project_id IS NOT NULL AND b.project_id<>'')""")
             if "run_id" not in {row["name"] for row in db.execute("PRAGMA table_info(publish_transactions)")}:
                 db.execute("ALTER TABLE publish_transactions ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
             # 本轮采集模式：auto=全自动 Agent，manual=半自动人工；空值代表历史批次。
@@ -440,36 +474,42 @@ class TaskStore:
                                             attempt_message or changes.get("message", ""))
 
     def create_run(self, run_id: str, mode: str, task_ids: list[str], message: str = "批次已启动", *, material: dict | None = None,
-                   capture_mode: str = "", name: str = "") -> dict:
+                   capture_mode: str = "", name: str = "", project_id: str = "") -> dict:
         stamp = now()
         with self.connect() as db:
             db.execute(
-                "INSERT INTO runs(id,mode,status,task_ids,current_index,current_task_id,message,created_at,updated_at,capture_mode,name) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO runs(id,mode,status,task_ids,current_index,current_task_id,message,created_at,updated_at,capture_mode,name,project_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, mode, "running", json.dumps(task_ids, ensure_ascii=False), 0,
-                 task_ids[0] if task_ids else "", message, stamp, stamp, capture_mode, name),
+                 task_ids[0] if task_ids else "", message, stamp, stamp, capture_mode, name, project_id),
             )
             if self.bind_assignments:
                 self.bind_assignments(db, run_id, task_ids)
             if material:
                 db.execute("UPDATE runs SET material_version_id=?,material_batch_id=?,material_version=?,material_snapshot=? WHERE id=?",
                            (material["id"], material["batch_id"], material["version"], material["snapshot_id"], run_id))
-            self._capture_run_members(db, run_id, task_ids, material)
+            self._capture_run_members(db, run_id, task_ids, material, project_id=project_id)
         return self.get_run(run_id)
 
     @staticmethod
-    def _capture_run_members(db, run_id: str, task_ids: list[str], material: dict | None) -> None:
+    def _capture_run_members(db, run_id: str, task_ids: list[str], material: dict | None,
+                              *, project_id: str = "") -> None:
         """冻结本轮门店名和来源版本；后续同步、重跑或换版不会改变这份归属。"""
         has_worker = db.execute("SELECT 1 FROM sqlite_master WHERE name='worker_assignments'").fetchone()
         has_versions = db.execute("SELECT 1 FROM sqlite_master WHERE name='material_versions'").fetchone()
         assigned = {}
         if has_worker:
+            worker_columns = {row["name"] for row in db.execute("PRAGMA table_info(worker_assignments)")}
+            project_column = ",project_id" if "project_id" in worker_columns else ",'' AS project_id"
             assigned = {row["task_id"]: dict(row) for row in db.execute(
-                "SELECT task_id,batch_id,batch_name,revision AS version FROM worker_assignments WHERE run_id=? ORDER BY rowid",
+                "SELECT task_id,batch_id,batch_name,revision AS version" + project_column +
+                " FROM worker_assignments WHERE run_id=? ORDER BY rowid",
                 (run_id,))}
         versions = {}
         if has_versions:
+            batch_columns = {row["name"] for row in db.execute("PRAGMA table_info(material_batches)")}
+            project_column = "b.project_id" if "project_id" in batch_columns else "'' AS project_id"
             versions = {row["snapshot_id"]: dict(row) for row in db.execute(
-                "SELECT v.snapshot_id,v.batch_id,b.name AS batch_name,v.version FROM material_versions v "
+                f"SELECT v.snapshot_id,v.batch_id,b.name AS batch_name,v.version,{project_column} FROM material_versions v "
                 "JOIN material_batches b ON b.id=v.batch_id ORDER BY v.rowid")}
         rows = []
         # 一轮常规限制为 300 家，逐店查询还能兼容更早的自定义长批次。
@@ -479,10 +519,11 @@ class TaskStore:
                 continue
             snapshot = Path(task["source_path"]).parent.parent.name
             context = assigned.get(task_id) or versions.get(snapshot) or material or {}
+            owner = context.get("project_id") or project_id or ""
             rows.append((run_id, task_id, task["source_name"], context.get("batch_id", ""),
-                         context.get("batch_name", ""), context.get("version", "")))
-        db.executemany("INSERT INTO capture_run_results(run_id,task_id,store_name,batch_id,batch_name,version)"
-                       " VALUES(?,?,?,?,?,?)", rows)
+                         context.get("batch_name", ""), context.get("version", ""), owner))
+        db.executemany("INSERT INTO capture_run_results(run_id,task_id,store_name,batch_id,batch_name,version,project_id)"
+                       " VALUES(?,?,?,?,?,?,?)", rows)
 
     @staticmethod
     def _record_capture_result(db, run_id: str, task_id: str, outcome: str,
@@ -527,7 +568,7 @@ class TaskStore:
                              (str(run_id or ""), str(task_id or ""))).fetchone()
         return str(row["store_name"] or "") if row else ""
 
-    def observed_store_name_current(self, task_id: str) -> str:
+    def observed_store_name_current(self, task_id: str, *, project_id: str | None = None) -> str:
         """按任务当前采集轮次读取名称，绝不回退到历史轮次。
 
         任务行不保存 run_id，当前轮次以最近一次包含该任务的运行为准（runs.updated_at）。
@@ -537,12 +578,14 @@ class TaskStore:
         if not task_id:
             return ""
         with self.connect() as db:
+            project_filter = " AND c.project_id=?" if project_id is not None else ""
+            params = (task_id, project_id) if project_id is not None else (task_id,)
             row = db.execute(
                 "SELECT o.store_name FROM capture_run_results c"
                 " JOIN runs r ON r.id=c.run_id"
                 " LEFT JOIN observed_store_names o ON o.run_id=c.run_id AND o.task_id=c.task_id"
-                " WHERE c.task_id=? ORDER BY r.updated_at DESC, r.rowid DESC LIMIT 1",
-                (task_id,)).fetchone()
+                " WHERE c.task_id=?" + project_filter + " ORDER BY r.updated_at DESC, r.rowid DESC LIMIT 1",
+                params).fetchone()
         return str(row["store_name"] or "") if row else ""
 
     def observed_store_name_record(self, run_id: str, task_id: str) -> dict:
@@ -552,18 +595,27 @@ class TaskStore:
                              (str(run_id or ""), str(task_id or ""))).fetchone()
         return dict(row) if row else {}
 
-    def observed_store_names(self, run_id: str) -> dict[str, str]:
+    def observed_store_names(self, run_id: str, *, project_id: str | None = None) -> dict[str, str]:
         """本轮各任务已确认的名称；显式撤销（空值）不出现在结果里。"""
         with self.connect() as db:
-            rows = db.execute("SELECT task_id,store_name FROM observed_store_names"
-                              " WHERE run_id=? AND store_name!=''", (str(run_id or ""),)).fetchall()
+            if project_id is None:
+                rows = db.execute("SELECT task_id,store_name FROM observed_store_names"
+                                  " WHERE run_id=? AND store_name!=''", (str(run_id or ""),)).fetchall()
+            else:
+                rows = db.execute("SELECT o.task_id,o.store_name FROM observed_store_names o"
+                                  " JOIN capture_run_results c ON c.run_id=o.run_id AND c.task_id=o.task_id"
+                                  " WHERE o.run_id=? AND c.project_id=? AND o.store_name!=''",
+                                  (str(run_id or ""), project_id)).fetchall()
         return {row["task_id"]: row["store_name"] for row in rows}
 
-    def observed_store_name_latest(self, task_id: str) -> dict:
+    def observed_store_name_latest(self, task_id: str, *, project_id: str | None = None) -> dict:
         """按原始任务编号查最近一次观察记录，含未采集成功的轮次。"""
         with self.connect() as db:
-            row = db.execute("SELECT * FROM observed_store_names WHERE task_id=?"
-                             " ORDER BY updated_at DESC, run_id DESC LIMIT 1", (str(task_id or ""),)).fetchone()
+            project_filter = " AND c.project_id=?" if project_id is not None else ""
+            params = (str(task_id or ""), project_id) if project_id is not None else (str(task_id or ""),)
+            row = db.execute("SELECT o.* FROM observed_store_names o JOIN capture_run_results c"
+                             " ON c.run_id=o.run_id AND c.task_id=o.task_id WHERE o.task_id=?" + project_filter
+                             + " ORDER BY o.updated_at DESC,o.run_id DESC LIMIT 1", params).fetchone()
         return dict(row) if row else {}
 
     def material_binding(self, source: str) -> dict | None:
@@ -638,9 +690,16 @@ class TaskStore:
             db.execute("DELETE FROM publish_transactions WHERE task_id=?", (task_id,))
 
     def update_run(self, run_id: str, **changes) -> None:
-        allowed = {"status", "current_index", "current_task_id", "message", "capture_mode"}
+        allowed = {"status", "current_index", "current_task_id", "message", "capture_mode", "project_id"}
         if not changes or not set(changes) <= allowed:
             raise ValueError("无效的批次状态字段")
+        if "project_id" in changes:
+            with self.connect() as db:
+                row = db.execute("SELECT project_id FROM runs WHERE id=?", (run_id,)).fetchone()
+                if row is None:
+                    raise ValueError("批次不存在")
+                if row["project_id"] and row["project_id"] != changes["project_id"]:
+                    raise ValueError("采集轮次项目归属不能更改")
         changes["updated_at"] = now()
         with self.connect() as db:
             db.execute("UPDATE runs SET " + ",".join(f"{key}=?" for key in changes) + " WHERE id=?",
@@ -681,12 +740,17 @@ class TaskStore:
             row = db.execute("SELECT * FROM runs ORDER BY rowid DESC LIMIT 1").fetchone()
         return self._run_dict(row)
 
-    def run_history(self, limit: int = 500) -> list[dict]:
-        """全部采集运行记录，供任务中心历史页使用。"""
+    def run_history(self, limit: int = 500, *, project_id: str | None = None) -> list[dict]:
+        """按项目先过滤，再限量；旧归属未知的轮次不进入项目列表。"""
         with self.connect() as db:
-            rows = db.execute(
-                "SELECT * FROM runs ORDER BY created_at DESC,rowid DESC LIMIT ?", (max(1, int(limit)),)
-            ).fetchall()
+            if project_id is None:
+                rows = db.execute("SELECT * FROM runs ORDER BY created_at DESC,rowid DESC LIMIT ?",
+                                  (max(1, int(limit)),)).fetchall()
+            else:
+                rows = db.execute("""SELECT r.* FROM runs r WHERE r.project_id=? OR EXISTS (
+                    SELECT 1 FROM capture_run_results c WHERE c.run_id=r.id AND c.project_id=?)
+                    ORDER BY r.created_at DESC,r.rowid DESC LIMIT ?""",
+                                  (project_id, project_id, max(1, int(limit)))).fetchall()
         return [self._run_dict(row) for row in rows]
 
     def begin_publish(self, task_id: str, output_root: Path, staging: Path, destination: Path,

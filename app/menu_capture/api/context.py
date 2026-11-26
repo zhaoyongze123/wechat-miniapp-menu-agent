@@ -45,3 +45,8 @@ class ApiContext:
     control_lock: threading.RLock
     # 采集/标注运行中禁止修改配置、素材与环境的统一闸门，由 create_app 注入。
     idle: Callable[[], None]
+    # 所有业务路由共享同一组项目归属校验，避免各域自行猜测资源归属。
+    project_scope: Callable[..., str]
+    batch_scope: Callable[..., str]
+    task_scope: Callable[..., str]
+    role: str

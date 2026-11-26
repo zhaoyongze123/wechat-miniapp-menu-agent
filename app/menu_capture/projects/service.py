@@ -1,7 +1,6 @@
 """Project identity and explicit scope primitives (Refs #102).
 
-The caller owns the write transaction. Do not enable the migration at startup
-until all project-aware readers, writers and rollback checks are in place.
+The integrated service owns startup migration and supplies its write transaction.
 """
 from datetime import datetime, timezone
 import re
@@ -77,6 +76,44 @@ def migrate_projects(db: sqlite3.Connection) -> None:
         WHERE p.id IS NULL OR b.id IS NULL OR b.project_id IS NOT s.project_id OR b.deleted_at!=''
         LIMIT 1""").fetchone():
         raise ProjectConflict("存在无效或跨项目的素材选择")
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "capture_run_results" in tables:
+        result_columns = {row[1] for row in db.execute("PRAGMA table_info(capture_run_results)")}
+        if {"project_id", "batch_id"}.issubset(result_columns):
+            # 批次外键是逐店历史的直接证据；只回填可精确关联的旧记录。
+            db.execute("""UPDATE capture_run_results SET project_id=(
+                SELECT project_id FROM material_batches WHERE id=capture_run_results.batch_id)
+                WHERE project_id='' AND batch_id<>'' AND EXISTS (
+                    SELECT 1 FROM material_batches WHERE id=capture_run_results.batch_id
+                      AND project_id IS NOT NULL AND project_id<>'')""")
+    if "runs" in tables and "project_id" in {row[1] for row in db.execute("PRAGMA table_info(runs)")}:
+        run_columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
+        if "material_batch_id" in run_columns:
+            db.execute("""UPDATE runs SET project_id=(
+                SELECT project_id FROM material_batches WHERE id=runs.material_batch_id)
+                WHERE project_id='' AND material_batch_id<>'' AND EXISTS (
+                    SELECT 1 FROM material_batches WHERE id=runs.material_batch_id
+                      AND project_id IS NOT NULL AND project_id<>'')""")
+        if "capture_run_results" in tables:
+            db.execute("""UPDATE runs SET project_id=(
+                SELECT MIN(c.project_id) FROM capture_run_results c WHERE c.run_id=runs.id
+                  AND c.project_id<>'')
+                WHERE project_id='' AND EXISTS (
+                    SELECT 1 FROM capture_run_results c WHERE c.run_id=runs.id)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM capture_run_results c WHERE c.run_id=runs.id AND c.project_id='')
+                  AND (SELECT COUNT(DISTINCT c.project_id) FROM capture_run_results c
+                       WHERE c.run_id=runs.id AND c.project_id<>'')=1""")
+
+
+def ensure_legacy_project(db: sqlite3.Connection) -> dict:
+    """为仍以单工作空间运行的本机模式提供固定兼容项目。"""
+    _require_write(db)
+    if db.execute("SELECT 1 FROM projects WHERE id=?", (LEGACY_ID,)).fetchone() is None:
+        stamp = _stamp()
+        db.execute("INSERT INTO projects(id,code,name,created_at,updated_at) VALUES(?,?,?,?,?)",
+                   (LEGACY_ID, "legacy", "历史项目", stamp, stamp))
+    return get_project(db, LEGACY_ID)
 
 
 def get_project(db, project_id: str) -> dict:
@@ -164,6 +201,8 @@ def archive_project(db, project_id: str, *, blockers) -> dict:
     """Require the integrated caller to check all live work under its write locks."""
     _require_write(db)
     project = get_project(db, project_id)
+    if project_id == LEGACY_ID:
+        raise ProjectConflict("历史兼容项目不能归档")
     if project["archived_at"]:
         return project
     reasons = tuple(blockers(db, project_id))
@@ -197,6 +236,87 @@ def assert_batch_set(db, project_id: str, ids, *, write: bool = False) -> None:
     allowed = batch_ids(db, project_id)
     if not set(ids).issubset(allowed):
         raise ProjectConflict("存在不属于当前项目的批次，本次操作未生效")
+
+
+def resolve_task_project(db, task_id: str) -> dict | None:
+    """依据轮次、批次或精确来源路径解析；不能可靠证明时保留为待核验。"""
+    if not isinstance(task_id, str) or not task_id:
+        return None
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    known: set[str] = set()
+    result_columns = ({row[1] for row in db.execute("PRAGMA table_info(capture_run_results)")}
+                      if "capture_run_results" in tables else set())
+    if "worker_assignments" in tables:
+        assignment_columns = {row[1] for row in db.execute("PRAGMA table_info(worker_assignments)")}
+        if "project_id" in assignment_columns:
+            known.update(row[0] for row in db.execute(
+                "SELECT DISTINCT project_id FROM worker_assignments WHERE task_id=? AND project_id!=''",
+                (task_id,)))
+    if "project_id" in result_columns:
+        known.update(row[0] for row in db.execute(
+            "SELECT DISTINCT project_id FROM capture_run_results WHERE task_id=? AND project_id!=''",
+            (task_id,)))
+    batch_columns = ({row[1] for row in db.execute("PRAGMA table_info(material_batches)")}
+                     if "material_batches" in tables else set())
+    if "batch_id" in result_columns and "project_id" in batch_columns:
+        known.update(row[0] for row in db.execute(
+            "SELECT DISTINCT b.project_id FROM capture_run_results c "
+            "JOIN material_batches b ON b.id=c.batch_id "
+            "WHERE c.task_id=? AND c.batch_id!='' AND b.project_id!=''", (task_id,)))
+    run_columns = ({row[1] for row in db.execute("PRAGMA table_info(runs)")}
+                   if "runs" in tables else set())
+    if "project_id" in run_columns and "capture_run_results" in tables:
+        known.update(row[0] for row in db.execute(
+            "SELECT DISTINCT r.project_id FROM runs r JOIN capture_run_results c ON c.run_id=r.id "
+            "WHERE c.task_id=? AND r.project_id!=''", (task_id,)))
+    if len(known) > 1:
+        return None
+    if known:
+        try:
+            return get_project(db, next(iter(known)))
+        except ProjectNotFound:
+            return None
+
+    if "tasks" not in tables or "project_id" not in batch_columns:
+        return None
+    task = db.execute("SELECT source_path FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if task is None or not task[0]:
+        return None
+    source = str(task[0]).replace("\\", "/").rstrip("/")
+    if "material_versions" in tables:
+        batch_rows = db.execute(
+            "SELECT b.project_id,b.source_root,v.snapshot_id FROM material_batches b "
+            "LEFT JOIN material_versions v ON v.batch_id=b.id").fetchall()
+    else:
+        batch_rows = db.execute(
+            "SELECT project_id,source_root,'' FROM material_batches").fetchall()
+    matches: set[str] = set()
+    for row in batch_rows:
+        project_id = str(row[0] or "")
+        if not project_id:
+            continue
+        source_root = str(row[1] or "").replace("\\", "/").rstrip("/")
+        snapshot_id = str(row[2] or "")
+        if ((source_root and (source == source_root or source.startswith(source_root + "/"))) or
+                (snapshot_id and ("/" + snapshot_id + "/") in ("/" + source + "/"))):
+            matches.add(project_id)
+    if len(matches) != 1:
+        return None
+    try:
+        return get_project(db, next(iter(matches)))
+    except ProjectNotFound:
+        return None
+
+
+def assert_task_scope(db, project_id: str, task_id: str, *, write: bool = False) -> dict:
+    if write:
+        _require_write(db)
+    project = resolve_task_project(db, task_id)
+    if project is None or project["id"] != project_id:
+        raise ProjectNotFound("任务不在当前项目或归属待核验")
+    if write:
+        assert_writable(db, project_id)
+    return project
 
 
 def selected_version(db, project_id: str) -> str | None:

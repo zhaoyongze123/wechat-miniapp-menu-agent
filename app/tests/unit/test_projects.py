@@ -77,6 +77,32 @@ def test_no_silent_backfill_after_migration(db):
     assert db.execute("SELECT COUNT(*) FROM material_batches").fetchone() == (2,)
 
 
+def test_migration_backfills_only_proven_run_history_scope(db):
+    db.execute("BEGIN IMMEDIATE")
+    migrate_projects(db)
+    other = create_project(db, 'other', '其他项目')
+    db.execute("INSERT INTO material_batches VALUES('b3','','t',?)", (other['id'],))
+    db.execute("CREATE TABLE capture_run_results(run_id TEXT, task_id TEXT, batch_id TEXT, project_id TEXT)")
+    db.execute("CREATE TABLE runs(id TEXT, material_batch_id TEXT, project_id TEXT)")
+    db.execute("INSERT INTO capture_run_results VALUES('legacy-run','t1','b1','')")
+    db.execute("INSERT INTO capture_run_results VALUES('mixed-run','t2','b1','')")
+    db.execute("INSERT INTO capture_run_results VALUES('mixed-run','t3','b3','')")
+    db.execute("INSERT INTO capture_run_results VALUES('unknown-run','t4','','')")
+    db.execute("INSERT INTO runs VALUES('legacy-run','b1','')")
+    db.execute("INSERT INTO runs VALUES('mixed-run','','')")
+    db.execute("INSERT INTO runs VALUES('unknown-run','','')")
+
+    migrate_projects(db)
+
+    assert db.execute("SELECT project_id FROM capture_run_results WHERE run_id='legacy-run'").fetchone() == (LEGACY_ID,)
+    assert db.execute("SELECT project_id FROM runs WHERE id='legacy-run'").fetchone() == (LEGACY_ID,)
+    assert db.execute("SELECT project_id FROM capture_run_results WHERE run_id='mixed-run' ORDER BY task_id").fetchall() == [
+        (LEGACY_ID,), (other['id'],),
+    ]
+    assert db.execute("SELECT project_id FROM runs WHERE id='mixed-run'").fetchone() == ('',)
+    assert db.execute("SELECT project_id FROM runs WHERE id='unknown-run'").fetchone() == ('',)
+
+
 def test_project_crud_selection_and_bulk_scope(db):
     from menu_capture.projects import service
 

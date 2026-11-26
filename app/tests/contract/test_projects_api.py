@@ -1,8 +1,8 @@
 import sqlite3
+import threading
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-import pytest
 
 from menu_capture.api.routers.projects import register
 from menu_capture.projects.service import migrate_projects
@@ -26,7 +26,8 @@ def test_project_routes(tmp_path):
         migrate_projects(db)
     app = FastAPI()
     blockers = ['待补传']
-    register(app, store=store, role='hub', archive_blockers=lambda *_: blockers)
+    register(app, store=store, role='hub', archive_blockers=lambda *_: blockers,
+             control_lock=threading.RLock())
     client = TestClient(app)
     assert client.get('/api/projects').json() == []
     payload = {'code': 'Q4', 'name': 'Q4'}
@@ -45,5 +46,9 @@ def test_project_routes(tmp_path):
     assert client.get('/api/projects').json() == []
     assert len(client.get('/api/projects?include_archived=true').json()) == 1
     assert not client.post(url + '/restore').json()['archived_at']
-    with pytest.raises(ValueError):
-        register(FastAPI(), store=store, role='worker', archive_blockers=lambda *_: [])
+    worker_app = FastAPI()
+    register(worker_app, store=store, role='worker', archive_blockers=lambda *_: [],
+             control_lock=threading.RLock(), worker=type('Worker', (), {'projects': lambda self: []})())
+    worker_client = TestClient(worker_app)
+    assert worker_client.get('/api/projects').json() == []
+    assert worker_client.get('/api/projects/unknown').status_code == 404

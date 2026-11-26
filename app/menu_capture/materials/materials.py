@@ -38,7 +38,10 @@ from menu_capture.materials.util import (
     _now, _selected_margin_ratio, _sha256, _store_id,
 )
 from menu_capture.storage.store import TaskStore
-from menu_capture.projects.service import assert_batch_scope, assert_writable, get_project, select_version
+from menu_capture.projects.service import (
+    LEGACY_ID, ProjectConflict, assert_batch_scope, assert_task_scope, assert_writable, ensure_legacy_project,
+    get_project, migrate_projects, resolve_batch_project, select_version,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,9 +118,11 @@ class MaterialService:
         inspector: Callable[[Path], list[dict]] | None = None,
         control_lock=None,
         ocr_reader: Callable[[Path], list[dict]] | None = None,
+        role: str = "standalone",
     ):
         self.root = Path(root).expanduser().resolve()
         self.configs, self.task_store = configs, task_store
+        self.role = role
         self.inspector = inspector
         self.ocr_reader = ocr_reader or image_ocr
         self.control_lock = control_lock  # 发布并发/runner idle 由 API 外层负责。
@@ -141,8 +146,14 @@ class MaterialService:
             self.jobs, self._run_job_item,
             prepare=self._prepare_job, on_finish=self._job_finished,
         )
-        self.versions = MaterialVersions(self.task_store, self.published_root)
+        self.versions = MaterialVersions(self.task_store, self.published_root, role=role)
         self.store_versions = StoreMaterialVersions(self.task_store, self.published_root)
+        # 迁移与入口启用同事务完成。不能确认历史归属时让启动失败，避免旧全局写路径继续混入新数据。
+        with self.task_store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            migrate_projects(db)
+            if role in {"standalone", "worker"}:
+                ensure_legacy_project(db)
         # 旧数据只做一次状态收敛：运行态按“是否所有门店都有决策”判定，不再无条件判死。
         self._migrate_legacy_batches()
         # 服务接收请求前只恢复一次清理事务，避免并发首请求重复处理同一暂存目录。
@@ -306,19 +317,13 @@ class MaterialService:
         source.mkdir(parents=True, mode=0o700, exist_ok=False)
         try:
             with self.task_store.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
                 stamp = _now()
-                if project_id is not None:
-                    db.execute("BEGIN IMMEDIATE")
-                    assert_writable(db, project_id)
-                    db.execute(
-                        "INSERT INTO material_batches(id,source_kind,source_root,status,created_at,updated_at,name,description,project_id) VALUES(?,?,?,?,?,?,?,?,?)",
-                        (batch_id, "upload", str(source), "uploading", stamp, stamp, name, description, project_id),
-                    )
-                else:
-                    db.execute(
-                        "INSERT INTO material_batches(id,source_kind,source_root,status,created_at,updated_at,name,description) VALUES(?,?,?,?,?,?,?,?)",
-                        (batch_id, "upload", str(source), "uploading", stamp, stamp, name, description),
-                    )
+                project_id = self.project_for_new_batch(db, project_id)
+                db.execute(
+                    "INSERT INTO material_batches(id,source_kind,source_root,status,created_at,updated_at,name,description,project_id) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (batch_id, "upload", str(source), "uploading", stamp, stamp, name, description, project_id),
+                )
         except Exception:
             # Only remove the newly created empty directory, never a source tree.
             source.rmdir()
@@ -326,7 +331,8 @@ class MaterialService:
             raise
         return {"batch_id": batch_id, "status": "uploading", "file_count": 0, "total_bytes": 0}
 
-    def add_upload_file(self, batch_id: str, relative_path: str, content: bytes) -> dict:
+    def add_upload_file(self, batch_id: str, relative_path: str, content: bytes, *, project_id: str | None = None) -> dict:
+        self._check_batch_scope(batch_id, project_id, write=True)
         rel = self._safe_upload_path(relative_path)
         if not isinstance(content, bytes) or not content:
             raise ValueError("上传文件必须是非空原始 bytes")
@@ -371,16 +377,18 @@ class MaterialService:
                 raise
             return {"batch_id": batch_id, "file_count": next_count, "total_bytes": next_size}
 
-    def abort_upload(self, batch_id: str) -> dict:
+    def abort_upload(self, batch_id: str, *, project_id: str | None = None) -> dict:
         """上传失败后退出上传态，保留已收到的文件，允许用户在管理页回收。"""
+        self._check_batch_scope(batch_id, project_id, write=True)
         with self._lock:
             row = self._batch_row(batch_id)
             if row["status"] != "uploading":
                 raise ValueError("该批次当前不在上传中")
             self._set_batch_error(batch_id, "failed", "上传未完成，可在批次管理中删除后重新导入")
-        return self.get_batch(batch_id)
+        return self.get_batch(batch_id, project_id=project_id)
 
-    def finish_upload(self, batch_id: str) -> dict:
+    def finish_upload(self, batch_id: str, *, project_id: str | None = None) -> dict:
+        self._check_batch_scope(batch_id, project_id, write=True)
         with self._lock, self.task_store.connect() as db:
             row = self._batch_row(batch_id)
             if row["status"] != "uploading":
@@ -388,10 +396,11 @@ class MaterialService:
             if row["upload_file_count"] == 0:
                 raise ValueError("上传批次没有可处理的图片")
             db.execute("UPDATE material_batches SET status='ready_to_analyze',updated_at=? WHERE id=?", (_now(), batch_id))
-        return self.get_batch(batch_id)
+        return self.get_batch(batch_id, project_id=project_id)
 
-    def begin_store_upload(self, batch_id: str, store_id: str) -> dict:
+    def begin_store_upload(self, batch_id: str, store_id: str, *, project_id: str | None = None) -> dict:
         """为当前门店创建临时补图目录，不触碰用户的原始素材目录。"""
+        self._check_batch_scope(batch_id, project_id, write=True)
         batch = self._batch_row(batch_id)
         if batch["status"] != "completed":
             raise ValueError("只有分析完成的批次可以补充门店素材")
@@ -403,7 +412,9 @@ class MaterialService:
         folder.mkdir(parents=True, mode=0o700, exist_ok=False)
         return {"upload_id": upload_id, "status": "uploading"}
 
-    def add_store_upload_file(self, batch_id: str, store_id: str, upload_id: str, filename: str, content: bytes) -> dict:
+    def add_store_upload_file(self, batch_id: str, store_id: str, upload_id: str, filename: str, content: bytes,
+                              *, project_id: str | None = None) -> dict:
+        self._check_batch_scope(batch_id, project_id, write=True)
         if not _UPLOAD_ID_RE.fullmatch(upload_id):
             raise ValueError("补图上传编号无效")
         batch = self._batch_row(batch_id)
@@ -449,7 +460,9 @@ class MaterialService:
             "sha256": hashlib.sha256(content).hexdigest(),
         }
 
-    def commit_store_upload(self, batch_id: str, store_id: str, upload_id: str, mode: str, files: list[dict]) -> dict:
+    def commit_store_upload(self, batch_id: str, store_id: str, upload_id: str, mode: str, files: list[dict],
+                            *, project_id: str | None = None) -> dict:
+        self._check_batch_scope(batch_id, project_id, write=True)
         if not _UPLOAD_ID_RE.fullmatch(upload_id):
             raise ValueError("补图上传编号无效")
         if mode not in {"append", "replace"}:
@@ -508,9 +521,11 @@ class MaterialService:
                     (decision, json.dumps(store, ensure_ascii=False), _now(), batch_id, store_id),
                 )
                 self._refresh_batch_summary(db, batch_id)
-        return {"store": self.get_store(batch_id, store_id), "uploaded": len(prepared), "mode": mode}
+        return {"store": self.get_store(batch_id, store_id, project_id=project_id),
+                "uploaded": len(prepared), "mode": mode}
 
-    def abort_store_upload(self, batch_id: str, store_id: str, upload_id: str) -> None:
+    def abort_store_upload(self, batch_id: str, store_id: str, upload_id: str, *, project_id: str | None = None) -> None:
+        self._check_batch_scope(batch_id, project_id, write=True)
         if not _UPLOAD_ID_RE.fullmatch(upload_id):
             raise ValueError("补图上传编号无效")
         batch = self._batch_row(batch_id)
@@ -528,14 +543,15 @@ class MaterialService:
             raise ValueError("补图目录不安全，拒绝删除")
         shutil.rmtree(folder, ignore_errors=True)
 
-    def reanalyze_store(self, batch_id: str, store_id: str) -> dict:
+    def reanalyze_store(self, batch_id: str, store_id: str, *, project_id: str | None = None) -> dict:
         """只重跑当前门店的本地二维码检测与 OCR；批次其他门店和决定不变。"""
+        self._check_batch_scope(batch_id, project_id, write=True)
         with self._lock:
             batch = self._batch_row(batch_id)
             if batch["status"] != "completed":
                 raise ValueError("只有分析完成的批次可以重新分析单店")
             self._reanalyze_store_locked(batch, store_id)
-        return self.get_store(batch_id, store_id)
+        return self.get_store(batch_id, store_id, project_id=project_id)
 
     def _reanalyze_store_locked(self, batch: dict, store_id: str) -> None:
         batch_id = batch["id"]
@@ -595,8 +611,9 @@ class MaterialService:
         return [{"store_id": _store_id(store["source_folder"]), "source_folder": store["source_folder"]}
                 for store in stores]
 
-    def start_analysis(self, batch_id: str) -> dict:
+    def start_analysis(self, batch_id: str, *, project_id: str | None = None) -> dict:
         """把整批分析转成持久化 job；立即返回，前端通过任务中心观察进度。"""
+        self._check_batch_scope(batch_id, project_id, write=True)
         batch = self._batch_row(batch_id)
         if batch["status"] != "ready_to_analyze":
             raise ValueError("只有 ready_to_analyze 批次可以开始分析")
@@ -613,10 +630,11 @@ class MaterialService:
         job = self.jobs.create(batch_id, "analyze", items, concurrency)
         self.jobs.event(job["id"], "info", f"任务已创建：{len(items)} 家门店，并发 {concurrency}")
         self.job_runner.wake()
-        return {**self.get_batch(batch_id), "job": self.jobs.get(job["id"])}
+        return {**self.get_batch(batch_id, project_id=project_id), "job": self.jobs.get(job["id"])}
 
-    def start_reanalysis(self, batch_id: str, store_ids: list[str]) -> dict:
+    def start_reanalysis(self, batch_id: str, store_ids: list[str], *, project_id: str | None = None) -> dict:
         """对已完成批次里选中的门店重跑检测；已确认门店必须先撤销确认。"""
+        self._check_batch_scope(batch_id, project_id, write=True)
         batch = self._batch_row(batch_id)
         if batch["status"] != "completed":
             raise ValueError("只有分析完成的批次可以重新分析")
@@ -637,10 +655,11 @@ class MaterialService:
         job = self.jobs.create(batch_id, "reanalyze", items, concurrency)
         self.jobs.event(job["id"], "info", f"重新分析任务已创建：{len(items)} 家门店，并发 {concurrency}")
         self.job_runner.wake()
-        return {**self.get_batch(batch_id), "job": self.jobs.get(job["id"])}
+        return {**self.get_batch(batch_id, project_id=project_id), "job": self.jobs.get(job["id"])}
 
-    def retry_failed(self, batch_id: str) -> dict:
+    def retry_failed(self, batch_id: str, *, project_id: str | None = None) -> dict:
         """只重跑上一次任务里失败且未确认的门店；会先取消旧任务再建新任务。"""
+        self._check_batch_scope(batch_id, project_id, write=True)
         batch = self._batch_row(batch_id)
         latest = self.jobs.latest(batch_id)
         if latest is None:
@@ -657,39 +676,58 @@ class MaterialService:
         job = self.jobs.create_replacing(batch_id, "retry_failed", items, concurrency)
         self.jobs.event(job["id"], "info", f"重试任务已创建：{len(items)} 家失败门店")
         self.job_runner.wake()
-        return {**self.get_batch(batch_id), "job": self.jobs.get(job["id"])}
+        return {**self.get_batch(batch_id, project_id=project_id), "job": self.jobs.get(job["id"])}
 
-    def pause_job(self, job_id: str) -> dict:
+    def pause_job(self, job_id: str, *, project_id: str | None = None) -> dict:
+        self._check_job_scope(job_id, project_id, write=True)
         if not self.jobs.request_pause(job_id):
             raise ValueError("当前任务状态不支持暂停")
         self.jobs.event(job_id, "info", "已请求暂停，将在当前门店处理完后停止")
         return self.jobs.get(job_id) or {}
 
-    def resume_job(self, job_id: str) -> dict:
+    def resume_job(self, job_id: str, *, project_id: str | None = None) -> dict:
+        self._check_job_scope(job_id, project_id, write=True)
         if not self.jobs.resume(job_id):
             raise ValueError("只有已暂停或已中断的任务可以恢复")
         self.jobs.event(job_id, "info", "任务已恢复并重新排队")
         self.job_runner.wake()
         return self.jobs.get(job_id) or {}
 
-    def cancel_job(self, job_id: str) -> dict:
+    def cancel_job(self, job_id: str, *, project_id: str | None = None) -> dict:
+        self._check_job_scope(job_id, project_id, write=True)
         if not self.jobs.cancel(job_id):
             raise ValueError("当前任务状态无法取消")
         self.jobs.event(job_id, "warn", "任务已取消，未完成门店保持待处理")
         return self.jobs.get(job_id) or {}
 
-    def list_jobs(self, *, active: bool = True, batch_id: str = "", limit: int = 20) -> list[dict]:
+    def list_jobs(self, *, active: bool = True, batch_id: str = "", limit: int = 20,
+                  project_id: str | None = None) -> list[dict]:
+        if self.role == "hub" and project_id is None:
+            raise ProjectConflict("项目范围缺失")
+        if project_id is None:
+            project_id = LEGACY_ID
+        if project_id is not None:
+            return self.jobs.for_project(project_id, active=active, limit=limit, batch_id=batch_id)
         if batch_id:
             return self.jobs.for_batch(batch_id, limit)
         if active:
             return self.jobs.active(limit)
         return self.jobs.for_batch(batch_id, limit) if batch_id else self.jobs.active(limit)
 
-    def job_detail(self, job_id: str, events: bool = True) -> dict:
+    def job_detail(self, job_id: str, events: bool = True, *, project_id: str | None = None) -> dict:
         job = self.jobs.get(job_id)
         if job is None:
             raise ValueError("任务不存在")
+        if project_id is not None or self.role == "hub":
+            self._check_batch_scope(job["batch_id"], project_id)
         job["events"] = self.jobs.events(job_id, 50) if events else []
+        return job
+
+    def _check_job_scope(self, job_id: str, project_id: str | None, *, write: bool) -> dict:
+        job = self.jobs.get(job_id)
+        if job is None:
+            raise ValueError("任务不存在")
+        self._check_batch_scope(job["batch_id"], project_id, write=write)
         return job
 
     # ------------------------------------------------------------ job 执行
@@ -869,13 +907,13 @@ class MaterialService:
             (json.dumps(summary, ensure_ascii=False), len(rows), len(rows), _now(), batch_id),
         )
 
-    def create_upload_batch(self, files: Iterable[dict]) -> dict:
+    def create_upload_batch(self, files: Iterable[dict], *, project_id: str | None = None) -> dict:
         """小批量/测试便捷接口；生产 API 应使用逐文件三步上传。"""
-        batch = self.begin_upload()
+        batch = self.begin_upload(project_id=project_id)
         try:
             for item in files:
-                self.add_upload_file(batch["batch_id"], item["path"], item["content"])
-            return self.finish_upload(batch["batch_id"])
+                self.add_upload_file(batch["batch_id"], item["path"], item["content"], project_id=project_id)
+            return self.finish_upload(batch["batch_id"], project_id=project_id)
         except Exception:
             self._set_batch_error(batch["batch_id"], "upload_error", "上传失败；未开始分析")
             shutil.rmtree(self.upload_root / batch["batch_id"], ignore_errors=True)
@@ -900,7 +938,7 @@ class MaterialService:
             "total_ms": total_ms,
         }
 
-    def adopt_manifest(self, manifest_path: Path) -> dict:
+    def adopt_manifest(self, manifest_path: Path, *, project_id: str | None = None) -> dict:
         path = Path(manifest_path).expanduser().resolve(strict=True)
         if not path.is_file():
             raise ValueError("manifest 路径必须是文件")
@@ -914,10 +952,12 @@ class MaterialService:
         source = self._validate_local_root(Path(safe_manifest["input_root"]))
         batch_id = uuid.uuid4().hex
         with self.task_store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            project_id = self.project_for_new_batch(db, project_id)
             stamp = _now()
             db.execute(
-                "INSERT INTO material_batches(id,source_kind,source_root,status,progress_done,progress_total,summary_json,manifest_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (batch_id, "adopted_manifest", str(source), "completed", safe_manifest["summary"]["total_images"], safe_manifest["summary"]["total_images"], json.dumps(safe_manifest["summary"], ensure_ascii=False), json.dumps(safe_manifest, ensure_ascii=False), stamp, stamp),
+                "INSERT INTO material_batches(id,source_kind,source_root,status,progress_done,progress_total,summary_json,manifest_json,created_at,updated_at,project_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (batch_id, "adopted_manifest", str(source), "completed", safe_manifest["summary"]["total_images"], safe_manifest["summary"]["total_images"], json.dumps(safe_manifest["summary"], ensure_ascii=False), json.dumps(safe_manifest, ensure_ascii=False), stamp, stamp, project_id),
             )
             for store in safe_manifest["stores"]:
                 store_id = _store_id(store["source_folder"])
@@ -926,7 +966,7 @@ class MaterialService:
                     "INSERT INTO material_decisions(batch_id,store_id,source_folder,source_name,analysis_status,recommendation,store_json,updated_at) VALUES(?,?,?,?,?,?,?,?)",
                     (batch_id, store_id, store["source_folder"], store["source_name"], store["status"], int(recommendation), json.dumps(store, ensure_ascii=False), stamp),
                 )
-        return self.get_batch(batch_id)
+        return self.get_batch(batch_id, project_id=project_id)
 
     def _classify_and_select(self, manifest: dict, source_root: Path, analysis_dir: Path, progress=None,
                              source_resolver=None, duplicate_names: set[str] | None = None) -> None:
@@ -1339,8 +1379,10 @@ class MaterialService:
         store["selected_artifact"] = None
 
     def active_release(self, active_root: Path, *, project_id: str | None = None) -> dict | None:
-        release = (self.versions.active_project(project_id) if project_id is not None
-                   else self.versions.active(active_root))
+        if self.role == "hub":
+            release = self.versions.active_project(project_id) if project_id is not None else None
+        else:
+            release = self.versions.active_project(project_id or LEGACY_ID)
         if release:
             try:
                 batch = self._batch_row(release["batch_id"])
@@ -1377,14 +1419,57 @@ class MaterialService:
             raise ValueError("批次描述最多 500 字")
         return name.strip(), description.strip()
 
+    def project_for_new_batch(self, db, project_id: str | None) -> str:
+        """Hub 新建批次必须指定项目；旧本机模式仅兼容固定 legacy 项目。"""
+        if project_id is None:
+            if self.role == "hub":
+                raise ProjectConflict("新建批次必须指定项目")
+            project_id = LEGACY_ID
+        assert_writable(db, project_id)
+        return project_id
+
+    @staticmethod
+    def _assert_batch_write(db, batch_id: str, project_id: str | None = None) -> str:
+        owner = resolve_batch_project(db, batch_id)
+        if project_id is not None and owner["id"] != project_id:
+            raise ProjectConflict("素材批次不属于当前项目")
+        assert_writable(db, owner["id"])
+        return owner["id"]
+
+    def _check_batch_scope(self, batch_id: str, project_id: str | None = None, *, write: bool = False,
+                           include_deleted: bool = False) -> str:
+        with self.task_store.connect() as db:
+            owner = resolve_batch_project(db, batch_id, include_deleted=include_deleted)
+            if self.role == "hub" and project_id is None:
+                raise ProjectConflict("项目范围缺失")
+            if project_id is not None and owner["id"] != project_id:
+                raise ProjectConflict("素材批次不属于当前项目")
+            if write:
+                if self.role == "hub" and project_id is None:
+                    raise ProjectConflict("批次写入必须指定项目")
+                assert_writable(db, owner["id"])
+            return owner["id"]
+
+    def _write_project(self, db, batch_id: str, project_id: str | None) -> str:
+        owner = resolve_batch_project(db, batch_id)
+        if project_id is None:
+            if self.role == "hub":
+                raise ProjectConflict("批次写入必须指定项目")
+            project_id = owner["id"]
+        if project_id != owner["id"]:
+            raise ProjectConflict("素材批次不属于当前项目")
+        assert_writable(db, project_id)
+        return project_id
+
     def list_batches(self, include_deleted: bool = False, *, project_id: str | None = None) -> list[dict]:
         with self.task_store.connect() as db:
-            filters = [] if include_deleted else ["deleted_at=''"]
-            params = []
-            if project_id is not None:
-                get_project(db, project_id)
-                filters.append("project_id=?")
-                params.append(project_id)
+            project_id = project_id or LEGACY_ID
+            if db.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone() is None:
+                return []
+            filters = ["project_id=?"]
+            params = [project_id]
+            if not include_deleted:
+                filters.append("deleted_at=''")
             predicate = "WHERE " + " AND ".join(filters) if filters else ""
             rows = [dict(row) for row in db.execute(
                 f"SELECT * FROM material_batches {predicate} ORDER BY created_at DESC,id DESC", params)]
@@ -1393,30 +1478,19 @@ class MaterialService:
     def batch_options(self, *, project_id: str | None = None) -> list[dict]:
         """批次下拉框只读名称和阶段，避免加载识别结果、发布差异及历史运行。"""
         with self.task_store.connect() as db:
-            if project_id is not None:
-                get_project(db, project_id)
-                rows = [dict(row) for row in db.execute(
-                    "SELECT b.id,b.name,b.created_at,b.capture_rounds,b.manual_stage,b.approved_at,v.snapshot_id "
-                    "FROM material_batches b LEFT JOIN material_versions v ON v.batch_id=b.id "
-                    "AND v.id=(SELECT version_id FROM project_material_selection WHERE project_id=?) "
-                    "WHERE b.deleted_at='' AND b.project_id=? ORDER BY b.created_at DESC,b.id DESC",
-                    (project_id, project_id))]
-            else:
-                rows = [dict(row) for row in db.execute(
-                    "SELECT b.id,b.name,b.created_at,b.capture_rounds,b.manual_stage,b.approved_at,v.snapshot_id "
-                    "FROM material_batches b LEFT JOIN material_versions v ON v.batch_id=b.id "
-                    "AND v.id=(SELECT version_id FROM material_selection WHERE singleton=1) "
-                    "WHERE b.deleted_at='' ORDER BY b.created_at DESC,b.id DESC"
-                )]
+            project_id = project_id or LEGACY_ID
+            if db.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone() is None:
+                return []
+            rows = [dict(row) for row in db.execute(
+                "SELECT b.id,b.name,b.created_at,b.capture_rounds,b.manual_stage,b.approved_at,v.snapshot_id "
+                "FROM material_batches b LEFT JOIN material_versions v ON v.batch_id=b.id "
+                "AND v.id=(SELECT version_id FROM project_material_selection WHERE project_id=?) "
+                "WHERE b.deleted_at='' AND b.project_id=? ORDER BY b.created_at DESC,b.id DESC",
+                (project_id, project_id))]
         selected = next((row for row in rows if row["snapshot_id"]), None)
         active_id = None
         if selected:
-            if project_id is not None:
-                active_id = selected["id"]
-            else:
-                root = Path(self.configs.load().input_dir).expanduser().resolve()
-                if root == (self.published_root / selected["snapshot_id"]).resolve():
-                    active_id = selected["id"]
+            active_id = selected["id"]
         return [{"batch_id": row["id"], "name": self.versions.batch_name(row),
                  "created_at": row["created_at"], "workflow": self.workflow_stage(row),
                  "current_active": row["id"] == active_id} for row in rows]
@@ -1446,8 +1520,9 @@ class MaterialService:
         return {"stage": stage, "label": self._WORKFLOW_LABELS[stage],
                 "capture_rounds": rounds, "source": source, "manual_stage": manual}
 
-    def set_stage(self, batch_id: str, stage: str) -> dict:
+    def set_stage(self, batch_id: str, stage: str, *, project_id: str | None = None) -> dict:
         """人工指定批次阶段；传空字符串恢复自动判断。"""
+        self._check_batch_scope(batch_id, project_id, write=True)
         stage = str(stage or "").strip()
         if stage and stage not in self._WORKFLOW_LABELS:
             raise ValueError("批次阶段无效")
@@ -1458,16 +1533,24 @@ class MaterialService:
                 "WHERE id=? AND deleted_at=''",
                 (stage, _now() if stage == "approved" else "", _now(), batch_id),
             )
-        return self.get_batch(batch_id)
+        return self.get_batch(batch_id, project_id=project_id)
 
-    def register_capture_round(self, task_ids: list[str]) -> list[str]:
+    def register_capture_round(self, task_ids: list[str], *, project_id: str | None = None) -> list[str]:
         """采集启动时按任务归属批次累加轮次；同一批次一次启动只加一次。"""
+        if self.role == "hub" and project_id is None:
+            raise ProjectConflict("项目范围缺失")
+        if project_id is not None:
+            allowed = {row["id"] for row in self.effective_capture_tasks(project_id=project_id)}
+            if not set(task_ids).issubset(allowed):
+                raise ProjectConflict("存在不属于当前项目的采集任务")
         batch_ids: set[str] = set()
         for task_id in task_ids:
             task = self.task_store.get(task_id)
             snapshot = Path(task["source_path"]).expanduser().resolve().parent.parent
             binding = self.task_store.material_binding(str(snapshot))
             if binding and binding.get("batch_id"):
+                if project_id is not None:
+                    self._check_batch_scope(binding["batch_id"], project_id, write=True)
                 batch_ids.add(binding["batch_id"])
         if not batch_ids:
             return []
@@ -1488,13 +1571,15 @@ class MaterialService:
     def _latest_versions(self, *, project_id: str | None = None) -> dict[str, dict]:
         """显式项目范围用于业务查询；未指定时保留全局同步视图。"""
         with self.task_store.connect() as db:
-            sql = "SELECT id,name,created_at FROM material_batches WHERE deleted_at=''"
+            sql = ("SELECT b.id,b.name,b.created_at,b.project_id,COALESCE(p.code,'') AS project_code,"
+                   "COALESCE(p.name,'') AS project_name FROM material_batches b "
+                   "LEFT JOIN projects p ON p.id=b.project_id WHERE b.deleted_at=''")
             params = ()
             if project_id is not None:
                 get_project(db, project_id)
-                sql += " AND project_id=?"
+                sql += " AND b.project_id=?"
                 params = (project_id,)
-            batches = {row["id"]: dict(row) for row in db.execute(sql, params)}
+            batches = {row["id"]: dict(row) for row in db.execute(sql + " ORDER BY b.created_at,b.id", params)}
             latest: dict[str, dict] = {}
             for row in db.execute("SELECT * FROM material_versions ORDER BY rowid").fetchall():
                 batch = batches.get(row["batch_id"])
@@ -1542,7 +1627,8 @@ class MaterialService:
                     state.update(status="blocked", stage="returned_to_materials", message="待重新选码并发布")
                 result.append({
                     **state, "batch_id": batch_id, "batch_name": batch["name"] or batch_id,
-                    **({"project_id": project_id} if project_id is not None else {}),
+                    "project_id": batch["project_id"] or "", "project_code": batch["project_code"],
+                    "project_name": batch["project_name"],
                     "version": f"v{revision}" if revision else release["version"],
                     "material_version": revision, "batch_version": release["version"],
                     "store_id": mapping["store_id"],
@@ -1554,17 +1640,19 @@ class MaterialService:
                 })
         return sorted(result, key=lambda row: (row["batch_name"], row["source_name"]))
 
-    def rework_records(self, batch_ids: list[str] | None = None) -> list[dict]:
+    def rework_records(self, batch_ids: list[str] | None = None, *, project_id: str | None = None) -> list[dict]:
         """跨批次返工清单：待处理 / 不合格 / 已选码待发布，按原批次归属展示。"""
         wanted = set(batch_ids) if batch_ids else None
-        latest = self._latest_versions()
+        latest = self._latest_versions(project_id=project_id)
         manifests: dict[str, dict[str, tuple]] = {}
         _, blocked = self.store_versions.current(set())
         with self.task_store.connect() as db:
             rows = [dict(row) for row in db.execute(
                 "SELECT * FROM material_decisions ORDER BY batch_id,source_folder,store_id")]
             names = {row["id"]: row["name"] for row in db.execute(
-                "SELECT id,name FROM material_batches WHERE deleted_at=''")}
+                "SELECT id,name FROM material_batches WHERE deleted_at=''" +
+                (" AND project_id=?" if project_id is not None else ""),
+                ((project_id,) if project_id is not None else ())) }
         records: list[dict] = []
         for row in rows:
             batch_id = row["batch_id"]
@@ -1604,8 +1692,9 @@ class MaterialService:
             })
         return records
 
-    def return_rework_store(self, batch_id: str, store_id: str) -> dict:
+    def return_rework_store(self, batch_id: str, store_id: str, *, project_id: str | None = None) -> dict:
         """先留存旧决策和采集证据，再锁定本店，重新发布才解除。"""
+        self._check_batch_scope(batch_id, project_id, write=True)
         with self._lock:
             batch = self._batch_row(batch_id)
             if batch["status"] != "completed":
@@ -1620,22 +1709,25 @@ class MaterialService:
                         reject_reason='',reject_detail='',rejected_at='',reject_reviewed_at='',updated_at=?
                     WHERE batch_id=? AND store_id=?
                 """, (_now(), batch_id, store_id))
-        return self.get_store(batch_id, store_id)
+        return self.get_store(batch_id, store_id, project_id=project_id)
 
-    def set_approved(self, batch_id: str, approved: bool) -> dict:
+    def set_approved(self, batch_id: str, approved: bool, *, project_id: str | None = None) -> dict:
         """兼容旧入口：审核通过/撤销等价于手工阶段 approved/自动。"""
-        return self.set_stage(batch_id, "approved" if approved else "")
+        return self.set_stage(batch_id, "approved" if approved else "", project_id=project_id)
 
-    def rejections(self) -> list[dict]:
+    def rejections(self, *, project_id: str | None = None) -> list[dict]:
         """返回仍处于不合格状态的清洗门店，直接以人工审核决策为事实源。"""
+        if self.role == "hub" and project_id is None:
+            raise ProjectConflict("项目范围缺失")
+        project_id = project_id or LEGACY_ID
         with self.task_store.connect() as db:
             rows = [dict(row) for row in db.execute("""
                 SELECT d.*, b.name AS batch_name
                 FROM material_decisions d
                 JOIN material_batches b ON b.id=d.batch_id
-                WHERE d.decision='skipped' AND b.deleted_at=''
+                WHERE d.decision='skipped' AND b.deleted_at='' AND b.project_id=?
                 ORDER BY d.updated_at DESC,d.source_folder
-            """)]
+            """, (project_id,))]
         result = []
         for row in rows:
             store = json.loads(row["store_json"])
@@ -1669,7 +1761,9 @@ class MaterialService:
             })
         return result
 
-    def get_batch(self, batch_id: str) -> dict:
+    def get_batch(self, batch_id: str, *, project_id: str | None = None) -> dict:
+        if self.role == "hub" or project_id is not None:
+            self._check_batch_scope(batch_id, project_id)
         row = self._batch_row(batch_id)
         with self.task_store.connect() as db:
             stores = [dict(item) for item in db.execute("SELECT * FROM material_decisions WHERE batch_id=? ORDER BY source_folder,store_id", (batch_id,))]
@@ -1696,7 +1790,9 @@ class MaterialService:
             "stores": [self._store_summary(item) for item in stores],
         }
 
-    def get_store(self, batch_id: str, store_id: str) -> dict:
+    def get_store(self, batch_id: str, store_id: str, *, project_id: str | None = None) -> dict:
+        if self.role == "hub" or project_id is not None:
+            self._check_batch_scope(batch_id, project_id)
         row = self._decision_row(batch_id, store_id)
         data = json.loads(row["store_json"])
         summary = self._store_summary(row)
@@ -1730,7 +1826,9 @@ class MaterialService:
             "images": images,
         }
 
-    def preview_original(self, batch_id: str, store_id: str, image_index: int) -> dict:
+    def preview_original(self, batch_id: str, store_id: str, image_index: int, *, project_id: str | None = None) -> dict:
+        if self.role == "hub" or project_id is not None:
+            self._check_batch_scope(batch_id, project_id)
         batch = self._batch_row(batch_id)
         store_row = self._decision_row(batch_id, store_id)
         store = json.loads(store_row["store_json"])
@@ -1738,7 +1836,10 @@ class MaterialService:
         path = self._checked_source(batch, image)
         return {"bytes": path.read_bytes(), "media_type": self._media_type(path), "filename": path.name}
 
-    def preview_candidate(self, batch_id: str, store_id: str, image_index: int, candidate_index: int) -> dict:
+    def preview_candidate(self, batch_id: str, store_id: str, image_index: int, candidate_index: int,
+                          *, project_id: str | None = None) -> dict:
+        if self.role == "hub" or project_id is not None:
+            self._check_batch_scope(batch_id, project_id)
         batch = self._batch_row(batch_id)
         store_row = self._decision_row(batch_id, store_id)
         store = json.loads(store_row["store_json"])
@@ -1767,7 +1868,9 @@ class MaterialService:
         box: dict | None = None,
         reject_reason: str | None = None,
         reject_detail: str = "",
+        *, project_id: str | None = None,
     ) -> dict:
+        self._check_batch_scope(batch_id, project_id, write=True)
         if not isinstance(decision, str) or decision not in {"confirm", "skip", "pending"}:
             raise ValueError("decision 只能是 confirm/skip/pending")
         if not isinstance(reject_detail, str) or len(reject_detail.strip()) > 200:
@@ -1824,10 +1927,12 @@ class MaterialService:
                      json.dumps(selected, ensure_ascii=False), source_hash, reason_code, reason_detail, rejected_at,
                      reviewed_at, _now(), batch_id, store_id),
                 )
-        return self.get_store(batch_id, store_id)
+        return self.get_store(batch_id, store_id, project_id=project_id)
 
-    def mark_rejection_reviewed(self, batch_id: str, store_id: str, reviewed: bool) -> dict:
+    def mark_rejection_reviewed(self, batch_id: str, store_id: str, reviewed: bool,
+                                *, project_id: str | None = None) -> dict:
         """人工复核不合格门店：标记/取消“确认确实不合格”，供清单与导出使用。"""
+        self._check_batch_scope(batch_id, project_id, write=True)
         with self.task_store.connect() as db:
             cursor = db.execute(
                 "UPDATE material_decisions SET reject_reviewed_at=?,updated_at=? "
@@ -1836,9 +1941,11 @@ class MaterialService:
             )
             if not cursor.rowcount:
                 raise ValueError("该门店当前没有不合格记录")
-        return self.get_store(batch_id, store_id)
+        return self.get_store(batch_id, store_id, project_id=project_id)
 
-    def accept_recommendations(self, batch_id: str, store_ids: list[str] | None = None) -> dict:
+    def accept_recommendations(self, batch_id: str, store_ids: list[str] | None = None,
+                               *, project_id: str | None = None) -> dict:
+        self._check_batch_scope(batch_id, project_id, write=True)
         with self._lock:
             batch = self._batch_row(batch_id)
             if batch["status"] != "completed":
@@ -1890,9 +1997,7 @@ class MaterialService:
             if batch["status"] != "completed":
                 raise ValueError("只有分析完成的批次可以发布")
             with self.task_store.connect() as db:
-                if project_id is not None:
-                    assert_batch_scope(db, project_id, batch_id)
-                    assert_writable(db, project_id)
+                project_id = self._write_project(db, batch_id, project_id)
                 rows = [dict(row) for row in db.execute("SELECT * FROM material_decisions WHERE batch_id=? AND decision='confirmed' ORDER BY source_folder,store_id", (batch_id,))]
                 decision_names = {row["store_id"]: row["source_name"] for row in db.execute(
                     "SELECT store_id,source_name FROM material_decisions WHERE batch_id=?", (batch_id,))}
@@ -2010,7 +2115,7 @@ class MaterialService:
 
             self._validate_snapshot_marker(snapshot, fingerprint, expected_artifact_paths)
 
-            previous = self.configs.load().model_dump() if project_id is None else None
+            previous = self.configs.load().model_dump() if self.role != "hub" else None
             try:
                 if previous is not None and activate:
                     self.configs.save({**previous, "input_dir": str(snapshot)})
@@ -2035,7 +2140,7 @@ class MaterialService:
                     except Exception:
                         pass
                 raise
-            root = snapshot if project_id is not None else Path(self.configs.load().input_dir).expanduser().resolve()
+            root = snapshot if self.role == "hub" else Path(self.configs.load().input_dir).expanduser().resolve()
             return {
                 "snapshot_id": fingerprint,
                 "release": next(item for item in self.versions.list(batch_id, root, project_id=project_id)
@@ -2048,29 +2153,24 @@ class MaterialService:
 
     def activate_version(self, batch_id: str, version: str, *, project_id: str | None = None) -> dict:
         with self._publish_lock, self._lock:
-            if project_id is not None:
-                with self.task_store.connect() as db:
-                    assert_batch_scope(db, project_id, batch_id)
-                    assert_writable(db, project_id)
+            with self.task_store.connect() as db:
+                project_id = self._write_project(db, batch_id, project_id)
             release = self.versions.find(batch_id, version)
             if release is None:
                 raise ValueError("发布版本不存在")
             snapshot = self.published_root / release["snapshot_id"]
             manifest = json.loads((snapshot / ".materials-snapshot.json").read_text(encoding="utf-8"))
             self._validate_snapshot_marker(snapshot, release["snapshot_id"], {row["path"] for row in manifest["artifacts"]})
-            previous = self.configs.load().model_dump() if project_id is None else None
+            previous = self.configs.load().model_dump() if self.role != "hub" else None
             try:
                 if previous is not None:
                     self.configs.save({**previous, "input_dir": str(snapshot)})
                 scan = self.task_store.scan(snapshot, reuse_sources=[self.published_root / row["snapshot_id"]
                                                                    for row in self.versions.records(batch_id)])
                 with self.task_store.connect() as db:
-                    if project_id is not None:
-                        db.execute("BEGIN IMMEDIATE")
-                        select_version(db, project_id, release["id"])
-                    else:
-                        db.execute("INSERT INTO material_selection VALUES(1,?) ON CONFLICT(singleton) DO UPDATE SET version_id=excluded.version_id",
-                                   (release["id"],))
+                    db.execute("BEGIN IMMEDIATE")
+                    self._write_project(db, batch_id, project_id)
+                    select_version(db, project_id, release["id"])
             except Exception:
                 if previous is not None:
                     self.configs.save(previous)
@@ -2083,19 +2183,13 @@ class MaterialService:
         if self.material_root == source or self.material_root in source.parents or source in self.material_root.parents:
             raise ValueError("素材源不能与素材管理输出目录重叠")
         with self.task_store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            project_id = self.project_for_new_batch(db, project_id)
             stamp = _now()
-            if project_id is not None:
-                db.execute("BEGIN IMMEDIATE")
-                assert_writable(db, project_id)
-                db.execute(
-                    "INSERT INTO material_batches(id,source_kind,source_root,status,progress_total,created_at,updated_at,name,description,project_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (batch_id, kind, str(source), status, total, stamp, stamp, name, description, project_id),
-                )
-            else:
-                db.execute(
-                    "INSERT INTO material_batches(id,source_kind,source_root,status,progress_total,created_at,updated_at,name,description) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (batch_id, kind, str(source), status, total, stamp, stamp, name, description),
-                )
+            db.execute(
+                "INSERT INTO material_batches(id,source_kind,source_root,status,progress_total,created_at,updated_at,name,description,project_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (batch_id, kind, str(source), status, total, stamp, stamp, name, description, project_id),
+            )
         return {"batch_id": batch_id, "status": status, "progress": {"done": 0, "total": total}}
 
     def _validate_local_root(self, path: Path) -> Path:

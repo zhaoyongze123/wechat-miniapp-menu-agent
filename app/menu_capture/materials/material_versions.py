@@ -7,12 +7,13 @@ import uuid
 from pathlib import Path
 
 from menu_capture.storage.store import TaskStore, now
-from menu_capture.projects.service import assert_batch_scope, get_project, select_version
+from menu_capture.projects.service import LEGACY_ID, assert_batch_scope, get_project, select_version
 
 
 class MaterialVersions:
-    def __init__(self, store: TaskStore, published_root: Path):
+    def __init__(self, store: TaskStore, published_root: Path, *, role: str = "standalone"):
         self.store, self.published_root = store, published_root
+        self.role = role
         with store.connect() as db:
             if "name" not in {row["name"] for row in db.execute("PRAGMA table_info(material_batches)")}:
                 db.execute("ALTER TABLE material_batches ADD COLUMN name TEXT NOT NULL DEFAULT ''")
@@ -60,23 +61,12 @@ class MaterialVersions:
                 f"JOIN material_batches b ON b.id=v.batch_id WHERE batch_id=? {deleted_filter} ORDER BY v.rowid DESC", (batch_id,),
             )]
 
-    def active(self, root: Path) -> dict | None:
-        root = root.expanduser().resolve()
-        if root.parent != self.published_root.resolve():
+    def active(self, root: Path, *, project_id: str | None = None) -> dict | None:
+        if project_id is not None:
+            return self.active_project(project_id)
+        if self.role == "hub":
             return None
-        with self.store.connect() as db:
-            row = db.execute(
-                "SELECT v.*, b.name, b.created_at FROM material_selection s "
-                "JOIN material_versions v ON v.id=s.version_id JOIN material_batches b ON b.id=v.batch_id "
-                "WHERE s.singleton=1 AND v.snapshot_id=? AND b.deleted_at=''", (root.name,),
-            ).fetchone()
-            if row is None:
-                row = db.execute(
-                    "SELECT v.*, b.name, b.created_at FROM material_versions v "
-                    "JOIN material_batches b ON b.id=v.batch_id WHERE v.snapshot_id=? AND b.deleted_at='' ORDER BY v.rowid DESC LIMIT 1",
-                    (root.name,),
-                ).fetchone()
-        return self.public(dict(row), root, active_id=row["id"]) if row else None
+        return self.active_project(LEGACY_ID)
 
     def active_project(self, project_id: str) -> dict | None:
         """项目选择只读取项目事实源，不读取全局 input_dir 或回退到其他快照。"""
@@ -102,6 +92,8 @@ class MaterialVersions:
 
     def list(self, batch_id: str, root: Path, *, include_deleted: bool = False,
              project_id: str | None = None) -> list[dict]:
+        if self.role == "hub" and project_id is None:
+            return []
         if project_id is not None:
             with self.store.connect() as db:
                 batch = db.execute("SELECT project_id,deleted_at FROM material_batches WHERE id=?", (batch_id,)).fetchone()
@@ -125,15 +117,26 @@ class MaterialVersions:
         major, minor, patch = max(versions)
         return f"v{major}.{minor}.{patch + 1}"
 
-    def clear_active_selection(self, batch_id: str) -> bool:
+    def clear_active_selection(self, batch_id: str, *, project_id: str | None = None) -> bool:
         """清除只指向此批次的选用记录；调用方负责先确认运行安全。"""
         with self.store.connect() as db:
-            row = db.execute("SELECT s.version_id FROM material_selection s "
-                             "JOIN material_versions v ON v.id=s.version_id "
-                             "WHERE s.singleton=1 AND v.batch_id=?", (batch_id,)).fetchone()
+            if project_id is None and self.role == "hub":
+                raise ValueError("项目范围缺失")
+            if project_id is not None:
+                row = db.execute("SELECT s.version_id FROM project_material_selection s "
+                                 "JOIN material_versions v ON v.id=s.version_id "
+                                 "WHERE s.project_id=? AND v.batch_id=?", (project_id, batch_id)).fetchone()
+            else:
+                row = db.execute("SELECT s.version_id FROM material_selection s "
+                                 "JOIN material_versions v ON v.id=s.version_id "
+                                 "WHERE s.singleton=1 AND v.batch_id=?", (batch_id,)).fetchone()
             if row is None:
                 return False
-            db.execute("DELETE FROM material_selection WHERE singleton=1 AND version_id=?", (row["version_id"],))
+            if project_id is not None:
+                db.execute("DELETE FROM project_material_selection WHERE project_id=? AND version_id=?",
+                           (project_id, row["version_id"]))
+            else:
+                db.execute("DELETE FROM material_selection WHERE singleton=1 AND version_id=?", (row["version_id"],))
         return True
 
     @staticmethod
@@ -167,11 +170,9 @@ class MaterialVersions:
         db.execute("UPDATE material_batches SET name=?,snapshot_id=?,updated_at=? WHERE id=?",
                    (name, snapshot_id, now(), batch_id))
         if activate:
-            if project_id is not None:
-                select_version(db, project_id, version_id)
-            else:
-                db.execute("INSERT INTO material_selection VALUES(1,?) ON CONFLICT(singleton) DO UPDATE SET version_id=excluded.version_id",
-                           (version_id,))
+            if project_id is None:
+                raise ValueError("发布激活必须指定项目")
+            select_version(db, project_id, version_id)
         return version_id
 
     def changes(self, batch_id: str, snapshot_id: str) -> dict:
