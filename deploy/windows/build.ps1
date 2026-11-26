@@ -746,7 +746,9 @@ try {
         '-c', $channel,
         '--outputDir', $packDir
     )
+    Write-StageTiming 'vpk_pack' $vpkPackStopwatch
 
+    $artifactStopwatch = [Diagnostics.Stopwatch]::StartNew()
     # 复用同一索引解析器选择本次资产；不依赖 vpk 文件名的通道后缀。
     $assetJson = Invoke-Checked $python @(
         '-B', (Join-Path $PSScriptRoot 'velopack_assets.py'), $packDir, $Version
@@ -769,7 +771,7 @@ try {
         Copy-DirectoryFast $bundle $bundleOutputPath
         Write-Host "Bundle: $bundleOutputPath"
     }
-    Write-StageTiming 'vpk_pack' $vpkPackStopwatch
+    Write-StageTiming 'artifacts' $artifactStopwatch
     Write-StageTiming 'total' $totalStopwatch
 } finally {
     Remove-Item -LiteralPath $stage -Recurse -Force
