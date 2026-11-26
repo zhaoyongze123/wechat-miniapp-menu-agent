@@ -19,6 +19,7 @@ from menu_capture.capture.capture_history import ACTIVE_RUN_STATUSES, capture_hi
 from menu_capture.capture.capture_results import store_state, waiting_for_materials
 from menu_capture.materials.materials import REJECTION_REASONS, MaterialService
 from menu_capture.storage.store import TaskStore
+from menu_capture.projects.service import ProjectConflict, ProjectNotFound, assert_batch_set, get_project
 from menu_capture.shared.shared_history import HistoryReport
 
 MAX_RESULT_SIZE = 1024**3
@@ -404,7 +405,8 @@ class SharedHub:
             db.execute("UPDATE shared_worker_profiles SET archived_at=? WHERE worker_id=?", (stamp, worker_id))
         return {"id": worker_id, "archived_at": stamp}
 
-    def assignment_records(self, *, worker_id: str, phase: str, query: str, page: int, size: int) -> dict:
+    def assignment_records(self, *, worker_id: str, phase: str, query: str, page: int, size: int,
+                           project_id: str | None = None) -> dict:
         where = ["1=1"]
         params = []
         if worker_id:
@@ -418,10 +420,15 @@ class SharedHub:
         if query.strip():
             where.append("instr(lower(a.store || ' ' || a.batch_name || ' ' || a.revision || ' ' || a.task_id), lower(?))>0")
             params.append(query.strip())
+        if project_id is not None:
+            where.append("EXISTS (SELECT 1 FROM material_batches b WHERE b.id=a.batch_id AND b.project_id=?)")
+            params.append(project_id)
         source = ("FROM shared_assignments a JOIN shared_workers w ON w.id=a.worker_id "
                   "LEFT JOIN shared_results r ON r.assignment_id=a.id "
                   "LEFT JOIN shared_result_names n ON n.assignment_id=a.id WHERE " + " AND ".join(where))
         with self.store.connect() as db:
+            if project_id is not None:
+                get_project(db, project_id)
             if worker_id:
                 self._worker(db, worker_id)
             total = db.execute("SELECT COUNT(*) " + source, params).fetchone()[0]
@@ -466,7 +473,7 @@ class SharedHub:
                 tuple(owners)).fetchone()
         return str(row["observed_store_name"] or "") if row else ""
 
-    def reclaim_many(self, assignment_ids: list[str]) -> dict:
+    def reclaim_many(self, assignment_ids: list[str], *, project_id: str | None = None) -> dict:
         if (not isinstance(assignment_ids, list) or not 1 <= len(assignment_ids) <= 300
                 or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{32}", value) for value in assignment_ids)):
             raise ValueError("请选择 1 至 300 条待回收分配")
@@ -482,6 +489,10 @@ class SharedHub:
                 "SELECT a.id,a.task_id,a.batch_id,a.store,a.status,COALESCE(r.disposition,'') AS disposition "
                 "FROM shared_assignments a LEFT JOIN shared_results r ON r.assignment_id=a.id "
                 f"WHERE a.id IN ({placeholders})", ids)}
+            if project_id is not None:
+                if len(rows) != len(ids):
+                    raise SharedConflict("分配记录不存在或不在当前项目，本次操作未生效")
+                self._assert_project_batches(db, project_id, [row["batch_id"] for row in rows.values()])
             for assignment_id in ids:
                 row = rows.get(assignment_id)
                 if row is None:
@@ -559,13 +570,7 @@ class SharedHub:
             if self._worker(db, worker_id)["revoked_at"]:
                 raise SharedConflict("采集电脑已解除配对，请选择有效设备")
             if project_id is not None:
-                from menu_capture.projects.service import ProjectConflict, ProjectNotFound, assert_batch_set
-
-                try:
-                    assert_batch_set(db, project_id,
-                                     [task["batch_id"] for task, _ in selected], write=True)
-                except (ProjectConflict, ProjectNotFound) as exc:
-                    raise SharedConflict(str(exc)) from exc
+                self._assert_project_batches(db, project_id, [task["batch_id"] for task, _ in selected])
             # Reconcile must always see every project's effective tasks.
             self._reconcile_assignments(db, self._store_index(effective))
             # 在同一个写事务核对占用，整次提交全部通过后才生成分配记录。
@@ -604,8 +609,21 @@ class SharedHub:
             )
         return {"assignments": rows}
 
-    def reclaim(self, assignment_id: str) -> dict:
+    @staticmethod
+    def _assert_project_batches(db, project_id: str, batch_ids: list[str]) -> None:
+        try:
+            assert_batch_set(db, project_id, batch_ids, write=True)
+        except (ProjectConflict, ProjectNotFound) as exc:
+            raise SharedConflict(str(exc)) from exc
+
+    def reclaim(self, assignment_id: str, *, project_id: str | None = None) -> dict:
         with self.store.connect() as db:
+            if project_id is not None:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute("SELECT batch_id FROM shared_assignments WHERE id=?", (assignment_id,)).fetchone()
+                if row is None:
+                    raise SharedConflict("分配记录不存在或不在当前项目")
+                self._assert_project_batches(db, project_id, [row["batch_id"]])
             changed = db.execute(
                 "UPDATE shared_assignments SET status='reclaimed' WHERE id=? AND status IN ('assigned','ready')",
                 (assignment_id,),
