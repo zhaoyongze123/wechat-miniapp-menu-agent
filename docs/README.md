@@ -10,6 +10,7 @@
 | API 与角色契约 | [接口契约](architecture/api-contracts.md) / [角色矩阵](architecture/role-matrix.md) | HTTP 契约、Hub/Worker/远程控制权限 |
 | GUI Agent 边界 | [GUI Agent 开发规范](architecture/gui-agent-development.md) | 决策权、工具边界与验收口径 |
 | 工程规范 | [工程规范](governance/engineering-standards.md) | 分层、测试、版本管理、双 Agent 协作、发布与备份、CI 门禁 |
+| 工作区治理 | [跨平台工作区与运行时存储治理](workspace-governance.md) | Mac/Windows 职责、主仓与 Worktree 生命周期、交接与清理规则 |
 | 前端设计体系 | [设计体系](design-system/README.md) | L1–L4 四层模型、上游索引、组件契约与验收矩阵 |
 | 前端设计规格 | [界面设计规格](design-system/ui-design-spec.md) | 现有视觉与交互标准 |
 | 产品需求 | [产品规格](product/README.md) | 逐页面产品设计、功能保真与用户情境验收 |
