@@ -1,4 +1,5 @@
 import { apiFetch } from '../../api/client'
+import { projectApiPath } from '../projects/scope'
 import type {
   ActiveTasksResponse,
   HistoryRecord,
@@ -19,21 +20,25 @@ function historyParams(filters: TaskFilters): string {
   return params.toString()
 }
 
-export function fetchTaskHistory(filters: TaskFilters, signal?: AbortSignal): Promise<HistoryResponse> {
-  return apiFetch<HistoryResponse>(`/api/tasks/history?${historyParams(filters)}`, { signal })
+export function fetchTaskHistory(filters: TaskFilters, signal?: AbortSignal, projectId?: string): Promise<HistoryResponse> {
+  const path = `/api/tasks/history?${historyParams(filters)}`
+  return apiFetch<HistoryResponse>(projectId ? projectApiPath(path, projectId) : path, { signal })
 }
 
-export function fetchActiveTasks(signal?: AbortSignal): Promise<ActiveTasksResponse> {
-  return apiFetch<ActiveTasksResponse>('/api/tasks/active', { signal })
+export function fetchActiveTasks(signal?: AbortSignal, projectId?: string): Promise<ActiveTasksResponse> {
+  const path = '/api/tasks/active'
+  return apiFetch<ActiveTasksResponse>(projectId ? projectApiPath(path, projectId) : path, { signal })
 }
 
-export function fetchTaskDetail(kind: string, id: string, signal?: AbortSignal): Promise<TaskDetail> {
-  return apiFetch<TaskDetail>(`/api/tasks/history/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, { signal })
+export function fetchTaskDetail(kind: string, id: string, signal?: AbortSignal, projectId?: string): Promise<TaskDetail> {
+  const path = `/api/tasks/history/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`
+  return apiFetch<TaskDetail>(projectId ? projectApiPath(path, projectId) : path, { signal })
 }
 
-export function renameCaptureRun(runId: string, name: string): Promise<HistoryRecord> {
-  return apiFetch<HistoryRecord>(`/api/tasks/history/capture/${encodeURIComponent(runId)}`, {
+export function renameCaptureRun(runId: string, name: string, projectId?: string): Promise<HistoryRecord> {
+  const path = `/api/tasks/history/capture/${encodeURIComponent(runId)}`
+  return apiFetch<HistoryRecord>(projectId ? projectApiPath(path, projectId) : path, {
     method: 'PATCH',
-    json: { name },
+    json: { name, ...(projectId ? { project_id: projectId } : {}) },
   })
 }

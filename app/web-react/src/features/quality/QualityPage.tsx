@@ -19,6 +19,8 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
+import { useProject } from '../projects/ProjectProvider'
+import { projectQueryKey } from '../projects/scope'
 import { AssignDialog } from '../hub/AssignDialog'
 import { formatStore, formatTime } from '../hub/format'
 import { useHubSharedStatus } from '../hub/hooks'
@@ -61,6 +63,7 @@ const PAGE_SIZE = 50
 /** 质量审核：不合格清单与待检查清单共享同一页面，数据和操作全部走后端接口。 */
 export function QualityPage() {
   const role = useRole()
+  const { projectId } = useProject()
   const toast = useToast()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -89,6 +92,21 @@ export function QualityPage() {
   const [selectedRejections, setSelectedRejections] = useState<Set<string>>(new Set())
   const [undoBatchOpen, setUndoBatchOpen] = useState(false)
   const [undoBatchResult, setUndoBatchResult] = useState<{ succeeded: number; failures: string[] } | null>(null)
+  const previousProjectId = useRef(projectId)
+
+  useEffect(() => {
+    if (previousProjectId.current === projectId) return
+    previousProjectId.current = projectId
+    setDrawerKey(null)
+    setDrawerSnapshot(null)
+    setSelectedRejections(new Set())
+    setSelectedTasks(new Set())
+    setReviewDrawerId(null)
+    setRejectOpen(false)
+    setUndoBatchOpen(false)
+    setPage(1)
+    setReviewPage(1)
+  }, [projectId])
 
   // 待检查清单
   const [reviewBatchIds, setReviewBatchIds] = useState<string[]>([])
@@ -114,7 +132,7 @@ export function QualityPage() {
   const reviewsQuery = usePendingReviews(reviewBatchIds, reviewQuery, view === 'review')
   const runningQuery = useHubRunning()
   const batchOptionsQuery = useBatchOptions()
-  const hubShared = useHubSharedStatus()
+  const hubShared = useHubSharedStatus(projectId)
   const rejectionActions = useRejectionActions()
   const reviewActions = useReviewActions()
 
@@ -416,7 +434,7 @@ export function QualityPage() {
   const exportExcel = async () => {
     setExporting(true)
     try {
-      await downloadRejections({ batchId, source, reason, q: query, reviewed: reviewState })
+      await downloadRejections({ batchId, source, reason, q: query, reviewed: reviewState }, projectId)
       toast.push('已导出当前筛选的不合格门店', 'success')
     } catch (error) {
       toast.push(errorMessage(error), 'danger')
@@ -428,7 +446,7 @@ export function QualityPage() {
   const exportStoreNames = async () => {
     setExportingNames(true)
     try {
-      await downloadStoreNames()
+      await downloadStoreNames(projectId)
       toast.push('已导出全量门店名称与采集状态', 'success')
     } catch (error) {
       toast.push(errorMessage(error), 'danger')
@@ -1308,6 +1326,7 @@ export function QualityPage() {
       />
 
       <AssignDialog
+        projectId={projectId}
         open={assignTasks !== null}
         onOpenChange={(open) => {
           if (!open) setAssignTasks(null)
@@ -1325,10 +1344,10 @@ export function QualityPage() {
           setAssignTasks(null)
           setSelectedTasks(new Set())
           toast.push(`已向 ${workerName} 分配 ${count} 家门店`, 'success')
-          void queryClient.invalidateQueries({ queryKey: ['quality'] })
-          void queryClient.invalidateQueries({ queryKey: ['hub-status'] })
-          void queryClient.invalidateQueries({ queryKey: ['hub-shared-status'] })
-          void queryClient.invalidateQueries({ queryKey: ['hub-assignments'] })
+          void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'quality') })
+          void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-status') })
+          void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-shared-status') })
+          void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-assignments') })
         }}
       />
     </section>

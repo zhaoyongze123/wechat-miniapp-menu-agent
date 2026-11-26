@@ -21,7 +21,7 @@ export type UpdateProjectPayload = Partial<Pick<Project, 'name' | 'description'>
 const BASE = '/api/projects'
 export const projectsKeys = {
   all: ['projects'] as const,
-  list: (includeArchived: boolean) => ['projects', 'list', includeArchived] as const,
+  list: (includeArchived: boolean, catalogueScope = 'hub') => ['projects', 'list', catalogueScope, includeArchived] as const,
   detail: (id: string) => ['projects', 'detail', id] as const,
 }
 

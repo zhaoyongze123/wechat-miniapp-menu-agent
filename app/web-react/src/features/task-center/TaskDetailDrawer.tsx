@@ -6,6 +6,7 @@ import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { AppDialog } from '../../components/AppDialog'
+import { useUnsavedChanges } from '../../components/UnsavedChangesProvider'
 import { AppDrawer } from '../../components/AppDrawer'
 import { AppDataTable } from '../../components/AppDataTable'
 import { CellText } from '../../components/CellText'
@@ -15,6 +16,7 @@ import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
+import { projectApiPath, projectQueryKey } from '../projects/scope'
 import { formatStore } from '../hub/format'
 import { ReviewDispositionDialog } from '../quality/ReviewDispositionDialog'
 import { fetchTaskDetail, renameCaptureRun } from './api'
@@ -63,13 +65,14 @@ interface Selection {
 }
 
 interface TaskDetailDrawerProps {
+  projectId: string
   selection: Selection | null
   summary: HistoryRecord | null
   onClose: () => void
   onRenamed: (record: HistoryRecord) => void
 }
 
-export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: TaskDetailDrawerProps) {
+export function TaskDetailDrawer({ projectId, selection, summary, onClose, onRenamed }: TaskDetailDrawerProps) {
   const queryClient = useQueryClient()
   const toast = useToast()
   const [dispositionTaskId, setDispositionTaskId] = useState<string | null>(null)
@@ -84,15 +87,16 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null)
 
   const detailQuery = useQuery({
-    queryKey: ['task-detail', selection?.kind ?? '', selection?.id ?? ''],
-    queryFn: ({ signal }) => fetchTaskDetail(selection?.kind ?? '', selection?.id ?? '', signal),
-    enabled: selection !== null,
+    queryKey: projectQueryKey(projectId, 'task-detail', selection?.kind ?? '', selection?.id ?? ''),
+    queryFn: ({ signal }) => fetchTaskDetail(selection?.kind ?? '', selection?.id ?? '', signal, projectId),
+    enabled: selection !== null && Boolean(projectId),
     staleTime: 5_000,
     refetchInterval: (query) => taskDetailIsProgressing(query.state.data?.status) ? 5_000 : false,
     refetchIntervalInBackground: false,
   })
 
   const detail = detailQuery.data
+  useUnsavedChanges(renaming && name.trim() !== (detail?.name || detail?.title || ''), '任务名称尚未保存，切换项目后当前修改将丢失。')
 
   useEffect(() => {
     setRenaming(false)
@@ -106,10 +110,10 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
   }, [selection?.kind, selection?.id])
 
   const renameMutation = useMutation({
-    mutationFn: (value: string) => renameCaptureRun(selection?.id ?? '', value),
+    mutationFn: (value: string) => renameCaptureRun(selection?.id ?? '', value, projectId),
     onSuccess: (updated) => {
       if (selection) {
-        queryClient.setQueryData<TaskDetail>(['task-detail', selection.kind, selection.id], (current) => {
+        queryClient.setQueryData<TaskDetail>(projectQueryKey(projectId, 'task-detail', selection.kind, selection.id), (current) => {
           if (!current) return current
           const next: TaskDetail = { ...current }
           if (updated.title !== undefined) next.title = updated.title
@@ -465,8 +469,8 @@ export function TaskDetailDrawer({ selection, summary, onClose, onRenamed }: Tas
           {storeDetail.status === 'review' ? (
             <div className="grid gap-3 sm:grid-cols-2">
               {[
-                { src: `/api/tasks/${encodeURIComponent(storeDetail.task_id)}/source`, alt: '原始二维码' },
-                { src: `/api/tasks/${encodeURIComponent(storeDetail.task_id)}/last-frame`, alt: '最近采集画面' },
+                { src: projectApiPath(`/api/tasks/${encodeURIComponent(storeDetail.task_id)}/source`, projectId), alt: '原始二维码' },
+                { src: projectApiPath(`/api/tasks/${encodeURIComponent(storeDetail.task_id)}/last-frame`, projectId), alt: '最近采集画面' },
               ].map((item) => (
                 <button
                   key={item.alt}

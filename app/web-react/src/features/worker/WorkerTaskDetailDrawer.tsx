@@ -9,6 +9,8 @@ import { ImagePreview } from '../../components/ImagePreview'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { errorMessage } from '../../api/client'
+import { useProject } from '../projects/ProjectProvider'
+import { projectApiPath } from '../projects/scope'
 import { fetchTaskActions, fetchTaskArtifacts, type WorkerAction } from './api'
 import { formatStore, formatTime, stateMetaOf } from './format'
 import type { WorkerTask } from './types'
@@ -33,23 +35,24 @@ const EVIDENCE_KEYS = [
 
 /** 本机任务详情复用受控文件接口；不会向界面回显素材或输出目录的绝对路径。 */
 export function WorkerTaskDetailDrawer({ task, debugView, onOpenChange }: WorkerTaskDetailDrawerProps) {
+  const { projectId } = useProject()
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null)
   const open = Boolean(task)
   const taskId = task?.id ?? ''
   const store = task ? formatStore(task.source_name) : null
   const meta = task ? stateMetaOf(task) : null
   const artifactsQuery = useQuery({
-    queryKey: ['worker-task-artifacts', taskId],
-    queryFn: ({ signal }) => fetchTaskArtifacts(taskId, signal),
-    enabled: open,
+    queryKey: ['project', projectId, 'worker-task-artifacts', taskId],
+    queryFn: ({ signal }) => fetchTaskArtifacts(taskId, signal, projectId),
+    enabled: open && Boolean(projectId),
     retry: false,
   })
   const actionsQuery = useInfiniteQuery({
-    queryKey: ['worker-task-actions', taskId],
-    queryFn: ({ pageParam, signal }) => fetchTaskActions(taskId, pageParam, signal),
+    queryKey: ['project', projectId, 'worker-task-actions', taskId],
+    queryFn: ({ pageParam, signal }) => fetchTaskActions(taskId, pageParam, signal, projectId),
     initialPageParam: null as number | null,
     getNextPageParam: (lastPage) => lastPage.actions.length === 100 ? lastPage.actions.at(-1)?.id : undefined,
-    enabled: open && debugView,
+    enabled: open && debugView && Boolean(projectId),
     retry: false,
   })
   const actions = useMemo(
@@ -68,15 +71,15 @@ export function WorkerTaskDetailDrawer({ task, debugView, onOpenChange }: Worker
   // 证据图与已发布截图合并为一个序列，打开后可连续浏览。
   const previewItems = task
     ? [
-        { src: `/api/tasks/${encodeURIComponent(task.id)}/source`, alt: '原始二维码' },
+        { src: projectApiPath(`/api/tasks/${encodeURIComponent(task.id)}/source`, projectId), alt: '原始二维码' },
         ...(task.reject_evidence
-          ? [{ src: `/api/rejections/tasks/${encodeURIComponent(task.id)}/evidence`, alt: '不合格判断证据' }]
+          ? [{ src: projectApiPath(`/api/rejections/tasks/${encodeURIComponent(task.id)}/evidence`, projectId), alt: '不合格判断证据' }]
           : []),
         ...(['needs_review', 'needs_retry', 'error', 'blocked', 'failed'].includes(task.status)
-          ? [{ src: `/api/tasks/${encodeURIComponent(task.id)}/last-frame`, alt: '最近采集画面' }]
+          ? [{ src: projectApiPath(`/api/tasks/${encodeURIComponent(task.id)}/last-frame`, projectId), alt: '最近采集画面' }]
           : []),
         ...images.map((file) => ({
-          src: `/api/artifact/${encodeURIComponent(task.id)}/${encodeURIComponent(file)}`,
+          src: projectApiPath(`/api/artifact/${encodeURIComponent(task.id)}/${encodeURIComponent(file)}`, projectId),
           alt: file,
         })),
       ]
@@ -103,12 +106,12 @@ export function WorkerTaskDetailDrawer({ task, debugView, onOpenChange }: Worker
         <section className="space-y-2">
           <h3 className="heading-xs">采集证据</h3>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <EvidenceImage key={`${task.id}-source`} src={`/api/tasks/${encodeURIComponent(task.id)}/source`} alt="原始二维码" onPreview={setPreview} />
+            <EvidenceImage key={`${task.id}-source`} src={projectApiPath(`/api/tasks/${encodeURIComponent(task.id)}/source`, projectId)} alt="原始二维码" onPreview={setPreview} />
             {task.reject_evidence ? (
-              <EvidenceImage key={`${task.id}-rejection`} src={`/api/rejections/tasks/${encodeURIComponent(task.id)}/evidence`} alt="不合格判断证据" onPreview={setPreview} />
+              <EvidenceImage key={`${task.id}-rejection`} src={projectApiPath(`/api/rejections/tasks/${encodeURIComponent(task.id)}/evidence`, projectId)} alt="不合格判断证据" onPreview={setPreview} />
             ) : null}
             {['needs_review', 'needs_retry', 'error', 'blocked', 'failed'].includes(task.status) ? (
-              <EvidenceImage key={`${task.id}-frame`} src={`/api/tasks/${encodeURIComponent(task.id)}/last-frame`} alt="最近采集画面" onPreview={setPreview} />
+              <EvidenceImage key={`${task.id}-frame`} src={projectApiPath(`/api/tasks/${encodeURIComponent(task.id)}/last-frame`, projectId)} alt="最近采集画面" onPreview={setPreview} />
             ) : null}
           </div>
         </section>
@@ -122,7 +125,7 @@ export function WorkerTaskDetailDrawer({ task, debugView, onOpenChange }: Worker
           ) : images.length ? (
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               {images.map((file) => {
-                const url = `/api/artifact/${encodeURIComponent(task.id)}/${encodeURIComponent(file)}`
+                const url = projectApiPath(`/api/artifact/${encodeURIComponent(task.id)}/${encodeURIComponent(file)}`, projectId)
                 return <EvidenceImage key={file} src={url} alt={file} onPreview={setPreview} />
               })}
             </div>
@@ -142,7 +145,7 @@ export function WorkerTaskDetailDrawer({ task, debugView, onOpenChange }: Worker
             </div>
             {runs.length ? (
               <div className="flex flex-wrap items-center gap-2 rounded-lg bg-surface-secondary p-3">
-                <RunExportControl runs={runs} />
+                <RunExportControl runs={runs} projectId={projectId} />
               </div>
             ) : null}
             {actionsQuery.isError ? (
@@ -151,7 +154,7 @@ export function WorkerTaskDetailDrawer({ task, debugView, onOpenChange }: Worker
               <StatePanel variant="loading" title="正在读取动作记录…" />
             ) : actions.length ? (
               <ol className="space-y-2">
-                {actions.map((action) => <ActionItem key={action.id} action={action} />)}
+                {actions.map((action) => <ActionItem key={action.id} action={action} projectId={projectId} />)}
               </ol>
             ) : <p className="text-xs text-tertiary">暂无动作记录。</p>}
             {actionsQuery.hasNextPage ? (
@@ -186,7 +189,7 @@ function EvidenceImage({ src, alt, onPreview }: { src: string; alt: string; onPr
   )
 }
 
-function RunExportControl({ runs }: { runs: { id: string; startedAt: string }[] }) {
+function RunExportControl({ runs, projectId }: { runs: { id: string; startedAt: string }[]; projectId: string }) {
   const [selected, setSelected] = useState(runs[0]?.id ?? '')
   useEffect(() => {
     if (!runs.some((run) => run.id === selected)) setSelected(runs[0]?.id ?? '')
@@ -208,14 +211,14 @@ function RunExportControl({ runs }: { runs: { id: string; startedAt: string }[] 
           onChange={(option) => setSelected(option.value)}
         />
       </div>
-      <a className="inline-flex min-h-8 items-center rounded-md border border-subtle px-2 text-xs text-default hover:bg-secondary-ghost-hover" href={`/api/debug/runs/${encodeURIComponent(selected)}/export`}>
+      <a className="inline-flex min-h-8 items-center rounded-md border border-subtle px-2 text-xs text-default hover:bg-secondary-ghost-hover" href={projectApiPath(`/api/debug/runs/${encodeURIComponent(selected)}/export`, projectId)}>
         下载调试包
       </a>
     </>
   ) : null
 }
 
-function ActionItem({ action }: { action: WorkerAction }) {
+function ActionItem({ action, projectId }: { action: WorkerAction; projectId: string }) {
   const details = action.details ?? {}
   const evidence = EVIDENCE_KEYS.flatMap(([key, label]) => {
     const name = details[key]
@@ -241,7 +244,7 @@ function ActionItem({ action }: { action: WorkerAction }) {
       </div>
       {info.length ? <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-secondary">{info.join(' · ')}</p> : null}
       {state ? <p className="mt-2 text-xs text-tertiary">{state}</p> : null}
-      {evidence.length ? <div className="mt-2 flex flex-wrap gap-2">{evidence.map(({ name, label }) => <a key={`${name}-${label}`} className="text-xs text-default underline-offset-2 hover:underline" href={`/api/action-evidence/${encodeURIComponent(name)}`} target="_blank" rel="noreferrer">{label}</a>)}</div> : null}
+      {evidence.length ? <div className="mt-2 flex flex-wrap gap-2">{evidence.map(({ name, label }) => <a key={`${name}-${label}`} className="text-xs text-default underline-offset-2 hover:underline" href={projectApiPath(`/api/action-evidence/${encodeURIComponent(name)}`, projectId)} target="_blank" rel="noreferrer">{label}</a>)}</div> : null}
     </li>
   )
 }

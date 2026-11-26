@@ -4,7 +4,9 @@ import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { AppDialog } from '../../components/AppDialog'
+import { useUnsavedChanges } from '../../components/UnsavedChangesProvider'
 import { errorMessage } from '../../api/client'
+import { useProject } from '../projects/ProjectProvider'
 import { startCapture } from './api'
 import { CAPTURE_MODE_LABEL, formatStore } from './format'
 import type { CaptureMode, WorkerTask } from './types'
@@ -28,9 +30,11 @@ function defaultName(): string {
 
 /** 开跑确认：展示门店范围、批次与模式，一次提交锁定任务，避免边跑边改选择。 */
 export function StartRunDialog({ open, onOpenChange, tasks, defaultMode, blocked, onStarted }: StartRunDialogProps) {
+  const { projectId } = useProject()
   const [name, setName] = useState('')
   const [mode, setMode] = useState<CaptureMode>(defaultMode)
   const [error, setError] = useState('')
+  useUnsavedChanges(open && tasks.length > 0, '已选门店尚未开跑，切换项目后选择和开跑设置将清除。')
 
   useEffect(() => {
     if (!open) return
@@ -51,7 +55,7 @@ export function StartRunDialog({ open, onOpenChange, tasks, defaultMode, blocked
   const preview = tasks.slice(0, 6).map((task) => formatStore(task.source_name).name)
 
   const mutation = useMutation({
-    mutationFn: () => startCapture({ mode, taskIds: tasks.map((task) => task.id), name: name.trim() }),
+    mutationFn: () => startCapture({ mode, taskIds: tasks.map((task) => task.id), name: name.trim(), projectId }),
     onSuccess: () => {
       onOpenChange(false)
       onStarted(mode, name.trim())

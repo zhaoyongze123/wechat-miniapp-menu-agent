@@ -1,4 +1,5 @@
 import { apiFetch } from '../../api/client'
+import { projectApiPath } from '../projects/scope'
 import type {
   AnnotationClickPayload,
   AnnotationHistory,
@@ -7,69 +8,75 @@ import type {
 } from './types'
 
 /** 标注会话状态；轮询由页面按忙闲控制，避免操作过程中被覆盖。 */
-export function fetchAnnotationState(signal?: AbortSignal): Promise<AnnotationState> {
-  return apiFetch<AnnotationState>('/api/annotation/state', { signal })
+export function fetchAnnotationState(signal?: AbortSignal, projectId?: string): Promise<AnnotationState> {
+  const path = '/api/annotation/state'
+  return apiFetch<AnnotationState>(projectId ? projectApiPath(path, projectId) : path, { signal })
 }
 
 /** 标注排队复用本机任务列表，只保留展示需要的字段。 */
-export async function fetchAnnotationTasks(signal?: AbortSignal): Promise<AnnotationTask[]> {
-  const data = await apiFetch<{ tasks?: AnnotationTask[] }>('/api/status?include_events=false', { signal })
+export async function fetchAnnotationTasks(signal?: AbortSignal, projectId?: string): Promise<AnnotationTask[]> {
+  const path = '/api/status?include_events=false'
+  const data = await apiFetch<{ tasks?: AnnotationTask[] }>(projectId ? projectApiPath(path, projectId) : path, { signal })
   return Array.isArray(data.tasks) ? data.tasks : []
 }
 
 /** 已完成的标注记录，用于“查看效果”回看。 */
-export function fetchAnnotationHistory(taskId: string, signal?: AbortSignal): Promise<AnnotationHistory> {
-  return apiFetch<AnnotationHistory>(`/api/annotation/history?task_id=${encodeURIComponent(taskId)}`, { signal })
+export function fetchAnnotationHistory(taskId: string, signal?: AbortSignal, projectId?: string): Promise<AnnotationHistory> {
+  const path = `/api/annotation/history?task_id=${encodeURIComponent(taskId)}`
+  return apiFetch<AnnotationHistory>(projectId ? projectApiPath(path, projectId) : path, { signal })
 }
 
-function post(action: string, json: Record<string, unknown> = {}): Promise<AnnotationState> {
-  return apiFetch<AnnotationState>(`/api/annotation/${action}`, { method: 'POST', json })
+function post(action: string, json: Record<string, unknown> = {}, projectId?: string): Promise<AnnotationState> {
+  const path = `/api/annotation/${action}`
+  return apiFetch<AnnotationState>(projectId ? projectApiPath(path, projectId) : path, {
+    method: 'POST', json: { ...json, ...(projectId ? { project_id: projectId } : {}) },
+  })
 }
 
-export function startAnnotation(taskIds: string[]): Promise<AnnotationState> {
-  return post('start', { task_ids: taskIds })
+export function startAnnotation(taskIds: string[], projectId?: string): Promise<AnnotationState> {
+  return post('start', { task_ids: taskIds }, projectId)
 }
 
-export function pauseAnnotation(): Promise<AnnotationState> {
-  return post('pause')
+export function pauseAnnotation(projectId?: string): Promise<AnnotationState> {
+  return post('pause', {}, projectId)
 }
 
-export function resumeAnnotation(): Promise<AnnotationState> {
-  return post('resume')
+export function resumeAnnotation(projectId?: string): Promise<AnnotationState> {
+  return post('resume', {}, projectId)
 }
 
-export function decideAnnotation(): Promise<AnnotationState> {
-  return post('decide')
+export function decideAnnotation(projectId?: string): Promise<AnnotationState> {
+  return post('decide', {}, projectId)
 }
 
-export function clickAnnotation(payload: AnnotationClickPayload): Promise<AnnotationState> {
-  return post('click', payload as unknown as Record<string, unknown>)
+export function clickAnnotation(payload: AnnotationClickPayload, projectId?: string): Promise<AnnotationState> {
+  return post('click', payload as unknown as Record<string, unknown>, projectId)
 }
 
-export function stepAnnotation(delta: number): Promise<AnnotationState> {
-  return post('step', { delta })
+export function stepAnnotation(delta: number, projectId?: string): Promise<AnnotationState> {
+  return post('step', { delta }, projectId)
 }
 
-export function completeAnnotation(): Promise<AnnotationState> {
-  return post('complete')
+export function completeAnnotation(projectId?: string): Promise<AnnotationState> {
+  return post('complete', {}, projectId)
 }
 
-export function skipAnnotation(reason: string): Promise<AnnotationState> {
-  return post('skip', { reason })
+export function skipAnnotation(reason: string, projectId?: string): Promise<AnnotationState> {
+  return post('skip', { reason }, projectId)
 }
 
-export function rejectAnnotation(reason: string, detail: string): Promise<AnnotationState> {
-  return post('reject', { reason, detail })
+export function rejectAnnotation(reason: string, detail: string, projectId?: string): Promise<AnnotationState> {
+  return post('reject', { reason, detail }, projectId)
 }
 
-export function retryAnnotation(): Promise<AnnotationState> {
-  return post('retry')
+export function retryAnnotation(projectId?: string): Promise<AnnotationState> {
+  return post('retry', {}, projectId)
 }
 
-export function refreshAnnotation(): Promise<AnnotationState> {
-  return post('refresh')
+export function refreshAnnotation(projectId?: string): Promise<AnnotationState> {
+  return post('refresh', {}, projectId)
 }
 
-export function stopAnnotation(): Promise<AnnotationState> {
-  return post('stop')
+export function stopAnnotation(projectId?: string): Promise<AnnotationState> {
+  return post('stop', {}, projectId)
 }

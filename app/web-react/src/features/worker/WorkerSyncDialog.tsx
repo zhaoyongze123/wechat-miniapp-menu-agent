@@ -1,11 +1,16 @@
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
+import { useQuery } from '@tanstack/react-query'
 import { AppDialog } from '../../components/AppDialog'
+import { StatePanel } from '../../components/StatePanel'
+import { errorMessage } from '../../api/client'
+import { useProject } from '../projects/ProjectProvider'
+import { projectQueryKey } from '../projects/scope'
+import { fetchWorkerConnectionStatus } from './api'
 import type { WorkerAssignmentRecord, WorkerConnectionStatus } from '../../api/types'
 
 interface WorkerSyncDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  connection: WorkerConnectionStatus | null
 }
 
 function summaryOf(connection: WorkerConnectionStatus | null): string {
@@ -25,7 +30,15 @@ function metaOf(record: WorkerAssignmentRecord): string {
  * 本机同步详情：只展示后端已持久化的分配与结果去向，
  * 不用文件数或时间推断逐文件上传进度。
  */
-export function WorkerSyncDialog({ open, onOpenChange, connection }: WorkerSyncDialogProps) {
+export function WorkerSyncDialog({ open, onOpenChange }: WorkerSyncDialogProps) {
+  const { projectId } = useProject()
+  const statusQuery = useQuery({
+    queryKey: projectQueryKey(projectId || 'unselected', 'worker-sync-status'),
+    queryFn: ({ signal }) => fetchWorkerConnectionStatus(signal, projectId),
+    enabled: open && Boolean(projectId),
+    staleTime: 1_000,
+  })
+  const connection: WorkerConnectionStatus | null = statusQuery.data?.role === 'worker' ? statusQuery.data : null
   const records = connection?.assignments ?? []
   const pending = records.filter((record) => record.status === 'pending_upload')
   const confirmed = records.filter((record) => record.status === 'completed').slice(0, 20)
@@ -35,6 +48,8 @@ export function WorkerSyncDialog({ open, onOpenChange, connection }: WorkerSyncD
       <div className="space-y-5">
         <div className="space-y-2">
           <p className="text-sm text-secondary">{summaryOf(connection)}</p>
+          {statusQuery.isError ? <Alert color="danger" variant="soft" title="同步状态读取失败" description={errorMessage(statusQuery.error)} /> : null}
+          {statusQuery.isPending && !connection ? <StatePanel variant="loading" title="正在读取项目同步状态…" /> : null}
           {connection?.history_error ? (
             <Alert color="warning" variant="soft" title="轮次历史同步" description={connection.history_error} />
           ) : null}

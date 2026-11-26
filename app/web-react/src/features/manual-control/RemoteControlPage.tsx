@@ -8,6 +8,7 @@ import { statusOf } from '../task-center/format'
 import { ManualPanel } from '../worker/ManualPanel'
 import { activateNotificationAudio, playNotificationSound, readNotificationPreferences } from '../notifications/preferences'
 import { fetchManualState, manualCapture, manualCommandContext, manualReject } from '../worker/api'
+import { useProject } from '../projects/ProjectProvider'
 
 interface DocumentPictureInPicture {
   window: Window | null
@@ -17,6 +18,7 @@ interface DocumentPictureInPicture {
 type Decision = { kind: 'capture' } | { kind: 'reject'; reason: string; detail: string }
 
 export function RemoteControlPage() {
+  const { projectId } = useProject()
   const [pinned, setPinned] = useState<Window | null>(null)
   const opening = useRef(false)
   const [windowError, setWindowError] = useState('')
@@ -29,8 +31,9 @@ export function RemoteControlPage() {
   }
   const api = (window as Window & { documentPictureInPicture?: DocumentPictureInPicture }).documentPictureInPicture
   const query = useQuery({
-    queryKey: ['manual-control'],
-    queryFn: ({ signal }) => fetchManualState(signal),
+    queryKey: ['project', projectId || 'unselected', 'manual-control'],
+    queryFn: ({ signal }) => fetchManualState(signal, projectId),
+    enabled: Boolean(projectId),
     refetchInterval: 1_500,
     refetchIntervalInBackground: Boolean(pinned),
     staleTime: 1_250,
@@ -43,7 +46,7 @@ export function RemoteControlPage() {
       if (!context || query.isError || Date.now() - query.dataUpdatedAt > 5_000) {
         throw new Error('当前状态已过期，请刷新后再操作')
       }
-      return decision.kind === 'capture' ? manualCapture(context) : manualReject(context, decision.reason, decision.detail)
+      return decision.kind === 'capture' ? manualCapture(context, projectId) : manualReject(context, decision.reason, decision.detail, projectId)
     },
     onSettled: () => { void query.refetch() },
   })

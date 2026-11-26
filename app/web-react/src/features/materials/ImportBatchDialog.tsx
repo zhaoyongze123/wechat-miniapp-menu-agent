@@ -1,9 +1,10 @@
-import { useMemo, useState, type ChangeEvent } from 'react'
+import { useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Input } from '@openai/apps-sdk-ui/components/Input'
 import { SegmentedControl } from '@openai/apps-sdk-ui/components/SegmentedControl'
 import { AppDialog } from '../../components/AppDialog'
+import { useUnsavedChanges } from '../../components/UnsavedChangesProvider'
 import { useToast } from '../../components/ToastProvider'
 import { errorMessage } from '../../api/client'
 import { validateBatchFiles, formatBytes } from './format'
@@ -30,7 +31,9 @@ export function ImportBatchDialog({ open, onOpenChange, onCreated }: ImportBatch
   const upload = useBatchUpload()
   const { createLocal } = useBatchActions('')
   const [mode, setMode] = useState<ImportMode>('upload')
-  const [name, setName] = useState(defaultName)
+  const [initialName, setInitialName] = useState(defaultName)
+  const [name, setName] = useState(initialName)
+  const initialNameRef = useRef(initialName)
   const [description, setDescription] = useState('')
   const [inputDir, setInputDir] = useState('')
   const [files, setFiles] = useState<File[]>([])
@@ -38,13 +41,20 @@ export function ImportBatchDialog({ open, onOpenChange, onCreated }: ImportBatch
 
   const totalBytes = useMemo(() => files.reduce((sum, file) => sum + file.size, 0), [files])
   const busy = upload.running || createLocal.isPending
+  useUnsavedChanges(
+    open && (name !== initialNameRef.current || Boolean(description.trim() || inputDir.trim() || files.length || upload.running)),
+    '素材批次导入尚未完成，切换项目后当前填写和选中文件将丢失。',
+  )
   const percent = upload.progress?.totalBytes
     ? Math.min(100, Math.round((upload.progress.bytes / upload.progress.totalBytes) * 100))
     : 0
 
   const reset = () => {
     setMode('upload')
-    setName(defaultName())
+    const nextName = defaultName()
+    initialNameRef.current = nextName
+    setInitialName(nextName)
+    setName(nextName)
     setDescription('')
     setInputDir('')
     setFiles([])

@@ -10,6 +10,7 @@ vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>()
   return { ...actual, fetchTaskActions: vi.fn(), fetchTaskArtifacts: vi.fn() }
 })
+vi.mock('../projects/ProjectProvider', () => ({ useProject: () => ({ projectId: 'project-test' }) }))
 
 const task: WorkerTask = {
   id: '0123456789abcdef0123',
@@ -51,7 +52,7 @@ describe('WorkerTaskDetailDrawer', () => {
     renderDrawer(false)
 
     expect(screen.queryByText('动作时间线')).not.toBeInTheDocument()
-    await waitFor(() => expect(fetchTaskArtifacts).toHaveBeenCalledWith(task.id, expect.any(AbortSignal)))
+    await waitFor(() => expect(fetchTaskArtifacts).toHaveBeenCalledWith(task.id, expect.any(AbortSignal), 'project-test'))
     expect(fetchTaskActions).not.toHaveBeenCalled()
   })
 
@@ -61,7 +62,7 @@ describe('WorkerTaskDetailDrawer', () => {
     renderDrawer(true)
 
     expect(await screen.findByText('动作时间线')).toBeInTheDocument()
-    await waitFor(() => expect(fetchTaskActions).toHaveBeenCalledWith(task.id, null, expect.any(AbortSignal)))
+    await waitFor(() => expect(fetchTaskActions).toHaveBeenCalledWith(task.id, null, expect.any(AbortSignal), 'project-test'))
     const list = screen.getByRole('list')
     const entries = Array.from(list.querySelectorAll('li'))
     expect(entries).toHaveLength(2)
@@ -69,6 +70,6 @@ describe('WorkerTaskDetailDrawer', () => {
     expect(entries[1]?.textContent).toContain('点击')
     expect(screen.getByAltText('page-1.png')).toBeInTheDocument()
     expect(screen.queryByAltText('../private.png')).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '下载调试包' })).toHaveAttribute('href', `/api/debug/runs/${'a'.repeat(32)}/export`)
+    expect(screen.getByRole('link', { name: '下载调试包' })).toHaveAttribute('href', `/api/debug/runs/${'a'.repeat(32)}/export?project_id=project-test`)
   })
 })

@@ -1,8 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchAnnotationState, fetchAnnotationTasks } from './api'
+import { useProject } from '../projects/ProjectProvider'
+import { projectQueryKey } from '../projects/scope'
 
-export const ANNOTATION_STATE_KEY = ['annotation', 'state'] as const
-export const ANNOTATION_TASKS_KEY = ['annotation', 'tasks'] as const
+export const ANNOTATION_STATE_KEY = (projectId: string) => projectQueryKey(projectId, 'annotation', 'state')
+export const ANNOTATION_TASKS_KEY = (projectId: string) => projectQueryKey(projectId, 'annotation', 'tasks')
 
 interface StateOptions {
   enabled: boolean
@@ -11,10 +13,11 @@ interface StateOptions {
 }
 
 export function useAnnotationState({ enabled, paused }: StateOptions) {
+  const { projectId } = useProject()
   return useQuery({
-    queryKey: ANNOTATION_STATE_KEY,
-    queryFn: ({ signal }) => fetchAnnotationState(signal),
-    enabled,
+    queryKey: ANNOTATION_STATE_KEY(projectId || 'unselected'),
+    queryFn: ({ signal }) => fetchAnnotationState(signal, projectId),
+    enabled: enabled && Boolean(projectId),
     refetchInterval: paused ? false : 2000,
     refetchIntervalInBackground: false,
     staleTime: 0,
@@ -23,10 +26,11 @@ export function useAnnotationState({ enabled, paused }: StateOptions) {
 
 /** 标注排队变化不频繁，只在进入页面、标记不合格或完成后刷新。 */
 export function useAnnotationTasks(enabled: boolean) {
+  const { projectId } = useProject()
   return useQuery({
-    queryKey: ANNOTATION_TASKS_KEY,
-    queryFn: ({ signal }) => fetchAnnotationTasks(signal),
-    enabled,
+    queryKey: ANNOTATION_TASKS_KEY(projectId || 'unselected'),
+    queryFn: ({ signal }) => fetchAnnotationTasks(signal, projectId),
+    enabled: enabled && Boolean(projectId),
     staleTime: 15_000,
   })
 }

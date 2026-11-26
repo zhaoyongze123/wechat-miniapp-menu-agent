@@ -10,6 +10,7 @@ vi.mock('./api', async () => {
   const actual = await vi.importActual<typeof import('./api')>('./api')
   return { ...actual, fetchPendingReviews: (...args: unknown[]) => fetchPendingReviews(...args) }
 })
+vi.mock('../projects/ProjectProvider', () => ({ useProject: () => ({ projectId: 'project-test' }) }))
 
 const record: PendingReviewRecord = {
   task_id: 'task-1',

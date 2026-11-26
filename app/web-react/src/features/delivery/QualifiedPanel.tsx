@@ -2,7 +2,7 @@ import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
 import { Select } from '@openai/apps-sdk-ui/components/Select'
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { errorMessage } from '../../api/client'
 import { AppDataTable, type DataColumn } from '../../components/AppDataTable'
 import { AppDrawer } from '../../components/AppDrawer'
@@ -16,6 +16,8 @@ import { StatCard } from '../../components/StatCard'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
+import { useProject } from '../projects/ProjectProvider'
+import { projectApiPath, projectQueryKey } from '../projects/scope'
 import { fetchTaskArtifacts } from '../worker/api'
 import { formatTime } from '../hub/format'
 import { formatBytes } from '../settings/format'
@@ -63,22 +65,25 @@ function QualifiedStoreDrawer({
   store,
   hostPath,
   onClose,
+  projectId,
 }: {
   store: DeliveryStore | null
   hostPath: string
   onClose: () => void
+  projectId: string
 }) {
   const [preview, setPreview] = useState<string | null>(null)
+  useEffect(() => setPreview(null), [projectId, store?.task_id])
   const taskId = store?.task_id ?? ''
   const artifacts = useQuery({
-    queryKey: ['delivery-artifacts', taskId],
-    queryFn: ({ signal }) => fetchTaskArtifacts(taskId, signal),
-    enabled: Boolean(store && taskId),
+    queryKey: projectQueryKey(projectId, 'delivery-artifacts', taskId),
+    queryFn: ({ signal }) => fetchTaskArtifacts(taskId, signal, projectId),
+    enabled: Boolean(projectId && store && taskId),
     retry: false,
   })
   const images = (artifacts.data?.files ?? []).filter((file) => /^page-\d+\.png$/i.test(file))
   const previewItems = images.map((file) => ({
-    src: `/api/artifact/${encodeURIComponent(taskId)}/${encodeURIComponent(file)}`,
+    src: projectApiPath(`/api/artifact/${encodeURIComponent(taskId)}/${encodeURIComponent(file)}`, projectId),
     alt: file,
   }))
 
@@ -125,7 +130,7 @@ function QualifiedStoreDrawer({
                       aria-label={`查看 ${file}`}
                     >
                       <img
-                        src={`/api/artifact/${encodeURIComponent(store.task_id)}/${encodeURIComponent(file)}`}
+                        src={projectApiPath(`/api/artifact/${encodeURIComponent(store.task_id)}/${encodeURIComponent(file)}`, projectId)}
                         alt={file}
                         loading="lazy"
                         className="h-28 w-full object-cover"
@@ -146,7 +151,7 @@ function QualifiedStoreDrawer({
       </AppDrawer>
       <ImagePreview
         open={Boolean(preview)}
-        src={preview ? `/api/artifact/${encodeURIComponent(taskId)}/${encodeURIComponent(preview)}` : ''}
+        src={preview ? projectApiPath(`/api/artifact/${encodeURIComponent(taskId)}/${encodeURIComponent(preview)}`, projectId) : ''}
         alt={preview ?? ''}
         {...(preview ? { caption: preview } : {})}
         items={previewItems}
@@ -159,6 +164,7 @@ function QualifiedStoreDrawer({
 
 /** 合格清单：跨批次展示当前有效合格门店与宿主机成品目录同步状态。 */
 export function QualifiedPanel() {
+  const { projectId } = useProject()
   const toast = useToast()
   const statusQuery = useDeliveryStatus()
   const [batchId, setBatchId] = useState('all')
@@ -169,6 +175,14 @@ export function QualifiedPanel() {
   const [selected, setSelected] = useState<DeliveryStore | null>(null)
   const storesQuery = useDeliveryStores({ page, size: pageSize, q: query, batchId })
   const actions = useDeliveryActions()
+
+  useEffect(() => {
+    setBatchId('all')
+    setSearch('')
+    setQuery('')
+    setPage(1)
+    setSelected(null)
+  }, [projectId])
 
   const status = statusQuery.data
   const stores = storesQuery.data
@@ -406,7 +420,7 @@ export function QualifiedPanel() {
         />
       </section>
 
-      <QualifiedStoreDrawer store={selected} hostPath={status.host_path} onClose={() => setSelected(null)} />
+      <QualifiedStoreDrawer store={selected} hostPath={status.host_path} projectId={projectId} onClose={() => setSelected(null)} />
     </div>
   )
 }

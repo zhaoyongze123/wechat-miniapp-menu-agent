@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { PendingReviewDrawer } from './PendingReviewDrawer'
 import type { PendingReviewRecord } from './types'
 
+vi.mock('../projects/ProjectProvider', () => ({ useProject: () => ({ projectId: 'project-test' }) }))
+
 const record: PendingReviewRecord = {
   task_id: 'task-1',
   store_name: 'E0005__LCA0000193429__佛山市__示例酒店__113.288719,22.954428',

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { Badge } from '@openai/apps-sdk-ui/components/Badge'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
@@ -15,6 +15,8 @@ import { StatCard } from '../../components/StatCard'
 import { FilterToolbar } from '../../components/FilterToolbar'
 import { errorMessage } from '../../api/client'
 import { useRole } from '../../app/RoleProvider'
+import { useProject } from '../projects/ProjectProvider'
+import { projectQueryKey } from '../projects/scope'
 import { ActiveTasksPanel } from './ActiveTasksPanel'
 import { TaskDetailDrawer } from './TaskDetailDrawer'
 import { fetchTaskHistory } from './api'
@@ -50,6 +52,7 @@ function parseDetail(value: string | null): { kind: string; id: string } | null 
 
 export function TaskCenterPage() {
   const role = useRole()
+  const { projectId } = useProject()
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -67,6 +70,7 @@ export function TaskCenterPage() {
     () => ({ kind, status, q, page, pageSize, workerId }),
     [kind, status, q, page, pageSize, workerId],
   )
+  const historyKey = projectQueryKey(projectId, 'task-history', filters.kind, filters.status, filters.q, filters.page, filters.pageSize, filters.workerId)
 
   const updateQuery = useCallback(
     (patch: Record<string, string>, options: { resetPage?: boolean } = {}) => {
@@ -96,10 +100,10 @@ export function TaskCenterPage() {
   }, [queryText, q, updateQuery])
 
   const historyQuery = useQuery({
-    queryKey: ['task-history', filters.kind, filters.status, filters.q, filters.page, filters.pageSize, filters.workerId],
-    queryFn: ({ signal }) => fetchTaskHistory(filters, signal),
-    placeholderData: keepPreviousData,
-    enabled: role.role !== 'standalone',
+    queryKey: historyKey,
+    queryFn: ({ signal }) => fetchTaskHistory(filters, signal, projectId),
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === projectId ? previous : undefined,
+    enabled: role.role !== 'standalone' && Boolean(projectId),
     staleTime: 5_000,
   })
 
@@ -125,12 +129,13 @@ export function TaskCenterPage() {
   }, [selection])
 
   const openDetail = useCallback(
-    (detailKind: string, id: string) => {
+    (detailKind: string, id: string, resourceProjectId?: string) => {
       const main = document.getElementById('app-main')
       savedScroll.current = main?.scrollTop ?? 0
       triggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
       setSearchParams((previous) => {
         const next = new URLSearchParams(previous)
+        if (resourceProjectId) next.set('project', resourceProjectId)
         next.set('detail', `${detailKind}:${id}`)
         return next
       })
@@ -151,7 +156,7 @@ export function TaskCenterPage() {
 
   const openActive = useCallback(
     (task: ActiveTask) => {
-      openDetail(task.source === 'capture' ? 'capture' : 'materials', task.id)
+      openDetail(task.source === 'capture' ? 'capture' : 'materials', task.id, task.project_id)
     },
     [openDetail],
   )
@@ -159,7 +164,7 @@ export function TaskCenterPage() {
   const handleRenamed = useCallback(
     (updated: HistoryRecord) => {
       queryClient.setQueryData<HistoryResponse>(
-        ['task-history', filters.kind, filters.status, filters.q, filters.page, filters.pageSize, filters.workerId],
+        historyKey,
         (current) =>
           current
             ? {
@@ -174,9 +179,9 @@ export function TaskCenterPage() {
               }
             : current,
       )
-      void queryClient.invalidateQueries({ queryKey: ['task-history'] })
+      void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'task-history') })
     },
-    [queryClient, filters],
+    [historyKey, projectId, queryClient, filters],
   )
 
   if (role.loading) {
@@ -321,7 +326,7 @@ export function TaskCenterPage() {
             size="sm"
             onClick={() => {
               void historyQuery.refetch()
-              void queryClient.invalidateQueries({ queryKey: ['tasks-active'] })
+              void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'tasks-active') })
             }}
           >
             刷新
@@ -464,6 +469,7 @@ export function TaskCenterPage() {
       </section>
 
       <TaskDetailDrawer
+        projectId={projectId}
         selection={selection}
         summary={selectedSummary}
         onClose={closeDetail}

@@ -1,6 +1,7 @@
 /** 质量审核接口适配：参数名与 Python 路由一致，不在前端复制筛选与状态规则。 */
 
 import { ApiError, apiFetch } from '../../api/client'
+import { projectApiPath } from '../projects/scope'
 import { REJECTION_REASONS } from '../materials/format'
 import type {
   PendingReviewsResponse,
@@ -21,13 +22,15 @@ function rejectionSearch(query: RejectionQuery): URLSearchParams {
   })
 }
 
-export function fetchRejections(query: RejectionQuery, signal?: AbortSignal): Promise<RejectionsResponse> {
-  return apiFetch<RejectionsResponse>(`${BASE}?${rejectionSearch(query).toString()}`, { signal })
+export function fetchRejections(query: RejectionQuery, signal?: AbortSignal, projectId?: string): Promise<RejectionsResponse> {
+  const path = `${BASE}?${rejectionSearch(query).toString()}`
+  return apiFetch<RejectionsResponse>(projectId ? projectApiPath(path, projectId) : path, { signal })
 }
 
 /** 导出当前服务端筛选结果，含人工确认状态筛选。 */
-export async function downloadRejections(query: RejectionQuery): Promise<void> {
-  const response = await fetch(`${BASE}/export.xlsx?${rejectionSearch(query).toString()}`, { cache: 'no-store' })
+export async function downloadRejections(query: RejectionQuery, projectId?: string): Promise<void> {
+  const path = `${BASE}/export.xlsx?${rejectionSearch(query).toString()}`
+  const response = await fetch(projectId ? projectApiPath(path, projectId) : path, { cache: 'no-store' })
   if (!response.ok) {
     let detail = `导出失败（${response.status}）`
     try {
@@ -56,8 +59,9 @@ export async function downloadRejections(query: RejectionQuery): Promise<void> {
 }
 
 /** 导出全量门店名称与采集状态：名称提取独立于采集结果，覆盖成功、待检查与不合格。 */
-export async function downloadStoreNames(): Promise<void> {
-  const response = await fetch(`${BASE}/export-store-names.xlsx`, { cache: 'no-store' })
+export async function downloadStoreNames(projectId?: string): Promise<void> {
+  const path = `${BASE}/export-store-names.xlsx`
+  const response = await fetch(projectId ? projectApiPath(path, projectId) : path, { cache: 'no-store' })
   if (!response.ok) {
     let detail = `导出失败（${response.status}）`
     try {
@@ -87,84 +91,99 @@ export async function downloadStoreNames(): Promise<void> {
 
 export function markRejectionReviewed(
   payload: RejectionReviewPayload,
+  projectId?: string,
 ): Promise<{ ok: boolean; reviewed_at: string }> {
-  return apiFetch(`${BASE}/review`, { method: 'POST', json: payload })
+  return apiFetch(projectId ? projectApiPath(`${BASE}/review`, projectId) : `${BASE}/review`, { method: 'POST', json: { ...payload, ...(projectId ? { project_id: projectId } : {}) } })
 }
 
-export function undoCaptureRejection(taskId: string): Promise<{ ok: boolean }> {
-  return apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/rejection/undo`, { method: 'POST', json: {} })
+export function undoCaptureRejection(taskId: string, projectId?: string): Promise<{ ok: boolean }> {
+  const path = `/api/tasks/${encodeURIComponent(taskId)}/rejection/undo`
+  return apiFetch(projectId ? projectApiPath(path, projectId) : path, { method: 'POST', json: projectId ? { project_id: projectId } : {} })
 }
 
-export function undoMaterialRejection(batchId: string, storeId: string): Promise<unknown> {
+export function undoMaterialRejection(batchId: string, storeId: string, projectId?: string): Promise<unknown> {
+  const path = `${BASE}/materials/${encodeURIComponent(batchId)}/${encodeURIComponent(storeId)}/undo`
   return apiFetch(
-    `${BASE}/materials/${encodeURIComponent(batchId)}/${encodeURIComponent(storeId)}/undo`,
-    { method: 'POST', json: {} },
+    projectId ? projectApiPath(path, projectId) : path,
+    { method: 'POST', json: projectId ? { project_id: projectId } : {} },
   )
 }
 
-export function undoRejectionsBatch(items: import('./types').RejectionUndoItem[]) {
-  return apiFetch<import('./types').RejectionUndoResponse>(`${BASE}/undo-batch`, {
+export function undoRejectionsBatch(items: import('./types').RejectionUndoItem[], projectId?: string) {
+  const path = `${BASE}/undo-batch`
+  return apiFetch<import('./types').RejectionUndoResponse>(projectId ? projectApiPath(path, projectId) : path, {
     method: 'POST',
-    json: { items },
+    json: { items, ...(projectId ? { project_id: projectId } : {}) },
   })
 }
 
 /** 打回素材清洗：清除不合格、素材决策回待处理、采集任务置为已阻塞。 */
 export function returnRejectionToMaterials(
   taskId: string,
+  projectId?: string,
 ): Promise<{ ok: boolean; batch_id: string; batch_name: string; store_id: string }> {
-  return apiFetch(`${BASE}/tasks/${encodeURIComponent(taskId)}/return-to-materials`, {
+  const path = `${BASE}/tasks/${encodeURIComponent(taskId)}/return-to-materials`
+  return apiFetch(projectId ? projectApiPath(path, projectId) : path, {
     method: 'POST',
-    json: {},
+    json: projectId ? { project_id: projectId } : {},
   })
 }
 
-export function retryCaptureTask(taskId: string): Promise<{ ok: boolean }> {
-  return apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/retry`, { method: 'POST', json: {} })
+export function retryCaptureTask(taskId: string, projectId?: string): Promise<{ ok: boolean }> {
+  const path = `/api/tasks/${encodeURIComponent(taskId)}/retry`
+  return apiFetch(projectId ? projectApiPath(path, projectId) : path, { method: 'POST', json: projectId ? { project_id: projectId } : {} })
 }
 
 /** 人工把待检查门店标记为不合格；只记录结论，不自动重新采集。 */
-export function rejectPendingTask(taskId: string, reason: string, detail: string): Promise<{ ok: boolean }> {
-  return apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/reject`, {
+export function rejectPendingTask(taskId: string, reason: string, detail: string, projectId?: string): Promise<{ ok: boolean }> {
+  const path = `/api/tasks/${encodeURIComponent(taskId)}/reject`
+  return apiFetch(projectId ? projectApiPath(path, projectId) : path, {
     method: 'POST',
-    json: { reason, detail },
+    json: { reason, detail, ...(projectId ? { project_id: projectId } : {}) },
   })
 }
 
-export function captureEvidenceUrl(taskId: string): string {
-  return `${BASE}/tasks/${encodeURIComponent(taskId)}/evidence`
+export function captureEvidenceUrl(taskId: string, projectId?: string): string {
+  const path = `${BASE}/tasks/${encodeURIComponent(taskId)}/evidence`
+  return projectId ? projectApiPath(path, projectId) : path
 }
 
-export function taskSourceUrl(taskId: string): string {
-  return `/api/tasks/${encodeURIComponent(taskId)}/source`
+export function taskSourceUrl(taskId: string, projectId?: string): string {
+  const path = `/api/tasks/${encodeURIComponent(taskId)}/source`
+  return projectId ? projectApiPath(path, projectId) : path
 }
 
-export function taskLastFrameUrl(taskId: string): string {
-  return `/api/tasks/${encodeURIComponent(taskId)}/last-frame`
+export function taskLastFrameUrl(taskId: string, projectId?: string): string {
+  const path = `/api/tasks/${encodeURIComponent(taskId)}/last-frame`
+  return projectId ? projectApiPath(path, projectId) : path
 }
 
 export function fetchPendingReviews(
   batchIds: string[],
   query: string,
   signal?: AbortSignal,
+  projectId?: string,
 ): Promise<PendingReviewsResponse> {
   const search = new URLSearchParams({
     batch_ids: batchIds.length ? batchIds.join(',') : 'all',
     q: query.trim(),
   })
-  return apiFetch<PendingReviewsResponse>(`/api/reviews/pending?${search.toString()}`, { signal })
+  const path = `/api/reviews/pending?${search.toString()}`
+  return apiFetch<PendingReviewsResponse>(projectId ? projectApiPath(path, projectId) : path, { signal })
 }
 
-export function approveBatches(batchIds: string[]): Promise<{ ok: boolean; batches: unknown[] }> {
-  return apiFetch('/api/reviews/approve', { method: 'POST', json: { batch_ids: batchIds } })
+export function approveBatches(batchIds: string[], projectId?: string): Promise<{ ok: boolean; batches: unknown[] }> {
+  const path = '/api/reviews/approve'
+  return apiFetch(projectId ? projectApiPath(path, projectId) : path, { method: 'POST', json: { batch_ids: batchIds, ...(projectId ? { project_id: projectId } : {}) } })
 }
 
 /** 撤销通过按批次逐个提交，与后端单批次入口一致；任一失败立即抛出并保留已完成结果。 */
-export async function unapproveBatches(batchIds: string[]): Promise<void> {
+export async function unapproveBatches(batchIds: string[], projectId?: string): Promise<void> {
   for (const batchId of batchIds) {
-    await apiFetch(`/api/materials/batches/${encodeURIComponent(batchId)}/approve/undo`, {
+    const path = `/api/materials/batches/${encodeURIComponent(batchId)}/approve/undo`
+    await apiFetch(projectId ? projectApiPath(path, projectId) : path, {
       method: 'POST',
-      json: {},
+      json: projectId ? { project_id: projectId } : {},
     })
   }
 }
@@ -176,7 +195,7 @@ export const REASON_OPTIONS = [
 ]
 
 /** Hub 是否正在执行采集；运行中禁用需要空闲状态的不合格处置。 */
-export function fetchHubRunning(signal?: AbortSignal): Promise<boolean> {
+export function fetchHubRunning(signal?: AbortSignal, projectId?: string): Promise<boolean> {
   const search = new URLSearchParams({
     include_events: 'false',
     queue_page: '1',
@@ -188,7 +207,8 @@ export function fetchHubRunning(signal?: AbortSignal): Promise<boolean> {
     queue_sort: 'source',
     selected: '',
   })
-  return apiFetch<{ running?: boolean }>(`/api/status?${search.toString()}`, { signal }).then(
+  const path = `/api/status?${search.toString()}`
+  return apiFetch<{ running?: boolean }>(projectId ? projectApiPath(path, projectId) : path, { signal }).then(
     (status) => status.running === true,
   )
 }

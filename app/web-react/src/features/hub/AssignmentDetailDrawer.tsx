@@ -15,6 +15,7 @@ import { assignmentStatusOf, formatStore } from './format'
 import type { AssignmentRecord } from './types'
 
 interface AssignmentDetailDrawerProps {
+  projectId: string
   record: AssignmentRecord | null
   onOpenChange: (open: boolean) => void
   onReclaim?: (record: AssignmentRecord) => void
@@ -30,6 +31,7 @@ const RECLAIMABLE = new Set(['assigned', 'ready'])
 
 /** 分配详情：状态、设备、结果文件与回收影响范围。结果文件只在后端确有记录时请求。 */
 export function AssignmentDetailDrawer({
+  projectId,
   record,
   onOpenChange,
   onReclaim,
@@ -43,9 +45,9 @@ export function AssignmentDetailDrawer({
   const hasResult = Boolean(record && record.disposition && record.disposition !== '')
 
   const filesQuery = useQuery({
-    queryKey: ['hub-assignment-files', record?.id],
-    queryFn: ({ signal }) => fetchResultFiles(record?.id ?? '', signal),
-    enabled: Boolean(record && hasResult),
+    queryKey: ['project', projectId, 'hub-assignment-files', record?.id],
+    queryFn: ({ signal }) => fetchResultFiles(record?.id ?? '', signal, projectId),
+    enabled: Boolean(projectId && record && hasResult),
     retry: false,
     staleTime: 60_000,
   })
@@ -60,8 +62,8 @@ export function AssignmentDetailDrawer({
   )
   // 证据按结果目录顺序连续浏览，避免每次只看一张后重新打开。
   const previewItems = useMemo(
-    () => (record ? images.map((file) => ({ src: resultFileUrl(record.id, file), alt: file })) : []),
-    [images, record],
+    () => (record ? images.map((file) => ({ src: resultFileUrl(record.id, file, projectId), alt: file })) : []),
+    [images, projectId, record],
   )
 
   if (!record) return null
@@ -158,7 +160,7 @@ export function AssignmentDetailDrawer({
               {images.length ? (
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                   {images.map((file) => {
-                    const src = resultFileUrl(record.id, file)
+                    const src = resultFileUrl(record.id, file, projectId)
                     return (
                       <button
                         key={file}
@@ -180,7 +182,7 @@ export function AssignmentDetailDrawer({
                     <li key={file}>
                       <a
                         className="break-all text-default underline-offset-2 hover:underline"
-                        href={resultFileUrl(record.id, file)}
+                        href={resultFileUrl(record.id, file, projectId)}
                         target="_blank"
                         rel="noreferrer"
                       >

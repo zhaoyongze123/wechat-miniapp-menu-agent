@@ -7,6 +7,8 @@ import { roleOf } from '../../api/types'
 import { fetchActiveTasks, fetchTaskDetail } from '../task-center/api'
 import type { ManualState } from '../worker/types'
 import { isOnline } from '../hub/format'
+import { useProject } from '../projects/ProjectProvider'
+import { fetchManualState } from '../worker/api'
 import {
   activateNotificationAudio,
   claimNotificationEvent,
@@ -38,6 +40,7 @@ const TERMINAL = new Set([...TERMINAL_SUCCESS, ...TERMINAL_ABNORMAL])
  */
 export function NotificationRuntime() {
   const toast = useToast()
+  const { projectId } = useProject()
   // 远程控制是受限路由，不允许访问共享状态和任务历史 API。
   const remoteControl = window.location.pathname === '/remote-control'
   const roleQuery = useQuery({
@@ -49,16 +52,16 @@ export function NotificationRuntime() {
   })
   const role = remoteControl ? 'worker' : roleOf(roleQuery.data)
   const tasksQuery = useQuery({
-    queryKey: ['tasks-active'],
-    queryFn: ({ signal }) => fetchActiveTasks(signal),
-    enabled: !remoteControl,
+    queryKey: ['project', projectId || 'unselected', 'tasks-active'],
+    queryFn: ({ signal }) => fetchActiveTasks(signal, projectId),
+    enabled: !remoteControl && Boolean(projectId),
     refetchInterval: 5_000,
     staleTime: 4_000,
   })
   const manualQuery = useQuery({
-    queryKey: ['manual-control'],
-    queryFn: ({ signal }) => apiFetch<ManualControlState>('/api/manual/state', { signal }),
-    enabled: role === 'worker',
+    queryKey: ['project', projectId || 'unselected', 'manual-control'],
+    queryFn: ({ signal }) => fetchManualState(signal, projectId),
+    enabled: role === 'worker' && Boolean(projectId),
     refetchInterval: 1_500,
     refetchIntervalInBackground: true,
     staleTime: 1_250,

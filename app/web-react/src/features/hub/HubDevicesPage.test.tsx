@@ -60,16 +60,17 @@ const shared: HubSharedStatus = {
   },
 }
 
-const { saveUpdateRollout } = vi.hoisted(() => ({ saveUpdateRollout: vi.fn() }))
+const { saveUpdateRollout, useHubSharedStatus } = vi.hoisted(() => ({ saveUpdateRollout: vi.fn(), useHubSharedStatus: vi.fn() }))
 
 vi.mock('../../app/RoleProvider', () => ({
   useRole: () => ({ role: 'hub', loading: false, error: '', reload: vi.fn() }),
 }))
+vi.mock('../projects/ProjectProvider', () => ({ useProject: () => ({ projectId: 'project-test' }) }))
 vi.mock('./hooks', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./hooks')>()
   return {
     ...actual,
-    useHubSharedStatus: () => ({ data: shared, isError: false, error: null, refetch: vi.fn() }),
+    useHubSharedStatus: (...args: unknown[]) => { useHubSharedStatus(...args); return { data: shared, isError: false, error: null, refetch: vi.fn() } },
   }
 })
 vi.mock('./api', async (importOriginal) => {
@@ -91,6 +92,11 @@ function renderPage() {
 afterEach(cleanup)
 
 describe('HubDevicesPage 集中更新状态', () => {
+  it('按当前项目读取设备与分配状态', () => {
+    renderPage()
+    expect(useHubSharedStatus).toHaveBeenCalledWith('project-test')
+  })
+
   it('展示各设备版本、更新状态与汇总', () => {
     renderPage()
 

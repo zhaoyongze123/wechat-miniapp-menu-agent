@@ -17,6 +17,8 @@ import { ROLE_LABEL, useRole } from './RoleProvider'
 import type { AppRole } from '../api/types'
 import { fetchActiveTasks } from '../features/task-center/api'
 import { NotificationRuntime } from '../features/notifications/NotificationRuntime'
+import { ProjectSwitcher } from '../features/projects/ProjectSwitcher'
+import { useProject } from '../features/projects/ProjectProvider'
 
 interface NavItem {
   key: string
@@ -35,6 +37,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'devices', label: '采集电脑', roles: ['hub'], icon: Desktop },
   { key: 'assignments', label: '分配记录', roles: ['hub'], icon: Clipboard },
   { key: 'materials', label: '素材清洗', roles: ['hub'], icon: Images },
+  { key: 'projects', label: '项目管理', roles: ['hub'], icon: Tasks },
   { key: 'rejections', label: '质量审核', roles: ['hub'], icon: CheckCircle },
   { key: 'task-center', label: '任务中心', roles: ['hub', 'worker'], icon: Tasks },
   { key: 'settings', label: '设置', roles: ['hub', 'worker'], icon: Settings },
@@ -44,6 +47,7 @@ const SIDEBAR_COLLAPSED_KEY = 'menu-capture.sidebar-collapsed'
 
 export function AppShell({ children }: { children: ReactNode }) {
   const role = useRole()
+  const project = useProject()
   const location = useLocation()
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -96,7 +100,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-2" aria-label="主导航">
           {visibleItems.map((item) => (
-            <NavLink key={item.key} item={item} active={item.key === currentKey} iconOnly={collapsed} />
+            <NavLink key={item.key} item={item} active={item.key === currentKey} iconOnly={collapsed} projectId={project.projectId} />
           ))}
         </nav>
 
@@ -121,6 +125,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
           <div className="ml-auto flex shrink-0 items-center gap-2.5">
             {currentKey === 'task-center' ? null : <ActiveTaskIndicator />}
+            <ProjectSwitcher />
             <span className="hidden text-xs text-tertiary sm:inline">{connection}</span>
             <Badge color={role.role === 'standalone' ? 'warning' : 'secondary'} variant="soft" size="sm">
               {role.loading ? '正在确认角色' : role.error ? '角色未知' : ROLE_LABEL[role.role]}
@@ -133,7 +138,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           aria-label="主导航（移动端）"
         >
           {visibleItems.map((item) => (
-            <NavLink key={item.key} item={item} active={item.key === currentKey} compact />
+            <NavLink key={item.key} item={item} active={item.key === currentKey} compact projectId={project.projectId} />
           ))}
         </nav>
 
@@ -150,11 +155,13 @@ function NavLink({
   active,
   compact = false,
   iconOnly = false,
+  projectId = '',
 }: {
   item: NavItem
   active: boolean
   compact?: boolean
   iconOnly?: boolean
+  projectId?: string
 }) {
   const Icon = item.icon
   const className = [
@@ -171,9 +178,11 @@ function NavLink({
       {iconOnly ? null : item.label}
     </>
   )
+  const businessPath = ['workbench', 'materials', 'rejections', 'task-center', 'assignments', 'annotation', 'devices'].includes(item.key)
+  const to = businessPath && projectId ? `/${item.key}?project=${encodeURIComponent(projectId)}` : `/${item.key}`
   return (
     <Link
-      to={`/${item.key}`}
+      to={to}
       className={className}
       aria-current={active ? 'page' : undefined}
       aria-label={iconOnly ? item.label : undefined}
@@ -186,9 +195,11 @@ function NavLink({
 
 /** 全局运行中任务入口：任何页面都能看到正在执行的采集或素材分析。 */
 function ActiveTaskIndicator() {
+  const { projectId } = useProject()
   const query = useQuery({
-    queryKey: ['tasks-active'],
-    queryFn: ({ signal }) => fetchActiveTasks(signal),
+    queryKey: ['project', projectId || 'unselected', 'tasks-active'],
+    queryFn: ({ signal }) => fetchActiveTasks(signal, projectId),
+    enabled: Boolean(projectId),
     refetchInterval: 5_000,
     staleTime: 4_000,
   })
@@ -203,7 +214,7 @@ function ActiveTaskIndicator() {
         {active.map((task) => (
           <li key={`${task.source}:${task.id}`}>
             <Link
-              to={`/task-center?${new URLSearchParams({ detail: `${task.source}:${task.id}` })}`}
+              to={`/task-center?${new URLSearchParams({ ...(task.project_id ? { project: task.project_id } : {}), detail: `${task.source}:${task.id}` })}`}
               className="block rounded px-2 py-2 text-sm hover:bg-secondary-soft"
             >
               <span className="block break-words">{task.title}</span>
