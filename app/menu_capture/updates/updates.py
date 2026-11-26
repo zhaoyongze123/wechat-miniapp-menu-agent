@@ -723,9 +723,9 @@ class UpdateService:
         """
         if self.role != "worker" or os.environ.get("MENU_CAPTURE_ALLOW_SELF_UPDATE") != "1":
             return False
-        if self._velopack_mode():
-            return True
-        return sys.platform == "win32" and self._install_root() is not None
+        # Fail closed until the external recovery coordinator can verify and restore the actual build.
+        # The local integration task must replace this guard with a real capability probe.
+        return False
 
     def _install_capable(self) -> bool:
         if self.install_capability is not None:

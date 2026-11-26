@@ -26,8 +26,6 @@ from pathlib import Path
 PACK_ID = "Yipu.MenuCapture"
 DEFAULT_PORT = 8765
 MUTEX_PREFIX = "Local\\MenuCaptureLauncher-"
-APPLY_REQUEST = "update-apply-request.json"
-ROLLBACK_REQUEST = "rollback-request.json"
 WORKER_STOP_TIMEOUT = 120
 LOG_MAX_BYTES = 1024 * 1024
 
@@ -95,15 +93,12 @@ def _message(text: str) -> None:
 def _run_velopack_hooks(data_root: Path) -> None:
     import velopack
 
-    def on_before_uninstall(*_args, **_kwargs) -> None:
-        # 卸载前尽力让 Worker 正常退出；不在这里等待长时间采集。
-        _request_worker_shutdown(data_root, timeout=15, force=True)
+    # 卸载的受控业务退出必须由独立入口处理；快速 hook 不允许绕过安装事务。
 
     (velopack.App()
         .set_auto_apply_on_startup(False)
         .on_first_run(lambda *_a, **_k: _ensure_autostart(data_root))
         .on_restarted(lambda *_a, **_k: _log(data_root, "Velopack 更新后重启"))
-        .on_before_uninstall_fast_callback(on_before_uninstall)
         .run())
 
 
@@ -180,16 +175,14 @@ def _port() -> int:
 
 def _read_version(current: Path) -> str:
     try:
-        payload = json.loads((current / "sq.version").read_text(encoding="utf-8"))
-        version = str(payload.get("Version") or payload.get("version") or "")
-        if version:
-            return version
-    except (OSError, ValueError):
+        payload = json.loads((current / "release-manifest.json").read_text(encoding="utf-8"))
+        version = payload.get("version")
+        if isinstance(version, str) and version.strip():
+            return version.strip()
+    except (OSError, ValueError, AttributeError):
         pass
-    try:
-        return (current / "sq.version").read_text(encoding="utf-8").strip()
-    except OSError:
-        return str(os.environ.get("MENU_CAPTURE_VERSION") or "")
+    raise RuntimeError("缺少有效的运行时发布清单")
+
 
 
 def _start_worker(data_root: Path, token: str) -> subprocess.Popen:
@@ -222,92 +215,26 @@ def _start_worker(data_root: Path, token: str) -> subprocess.Popen:
     return process
 
 
-def _request_worker_shutdown(data_root: Path, timeout: float = WORKER_STOP_TIMEOUT, *, force: bool = False) -> bool:
+def _request_worker_shutdown(data_root: Path, transaction: dict) -> bool:
     token = str(os.environ.get("MENU_CAPTURE_COORDINATOR_TOKEN") or "") or _read_token(data_root)
     if not token:
         return False
     request = urllib.request.Request(
         f"http://127.0.0.1:{_port()}/api/internal/shutdown",
+        data=json.dumps({
+            "transaction_id": transaction["transaction_id"],
+            "target_version": transaction["target_version"],
+        }).encode("utf-8"),
         method="POST",
-        headers={"X-Coordinator-Token": token},
+        headers={"X-Coordinator-Token": token, "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=10):
-            pass
-    except Exception as exc:  # noqa: BLE001 - Worker 可能已经退出
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=10) as response:
+            return json.loads(response.read()).get("ok") is True
+    except Exception as exc:
         _log(data_root, f"请求 Worker 正常退出失败：{exc}")
-        if not force:
-            return False
-    return True
-
-
-# ---------- 更新应用 ----------
-
-def _apply_pending(data_root: Path, version: str, worker: subprocess.Popen, channel: str) -> bool:
-    from menu_capture.updates.velopack_backend import VelopackBackend
-
-    backend = VelopackBackend(
-        "zhaoyongze123/wechat-miniapp-menu-agent", data_root / "data",
-        channel=channel,
-        python=str(_current_dir() / "python" / "python.exe"),
-        app_dir=_current_dir() / "app",
-    )
-    pending = backend.pending_restart(channel)
-    if not pending or str(pending.get("version")) != version:
-        backend.write_apply_state("failed", version, "没有与请求版本一致的已下载更新包")
-        backend.clear_apply_request()
-        _log(data_root, f"应用更新被拒绝：待安装包不匹配 {version}")
         return False
-    _log(data_root, f"收到应用请求 {version}，先正常停止 Worker")
-    _request_worker_shutdown(data_root)
-    try:
-        worker.wait(timeout=WORKER_STOP_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        backend.write_apply_state("failed", version, "Worker 未在时限内正常退出，已取消本次切换")
-        backend.clear_apply_request()
-        _log(data_root, "Worker 未正常退出，取消应用更新（不强制结束采集）")
-        return False
-    backend.write_apply_state("applying", version, "Worker 已停止，正在应用更新")
-    try:
-        # 该调用会启动 Update.exe 并等待本进程退出后替换 current；返回后必须立即退出。
-        backend.apply_pending(version, channel=channel)
-    except Exception as exc:  # noqa: BLE001 - 应用失败时恢复 Worker，不进入半更新状态
-        backend.write_apply_state("failed", version, f"应用更新失败：{exc}")
-        backend.clear_apply_request()
-        _log(data_root, f"应用更新失败：{exc}")
-        return False
-    return True
-
-
-def _apply_rollback(data_root: Path, version: str) -> int:
-    """显式回滚：校验数据库结构未变后，用 Update.exe 应用本地同版本 full 包。"""
-    from menu_capture.updates.update_install import rollback_schema_matches
-
-    baseline_path = data_root / "data" / "update-schema-baseline.json"
-    try:
-        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-        if not rollback_schema_matches(data_root / "data", baseline, version):
-            _message("数据库结构快照不可用、版本不匹配或结构已变化，已停止回滚。请人工确认后处理。")
-            return 2
-    except (OSError, ValueError):
-        _message("缺少可核对的数据结构快照，已停止自动回滚。请人工确认。")
-        return 2
-    root = _install_root()
-    packages = root / "packages"
-    matches = sorted(packages.glob(f"*-{version}-full.nupkg")) if packages.is_dir() else []
-    if not matches:
-        _message(f"本机没有 {version} 的完整安装包，无法离线回滚。请重新安装该正式版本。")
-        return 3
-    updater = root / "Update.exe"
-    if not updater.is_file():
-        _message("缺少 Velopack 更新程序 Update.exe。")
-        return 4
-    _log(data_root, f"开始回滚到 {version}，包：{matches[0].name}")
-    subprocess.Popen(
-        [str(updater), "apply", "--package", str(matches[0]), "--waitPid", str(os.getpid())],
-        cwd=str(root), close_fds=True, creationflags=0x08000000,
-    )
-    return 0
 
 
 # ---------- 主循环 ----------
@@ -315,11 +242,8 @@ def _apply_rollback(data_root: Path, version: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if "--rollback-to" in args:
-        version = args[args.index("--rollback-to") + 1] if args.index("--rollback-to") + 1 < len(args) else ""
-        if not version:
-            _message("请提供要回滚的版本号。")
-            return 1
-        return _apply_rollback(_data_root(), version)
+        _message("直接版本切换已禁用，请通过受控恢复流程处理。")
+        return 2
 
     data_root = _data_root()
     # 启动器是 PyInstaller 入口，业务模块位于同目录的 app/；显式加入导入路径，
@@ -348,44 +272,26 @@ def main(argv: list[str] | None = None) -> int:
         _write_token(data_root, token)
         _ensure_autostart(data_root)
         worker = _start_worker(data_root, token)
-        backend_state = data_root / "data" / APPLY_REQUEST
+        # 旧 update-apply-request / rollback-request 文件不再是可执行指令。
+        # 独立恢复协调器接入前不调用原生更新器；避免不具备恢复能力的切换。
+        from menu_capture.updates.install_transaction import InstallTransaction, TransactionError
+
+        transaction = InstallTransaction(data_root / "data")
         while True:
+            try:
+                journal = transaction.read()
+                if journal.get("status") == "prepared":
+                    transaction.transition(
+                        journal["transaction_id"], "prepared", "failed",
+                        message="安全恢复协调器尚未接入，未停止 Worker 或切换版本",
+                    )
+            except TransactionError as exc:
+                _log(data_root, f"安装事务需人工确认：{exc}")
             if worker.poll() is not None:
                 _log(data_root, f"Worker 退出，退出码 {worker.returncode}，5 秒后重启")
                 time.sleep(5)
                 worker = _start_worker(data_root, token)
                 continue
-            if backend_state.is_file():
-                try:
-                    request = json.loads(backend_state.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    request = {}
-                version = str(request.get("version") or "")
-                channel = str(request.get("channel") or "")
-                if not version or channel not in {"stable", "preview"}:
-                    _log(data_root, "安装请求缺少有效版本或渠道，拒绝应用")
-                    backend_state.unlink(missing_ok=True)
-                    continue
-                if _apply_pending(data_root, version, worker, channel):
-                    _log(data_root, f"更新 {version} 已交给 Velopack，启动器退出")
-                    return 0
-                worker = _start_worker(data_root, token) if worker.poll() is not None else worker
-                continue
-            rollback = data_root / "data" / ROLLBACK_REQUEST
-            if rollback.is_file():
-                try:
-                    version = str(json.loads(rollback.read_text(encoding="utf-8")).get("version") or "")
-                except (OSError, ValueError):
-                    version = ""
-                rollback.unlink(missing_ok=True)
-                if version:
-                    _request_worker_shutdown(data_root)
-                    try:
-                        worker.wait(timeout=WORKER_STOP_TIMEOUT)
-                    except subprocess.TimeoutExpired:
-                        _log(data_root, "回滚前 Worker 未正常退出，已取消")
-                        continue
-                    return _apply_rollback(data_root, version)
             time.sleep(2)
     finally:
         try:

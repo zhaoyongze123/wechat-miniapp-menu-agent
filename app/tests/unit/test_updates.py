@@ -909,8 +909,9 @@ def test_install_supported_requires_windows_worker_and_opt_in(tmp_path, monkeypa
     assert service.status_no_check()["capabilities"]["install"] is False
 
     monkeypatch.setenv("MENU_CAPTURE_ALLOW_SELF_UPDATE", "1")
-    assert service.install_supported() is True
-    assert service.status_no_check()["capabilities"]["install"] is True
+    # Old release-directory layout must not expose the new Velopack installer.
+    assert service.install_supported() is False
+    assert service.status_no_check()["capabilities"]["install"] is False
 
     hub = UpdateService(tmp_path / "hub", role="hub", app_root=app, machine="AMD64")
     assert hub.install_supported() is False

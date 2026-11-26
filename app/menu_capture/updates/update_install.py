@@ -17,10 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-# 应用请求到新版本启动之间的最长等待；超时后如实标记失败，允许用户重试。
+from menu_capture.updates.install_transaction import ACTIVE, InstallTransaction, TransactionError
+
+# 超时仅作为诊断提示，不作为解除安装互斥的证据。
 MAX_ACTIVE_SECONDS = 900
-ACTIVE_STATUSES = {"starting", "restarting", "applying"}
-STALLED_MESSAGE = "更新已请求应用，但启动器长时间未完成切换，请检查本机日志后重试"
+ACTIVE_STATUSES = ACTIVE
+STALLED_MESSAGE = "安装长时间无进展，保留业务闸门，请检查更新器及恢复协调器"
 
 
 def _utc_now() -> str:
@@ -114,8 +116,8 @@ class InstallController:
         self.idle_check = idle_check
         self.role = role
         self.platform = platform
-        self.journal_path = self.data_dir / "update-install.json"
-        self.baseline_path = self.data_dir / "update-schema-baseline.json"
+        self.transaction = InstallTransaction(self.data_dir)
+        self.journal_path = self.transaction.path
         self.authorization_check = authorization_check
         self.authorization_release = authorization_release
         self.filesystem_lock = filesystem_lock
@@ -133,85 +135,57 @@ class InstallController:
         """与采集/标注启动共享的互斥闸门，闭合空闲检查到写请求之间的竞态窗口。"""
         return self._lock
 
+    def _snapshot(self) -> dict:
+        if self.role != "worker":
+            return {}
+        try:
+            return self.transaction.read()
+        except TransactionError as exc:
+            return {"status": "recovery_required", "message": str(exc), "error": str(exc)}
+
     def active(self) -> bool:
         with self._lock:
-            self._refresh()
-            return str(_read_json(self.journal_path, {}).get("status") or "") in ACTIVE_STATUSES
+            return self.active_nonblocking()
 
     def active_nonblocking(self) -> bool:
-        return str(_read_json(self.journal_path, {}).get("status") or "") in ACTIVE_STATUSES
+        return self._snapshot().get("status") in ACTIVE
 
     def status(self) -> dict:
         with self._lock:
-            self._refresh()
-            journal = _read_json(self.journal_path, {})
+            journal = self._snapshot()
             stalled = self._is_stalled(journal)
-        status = str(journal.get("status") or "idle")
+        state = journal.get("status", "idle")
+        # UI 继续使用既有阶段；原始事务阶段单独提供，绝不把恢复阻断映射成可重试失败。
+        status = {"prepared": "restarting", "stopping": "restarting",
+                  "applying": "installing", "recovery_required": "verifying"}.get(state, state)
         payload = {
             "supported": self.supported,
-            "reason": "" if self.supported else "安装执行器需在 Windows 采集端并显式启用后才能使用",
-            "active": status in ACTIVE_STATUSES,
+            "reason": "" if self.supported else "安全恢复协调器尚未就绪或未显式启用安装",
+            "active": state in ACTIVE,
             "stalled": stalled,
             **journal,
+            "transaction_status": state,
+            "status": status,
         }
-        if stalled:
+        if stalled and state != "recovery_required":
             payload["message"] = STALLED_MESSAGE
         return payload
 
     def recover(self) -> None:
+        # 只有独立恢复协调器能根据进程、包与健康证据完成事务。
+        # Worker 启动或 GET 查询不能以版本相等、超时作为成功或失败的依据。
+        return None
+
+    def authorize_shutdown(self, transaction_id: str, target_version: str) -> None:
         with self._lock:
-            self._refresh()
-
-    # ---------- 状态收尾 ----------
-
-    def _refresh(self) -> None:
-        journal = _read_json(self.journal_path, {})
-        if str(journal.get("status") or "") not in ACTIVE_STATUSES:
-            return
-        target = str(journal.get("target_version") or "")
-        try:
-            running = str(self.current_version() or "").strip()
-        except Exception:  # noqa: BLE001 - 状态探测失败不能拖垮接口
-            running = ""
-        apply_state = {}
-        if self.backend is not None:
-            try:
-                apply_state = self.backend.read_apply_state()
-            except Exception:  # noqa: BLE001
-                apply_state = {}
-        state = str(apply_state.get("status") or "")
-        # 1) 已经运行目标版本：更新成功，哪怕启动器还来不及回写状态。
-        if target and running == target:
-            self._finish("completed", f"已切换到 {target}")
-            return
-        # 2) 启动器明确失败：如实转为失败并清理请求。
-        if state == "failed":
-            self._finish(
-                "failed",
-                str(apply_state.get("message") or "应用更新失败"),
-                str(apply_state.get("error") or ""),
-            )
-            return
-        # 3) 请求未被启动器接手或切换长时间无进展：超时后解除活动态，允许重试。
-        age = _age_seconds(str(journal.get("updated_at") or journal.get("started_at") or ""), self.journal_path)
-        if age is not None and age > MAX_ACTIVE_SECONDS:
-            self._finish("failed", STALLED_MESSAGE, STALLED_MESSAGE)
-
-    def _finish(self, status: str, message: str, error: str = "") -> None:
-        journal = _read_json(self.journal_path, {})
-        journal.update({
-            "status": status,
-            "message": message,
-            "error": error,
-            "finished_at": _utc_now(),
-            "updated_at": _utc_now(),
-        })
-        _write_json(self.journal_path, journal)
-        if status == "completed" and self.backend is not None:
-            try:
-                self.backend.clear_apply_request()
-            except Exception:  # noqa: BLE001
-                pass
+            journal = self.transaction.read()
+            if (not transaction_id or journal.get("transaction_id") != transaction_id
+                    or journal.get("status") != "stopping"
+                    or journal.get("target_version") != target_version):
+                raise ValueError("关闭请求不对应当前安装事务")
+            idle, reason = self.idle_check()
+            if not idle:
+                raise ValueError(reason or "采集或标注仍在执行，不能关闭")
 
     def _is_stalled(self, journal: dict) -> bool:
         if str(journal.get("status") or "") not in ACTIVE_STATUSES:
@@ -250,9 +224,8 @@ class InstallController:
             raise ValueError("更新包尚未下载完成或版本不一致，请先下载并校验")
 
         with self._lock:
-            self._refresh()
-            journal = _read_json(self.journal_path, {})
-            if str(journal.get("status") or "") in ACTIVE_STATUSES:
+            journal = self.transaction.read()
+            if journal.get("status") in ACTIVE_STATUSES:
                 raise ValueError("已有安装任务正在执行")
             idle, reason = self.idle_check()
             if not idle:
@@ -274,23 +247,10 @@ class InstallController:
                 schema = schema_fingerprint(self.data_dir)
                 if schema is None:
                     raise ValueError("无法读取有效数据库结构，拒绝自动安装")
-                _write_json(self.baseline_path, {
-                    "version": previous,
-                    "schema": schema,
-                    "captured_at": _utc_now(),
-                })
-                self.backend.request_apply(version, channel=channel)
-                _write_json(self.journal_path, {
-                    "status": "restarting",
-                    "target_version": version,
-                    "previous_version": previous,
-                    "channel": channel,
-                    "started_at": _utc_now(),
-                    "updated_at": _utc_now(),
-                    "finished_at": "",
-                    "message": "已请求启动器在空闲时应用更新并重启",
-                    "error": "",
-                })
+                self.transaction.create(
+                    previous_version=previous, target_version=version, channel=channel,
+                    schema_baseline=schema, target_asset=dict(pending),
+                )
             except BaseException:
                 self._release_claim(claimed, version)
                 raise

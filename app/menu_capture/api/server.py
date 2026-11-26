@@ -172,6 +172,14 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         # 手动回滚接口尚未开放；失败时由执行器自动回滚。
         updates.rollback_capability = lambda: False
     else:
+        def install_idle():
+            if runner.running or annotations.active:
+                return False, "采集或人工标注正在执行，请先结束后再安装"
+            run = store.latest_run()
+            if run and run.get("status") in ACTIVE_RUN_STATUSES:
+                return False, "采集轮次尚未结束，请先继续完成或终止"
+            return True, ""
+
         install = InstallController(
             data_dir=updates.data_dir,
             backend=velopack_backend,
@@ -179,10 +187,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             platform=updates.platform,
             latest_provider=lambda: (updates.status_no_check().get("latest") or {}),
             current_version=updates.current_version,
-            idle_check=lambda: (
-                (True, "") if not (runner.running or annotations.active)
-                else (False, "采集或人工标注正在执行，请先结束或暂停后再安装")
-            ),
+            idle_check=install_idle,
             supported=updates.install_supported(),
             # 后台调度在真正拉起进程前消费授权；用户取消与消费共用更新锁，只会有一个成功。
             authorization_check=updates.claim_install,
@@ -206,7 +211,6 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     updates.schedule_installer = lambda version: install.start(
         version, version, require_authorization=True,
     )
-    updates.resume_schedule()
     if hub is not None:
         # Hub 集中检查 GitHub 后向 Worker 分发元数据，避免每台设备重复请求。
         hub.update_metadata = updates.release_target
@@ -219,6 +223,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     runner.update_blocked = install.active
     annotations.update_gate = install.gate
     annotations.update_blocked = install.active
+    updates.resume_schedule()
     token = secrets.token_urlsafe(32)
     def _warm_local_ocr() -> None:
         """后台预热 Apple Vision：首次 OCR 要加载框架约 3-4 秒，别让它落在第一次截图之后。"""
@@ -287,20 +292,29 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     app.state.updates_install = install
     register_shared_routes(app, role, hub, worker, control_lock)
 
-    # 启动器在应用 Velopack 更新前需要先让 Worker 正常退出；只注册带随机令牌的本地入口。
-    # 没有令牌（普通开发/单机运行）时该路由完全不存在，不扩大攻击面。
+    # Only this exact internal protocol may bypass browser CSRF, and only with its own token.
     coordinator_token = str(os.environ.get("MENU_CAPTURE_COORDINATOR_TOKEN") or "")
-    if coordinator_token:
+    if role == "worker" and coordinator_token:
         @app.post("/api/internal/shutdown")
-        def internal_shutdown(request: Request):
+        def internal_shutdown(request: Request, payload: dict):
+            if request.client is None or request.client.host not in {"127.0.0.1", "::1"}:
+                raise HTTPException(403, "内部关闭仅允许本机连接")
             provided = request.headers.get("x-coordinator-token", "")
-            if not hmac.compare_digest(provided, coordinator_token):
+            if not hmac.compare_digest(provided.encode(), coordinator_token.encode()):
                 raise HTTPException(401, "协调令牌无效")
+            if set(payload) != {"transaction_id", "target_version"} or any(
+                not isinstance(value, str) or not value for value in payload.values()
+            ):
+                raise HTTPException(409, "安装事务参数无效")
             server = getattr(app.state, "uvicorn_server", None)
             if server is None:
                 raise HTTPException(409, "当前进程不支持受控关闭")
-            # 只置位退出标志，由 uvicorn 触发 lifespan 清理，不强行结束采集线程。
-            server.should_exit = True
+            with install.gate:
+                try:
+                    install.authorize_shutdown(payload["transaction_id"], payload["target_version"])
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from None
+                server.should_exit = True
             return {"ok": True}
 
     def basic_authorized(header: str, expected_user: bytes, expected_password: str) -> bool:
@@ -360,7 +374,13 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             or path.startswith("/api/annotation/")
         ) and install.active_nonblocking():
             return JSONResponse({"detail": "更新安装进行中，已暂停新的采集操作"}, status_code=409)
-        if request.method not in {"GET", "HEAD"} and not worker_protocol:
+        internal_shutdown_protocol = (
+            role == "worker" and bool(coordinator_token)
+            and path == "/api/internal/shutdown" and request.method == "POST"
+            and not is_remote and request.client is not None
+            and request.client.host in {"127.0.0.1", "::1"}
+        )
+        if request.method not in {"GET", "HEAD"} and not worker_protocol and not internal_shutdown_protocol:
             supplied = request.headers.get("x-capture-token", "")
             origin = request.headers.get("origin")
             try:

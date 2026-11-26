@@ -88,41 +88,66 @@ def test_start_writes_restarting_and_apply_request(tmp_path: Path):
     status = controller.start("0.4.0", "0.4.0")
     assert status["status"] == "restarting"
     assert status["target_version"] == "0.4.0"
-    assert backend.requests == ["0.4.0"]
+    assert backend.requests == []
     journal = json.loads((tmp_path / "update-install.json").read_text(encoding="utf-8"))
     assert journal["previous_version"] == "0.3.4"
-    assert (tmp_path / "update-schema-baseline.json").is_file()
+    assert journal["status"] == "prepared"
+    assert journal["transaction_id"]
+    assert journal["schema_baseline"]
     assert controller.active() is True
 
 
-def test_refresh_marks_completed_when_target_is_running(tmp_path: Path):
-    controller, backend = make_controller(tmp_path)
-    controller.start("0.4.0", "0.4.0")
-    controller.current_version = lambda: "0.4.0"
-    assert controller.active() is False
-    journal = json.loads((tmp_path / "update-install.json").read_text(encoding="utf-8"))
-    assert journal["status"] == "completed"
-    assert backend.cleared == 1
-
-
-def test_refresh_marks_failed_when_launcher_reports_error(tmp_path: Path):
-    controller, backend = make_controller(tmp_path)
-    controller.start("0.4.0", "0.4.0")
-    backend.apply_state = {"status": "failed", "message": "Worker 未正常退出", "error": "timeout"}
-    assert controller.active() is False
-    status = controller.status()
-    assert status["status"] == "failed"
-    assert "Worker 未正常退出" in status["message"]
-
-
-def test_refresh_marks_stalled_after_timeout(tmp_path: Path):
+def test_running_version_does_not_complete_transaction(tmp_path):
     controller, _ = make_controller(tmp_path)
     controller.start("0.4.0", "0.4.0")
-    journal = json.loads((tmp_path / "update-install.json").read_text(encoding="utf-8"))
-    journal.update({"started_at": "2020-01-01T00:00:00+00:00", "updated_at": "2020-01-01T00:00:00+00:00"})
-    (tmp_path / "update-install.json").write_text(json.dumps(journal), encoding="utf-8")
-    assert controller.active() is False
-    assert controller.status()["status"] == "failed"
+    controller.current_version = lambda: "0.4.0"
+    assert controller.active() is True
+    assert controller.status()["transaction_status"] == "prepared"
+
+
+def test_stale_backend_failure_does_not_override_transaction(tmp_path):
+    controller, backend = make_controller(tmp_path)
+    controller.start("0.4.0", "0.4.0")
+    backend.apply_state = {"status": "failed", "message": "旧事务失败"}
+    assert controller.active()
+    assert controller.status()["transaction_status"] == "prepared"
+
+
+def test_timeout_does_not_unlock(tmp_path):
+    controller, _ = make_controller(tmp_path)
+    controller.start("0.4.0", "0.4.0")
+    journal = json.loads(controller.journal_path.read_text(encoding="utf-8"))
+    journal.update(started_at="2020-01-01T00:00:00+00:00", updated_at="2020-01-01T00:00:00+00:00")
+    controller.journal_path.write_text(json.dumps(journal), encoding="utf-8")
+    assert controller.active()
+    assert controller.status()["stalled"]
+
+
+def test_shutdown_requires_bound_stopping_transaction(tmp_path):
+    controller, _ = make_controller(tmp_path)
+    controller.start("0.4.0", "0.4.0")
+    row = controller.transaction.read()
+    tid = row["transaction_id"]
+    with pytest.raises(ValueError):
+        controller.authorize_shutdown(tid, "0.4.0")
+    controller.transaction.transition(tid, "prepared", "stopping")
+    with pytest.raises(ValueError):
+        controller.authorize_shutdown("stale", "0.4.0")
+    with pytest.raises(ValueError):
+        controller.authorize_shutdown(tid, "0.4.1")
+    controller.authorize_shutdown(tid, "0.4.0")
+    controller.idle_check = lambda: (False, "采集正在执行")
+    with pytest.raises(ValueError, match="采集正在执行"):
+        controller.authorize_shutdown(tid, "0.4.0")
+
+
+def test_corrupt_journal_blocks_retry(tmp_path):
+    controller, _ = make_controller(tmp_path)
+    controller.journal_path.write_text("{", encoding="utf-8")
+    assert controller.active()
+    assert controller.status()["transaction_status"] == "recovery_required"
+    with pytest.raises(ValueError):
+        controller.start("0.4.0", "0.4.0")
 
 
 def test_schema_missing_and_corrupt(tmp_path):
