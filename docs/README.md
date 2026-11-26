@@ -6,15 +6,15 @@
 
 | 主题 | 入口 | 说明 |
 | --- | --- | --- |
-| 项目结构 | [架构与项目地图](architecture/project-map.md) | 目录职责、模块划分、数据流与角色边界 |
-| API 与角色契约 | [接口契约](architecture/api-contracts.md) / [角色矩阵](architecture/role-matrix.md) | HTTP 契约、Hub/Worker/远程控制权限 |
+| 项目结构 | [架构与项目地图](architecture/project-map.md) | 目录职责、项目数据隔离、模块划分与数据流 |
+| API 与角色契约 | [接口契约](architecture/api-contracts.md) / [角色矩阵](architecture/role-matrix.md) | HTTP/Worker 项目范围契约、Hub/Worker/远程控制权限 |
 | GUI Agent 边界 | [GUI Agent 开发规范](architecture/gui-agent-development.md) | 决策权、工具边界与验收口径 |
 | 工程规范 | [工程规范](governance/engineering-standards.md) | 分层、测试、版本管理、双 Agent 协作、发布与备份、CI 门禁 |
 | 前端设计体系 | [设计体系](design-system/README.md) | L1–L4 四层模型、上游索引、组件契约与验收矩阵 |
 | 前端设计规格 | [界面设计规格](design-system/ui-design-spec.md) | 现有视觉与交互标准 |
 | 产品需求 | [产品规格](product/README.md) | 逐页面产品设计、功能保真与用户情境验收 |
 | 软件更新 | [更新与版本生命周期](updates/README.md) | Release 清单、发现/下载/安装/回滚、集中更新与清理 |
-| 合格成品目录 | [合格成品目录](delivery/README.md) | 一店一目录、最新整轮覆盖、历史存量初始化与宿主机交付 |
+| 合格成品目录 | [合格成品目录](delivery/README.md) | 项目级派生目录、最新整轮覆盖、历史身份待核验与宿主机交付 |
 | 采集合规 | [采集回归台账](governance/menu-capture-regression.md) | 按链路记录的问题与复测证据 |
 | 部署与发布 | [部署指南](../deploy/README.md) | 安装、升级、回滚与手动发布流程 |
 
