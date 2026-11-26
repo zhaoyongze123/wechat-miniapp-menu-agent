@@ -14,10 +14,6 @@
     "url": "https://github.com/tesseract-ocr/tesseract/releases/download/5.5.3/tesseract-ocr-w64-setup-5.5.3.20260724.exe",
     "sha256": "bee9e3434bd94fd65387d9be28cd467a41f61b1275383b55b0f59a1331270ae4"
   },
-  "installer_language": {
-    "url": "https://raw.githubusercontent.com/jrsoftware/issrc/is-6_5_4/Files/Languages/Unofficial/ChineseSimplified.isl",
-    "sha256": "fc1dbf303559cfefd47cf59eec7f1ad1c5fc6266ef8fa64569c13bc754adfeb4"
-  },
   "tessdata": {
     "version": "4.1.0",
     "base_url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.1.0/",

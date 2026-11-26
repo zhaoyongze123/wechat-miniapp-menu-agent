@@ -4,6 +4,13 @@
 本进程运行在宿主机，仅通过受限 HTTP 接口接收「应用某个已校验镜像」的意图，
 自己完成下载/校验/加载/切换/健康核对/回滚，所有动作写入状态文件与审计日志。
 
+尽可能复用 Docker 原生能力，而不是自研等价逻辑：
+- OCI 分支用 `docker pull --platform linux/amd64 <repo>@<digest>`、`docker image inspect`
+  核对 `RepoDigests`/`Os`/`Architecture`，再用 `docker tag` 固定本地标签；
+- 切换用 `docker compose up -d --no-build --pull never [--wait --wait-timeout N] <service>`，
+  Compose 支持 `--wait` 时由它等待容器健康检查，执行器只在有限窗口内补做应用层
+  `/api/version` 核验；不支持时降级为原有的健康轮询，不维护两套状态机。
+
 安全边界：
 - 只接受固定镜像仓库 `<IMAGE_REPO>:<version>`，拒绝任意镜像、命令、路径；
 - 归档只允许来自受信任 GitHub 域名，或位于 `ARCHIVE_DIR` 内且名称不含路径分隔符；
@@ -54,7 +61,13 @@ MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 DISK_MARGIN_BYTES = 512 * 1024 * 1024
 DOWNLOAD_TIMEOUT_SECONDS = 1800
 DOCKER_TIMEOUT_SECONDS = 900
-SCHEMA_PROBE = r'''import json, pathlib, sqlite3, sys
+# 保守阈值：Compose v2.1.1 已支持 `up --wait`，但 `--wait-timeout` 的细节在早期 2.x
+# 有差异，统一要求 >=2.17.0；不满足时降级为应用层健康轮询。
+COMPOSE_WAIT_MIN_VERSION = (2, 17, 0)
+# 使用 `up --wait` 后容器健康检查已由 Compose 等待，应用层核验只需一个有限窗口。
+APP_VERIFY_TIMEOUT_SECONDS = 30
+DEFAULT_WAIT_TIMEOUT_SECONDS = 180
+SCHEMA_PROBE = r'''import json, pathlib, shutil, sqlite3, sys
 def q(value): return '"' + value.replace('"', '""') + '"'
 root = pathlib.Path(sys.argv[1])
 data = root / 'data'
@@ -62,9 +75,25 @@ path = data / 'tasks.sqlite3'
 if data.is_symlink() or path.is_symlink(): raise RuntimeError('Hub 数据库路径不能是符号链接')
 if not path.exists(): print(json.dumps({'exists': False, 'tables': [], 'objects': []}))
 else:
-    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5)
-    db.execute('PRAGMA query_only=ON')
-    db.execute('BEGIN')
+    def open_ro(db_path):
+        conn = sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True, timeout=5)
+        conn.execute('PRAGMA query_only=ON')
+        conn.execute('BEGIN')
+        return conn
+    try:
+        db = open_ro(path)
+    except sqlite3.OperationalError:
+        # WAL 模式在只读挂载卷上无法创建/映射 -shm；复制到容器临时 tmpfs 只读探测，绝不写入源卷。
+        tmp = pathlib.Path('/tmp/schema-probe')
+        tmp.mkdir(parents=True, exist_ok=True)
+        dst = tmp / 'tasks.sqlite3'
+        shutil.copyfile(path, dst)
+        wal = pathlib.Path(str(path) + '-wal')
+        if wal.is_file():
+            shutil.copyfile(wal, pathlib.Path(str(dst) + '-wal'))
+        db = sqlite3.connect(str(dst), timeout=5)
+        db.execute('PRAGMA query_only=ON')
+        db.execute('BEGIN')
     tables = []
     for name, sql in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name"):
         indexes = []
@@ -191,11 +220,41 @@ def _table_definitions(sql: str) -> tuple[dict[str, str], list[str], str]:
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        return _windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except OSError:
         return False
     return True
+
+
+def _windows_pid_alive(pid: int) -> bool:
+    """只读查询 Windows 进程状态；无法确认时保守认为事务仍在运行。"""
+    import ctypes
+    from ctypes import wintypes
+
+    # 零超时等待只需要 SYNCHRONIZE 权限，无需查询进程详情或终止权限。
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+    if not handle:
+        # ERROR_INVALID_PARAMETER 表示 PID 不存在。拒绝访问或其他未知错误时保守阻止并发事务。
+        return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER
+    try:
+        result = kernel32.WaitForSingleObject(handle, 0)
+        if result == 258:  # WAIT_TIMEOUT: 进程仍在运行
+            return True
+        # WAIT_OBJECT_0 表示已退出；WAIT_FAILED 或未知结果均保守保留活动状态。
+        return result != 0
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 class UpdateError(ValueError):
@@ -204,6 +263,20 @@ class UpdateError(ValueError):
 
 class ValidationError(UpdateError):
     """请求体本身不合法（字段、格式、路径穿越）；与事务状态冲突区分，按 400 返回。"""
+
+
+def _positive_int(value: str | None, default: int, name: str) -> int:
+    """环境变量里的秒数必须是正整数；留空用默认值，非法直接拒绝启动。"""
+    raw = str(value).strip() if value is not None else ""
+    if not raw:
+        return default
+    try:
+        number = int(raw)
+    except ValueError:
+        raise UpdateError(f"{name} 必须是正整数") from None
+    if number <= 0:
+        raise UpdateError(f"{name} 必须是正整数")
+    return number
 
 
 class Config:
@@ -233,6 +306,10 @@ class Config:
             if item.strip()
         ]
         self.health_timeout = float(env.get("HUB_UPDATE_HEALTH_TIMEOUT") or "240")
+        # Compose `up --wait` 的等待上限，单独配置，避免和归档/下载超时混在一起。
+        self.wait_timeout = _positive_int(
+            env.get("HUB_UPDATE_WAIT_TIMEOUT"), DEFAULT_WAIT_TIMEOUT_SECONDS, "HUB_UPDATE_WAIT_TIMEOUT"
+        )
 
     def image_ref(self, version: str) -> str:
         return f"{self.image_repo}:{version}"
@@ -397,6 +474,8 @@ class HubUpdater:
         self.download = download or self._download
         self.health = health or self._health
         self.sleep = sleep
+        # Compose `--wait` 能力只探测一次，所有切换路径复用同一结论。
+        self._compose_wait: bool | None = None
 
     # ---------- 基础动作 ----------
 
@@ -471,16 +550,42 @@ class HubUpdater:
         ids = [line.strip() for line in output.splitlines() if line.strip()]
         return ids[0] if ids else ""
 
-    def _switch(self, version: str) -> tuple[bool, str]:
+    def _switch(self, version: str, *, wait: bool) -> tuple[bool, str]:
         # compose 只认环境里的镜像标签；绝不拼接 shell 命令，避免注入。
+        # `--pull never` 确保只用刚刚校验过的本地标签，避免 compose 重新拉取同标签的不同内容。
         env = dict(os.environ, MENU_CAPTURE_IMAGE=self.config.image_ref(version))
-        code, output = self.run_env(
-            ["docker", "compose", "-f", str(self.config.compose_file), "-p", self.config.project,
-             "up", "-d", "--no-build", self.config.service],
-            DOCKER_TIMEOUT_SECONDS,
-            env,
-        )
+        args = [
+            "docker", "compose", "-f", str(self.config.compose_file), "-p", self.config.project,
+            "up", "-d", "--no-build", "--pull", "never",
+        ]
+        if wait:
+            # 由 Compose 等待容器 healthcheck；应用层 /api/version 仍需单独核验。
+            args += ["--wait", "--wait-timeout", str(self.config.wait_timeout)]
+        args.append(self.config.service)
+        code, output = self.run_env(args, DOCKER_TIMEOUT_SECONDS, env)
         return code == 0, (output or "")[:800]
+
+    def _compose_supports_wait(self) -> bool:
+        """一次性解析 `docker compose version`，决定切换时是否使用 `--wait`。"""
+        if self._compose_wait is not None:
+            return self._compose_wait
+        code, output = self.run(["docker", "compose", "version"], 30)
+        match = re.search(r"(\d+)\.(\d+)\.(\d+)", output) if code == 0 else None
+        supported = bool(match) and tuple(int(part) for part in match.groups()) >= COMPOSE_WAIT_MIN_VERSION
+        self._compose_wait = supported
+        detail = output.strip().splitlines()[0][:200] if output.strip() else "无法识别 Compose 版本"
+        self._audit(
+            "compose",
+            "supported" if supported else "unsupported",
+            f"Compose --wait {'可用' if supported else '不可用，降级为健康轮询'}：{detail}",
+        )
+        return supported
+
+    def _verify_timeout(self, wait_used: bool) -> float:
+        """`up --wait` 已保证容器健康时，应用层核验只保留有限窗口。"""
+        if not wait_used:
+            return self.config.health_timeout
+        return min(self.config.health_timeout, APP_VERIFY_TIMEOUT_SECONDS)
 
     def _run_with_env(self, args: list[str], timeout: float, env: dict[str, str]) -> tuple[int, str]:
         try:
@@ -492,8 +597,9 @@ class HubUpdater:
             part for part in (completed.stdout, completed.stderr) if part
         ).strip()
 
-    def _wait_healthy(self, version: str) -> tuple[bool, str]:
-        deadline = time.monotonic() + self.config.health_timeout
+    def _wait_healthy(self, version: str, *, timeout: float | None = None) -> tuple[bool, str]:
+        # 这里只做应用层版本核验的有限重试；容器健康在 Compose 支持 --wait 时已由 Docker 等待。
+        deadline = time.monotonic() + (self.config.health_timeout if timeout is None else timeout)
         detail = ""
         while time.monotonic() < deadline:
             state = self.health(version)
@@ -517,7 +623,9 @@ class HubUpdater:
         image = self._schema_probe_image()
         mount = f"type=volume,source={self.config.data_volume},target=/hub-data,volume-nocopy,readonly"
         code, output = self.run([
-            "docker", "run", "--rm", "--pull=never", "--network", "none", "--read-only", "--cap-drop=ALL",
+            "docker", "run", "--rm", "--pull=never", "--network", "none", "--read-only",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
+            "--cap-drop=ALL",
             "--security-opt=no-new-privileges", "--mount", mount,
             "--entrypoint", "python", image, "-c", SCHEMA_PROBE, "/hub-data",
         ], 30)
@@ -720,11 +828,12 @@ class HubUpdater:
                         started_at=_utc_now(), finished_at="", error="")
             pulled = False
             if request["image"]:
-                self._write("pulling", f"正在分层拉取 {request['image']}@{request['digest']}")
+                self._write("pulling",
+                            f"正在 docker pull --platform {OCI_PLATFORM} {request['image']}@{request['digest']}")
                 pulled, output = self._pull_image(request["image"], request["digest"], version)
                 if not pulled:
                     # 拉取失败不改变事务身份：审计后在同一事务内改用完整归档。
-                    self._audit("pull", "failed", output, version)
+                    self._audit("pull", "failed", f"docker pull/inspect/tag 未通过：{output}", version)
                     if not self._disk_ok(request):
                         self._fail(f"镜像分层拉取失败且磁盘余量不足：{output}", version)
                         raise UpdateError(f"镜像分层拉取失败且磁盘余量不足：{output}")
@@ -738,13 +847,15 @@ class HubUpdater:
                 if not ok:
                     self._fail(f"镜像加载失败：{output}", version)
                     raise UpdateError(f"镜像加载失败：{output}")
-            self._write("switching", f"正在切换到 {version}",
-                        delivery="oci" if pulled else "archive")
-            switched, output = self._switch(version)
+            wait_used = self._compose_supports_wait()
+            mode = "docker compose up --wait" if wait_used else "docker compose up + 健康轮询"
+            self._write("switching", f"正在切换到 {version}（{mode}）",
+                        delivery="oci" if pulled else "archive", compose_wait=wait_used)
+            switched, output = self._switch(version, wait=wait_used)
             if not switched:
                 return self._rollback_after_failure(previous, f"compose 切换失败：{output}", version)
             self._write("verifying", "正在核对运行版本与健康状态")
-            healthy, detail = self._wait_healthy(version)
+            healthy, detail = self._wait_healthy(version, timeout=self._verify_timeout(wait_used))
             if not healthy:
                 return self._rollback_after_failure(previous, f"健康检查未通过：{detail}", version)
             self._write("completed", f"已切换到 {version}")
@@ -769,13 +880,14 @@ class HubUpdater:
             code, _ = self.run(["docker", "image", "inspect", self.config.image_ref(target)], 30)
             if code != 0:
                 raise UpdateError(f"上一版本镜像 {self.config.image_ref(target)} 已不存在，无法自动回滚")
+            wait_used = self._compose_supports_wait()
             self._write("rolling_back", f"正在回滚到 {target}", target_version=target,
-                        started_at=_utc_now(), error="")
-            switched, output = self._switch(target)
+                        started_at=_utc_now(), error="", compose_wait=wait_used)
+            switched, output = self._switch(target, wait=wait_used)
             if not switched:
                 self._fail(f"回滚切换失败：{output}", target)
                 raise UpdateError(f"回滚切换失败：{output}")
-            healthy, detail = self._wait_healthy(target)
+            healthy, detail = self._wait_healthy(target, timeout=self._verify_timeout(wait_used))
             if not healthy:
                 # 回滚目标不可用时绝不能把采集服务留在停机状态：优先切回回滚前仍在运行的版本。
                 restored, restore_output = self._restore_after_failed_rollback(current)
@@ -833,23 +945,26 @@ class HubUpdater:
         )
         if code != 0:
             return False, f"拉取失败：{output[:600]}"
+        # 一次 inspect 同时核对 RepoDigests 与 Os/Architecture，避免重复调用。
         code, output = self.run(
-            ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", ref], 60
+            ["docker", "image", "inspect", "--format", "{{json .}}", ref], 60
         )
         if code != 0:
-            return False, f"无法读取镜像摘要：{output[:400]}"
+            return False, f"无法读取镜像信息：{output[:400]}"
         try:
-            digests = json.loads(output.strip() or "[]")
+            info = json.loads(output.strip() or "{}")
         except ValueError:
-            digests = []
-        if not isinstance(digests, list) or ref not in digests:
-            actual = ", ".join(str(item) for item in digests) if isinstance(digests, list) else "无法解析"
-            return False, f"拉取到的镜像摘要与清单不一致：{actual or '未知'}"
-        code, output = self.run(
-            ["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", ref], 60
-        )
-        if code != 0 or output.strip() != OCI_PLATFORM:
-            return False, f"镜像平台不是 {OCI_PLATFORM}：{output.strip() or '未知'}"
+            info = {}
+        if not isinstance(info, dict):
+            info = {}
+        repo_digests = info.get("RepoDigests")
+        normalized = [str(item).lower() for item in repo_digests] if isinstance(repo_digests, list) else []
+        if ref not in normalized:
+            actual = ", ".join(normalized) if normalized else "无法解析"
+            return False, f"拉取到的镜像摘要与清单不一致：{actual}"
+        platform = f"{info.get('Os')}/{info.get('Architecture')}"
+        if platform != OCI_PLATFORM:
+            return False, f"镜像平台不是 {OCI_PLATFORM}：{platform}"
         target = self.config.image_ref(version)
         code, output = self.run(["docker", "tag", ref, target], 60)
         if code != 0:
@@ -864,12 +979,14 @@ class HubUpdater:
             self._fail(message, version)
             raise UpdateError(message)
         self._require_rollback_compatible(self.journal(), target=previous)
-        self._write("rolling_back", f"{message}；正在回滚到 {previous}", error=message)
-        switched, output = self._switch(previous)
+        wait_used = self._compose_supports_wait()
+        self._write("rolling_back", f"{message}；正在回滚到 {previous}", error=message,
+                    compose_wait=wait_used)
+        switched, output = self._switch(previous, wait=wait_used)
         healthy = False
         detail = ""
         if switched:
-            healthy, detail = self._wait_healthy(previous)
+            healthy, detail = self._wait_healthy(previous, timeout=self._verify_timeout(wait_used))
         if not healthy:
             self._fail(f"{message}；回滚失败：{output or detail}", version)
             raise UpdateError(f"{message}；回滚失败：{output or detail}")
@@ -884,11 +1001,13 @@ class HubUpdater:
         code, _ = self.run(["docker", "image", "inspect", self.config.image_ref(version)], 30)
         if code != 0:
             return False, f"原版本镜像 {self.config.image_ref(version)} 不存在"
-        self._write("rolling_back", f"回滚未通过健康检查，正在恢复运行 {version}", target_version=version)
-        switched, output = self._switch(version)
+        wait_used = self._compose_supports_wait()
+        self._write("rolling_back", f"回滚未通过健康检查，正在恢复运行 {version}",
+                    target_version=version, compose_wait=wait_used)
+        switched, output = self._switch(version, wait=wait_used)
         if not switched:
             return False, output
-        healthy, detail = self._wait_healthy(version)
+        healthy, detail = self._wait_healthy(version, timeout=self._verify_timeout(wait_used))
         return healthy, detail
 
     def _fail(self, message: str, version: str) -> None:

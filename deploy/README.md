@@ -24,7 +24,9 @@ A 机运行共享后台。A、B 都安装 Windows 采集端，用各自已登录
 
 前后端随发布版本一起打包：React 构建产物在 `web/react/`，运行时不依赖 Node、npm 或外部 CDN。安装包与镜像都会写入版本信息，可用 `GET /api/version` 核对实际运行的后端版本与前端入口哈希。
 
-Windows 采集端按版本目录并存（`releases\<版本>`），`current-version` 决定守护进程启动哪个版本；数据、配置、设备身份和待上传结果都在 `%LOCALAPPDATA%\MenuCapture`，升级与回滚都不触碰。升级：运行新版安装包。回滚：执行安装目录下的 `rollback.ps1 -Version <旧版本>`，守护进程会在当前采集或标注结束后切回旧版本；脚本校验目标版本文件完整，并通过健康检查与 Worker 进程路径等待切换完成，兼容没有 `/api/version` 与 React 清单的迁移前版本。新版版本目录内的 `release-manifest.json` 记录版本、源码提交与前端入口哈希，可用于发布核对。
+Windows 采集端采用 Velopack 独立安装目录，与旧 Inno 安装目录隔离。业务数据、配置、设备身份与待补传结果必须保留在实际 MENU_CAPTURE_HOME（不假定默认路径）。当前 PR 的 Windows 自动安装能力关闭，直接 --rollback-to 已禁用；真实 SDK、独立恢复协调器和可信旧包恢复完成前不得启动生产切换。
+
+首次迁移先确认业务空闲，记录真实目录及旧版本恢复来源，停止旧 Worker 和登录入口，保留旧程序；在独立环境安装经验证的 Setup 并复用同一数据目录。核对 /api/version、commit、健康、设备配对及未上传数据后才清理旧安装入口。失败则恢复旧入口，不先卸载旧版本。发布清单仅以 velopack 扩展声明 Windows 新资产，不抬高全局 min_supported_version 阻塞旧 Hub。详细安全边界见 docs/updates/README.md。
 
 共享后台使用已经导入并核对摘要的镜像升级与回滚。保持同一 Compose 项目和数据卷。
 

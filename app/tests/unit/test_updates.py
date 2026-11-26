@@ -909,11 +909,23 @@ def test_install_supported_requires_windows_worker_and_opt_in(tmp_path, monkeypa
     assert service.status_no_check()["capabilities"]["install"] is False
 
     monkeypatch.setenv("MENU_CAPTURE_ALLOW_SELF_UPDATE", "1")
-    assert service.install_supported() is True
-    assert service.status_no_check()["capabilities"]["install"] is True
+    # Old release-directory layout must not expose the new Velopack installer.
+    assert service.install_supported() is False
+    assert service.status_no_check()["capabilities"]["install"] is False
 
     hub = UpdateService(tmp_path / "hub", role="hub", app_root=app, machine="AMD64")
     assert hub.install_supported() is False
+
+    # Velopack 后端可用且信任根已配置时才开放自动安装。
+    class ReadyBackend:
+        def available(self) -> bool:
+            return True
+
+    velopack_service = UpdateService(
+        tmp_path / "runtime-vp", role="worker", app_root=app, machine="AMD64", backend=ReadyBackend(),
+    )
+    assert velopack_service.install_supported() is True
+    assert velopack_service.status_no_check()["capabilities"]["install"] is True
 
 
 
@@ -1475,236 +1487,6 @@ def test_update_flow_surfaces_failure_after_background_disarms(tmp_path):
     # 用户取消后不应显示为失败。
     service._schedule = {**service._schedule, "last_result": "", "note": "已取消更新"}
     assert service.update_flow()["stage"] == "idle"
-
-
-# ---------- 增量补丁清单与下载 ----------
-
-PATCH_NAME = "MenuCapture-0.2.0-to-0.3.0.patch.zip"
-
-
-def patch_payload(version: str, full_body: bytes, patch_body: bytes, *, catalog: str = "",
-                  patch_name: str = PATCH_NAME) -> tuple[dict, dict]:
-    payload = download_manifest(version, full_body)
-    entry = {
-        "from": "0.2.0",
-        "name": patch_name,
-        "size": len(patch_body),
-        "sha256": hashlib.sha256(patch_body).hexdigest(),
-        "url": f"{BASE}/v{version}/{patch_name}",
-        "platform": "windows",
-        "arch": "x64",
-        "format": "zip-sha256-v1",
-    }
-    if catalog:
-        entry["catalog"] = catalog
-    payload["patches"] = [entry]
-    return payload, entry
-
-
-def release_with_patch(tag: str, payload: dict, full_body: bytes, patch_body: bytes,
-                       *, patch_name: str = PATCH_NAME, extras: tuple[str, ...] = ()) -> dict:
-    rel = download_release(tag, payload, full_body)
-    rel["assets"].append({
-        "name": patch_name,
-        "size": len(patch_body),
-        "browser_download_url": f"{BASE}/{tag}/{patch_name}",
-        "digest": "sha256:" + hashlib.sha256(patch_body).hexdigest(),
-    })
-    for name in extras:
-        rel["assets"].append({
-            "name": name,
-            "size": 5,
-            "browser_download_url": f"{BASE}/{tag}/{name}",
-            "digest": "",
-        })
-    return rel
-
-
-def make_install_root(tmp_path: Path, version: str = "0.2.0", commit: str = "c" * 40) -> Path:
-    root = tmp_path / "install"
-    release_dir = root / "releases" / version
-    release_dir.mkdir(parents=True)
-    release_dir.joinpath("release-manifest.json").write_text(
-        json.dumps({"version": version, "git_commit": commit}), encoding="utf-8"
-    )
-    return root
-
-
-def test_manifest_accepts_optional_patch_extension(tmp_path):
-    full, patch = b"full" * 10, b"patch" * 5
-    payload, entry = patch_payload("0.3.0", full, patch, catalog="p.cat")
-    rel = release_with_patch("v0.3.0", payload, full, patch, extras=("p.cat",))
-    service = make_service(tmp_path, [rel], {"v0.3.0": payload})
-
-    status = service.check(force=True)
-
-    assert status["update_available"] is True
-    patches = status["latest"]["patches"]
-    assert len(patches) == 1
-    assert patches[0]["from"] == entry["from"]
-    assert patches[0]["name"] == entry["name"]
-    assert patches[0]["catalog"] == "p.cat"
-    assert patches[0]["kind"] == "windows_patch"
-
-
-@pytest.mark.parametrize("mutation", [
-    lambda entry: {**entry, "format": "zip-sha1-v1"},
-    lambda entry: {**entry, "arch": "arm64"},
-    lambda entry: {**entry, "from": "0.3.0"},
-    lambda entry: {**entry, "size": 1},
-    lambda entry: {**entry, "sha256": "f" * 64},
-    lambda entry: {**entry, "url": f"{BASE}/v9.9.9/{entry['name']}"},
-    lambda entry: {**entry, "name": "not-in-release.zip"},
-])
-def test_invalid_patch_entry_never_breaks_full_asset(tmp_path, mutation):
-    full, patch = b"full" * 10, b"patch" * 5
-    payload, entry = patch_payload("0.3.0", full, patch)
-    payload["patches"] = [mutation(entry)]
-    rel = release_with_patch("v0.3.0", payload, full, patch)
-    service = make_service(tmp_path, [rel], {"v0.3.0": payload})
-
-    status = service.check(force=True)
-
-    assert status["update_available"] is True
-    assert status["latest"]["patches"] == []
-
-
-def test_malformed_patches_field_is_ignored(tmp_path):
-    full = b"full" * 10
-    payload = download_manifest("0.3.0", full)
-    payload["patches"] = {"bad": "shape"}
-    rel = download_release("v0.3.0", payload, full)
-    service = make_service(tmp_path, [rel], {"v0.3.0": payload})
-
-    status = service.check(force=True)
-
-    assert status["update_available"] is True
-    assert status["latest"]["patches"] == []
-
-
-def _patch_entry() -> dict:
-    return {
-        "kind": "windows_patch",
-        "from": "0.2.0",
-        "name": PATCH_NAME,
-        "size": 10,
-        "sha256": "a" * 64,
-        "url": f"{BASE}/v0.3.0/{PATCH_NAME}",
-        "platform": "windows",
-        "arch": "x64",
-        "format": "zip-sha256-v1",
-    }
-
-
-def test_select_patch_requires_opt_in_and_trusted_baseline(tmp_path, monkeypatch):
-    monkeypatch.setattr(updates_module.sys, "platform", "win32")
-    root = make_install_root(tmp_path)
-    service = UpdateService(
-        tmp_path / "runtime", role="worker", platform="windows", machine="AMD64",
-        install_root=root, fetcher=Fetcher([], {}),
-    )
-    latest = {"patches": [_patch_entry()]}
-
-    # 默认关闭增量，即使基线与补丁都齐全。
-    assert service._select_patch(latest, "0.2.0") is None
-
-    monkeypatch.setenv("MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE", "1")
-    # 没有签名 catalog 时，必须沿用既有 unsigned 放行开关。
-    assert service._select_patch(latest, "0.2.0") is None
-
-    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
-    assert service._select_patch(latest, "0.2.0")["name"] == PATCH_NAME
-
-    # 签名 catalog 存在时不再要求 unsigned 放行。
-    monkeypatch.delenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE")
-    latest = {"patches": [{**_patch_entry(), "catalog": "p.cat"}]}
-    assert service._select_patch(latest, "0.2.0")["catalog"] == "p.cat"
-
-    # 基线清单版本不符时拒绝。
-    root.joinpath("releases/0.2.0/release-manifest.json").write_text(
-        json.dumps({"version": "0.1.9"}), encoding="utf-8"
-    )
-    assert service._select_patch(latest, "0.2.0") is None
-
-
-def test_patch_download_preferred_when_enabled(tmp_path, monkeypatch):
-    monkeypatch.setattr(updates_module.sys, "platform", "win32")
-    monkeypatch.setenv("MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE", "1")
-    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
-    full, patch = b"exe" * 100, b"patch" * 20
-    payload, _ = patch_payload("0.3.0", full, patch)
-    rel = release_with_patch("v0.3.0", payload, full, patch)
-    service = make_service(
-        tmp_path, [rel], {"v0.3.0": payload}, opener=FakeOpener(patch),
-        install_root=make_install_root(tmp_path),
-    )
-    service.check(force=True)
-
-    service.start_download()
-    state = wait_download(service)
-
-    assert state["status"] == "completed"
-    assert state["asset_kind"] == "windows_patch"
-    assert state["from_version"] == "0.2.0"
-    assert Path(state["path"]).read_bytes() == patch
-
-
-class PatchFailOpener(FakeOpener):
-    def __call__(self, url, headers, timeout):
-        if url.endswith(PATCH_NAME):
-            raise OSError("patch unavailable")
-        return super().__call__(url, headers, timeout)
-
-
-def test_patch_download_failure_falls_back_to_full_once(tmp_path, monkeypatch):
-    monkeypatch.setattr(updates_module.sys, "platform", "win32")
-    monkeypatch.setenv("MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE", "1")
-    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
-    full, patch = b"exe" * 100, b"patch" * 20
-    payload, _ = patch_payload("0.3.0", full, patch)
-    rel = release_with_patch("v0.3.0", payload, full, patch)
-    service = make_service(
-        tmp_path, [rel], {"v0.3.0": payload}, opener=PatchFailOpener(full),
-        install_root=make_install_root(tmp_path),
-    )
-    service.check(force=True)
-
-    service.start_download()
-    state = wait_download(service)
-
-    assert state["status"] == "completed"
-    assert state["asset_kind"] == "windows_installer"
-    assert state["fallback_reason"]
-    assert Path(state["path"]).read_bytes() == full
-
-
-def test_cancelled_patch_download_does_not_fall_back(tmp_path, monkeypatch):
-    monkeypatch.setattr(updates_module.sys, "platform", "win32")
-    monkeypatch.setenv("MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE", "1")
-    monkeypatch.setenv("MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE", "1")
-    monkeypatch.setattr(updates_module, "DOWNLOAD_CHUNK_BYTES", 8)
-    full, patch = b"exe" * 100, b"patch" * 200
-    payload, _ = patch_payload("0.3.0", full, patch)
-    rel = release_with_patch("v0.3.0", payload, full, patch)
-    opener = GatedOpener(patch)
-    service = make_service(
-        tmp_path, [rel], {"v0.3.0": payload}, opener=opener,
-        install_root=make_install_root(tmp_path),
-    )
-    service.check(force=True)
-
-    service.start_download()
-    deadline = time.monotonic() + 5
-    while service.download_status()["downloaded"] == 0 and time.monotonic() < deadline:
-        time.sleep(0.01)
-    service.cancel_download()
-    # 放行被阻塞的读取，让下载线程回到循环顶部观察取消，避免依赖 5 秒门超时。
-    opener.gate.set()
-    state = wait_download(service)
-
-    assert state["status"] == "cancelled"
-    assert state["asset_kind"] == "windows_patch"
-    assert state["fallback_reason"] == ""
 
 
 def test_hub_manifest_accepts_pinned_oci_extension(tmp_path: Path):

@@ -1,6 +1,6 @@
 # 软件更新与版本生命周期（Issue #32）
 
-本目录记录应用内更新的发布契约、安全边界与当前实施阶段。更新发现、清单校验、偏好、审计、受控下载已实现；Windows 安装、切换与回滚执行器已通过隔离环境验收，前端按服务端能力显示安装入口（默认未启用自动安装，见下节）。Hub 镜像更新执行器已实现并通过隔离 Compose 验收（含真实 v0.2.2 跨版本回滚）；历史版本/下载缓存/日志清理与 Hub 镜像保留策略已实现（先预览、确认后删除）；多设备状态汇总与版本元数据分发已实现，批量推广仍待实施。
+本目录记录应用内更新的发布契约、安全边界与当前实施阶段。更新发现、清单校验、偏好、审计、受控下载已实现；旧 Inno Windows 执行器曾通过隔离环境验收；新 Velopack 执行器尚未通过真实安装、切换与回滚验收，当前安全门禁关闭自动安装。Hub 镜像更新执行器已实现并通过隔离 Compose 验收（含真实 v0.2.2 跨版本回滚）；历史版本/下载缓存/日志清理与 Hub 镜像保留策略已实现（先预览、确认后删除）；多设备状态汇总与版本元数据分发已实现，批量推广仍待实施。
 
 Issue #32 最新正文已把产品形态收敛为「一次授权完成更新」：用户只需点击一次“立即更新”，系统负责下载、校验、等待采集结束、安装、重启、重连与健康检查；技术细节下沉到高级设置。本目录按该形态记录契约，并明确取消 Hub 远程触发安装与多设备分批安装编排。
 
@@ -80,25 +80,24 @@ Issue #32 最新正文已把产品形态收敛为「一次授权完成更新」�
 - `hub_image` 可带可选 `registry`（固定 `ghcr.io/<org>/<repo>`）与 `digest`（`sha256:<64 位十六进制>`），用于 OCI 分层拉取；任一字段非法只丢弃这两个可选字段，完整归档资产仍然可用，旧客户端完全不受影响。
 - 缺少清单或校验失败时仍展示该 Release，但标记不可更新并说明原因，不静默回退到旧版本。
 
-SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Release 语义；后续如引入签名/发布证明，必须在此文档与实现中显式升级，不能把摘要当作唯一真实性依据。
+SHA-256 只证明完整性。Windows Velopack 发布还要求 Ed25519 发布者签名，签名绑定版本、渠道、commit、最低支持版本、回滚策略、完整资产清单以及 Velopack full/delta/index 身份；客户端只信任代码内固定公钥，缺签名、未知密钥或外层策略不一致时拒绝更新。正式发布密钥由受控发布环境注入，绝不提交私钥或用 unsigned 产物代替。当前客户端固定公钥表尚未配置，因此正式签名发布和安装均 fail-closed，属于发布启用阻断项。
 
-### 可选增量补丁（`patches`）
+### Windows 增量更新（Velopack）
 
-发布清单可带可选顶层 `patches` 数组；旧客户端忽略该字段，只使用 `assets` 中的完整资产。
+Windows 的差分、重建与安装已交给 Velopack，不再由本项目生成 `patches`。
 
-- 每条补丁字段：`from`、`name`、`size`、`sha256`、`url`、`platform`（固定 `windows`）、`arch`、`format`（固定 `zip-sha256-v1`），可选 `catalog`（同一 Release 内的签名目录资产）。
-- 服务端逐条尽力校验：`from` 必须低于目标版本、格式/平台/架构匹配、URL 归属正确、名称/大小/SHA-256 与同一 Release 资产一致；任一不合法只丢弃该条，**不影响**完整安装包仍可更新。
-- 补丁本体为 ZIP，内含 `patch-manifest.json` 与 `files/<路径>`；清单携带基线/目标的完整受管文件清单、版本、`from_commit`/`to_commit`、平台、架构与受限区域指纹。
-- 安全开关：只有 `MENU_CAPTURE_ALLOW_INCREMENTAL_UPDATE=1` 时才考虑增量（默认关闭）。没有签名 `catalog` 时仍必须沿用既有 `MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE=1`，不新增任何放宽；有 `catalog` 时执行器用 `Test-FileCatalog` + Authenticode 双重校验，任一不通过即拒绝增量。
-- 只允许应用层变化：运行环境（`python/`、`node/`、`tesseract/`、`vcruntime/`）、依赖锁（`requirements*.txt`、`package-lock.json` 等）、安装器与根级 `Launch.ps1`/`rollback.ps1`/`setup.iss` 指纹变化时，该版本不生成补丁，客户端也只走全量。
-- 不引入补丁链：跨多个版本升级只有在存在 `from == 当前版本` 的补丁时才使用，否则直接全量。
-- 生成工具：`deploy/windows/make_patch.py`（纯标准库）比较两棵完整构建树后输出 ZIP 与同名 `.json`；`build.ps1 -BundleOutput <dir>` 另存本次正式构建的 staging bundle，发布时打包为 `MenuCapture-<版本>-bundle.zip` 随 Release 归档。历史基线只能下载该正式归档并校验版本与 commit，缺失或校验不一致时跳过补丁，仅发布完整安装包；条件不满足时输出 `status: skipped`，同样不阻断完整安装包发布。
+- 构建期用 `vpk pack` 生成 `Setup.exe`、full/delta `.nupkg` 与 `releases.win-x64-<channel>.json`；有历史正式包时由 `vpk download github` 取回并由 vpk 自动生成增量。
+- 客户端用 Velopack Python SDK 的 `UpdateManager` 发现、下载与应用更新；SDK 负责版本选择、差分计算、包重建与全量兜底。
+- 新发布清单的 `assets` 保留 `hub_image`，顶层 `velopack` 扩展记录 setup/full/deltas/index 的实际名称、大小、SHA-256、URL、pack ID、版本、commit、tag 与渠道，并由完整清单签名绑定。禁止将 Velopack Setup 声明为旧 `windows_installer`。下载前后核对 SDK 资产身份及实际完整包摘要；仅由 Velopack 官方 SDK 选择 delta 或 full 并执行重建，不实现自制补丁应用。
+- 渠道固定为 `win-x64-stable` / `win-x64-preview`，平台与架构编码在通道名中，避免跨平台误装。
+- 首次迁移到 Velopack 的版本没有历史 Velopack 包，按全量迁移处理；之后才由框架生成真实增量。
+- 当前正式 v0.3.4 清单仍是 Inno/文件补丁契约，只有 `windows_installer`，没有 Velopack full 包或签名；它不能成为该执行器的 OTA 恢复基线。首次切换必须经过独立验证的完整安装迁移，随后基于已签名的 Velopack 版本验证增量；不得把旧版改写或伪装成 Velopack 发布。
 
 ## 受控下载
 
 - 通过 `POST /api/updates/download` 启动，`POST /api/updates/download/cancel` 取消；进度随 `GET /api/updates/status` 的 `download` 字段返回。
 - 只有已通过清单校验、且 `update_available` 为真的版本才允许下载；资产必须与本机平台、归一化架构一致，否则直接拒绝。
-- 文件只写入 `data_root/data/updates/<version>/`：先写 `<asset>.part`，完整校验 SHA-256 后才原子替换为正式文件，绝不写入程序目录或安装目录。
+- 文件只写入 `data_root/data/updates/<version>/`：先写 `<asset>.part`，完整校验 SHA-256 后才原子替换为正式文件，绝不写入程序目录或安装目录。Windows 的 Velopack 包由 SDK 写入 `%LOCALAPPDATA%\Yipu.MenuCapture\packages`，不经过本目录。
 - 断点续传使用 HTTP `Range` 与 `.part` 现有长度；服务器忽略 Range 返回 200 时从零重写，并重新按完整文件大小检查磁盘余量。
 - 续传响应必须提供匹配的 `Content-Range`（起点、末尾、总长）与 `Content-Length`；记录 `ETag`/`Last-Modified` 并在续传时发送 `If-Range`。范围不一致时丢弃断点并自动重下一次完整文件，绝不把错误区段拼进产物。
 - 下载与清单请求只允许重定向到受信任的 GitHub 域名（`github.com`、`objects.githubusercontent.com`、`release-assets.githubusercontent.com`、`api.github.com`），其他主机或 HTTP 一律拒绝。
@@ -106,27 +105,19 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 同一时刻只允许一个下载任务；进程重启后把未完成的下载如实标记为“已中断”，不会假装仍在下载。
 - 完成后只上报文件路径与校验结果，不执行安装、切换或重启；这些能力由下一节的独立执行器负责。
 
-## Windows 安装执行器（需显式启用）
+## Windows 安装执行器（Velopack，当前开发门禁）
 
-- 仅 Windows Worker、能定位安装根，且运维设置 `MENU_CAPTURE_ALLOW_SELF_UPDATE=1` 时，能力接口才把 `install`/`rollback` 上报为可用；未完成真实 Windows 升级/回滚验收前不默认开启。
-- `POST /api/updates/install` 启动安装，必须提交与目标版本一致的 `confirm`；`GET /api/updates/install` 返回安装日志与当前状态。
-- 控制器与执行器共用 `build_job()` 生成的安装任务契约（`schema`、`artifact_path`、`asset_name`、`sha256`、`size`、`download_dir`、`data_dir`、`install_root`、目标/上一版本、端口），字段只定义一次；契约不匹配直接拒绝，不再出现"写入 `path`、读取 `artifact_path`"这类跨模块断裂。
-- 增量任务使用 schema 2，并在同一任务里携带补丁与同版本完整安装包身份（名称/大小/SHA-256/URL）；执行器校验补丁大小与 SHA-256、`from` 与当前版本一致、基线 `release-manifest.json` 版本与 commit、平台/架构，以及可选签名目录。
-- 补丁应用先按基线清单复制未变化文件，再写入修改文件，最终受管文件集合与哈希必须与补丁目标清单完全一致；只写 `releases/.<版本>.patch-tmp`，完成后原子改名为目标目录，绝不原地修改当前版本。
-- 回退（同一次用户授权内最多一次）：补丁下载失败、切换版本前的基线校验失败、补丁应用失败都会改用同版本完整安装包并重新走 Authenticode 校验；用户取消不触发兜底；切换后的健康失败仍按既有回滚规则处理。
-- 手动安装和空闲调度均将已完成下载的补丁记录交给独立执行器。控制器先核对发布清单身份、路径和授权；落盘后的补丁缺失、内容损坏或基线变化由执行器回退。记录与清单冲突、路径越界或授权已撤销时终止安装。
-- `/api/updates/status.download` 记录服务端实际选中的资产类型、补丁基线、资产大小与回退原因；设置页高级诊断展示这些字段。界面不把 OCI 镜像分层复用伪装成可精确计量的下载百分比。
-- 失败或回滚后清理未被 `current-version` 指向的目标目录，避免 `setup.iss` 的 `onlyifdoesntexist` 让残缺目录挡住下一次完整安装。
-- 安装前重新校验：版本语义化、平台/架构、资产名、大小、SHA-256、`download_dir/<version>/<asset>` 路径归属，且与当前发布清单的资产哈希/名称/大小一致；不信任历史 `completed` 状态。
-- 路径安全：先校验路径片段、逐级拒绝符号链接/重解析点，再解析并确认仍在下载目录内；安装根同样拒绝链接、文件系统根与非 `releases` 目录。
-- 可信发布证明：固定仓库正式 Release + 清单 SHA-256 + 安装包 Authenticode 签名状态。签名有效才通过；未签名需显式设置 `MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE=1`；签名无效一律拒绝并记录到安装日志。
-- 采集或人工标注未结束时拒绝安装；采集/标注启动与安装启动共用同一把锁，闭合"空闲检查 → 写任务"之间的竞态窗口；安装进行中服务端拒绝新的采集/标注请求。
-- 独立进程执行（守护进程会终止并重启采集端，工作线程无法观察重启后的健康状态）：静默运行安装器并显式传入 `/DIR=<安装根>` → 校验 `releases/<version>`、发布清单、前端入口哈希与 `current-version` → 轮询 `/api/version` 与 `/healthz`，要求版本、角色 `worker`、健康状态、前端入口和清单 `git_commit` 全部一致。
-- 事务异常恢复：任务记录执行器 PID；服务启动或状态查询发现进程已退出时，按 `current-version` 与实际运行版本收尾为 `completed`/`failed`，不会长期停在 `installing`。
-- 安装器失败且已改动 `current-version`、或健康检查超时，自动调用 `rollback.ps1 -Version <上一版本>` 回滚并核对上一版本；回滚前比对数据库结构指纹，若新版本已执行迁移则阻止自动回滚并提示人工确认，避免旧版本读不懂新结构。
-- 单进程内串行化安装启动，同一时刻只允许一个安装任务。
-- 设置中心按 `GET /api/updates/install` 的真实能力显示安装入口：下载完成且能力可用时提供"安装并重启"，确认窗口写明重启与回滚影响；能力未启用时只说明原因，不显示按钮。
-- 隔离验收使用 `deploy/windows/ota-smoke.ps1`，覆盖安装 API、独立执行器、静默安装、版本切换和回滚。现有产物可用于本地验证。候选包需要复验时，在本轮唯一完整 CI 中使用适用的 OTA 基线参数。 [集成交付规则](../governance/engineering-standards.md#发布与云端构建)
+- PR #103 已实现独立于 `current` 的恢复看门狗、SDK 更新交接、候选版本隔离数据库验证与恢复门禁；但当前开发机不具备 Windows 原生运行环境，尚未完成真实 SDK/Windows 安装与切换验证，故 `install_supported=false`，`MENU_CAPTURE_ALLOW_SELF_UPDATE=1` 不能绕过门禁。
+- 下载及资产身份验证与安装权限分离。正式资产必须具有有效的 Ed25519 签名并匹配客户端固定公钥；`MENU_CAPTURE_ALLOW_UNSIGNED_UPDATE=1` 仅是显式开发/测试豁免，不是生产回退路径。发布清单缺签名、信任根未配置、签名错误或未知签名模式均拒绝。
+- `data/update-install.json` 为唯一安装事务事实源，事务带 schema_version、transaction_id、目标发布资产身份、数据库结构基线。跨进程短时锁与原子替换保护状态迁移；陈旧请求不得覆盖新事务。
+- Worker 关闭入口仅接受本机 HTTP POST、协调令牌、合法 stopping 事务及匹配目标版本；重新检查采集和标注空闲。旧 update-apply-request、update-apply-state、rollback-request 不再驱动安装。
+- 超时只用于诊断，不解除业务闸门；仅版本字符串相等不能完成安装。未知状态和损坏记录保持恢复阻断。
+- 恢复看门狗位于 `data/recovery`，必须先复制自当前受信发布并完成 nonce/PID/创建时间 ready 握手。它与 Python 共用同一字节锁（`data/update-install.lock`），在锁内重读事务、确认协调器已退出且官方 `Update.exe` 已停止并超过无进展时限后写入 `recovery_required`，**定位为独立于 `current` 的故障检测器**，不自行解包、切换目录或回滚；新启动器完全无法启动时按下方受控人工恢复 SOP 处置（不宣称已验证无人值守自动恢复）。
+- 验证候选版本时，使用 SQLite backup API（包含 WAL 已提交事务）在**与 `data_root`、`current`、`packages` 完全分离的独立目录**创建一致性副本；缺少主库、数据库清单为空、复制失败、结构或核心业务表行数不一致均拒绝成功。真实 Worker 在 `verifying` 阶段启动时，`TaskStore` 初始化与后台业务/同步写入（`recover_publishes`、`store.recover`、`materials`、`shared worker`、`connections`、`resume_schedule`）明确分离，须待事务进入 `completed` 并通过本机 `/api/internal/release-business-gate` 放行后才启动后台业务服务。
+- 准备阶段（`prepared`）先按事务所有权规则 `claim` 再做预检，确保预检失败合法落盘为 `failed` 并保留旧 Worker；HTTP shutdown 响应丢失时核验真实进程树与端口，状态不确定一律进入 `recovery_required`，绝不直接 `failed` 解锁。
+- 恢复包严格使用 `previous_version` 的实际发布渠道（支持 `stable -> preview`、`preview -> stable` 与同渠道），并在 `recovery_asset.channel` 中持久化，回滚时按旧包实际渠道调用 SDK。
+- 回滚前要求候选 Worker 通过受控本机 API 确认关闭，并验证 Job Object 进程树退出且业务端口释放。停止失败或进程状态未知时保持 `recovery_required`，不得启动 updater。
+- 直接 `--rollback-to` 已禁用。真实 Windows 验收、固定发布公钥引导、数据库迁移兼容及 Inno 迁移脚本/实机验证完成前，不恢复生产自动安装。历史 Inno 验收不构成新框架通过证据。
 
 ## Hub 镜像更新执行器（宿主机，需显式部署）
 
@@ -165,6 +156,7 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 清点本身只读：`GET /api/updates/status` 与 `GET /api/updates/cleanup` 不删除目录、不修改
   `current-version`；符号链接/重解析点跳过。
 - 非 Windows 或缺少 `releases` 目录时明确显示“不支持”，不伪造可释放空间。数据目录下即使存在 `releases` 也不会被当作安装根。
+- Velopack 安装布局下不再暴露 `releases` 清点与历史版本清理（`install_root` 返回空）：`current`、`packages` 与旧版本保留由 Velopack 管理，设置中心只保留下载缓存与日志治理，避免与框架争抢版本目录。
 
 ## 存储治理（先预览，确认后删除）
 
@@ -203,17 +195,15 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 
 以下命令均在隔离环境先演练，生产解冻前不得直接执行。
 
-1. **首次接入更新执行器（旧版 → 支持 OTA 的版本）**：旧版没有安装入口，仍需按传统方式部署一次；
-   升级后确认 `release-manifest.json`、`current-version` 与 `/api/version` 一致，再启用
-   `MENU_CAPTURE_ALLOW_SELF_UPDATE=1`。Hub 侧额外部署 `deploy/hub-update/hub_updater.py` 并配置
-   `HUB_UPDATE_*` 变量，未配置时设置页只显示原因。
-2. **日常升级**：Hub 在设置中心检查 → 下载 → 确认安装；Worker 由 Hub 分批推送目标版本后在本机
-   确认安装。采集中/标注中会被安全闸门拒绝，等待任务结束或安全暂停后重试。
-3. **升级前备份**：保留当前及最近两个可回滚版本、数据目录、设备凭据与待上传结果；不修改生产
-   数据库结构。
-4. **回滚**：Windows 使用版本管理中的回滚入口或 `deploy/windows/rollback.ps1 -Version <版本>`；
-   若新版本已执行不可逆迁移，执行器按数据库结构指纹阻止自动回滚并提示人工确认。Hub 使用执行器
-   `POST /rollback`，回滚目标不健康时会自动切回回滚前版本。
+1. **首次 Inno → Velopack 迁移**：记录并保护实际 MENU_CAPTURE_HOME、设备身份、配置、数据库和待补传数据；确认业务空闲后停止旧 Worker 与登录入口，保留旧程序和可恢复资料。独立安装经验证的新 Setup，复用原数据目录，核对版本、commit、配对和数据后再清理旧入口。失败恢复旧入口，不先卸载旧版。新 Setup 不进入旧 windows_installer 清单，全局 min_supported_version 不为迁移而抬高。
+2. **日常升级**：Hub 保持受控更新；Windows 真实安装和恢复验证完成前仅允许检查/受控下载，不启用自动切换。暂停但未结束的业务轮次也阻止安装。
+3. **升级前备份**：保留可信旧版完整包、配置、数据、设备身份与待补传结果。结构一致不等于数据语义一定兼容。
+4. **回滚与 `current` 外受控人工恢复 SOP**：Windows 直接切换入口已禁用。当新启动器完全无法启动或事务进入 `recovery_required` 时，运维在 `current` 之外按以下顺序执行受控人工恢复（不得解包或手工覆盖 `current`）：
+   1. **确认进程与更新器均已停止**：核对 `MenuCapture.exe`、`python.exe`（业务 Worker）与 `<install_root>\Update.exe` 均已退出，且业务端口（默认 `8765`）未被占用；若 `Update.exe` 仍在运行则等待其结束，禁止并发干预。
+   2. **审计事务与数据库基线**：读取 `<data_root>\data\update-install.json`（确认 `transaction_id`、`previous_version`、`previous_commit`、`recovery_asset` 与 `schema_baseline.snapshot.sha256`）及 `<data_root>\recovery\watchdog.log`；对当前 `<data_root>\data\tasks.sqlite3` 做只读 SQLite backup 后比对 SHA-256。若数据库已发生前向变更或存在待补传/新增业务数据，必须先备份整份 `<data_root>\data` 并评估兼容性，禁止盲目覆盖。
+   3. **核验可信恢复包**：定位 `recovery_asset.path`（位于 `<data_root>\data\recovery\<version>-<sha12>\*.nupkg`），用 `Get-FileHash -Algorithm SHA256` 核对与 `recovery_asset.sha256` 一致，并确认包内 `release-manifest.json` 的 `version`/`git_commit` 与 `previous_version`/`previous_commit` 一致；将已核验的 `.nupkg` 复制到 `<install_root>\packages\` 并再次核对 SHA-256。
+   4. **通过官方更新器恢复并复核**：仅在确认恢复包与数据库兼容后，调用官方 `<install_root>\Update.exe`（或对应旧版经验证的官方 `Setup.exe`）完成受控安装；启动后核对 `/healthz`、`/api/version`（版本与 commit 回到 `previous_version`/`previous_commit`）与 `tasks.sqlite3` 完整性，最后留存人工恢复审计记录后再解除 `update-install.json` 恢复闸门。
+   - Hub 回滚使用宿主机执行器 `POST /rollback`。
 5. **存储清理**：先 `GET /api/updates/cleanup` 预览，再以 `confirm: "cleanup"` 确认；安装/下载
    期间拒绝清理。Hub 镜像与归档执行 `python3 hub_retention.py --keep 3` 预览，确认后加
    `--apply --confirm prune`。绝不删除数据卷、Docker 容器或业务素材。
@@ -252,8 +242,8 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 - 保留数量可配置（2–5，默认 3，含当前版本）：清点与清理始终优先保护运行中、当前、待安装与回滚目标。
 - 受控下载：资产匹配、磁盘预检、断点续传、进度展示、取消、SHA-256 校验与下载审计。
 - Windows 安装执行器：安装前重校验、路径与签名校验、空闲闸门、独立进程静默安装（显式 `/DIR`）、目标版本文件/清单/前端哈希与角色核对、事务异常恢复、迁移感知回滚；需显式启用。
-- Windows OTA 隔离验收已覆盖应用内安装及回滚。前端安装入口须由服务端显式启用。 [隔离验收记录](https://github.com/zhaoyongze123/wechat-miniapp-menu-agent/actions/runs/45438329640)
-- Windows 文件级增量更新（Phase 1）：`deploy/windows/make_patch.py` 在正式构建 bundle 上生成补丁，发布清单可选 `patches`；执行器 schema 2 重建目标版本，失败在同一授权内回退一次完整安装包；默认关闭。
+- 旧 Inno OTA 隔离验收已覆盖应用内安装及回滚；该证据不适用于新 Velopack 框架。当前 Windows 自动安装能力关闭。 [隔离验收记录](https://github.com/zhaoyongze123/wechat-miniapp-menu-agent/actions/runs/45438329640)
+- Windows 增量更新：`vpk` 在构建期基于历史正式 full 包生成 delta；客户端由 Velopack SDK 完成差分下载、重建与全量兜底。首次迁移版本按全量处理。
 - 存储治理：`GET/POST /api/updates/cleanup` 提供只读预览与确认后删除；按配置保留当前/运行中/最近多个
   版本并保护待安装下载包，安装/下载期间拒绝清理；设置中心提供存储治理面板。
 - Hub 镜像/归档保留脚本 `deploy/hub-update/hub_retention.py`：默认 dry-run，确认后按版本保留策略
@@ -276,7 +266,7 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
 | 一次授权完成更新 | 已实现 | `POST /api/updates/update` 一次授权串联下载、等待空闲、安装、重启与健康检查；`flow` 统一进度；页面关闭后服务端继续；可取消/重试 |
 | 立即安装 | 已实现 | 需显式启用执行器；下载产物与清单、签名状态、空闲闸门均重校验 |
 | 空闲后更新（安排/取消） | 已实现 | 持久化安排，后台等待采集/标注结束；执行器二次校验；可随时取消，不强行结束任务 |
-| 回滚 | 已实现 | Windows 版本目录回滚 + Hub 执行器回滚；数据库结构指纹不兼容时转人工恢复 |
+| 回滚 | 部分完成 | Hub 执行器回滚；Windows Velopack 独立恢复协调器及可信旧包恢复待验证 |
 | 更新记录 | 已实现 | `data/update-history.jsonl`，含检查/偏好/下载/安装/安排/清理结果 |
 | 多设备状态汇总 | 已实现 | Worker 上报版本与更新状态，Hub 汇总区分未上报/离线/已下载/等待空闲/安装成功 |
 | 集中分批推广范围 | 已实现 | `GET/PUT /api/shared/update-rollout` 控制目标版本分发范围；不含远程安装 |
@@ -293,10 +283,8 @@ SHA-256 只证明完整性，发布者真实性依赖固定仓库的正式 Relea
   受信任发布证明只有 SHA-256 与仓库来源约束，不能替代代码签名。
 - Hub 保留策略尚未接入定时任务或管理界面，当前由运维在宿主机手动执行（按最新范围暂缓接入）。
 - 多设备批量安装（远程触发）不在范围内；分批推广只控制目标版本的分发范围，安装仍由设备本地确认。
-- Windows 真实设备（隔离机）升级/回滚仍待维护者安排；自动化验收已由 `ota-smoke.ps1` 覆盖。本轮“一次授权”只完成单测与组件测试，真实浏览器 + 隔离环境的 OTA 全流程证据需在解冻后按 Issue #32 验收条件单独产出，不能以单测通过代替。
-- 增量补丁默认关闭；发布流水线尚未配置签名目录（`catalog`）证书，生产启用前需要等价可信的签名载体，否则只能沿用既有 unsigned 放行口径。
-- 跨正式 Release 的补丁以 `ota_base_version` 对应 Release 中归档的 `MenuCapture-<版本>-bundle.zip` 为唯一基线，并核对 bundle 内 `release-manifest.json` 与正式 `update-manifest.json` 的版本、commit 和 bundle 校验值；历史归档缺失时不得用当前 HEAD 改版本号重建，直接跳过补丁并以完整安装包兜底。
-- 补丁链、二进制差分、文件块级分发与 P2P 下载不在范围；不新增第二套更新状态机。
+- Windows 真实设备（隔离机）安装、增量与回滚仍需维护者安排；自动化安装布局、启动与数据保留由 `deploy/windows/smoke.ps1` 覆盖，增量需两个正式包在专用环境验证。本轮“一次授权”只完成单测与组件测试，真实浏览器 + 隔离环境的 OTA 全流程证据需在解冻后按 Issue #32 验收条件单独产出，不能以单测通过代替。
+- Windows 增量由 Velopack 生成与校验，不再维护自研补丁链、补丁清单或补丁执行器。
 
 ## 运维建议
 

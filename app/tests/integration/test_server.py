@@ -293,6 +293,47 @@ def test_remote_manual_control_is_scoped_and_rejects_stale_commands(tmp_path):
     app.state.shared_worker.close()
 
 
+def test_recovery_shutdown_is_loopback_scoped_and_requires_coordinator_token(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    coordinator_token = "test-coordinator-token"
+    monkeypatch.setenv("MENU_CAPTURE_COORDINATOR_TOKEN", coordinator_token)
+    app = create_app(tmp_path, role="worker")
+    install = app.state.updates_install
+    authorized: list[tuple[str, str]] = []
+
+    def authorize(transaction_id: str, target_version: str) -> None:
+        if transaction_id != "transaction-1" or target_version != "0.4.0":
+            raise ValueError("恢复关闭请求不对应当前验证事务")
+        authorized.append((transaction_id, target_version))
+
+    install.authorize_recovery_shutdown = authorize
+    app.state.uvicorn_server = SimpleNamespace(should_exit=False)
+    client = TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
+    payload = {"transaction_id": "stale-transaction", "target_version": "0.4.0"}
+
+    denied = client.post("/api/internal/recovery-shutdown", json=payload)
+    assert denied.status_code == 401
+    stale = client.post("/api/internal/recovery-shutdown", json=payload,
+                        headers={"X-Coordinator-Token": coordinator_token})
+    assert stale.status_code == 409
+    assert not authorized
+
+    # 一个非回环 Host 即使携带有效协调令牌，也不允许调用内部关闭协议。
+    remote = TestClient(app, base_url="http://capture.example", client=("127.0.0.1", 12345))
+    assert remote.post("/api/internal/recovery-shutdown", json=payload,
+                       headers={"X-Coordinator-Token": coordinator_token}).status_code == 403
+
+    payload["transaction_id"] = "transaction-1"
+    accepted = client.post("/api/internal/recovery-shutdown", json=payload,
+                           headers={"X-Coordinator-Token": coordinator_token})
+    assert accepted.status_code == 200 and accepted.json() == {"ok": True}
+    assert authorized == [("transaction-1", "0.4.0")]
+    assert app.state.uvicorn_server.should_exit is True
+
+
 def test_update_install_is_disabled_without_explicit_opt_in(tmp_path: Path) -> None:
     app = create_app(tmp_path)
     client = TestClient(app, base_url="http://127.0.0.1")

@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
@@ -90,10 +91,21 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         os.environ.pop(name, None)
     os.environ["NO_PROXY"] = "*"
     os.environ["no_proxy"] = "*"
+    # 更新验证模式只在隔离数据副本上运行；禁止后台业务服务与真实库写入路径。
+    verify_only = role == "worker" and os.environ.get("MENU_CAPTURE_UPDATE_VERIFY") == "1"
     configs = ConfigStore(root, managed=role != "standalone" or bool(os.environ.get("MENU_CAPTURE_HOME")))
     # root 是可写数据目录（可能由 MENU_CAPTURE_HOME 指定）；程序目录必须单独传入，
     # 否则安装目录/历史版本清点会错误地从数据目录反推。
-    updates = UpdateService(root, role=role, app_root=ROOT)
+    # Windows 采集端的 Windows 包交付由 Velopack 承担；Hub/单机不加载该后端。
+    velopack_backend = None
+    if sys.platform == "win32" and role == "worker":
+        from menu_capture.updates.velopack_backend import VelopackBackend
+
+        velopack_backend = VelopackBackend(
+            "zhaoyongze123/wechat-miniapp-menu-agent", root / "data",
+            python=sys.executable, app_dir=ROOT,
+        )
+    updates = UpdateService(root, role=role, app_root=ROOT, backend=velopack_backend)
     store = TaskStore(root / "data/tasks.sqlite3")
     model_usage = UsageLedger(store)
     debug_log = DebugLog(root / "data", configs.load().debug_logging.max_storage_mb)
@@ -107,10 +119,6 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                          clipboard_text_preparer=prepare_clipboard_text,
                          ocr_reader=image_ocr, qr_detector=qr_boxes, debug_log=debug_log,
                          usage_ledger=model_usage)
-    # 先恢复目录替换事务，再把非事务中的中断任务标为待检查，避免新结果覆盖旧结果后被误判回滚。
-    runner.recover_publishes()
-    # 服务重启后不能沿用“运行中”状态，更不能自动重放上一次的桌面动作。
-    store.recover()
     control_lock = threading.RLock()
     materials = MaterialService(root / "data", configs, store)
     hub = SharedHub(store, materials) if role == "hub" else None
@@ -163,21 +171,22 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         # 手动回滚接口尚未开放；失败时由执行器自动回滚。
         updates.rollback_capability = lambda: False
     else:
+        def install_idle():
+            if runner.running or annotations.active:
+                return False, "采集或人工标注正在执行，请先结束后再安装"
+            run = store.latest_run()
+            if run and run.get("status") in ACTIVE_RUN_STATUSES:
+                return False, "采集轮次尚未结束，请先继续完成或终止"
+            return True, ""
+
         install = InstallController(
-            download_dir=updates.download_dir,
-            install_root=updates.install_root(),
             data_dir=updates.data_dir,
+            backend=velopack_backend,
             role=role,
             platform=updates.platform,
-            arch=updates.local_arch,
-            port=int(os.environ.get("MENU_CAPTURE_PORT", "8765")),
             latest_provider=lambda: (updates.status_no_check().get("latest") or {}),
-            artifact_provider=updates.download_status,
             current_version=updates.current_version,
-            idle_check=lambda: (
-                (True, "") if not (runner.running or annotations.active)
-                else (False, "采集或人工标注正在执行，请先结束或暂停后再安装")
-            ),
+            idle_check=install_idle,
             supported=updates.install_supported(),
             # 后台调度在真正拉起进程前消费授权；用户取消与消费共用更新锁，只会有一个成功。
             authorization_check=updates.claim_install,
@@ -201,7 +210,6 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     updates.schedule_installer = lambda version: install.start(
         version, version, require_authorization=True,
     )
-    updates.resume_schedule()
     if hub is not None:
         # Hub 集中检查 GitHub 后向 Worker 分发元数据，避免每台设备重复请求。
         hub.update_metadata = updates.release_target
@@ -214,6 +222,39 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     runner.update_blocked = install.active
     annotations.update_gate = install.gate
     annotations.update_blocked = install.active
+    # 真实数据迁移提交点（TaskStore 初始化）与业务/同步后台写入显式分离：
+    # 隔离验证或安装事务仍处于 verifying/applying/rolling_back/recovery_required 时，
+    # 禁止 recover_publishes、store.recover、materials、shared worker、connections 与 schedule 写入。
+    business_gate_active = bool(verify_only or (role == "worker" and install.active_nonblocking()))
+    business_started = False
+    business_lock = threading.Lock()
+
+    def _activate_business_services(*, start_runtime: bool) -> None:
+        nonlocal business_started
+        with business_lock:
+            if business_started:
+                return
+            # 先恢复目录替换事务，再把非事务中的中断任务标为待检查，避免新结果覆盖旧结果后被误判回滚。
+            runner.recover_publishes()
+            # 服务重启后不能沿用“运行中”状态，更不能自动重放上一次的桌面动作。
+            store.recover()
+            updates.resume_schedule()
+            if start_runtime:
+                if role != "hub":
+                    threading.Thread(target=_warm_local_ocr, name="ocr-warmup", daemon=True).start()
+                materials.start_job_runner()
+                if delivery:
+                    delivery.start()
+                if worker:
+                    worker.start()
+                    if sys.platform == "win32":
+                        connections.connect()
+            business_started = True
+
+    if not business_gate_active:
+        runner.recover_publishes()
+        store.recover()
+        updates.resume_schedule()
     token = secrets.token_urlsafe(32)
     def _warm_local_ocr() -> None:
         """后台预热 Apple Vision：首次 OCR 要加载框架约 3-4 秒，别让它落在第一次截图之后。"""
@@ -232,6 +273,27 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
 
     @asynccontextmanager
     async def lifespan(app):
+        if verify_only or business_gate_active:
+            # 隔离副本或安装验证门禁期间只开放健康/版本探测，不启动采集、分发、同步或连接。
+            try:
+                yield
+            finally:
+                if business_started:
+                    if delivery:
+                        delivery.stop()
+                    if worker:
+                        worker.close()
+                    try:
+                        materials.shutdown()
+                    except Exception:
+                        pass
+                    try:
+                        annotations.shutdown()
+                    except Exception:
+                        pass
+                    connections.close()
+                debug_log.close()
+            return
         if role != "hub":
             threading.Thread(target=_warm_local_ocr, name="ocr-warmup", daemon=True).start()
         # 常驻 1s 巡检：心跳回收 + 单通道调度；不依赖任何请求触发。
@@ -280,7 +342,138 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     app.state.shared_hub = hub
     app.state.shared_worker = worker
     app.state.updates_install = install
+    app.state.business_gate_active = business_gate_active
     register_shared_routes(app, role, hub, worker, control_lock)
+
+    # Only this exact internal protocol may bypass browser CSRF, and only with its own token.
+    coordinator_token = str(os.environ.get("MENU_CAPTURE_COORDINATOR_TOKEN") or "")
+    if role == "worker" and coordinator_token:
+        @app.post("/api/internal/shutdown")
+        def internal_shutdown(request: Request, payload: dict):
+            if request.client is None or request.client.host not in {"127.0.0.1", "::1"}:
+                raise HTTPException(403, "内部关闭仅允许本机连接")
+            provided = request.headers.get("x-coordinator-token", "")
+            if not hmac.compare_digest(provided.encode(), coordinator_token.encode()):
+                raise HTTPException(401, "协调令牌无效")
+            if set(payload) != {"transaction_id", "target_version"} or any(
+                not isinstance(value, str) or not value for value in payload.values()
+            ):
+                raise HTTPException(409, "安装事务参数无效")
+            server = getattr(app.state, "uvicorn_server", None)
+            if server is None:
+                raise HTTPException(409, "当前进程不支持受控关闭")
+            with install.gate:
+                try:
+                    install.authorize_shutdown(payload["transaction_id"], payload["target_version"])
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from None
+                server.should_exit = True
+            return {"ok": True}
+
+        @app.post("/api/internal/recovery-shutdown")
+        def internal_recovery_shutdown(request: Request, payload: dict):
+            if request.client is None or request.client.host not in {"127.0.0.1", "::1"}:
+                raise HTTPException(403, "恢复关闭仅允许本机连接")
+            provided = request.headers.get("x-coordinator-token", "")
+            if not hmac.compare_digest(provided.encode(), coordinator_token.encode()):
+                raise HTTPException(401, "协调令牌无效")
+            if set(payload) != {"transaction_id", "target_version"} or any(
+                not isinstance(value, str) or not value for value in payload.values()
+            ):
+                raise HTTPException(409, "恢复关闭事务参数无效")
+            server = getattr(app.state, "uvicorn_server", None)
+            if server is None:
+                raise HTTPException(409, "当前进程不支持受控恢复关闭")
+            with install.gate:
+                try:
+                    install.authorize_recovery_shutdown(
+                        payload["transaction_id"], payload["target_version"])
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from None
+                server.should_exit = True
+            return {"ok": True}
+
+        launcher_stop_nonce = str(os.environ.get("MENU_CAPTURE_LAUNCHER_STOP_NONCE") or "")
+        if launcher_stop_nonce:
+            @app.post("/api/internal/launcher-stop")
+            def internal_launcher_stop(request: Request, payload: dict):
+                if request.client is None or request.client.host not in {"127.0.0.1", "::1"}:
+                    raise HTTPException(403, "启动器停止仅允许本机连接")
+                provided = request.headers.get("x-coordinator-token", "")
+                if not hmac.compare_digest(provided.encode(), coordinator_token.encode()):
+                    raise HTTPException(401, "协调令牌无效")
+                if set(payload) != {"nonce"} or not isinstance(payload.get("nonce"), str):
+                    raise HTTPException(409, "停止参数无效")
+                if not hmac.compare_digest(payload["nonce"].encode(), launcher_stop_nonce.encode()):
+                    raise HTTPException(409, "停止凭据无效")
+                server = getattr(app.state, "uvicorn_server", None)
+                if server is None:
+                    raise HTTPException(409, "当前进程不支持受控关闭")
+                server.should_exit = True
+                return {"ok": True}
+
+        @app.post("/api/internal/release-business-gate")
+        def internal_release_business_gate(request: Request, payload: dict):
+            if verify_only:
+                raise HTTPException(409, "隔离验证副本不允许放行业务后台服务")
+            if request.client is None or request.client.host not in {"127.0.0.1", "::1"}:
+                raise HTTPException(403, "业务闸门放行仅允许本机连接")
+            provided = request.headers.get("x-coordinator-token", "")
+            if not hmac.compare_digest(provided.encode(), coordinator_token.encode()):
+                raise HTTPException(401, "协调令牌无效")
+            if set(payload) != {"transaction_id", "target_version"} or any(
+                not isinstance(value, str) or not value for value in payload.values()
+            ):
+                raise HTTPException(409, "放行参数无效")
+            try:
+                journal = install.transaction.read()
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(409, str(exc)) from None
+            status = journal.get("status")
+            expected_version = (
+                journal.get("target_version") if status == "completed"
+                else journal.get("previous_version") if status == "rolled_back"
+                else ""
+            )
+            if (journal.get("transaction_id") != payload["transaction_id"]
+                    or status not in {"completed", "rolled_back"}
+                    or expected_version != payload["target_version"]):
+                raise HTTPException(409, "安装事务尚未完成，拒绝放行业务后台服务")
+            _activate_business_services(start_runtime=True)
+            app.state.business_gate_active = False
+            return {"ok": True, "business_started": True}
+
+        if verify_only:
+            @app.post("/api/internal/verify-exit")
+            def internal_verify_exit(request: Request, payload: dict):
+                if request.client is None or request.client.host not in {"127.0.0.1", "::1"}:
+                    raise HTTPException(403, "验证关闭仅允许本机连接")
+                provided = request.headers.get("x-coordinator-token", "")
+                if not hmac.compare_digest(provided.encode(), coordinator_token.encode()):
+                    raise HTTPException(401, "协调令牌无效")
+                if set(payload) != {"transaction_id", "target_version", "verify_pid"}:
+                    raise HTTPException(409, "验证事务参数无效")
+                try:
+                    verify_pid = int(payload["verify_pid"])
+                except (TypeError, ValueError):
+                    raise HTTPException(409, "验证进程身份无效") from None
+                if verify_pid != os.getpid():
+                    raise HTTPException(409, "验证进程身份不匹配")
+                if str(os.environ.get("MENU_CAPTURE_VERSION") or "") != str(payload["target_version"]):
+                    raise HTTPException(409, "验证进程版本与事务目标不一致")
+                try:
+                    journal = install.transaction.read()
+                except Exception as exc:  # noqa: BLE001 - 事务不可读时拒绝关闭
+                    raise HTTPException(409, str(exc)) from None
+                if (journal.get("transaction_id") != payload["transaction_id"]
+                        or journal.get("status") not in {"applying", "verifying"}
+                        or journal.get("target_version") != payload["target_version"]):
+                    raise HTTPException(409, "验证关闭不对应当前安装事务")
+                server = getattr(app.state, "uvicorn_server", None)
+                if server is None:
+                    raise HTTPException(409, "当前进程不支持受控关闭")
+                server.should_exit = True
+                return {"ok": True}
 
     def basic_authorized(header: str, expected_user: bytes, expected_password: str) -> bool:
         method, _, credentials = header.partition(" ")
@@ -339,7 +532,40 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             or path.startswith("/api/annotation/")
         ) and install.active_nonblocking():
             return JSONResponse({"detail": "更新安装进行中，已暂停新的采集操作"}, status_code=409)
-        if request.method not in {"GET", "HEAD"} and not worker_protocol:
+        internal_shutdown_protocol = (
+            role == "worker" and bool(coordinator_token)
+            and path == "/api/internal/shutdown" and request.method == "POST"
+            and not is_remote and request.client is not None
+            and request.client.host in {"127.0.0.1", "::1"}
+        )
+        internal_recovery_protocol = (
+            role == "worker" and bool(coordinator_token)
+            and path == "/api/internal/recovery-shutdown" and request.method == "POST"
+            and not is_remote and request.client is not None
+            and request.client.host in {"127.0.0.1", "::1"}
+        )
+        internal_verify_protocol = (
+            role == "worker" and verify_only and bool(coordinator_token)
+            and path == "/api/internal/verify-exit" and request.method == "POST"
+            and not is_remote and request.client is not None
+            and request.client.host in {"127.0.0.1", "::1"}
+        )
+        internal_launcher_protocol = (
+            role == "worker" and path == "/api/internal/launcher-stop" and request.method == "POST"
+            and not is_remote and request.client is not None
+            and request.client.host in {"127.0.0.1", "::1"}
+        )
+        internal_release_gate_protocol = (
+            role == "worker" and bool(coordinator_token)
+            and path == "/api/internal/release-business-gate" and request.method == "POST"
+            and not is_remote and request.client is not None
+            and request.client.host in {"127.0.0.1", "::1"}
+        )
+        if (request.method not in {"GET", "HEAD"} and not worker_protocol
+                and not internal_shutdown_protocol and not internal_recovery_protocol
+                and not internal_verify_protocol
+                and not internal_launcher_protocol
+                and not internal_release_gate_protocol):
             supplied = request.headers.get("x-capture-token", "")
             origin = request.headers.get("origin")
             try:
@@ -1773,6 +1999,16 @@ def main():
     password = os.environ.get("MENU_CAPTURE_ADMIN_PASSWORD", "")
     allowed_hosts = tuple(value.strip().lower() for value in os.environ.get("MENU_CAPTURE_ALLOWED_HOSTS", "").split(",")
                           if value.strip())
+    # 启动闸门：启动器先创建 Job Object 并纳入本进程，再放行；避免子进程在纳入前逃逸。
+    gate = str(os.environ.get("MENU_CAPTURE_START_GATE") or "")
+    if gate:
+        gate_path = Path(gate)
+        deadline = time.time() + 60
+        while not gate_path.exists():
+            if time.time() >= deadline:
+                raise SystemExit("等待启动器进程纳管超时")
+            time.sleep(0.05)
+    # 通过启动闸门后才触碰数据目录；失败或尚未纳管的候选进程不能创建业务状态。
     home.joinpath("data").mkdir(parents=True, exist_ok=True)
     # 进程锁防止两个服务实例同时接管鼠标；不用新增桌面代理进程。
     try:
@@ -1784,7 +2020,11 @@ def main():
                 remote_control_password=os.environ.get("MENU_CAPTURE_REMOTE_CONTROL_PASSWORD", ""),
             )
             app.state.debug_log.install_service_logging()
-            uvicorn.run(app, host=host, port=port, access_log=False, log_config=None)
+            # 以编程方式持有 Server，供启动器请求“正常退出后应用更新”，避免强制结束进程。
+            config = uvicorn.Config(app, host=host, port=port, access_log=False, log_config=None)
+            server = uvicorn.Server(config)
+            app.state.uvicorn_server = server
+            server.run()
     except InstanceLockedError:
         raise SystemExit("本机控制台已运行，请打开 http://127.0.0.1:8765")
 
