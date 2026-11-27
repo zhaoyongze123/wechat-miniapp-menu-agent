@@ -237,14 +237,14 @@ export function fetchRework(query = '', signal?: AbortSignal, projectId?: string
 export function returnReworkStore(batchId: string, storeId: string, projectId?: string): Promise<MaterialStoreDetail> {
   return apiFetch<MaterialStoreDetail>(scoped(`${BASE}/rework/return`, projectId), {
     method: 'POST',
-    json: { batch_id: batchId, store_id: storeId, ...(projectId ? { project_id: projectId } : {}) },
+    json: { batch_id: batchId, store_id: storeId },
   })
 }
 
 export function publishRework(storeKeys: string[], description = '跨批次返工发布', projectId?: string): Promise<ReworkPublishResponse> {
   return apiFetch<ReworkPublishResponse>(scoped(`${BASE}/rework/publish`, projectId), {
     method: 'POST',
-    json: { store_ids: storeKeys, description, ...(projectId ? { project_id: projectId } : {}) },
+    json: { store_ids: storeKeys, description },
   })
 }
 

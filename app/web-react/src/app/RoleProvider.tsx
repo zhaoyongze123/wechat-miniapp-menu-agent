@@ -32,7 +32,10 @@ export function RoleProvider({ children }: { children: ReactNode }) {
         return await apiFetch<SharedStatus>('/api/shared/status?include_history=false', { signal: controller.signal })
       } catch (cause) {
         if (signal.aborted) throw cause
-        throw new Error('读取服务角色超时，请检查共享后台连接后重试')
+        if (controller.signal.aborted) {
+          throw new Error('读取服务角色超时，请检查共享后台连接后重试')
+        }
+        throw cause
       } finally {
         signal.removeEventListener('abort', abort)
         window.clearTimeout(timer)

@@ -788,6 +788,8 @@ class SharedWorker:
         for assigned in active:
             if self._stop.is_set() or self.connection is not connection:
                 break
+            if assigned.get("status") not in {"assigned", "ready"}:
+                continue
             self._send_keepalive_if_due(connection)
             try:
                 self._ensure_source(assigned, connection)

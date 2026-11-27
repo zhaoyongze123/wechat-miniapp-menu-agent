@@ -236,7 +236,10 @@ export function NotificationRuntime() {
             : 'abnormal'
           const failedCount = Number(task.extra.failed) || 0
           const fallbackSummary = `${task.progress.done} / ${task.progress.total} 家${task.source === 'materials' ? ` · 失败 ${failedCount}` : ''}`
-          const route = `/task-center?${new URLSearchParams({ detail: `${task.source}:${task.id}` })}`
+          const targetProject = task.project_id || projectId
+          const routeParams = new URLSearchParams({ detail: `${task.source}:${task.id}` })
+          if (targetProject) routeParams.set('project', targetProject)
+          const route = `/task-center?${routeParams.toString()}`
           const title = isSuccess ? `${task.source === 'materials' ? '素材分析' : '采集任务'}已完成` : `${task.source === 'materials' ? '素材分析' : '采集任务'}异常结束`
           const eventId = `task-terminal:${task.source}:${task.id}:${task.status}:${changedAt}`
           const send = (summary: string, detailMessage = '') => {
@@ -261,7 +264,7 @@ export function NotificationRuntime() {
             )
           }
           if (task.source === 'capture') {
-            void fetchTaskDetail('capture', task.id).then((detail) => {
+            void fetchTaskDetail('capture', task.id, undefined, targetProject || undefined).then((detail) => {
               const counts = detail.counts
               const summary = counts
                 ? `已截图 ${counts.done ?? 0} · 待检查 ${counts.attention ?? 0} · 不合格 ${counts.rejected ?? 0} · 共 ${counts.total ?? task.progress.total} 家`

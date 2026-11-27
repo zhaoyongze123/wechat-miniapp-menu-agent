@@ -163,6 +163,9 @@ export function useBatchActions(batchId: string) {
   const invalidate = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: materialsKeys.batches(projectId) })
     void queryClient.invalidateQueries({ queryKey: materialsKeys.batchOptions(projectId) })
+    void queryClient.invalidateQueries({ queryKey: ['project', projectId, 'materials', 'management'] })
+    void queryClient.invalidateQueries({ queryKey: ['project', projectId, 'materials', 'rework'] })
+    void queryClient.invalidateQueries({ queryKey: ['project', projectId, 'hub-status'] })
     if (batchId) void queryClient.invalidateQueries({ queryKey: materialsKeys.batch(projectId, batchId) })
   }, [batchId, projectId, queryClient])
 

@@ -106,7 +106,7 @@ class _SelectiveGZipMiddleware:
         lower = path.lower()
         if lower.endswith(cls._SKIP_SUFFIXES):
             return True
-        if lower.startswith(("/api/artifact/", "/api/source/", "/api/action-evidence/", "/api/annotation/frame")):
+        if lower.startswith(("/api/artifact/", "/api/source/", "/api/action-evidence/", "/api/annotation/frame", "/api/shared/worker/")):
             return True
         if "/images/" in lower or lower.endswith(("/selected", "/source", "/last-frame", "/evidence")):
             return True
@@ -565,7 +565,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return JSONResponse({"detail": "请在已配对的 Windows 采集端执行此操作"}, status_code=409)
         if worker and request.method not in {"GET", "HEAD"} and (
             path in {"/api/start", "/api/scan", "/api/ui-tars/trial"}
-            or path.startswith(("/api/materials/", "/api/reviews/", "/api/rejections/"))
+            or (path.startswith(("/api/materials/", "/api/reviews/", "/api/rejections/"))
+                and path != "/api/reviews/pending/rerun")
             or re.fullmatch(r"/api/tasks/[^/]+/(reject|retry|mark-review|rejection/undo)", path)
         ):
             return JSONResponse({"detail": "请在共享工作台管理素材和审核结果"}, status_code=409)
@@ -1832,11 +1833,13 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         scope = project_scope(project_id, write=True)
         run = store.get_run(run_id)
         results = store.capture_run_results([run_id]).get(run_id, [])
-        if scoped_capture_history(run, results, capture_history_task_index(scope), scope) is None:
+        needed = set(run.get("task_ids") or [])
+        task_index = capture_history_task_index(scope, needed_task_ids=needed)
+        if scoped_capture_history(run, results, task_index, scope) is None:
             raise HTTPException(404, "运行记录不属于当前项目")
         store.rename_run(run_id, name)
         results = store.capture_run_results([run_id]).get(run_id, [])
-        record = scoped_capture_history(store.get_run(run_id), results, capture_history_task_index(), scope)
+        record = scoped_capture_history(store.get_run(run_id), results, task_index, scope)
         return record
 
     @app.get("/api/materials/batches/{batch_id}")
@@ -1994,9 +1997,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     @app.post("/api/materials/rework/return")
     def return_material_rework(payload: dict, project_id: str | None = None):
         """打回选错码的门店：恢复待处理，等待人工在原批次重新选码。"""
-        if set(payload) != {"batch_id", "store_id"}:
+        if not {"batch_id", "store_id"} <= set(payload) or (set(payload) - {"batch_id", "store_id", "project_id"}):
             raise ValueError("打回参数无效")
-        scope = batch_scope(str(payload["batch_id"]), project_id, write=True)
+        scope = batch_scope(str(payload["batch_id"]), project_id or payload.get("project_id"), write=True)
         with control_lock:
             idle()
             result = materials.return_rework_store(str(payload["batch_id"]), str(payload["store_id"]),
@@ -2009,9 +2012,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     def publish_material_rework(payload: dict, project_id: str | None = None):
         """统一发布已处理门店：按原批次分组，各自在最新快照上增量更新。"""
         payload = payload or {}
-        if set(payload) - {"store_ids", "description"}:
+        if set(payload) - {"store_ids", "description", "project_id"}:
             raise ValueError("发布参数无效")
-        scope = project_scope(project_id, write=True)
+        scope = project_scope(project_id or payload.get("project_id"), write=True)
         store_ids = payload.get("store_ids")
         if not isinstance(store_ids, list) or not store_ids:
             raise ValueError("请勾选要发布的门店")

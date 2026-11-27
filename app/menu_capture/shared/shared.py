@@ -993,7 +993,7 @@ class SharedHub:
         if supported_project_scope:
             response["supports_project_scope"] = True
             response["projects"] = projects_for_worker
-            response["assignments"] = assignments
+            response["assignments"] = response_assignments
         return response
 
     def record_run_history(self, worker_id: str, report: HistoryReport,

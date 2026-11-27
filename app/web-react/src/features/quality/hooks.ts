@@ -69,6 +69,7 @@ function useRefreshQuality() {
     void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'materials') })
     void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-status') })
     void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-shared-status') })
+    void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'delivery') })
   }, [projectId, queryClient])
 }
 

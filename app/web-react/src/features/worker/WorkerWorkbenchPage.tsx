@@ -63,7 +63,6 @@ const FILTER_OPTIONS = [
   { value: 'running', label: '采集中' },
   { value: 'captured', label: '已截图待复核' },
   { value: 'review', label: '待检查' },
-  { value: 'returned', label: '待重新选码' },
   { value: 'rejected', label: '不合格' },
   { value: 'returned', label: '待重新选码' },
 ]
@@ -82,7 +81,7 @@ export function WorkerWorkbenchPage() {
   const { projectId } = useProject()
   const previousProjectId = useRef(projectId)
   const refresh = useRefreshWorkerStatus()
-  const { status: sharedStatus } = useRole()
+  const { role, status: sharedStatus } = useRole()
   const statusQuery = useWorkerStatus(true)
   const status = statusQuery.data
   const tasks = useMemo(() => status?.tasks ?? [], [status])
@@ -345,15 +344,17 @@ export function WorkerWorkbenchPage() {
           <Button color="secondary" variant="outline" size="sm" onClick={() => setDetailTask(task)}>
             详情
           </Button>
-          <Button
-            color="secondary"
-            variant="outline"
-            size="sm"
-            disabled={running || !canRetry(task) || retry.isPending}
-            onClick={() => retry.mutate(task.id)}
-          >
-            重新排队
-          </Button>
+          {role !== 'worker' ? (
+            <Button
+              color="secondary"
+              variant="outline"
+              size="sm"
+              disabled={running || !canRetry(task) || retry.isPending}
+              onClick={() => retry.mutate(task.id)}
+            >
+              重新排队
+            </Button>
+          ) : null}
         </div>
       ),
     },

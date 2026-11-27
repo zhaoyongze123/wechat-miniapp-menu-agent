@@ -92,17 +92,18 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, [location.pathname, location.search])
 
   const displayProject = project ?? (!isBusinessPage ? defaultProject : null)
+  const redirectingToDefault = Boolean(isBusinessPage && !requestedId && !listQuery.isPending && !listQuery.isError && defaultProject)
   const value = useMemo<ProjectContextValue>(() => ({
     projectId: displayProject?.id ?? '',
     project: displayProject,
     displayProject,
     projects,
-    loading: listQuery.isPending || role.loading,
+    loading: listQuery.isPending || role.loading || redirectingToDefault,
     error: listQuery.error instanceof Error ? listQuery.error.message : role.error,
-    invalid: Boolean(requestedId && !listQuery.isPending && !project),
+    invalid: Boolean(requestedId && !listQuery.isPending && !listQuery.isFetching && !project),
     isBusinessPage,
     switchHref,
-  }), [displayProject, isBusinessPage, listQuery.error, listQuery.isPending, projects, requestedId, role.error, role.loading, switchHref])
+  }), [displayProject, isBusinessPage, listQuery.error, listQuery.isFetching, listQuery.isPending, projects, redirectingToDefault, requestedId, role.error, role.loading, switchHref])
 
   return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>
 }

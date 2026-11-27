@@ -91,7 +91,7 @@ class RejectionService:
         rows = self.materials.rejections(project_id=project_id) if self.materials is not None else []
         current = ({task["id"] for task in self.materials.effective_capture_tasks(project_id=project_id)}
                    if self.current_only and self.materials is not None else None)
-        batch_cache: dict[str, dict | None] = {}
+        batch_name_counts: dict[str, dict[str, int] | None] = {}
         raw_rejections = [
             task for task in self.tasks.rejections()
             if not ((current is not None and task["id"] not in current) or capture_outcome(task) != "rejected")
@@ -100,24 +100,43 @@ class RejectionService:
             proj_map = self._task_project_ids(task["id"] for task in raw_rejections)
             raw_rejections = [task for task in raw_rejections if proj_map.get(str(task["id"])) == project_id]
         names_map = self._observed_names_map((task["id"] for task in raw_rejections), project_id) if raw_rejections else {}
+        if raw_rejections:
+            needed_batches = list(dict.fromkeys(
+                str(task.get("material_batch_id") or "") for task in raw_rejections if task.get("material_batch_id")
+            ))
+            if needed_batches:
+                with self.tasks.connect() as db:
+                    placeholders = ",".join("?" for _ in needed_batches)
+                    existing_batches = {
+                        str(r["id"]) for r in db.execute(
+                            f"SELECT id FROM material_batches WHERE id IN ({placeholders}) AND deleted_at=''"
+                            + (" AND project_id=?" if project_id is not None else ""),
+                            (*needed_batches, project_id) if project_id is not None else tuple(needed_batches),
+                        )
+                    }
+                    for bid in needed_batches:
+                        batch_name_counts[bid] = {} if bid in existing_batches else None
+                    if existing_batches:
+                        eb = list(existing_batches)
+                        ep = ",".join("?" for _ in eb)
+                        for r in db.execute(
+                            f"SELECT batch_id, source_name FROM material_decisions WHERE batch_id IN ({ep})", eb
+                        ):
+                            counts = batch_name_counts[str(r["batch_id"])]
+                            if counts is not None:
+                                sname = str(r["source_name"] or "")
+                                counts[sname] = counts.get(sname, 0) + 1
         for task in raw_rejections:
             code = task.get("reject_reason", "")
             source_path = Path(task["source_path"])
             batch_id = task.get("material_batch_id", "") or ""
             can_return, return_disabled_reason = False, "该任务未关联素材批次，无法打回素材清洗"
             if batch_id:
-                if batch_id not in batch_cache:
-                    try:
-                        batch_cache[batch_id] = self.materials.get_batch(batch_id, project_id=project_id)
-                    except ValueError:
-                        batch_cache[batch_id] = None
-                batch = batch_cache[batch_id]
-                if batch is None:
+                counts = batch_name_counts.get(batch_id)
+                if counts is None:
                     return_disabled_reason = "原素材批次已不存在，无法打回素材清洗"
                 else:
-                    matches = [item for item in (batch.get("stores") or [])
-                               if item.get("source_name") == task.get("source_name")]
-                    can_return = len(matches) == 1
+                    can_return = counts.get(str(task.get("source_name") or ""), 0) == 1
                     return_disabled_reason = "" if can_return else "原批次中无法唯一匹配该门店，无法安全打回"
             rows.append({
                 "source_type": "capture",
