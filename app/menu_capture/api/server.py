@@ -23,6 +23,7 @@ import threading
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
@@ -879,27 +880,51 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     # 资源只按 Vite manifest 白名单返回，避免把构建目录里的其他文件暴露出去。
     react_root = ROOT / "web" / "react"
 
+    @lru_cache(maxsize=1)
     def react_bundle() -> tuple[str, dict[str, Path], str]:
         """读取一次 manifest，返回入口 HTML、允许对外提供的资源清单与入口文件名。"""
         try:
             manifest = json.loads((react_root / ".vite" / "manifest.json").read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
             raise RuntimeError("前端控制台尚未构建，请先运行 web-react 的 npm run build") from error
-        entries = [item for item in manifest.values()
+        entries = [key for key, item in manifest.items()
                    if isinstance(item, dict) and item.get("isEntry")] if isinstance(manifest, dict) else []
-        if len(entries) != 1 or not isinstance(entries[0].get("file"), str):
+        if len(entries) != 1:
             raise RuntimeError("前端构建清单缺少唯一入口文件")
-        entry = entries[0]
+        entry = manifest[entries[0]]
+        # 生产构建在服务进程生命周期内固定。沿入口递归放行预载和懒加载资源；
+        # 同一 chunk 可被多页引用，且可能回指入口，按 manifest key 记录已访问项。
+        pending = entries[:]
+        visited: set[str] = set()
+        names: set[str] = set()
+        while pending:
+            key = pending.pop()
+            if key in visited:
+                continue
+            visited.add(key)
+            item = manifest.get(key)
+            if not isinstance(item, dict) or not isinstance(item.get("file"), str):
+                raise RuntimeError("前端构建清单缺少引用的资源记录")
+            names.add(item["file"])
+            for field in ("css", "assets", "imports", "dynamicImports"):
+                values = item.get(field, [])
+                if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+                    raise RuntimeError("前端构建清单包含非法资源引用")
+                if field in {"imports", "dynamicImports"}:
+                    pending.extend(values)
+                else:
+                    names.update(values)
         assets: dict[str, Path] = {}
-        names = [entry["file"], *[item for item in entry.get("css", []) if isinstance(item, str)]]
+        assets_root = react_root.resolve() / "assets"
         for name in names:
             relative = PurePosixPath(name)
             # 只接受 assets/<文件名>，拒绝绝对路径、..、嵌套目录与隐藏文件。
-            if (relative.is_absolute() or len(relative.parts) != 2 or relative.parts[0] != "assets"
+            if ("\\" in name or ":" in name or name != relative.as_posix()
+                    or len(relative.parts) != 2 or relative.parts[0] != "assets"
                     or relative.parts[1].startswith(".")):
                 raise RuntimeError("前端构建清单包含非法资源路径")
             target = react_root.joinpath(*relative.parts)
-            if not target.is_file():
+            if not target.is_file() or target.resolve().parent != assets_root:
                 raise RuntimeError(f"前端构建产物缺失: {name}")
             assets[relative.parts[1]] = target
         try:
