@@ -510,7 +510,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             read_only = request.method in {"GET", "HEAD"} and (
                 path in {"/remote-control", "/api/session", "/api/manual/state", "/favicon.svg"} or path.startswith("/assets/")
             )
-            command = request.method == "POST" and path in {"/api/manual/capture", "/api/manual/reject"}
+            command = request.method == "POST" and path in {
+                "/api/manual/capture", "/api/manual/reject",
+                "/api/manual/recognize-store-name", "/api/manual/store-name",
+            }
             if not (read_only or command):
                 return JSONResponse({"detail": "远程访问仅开放半自动控制"}, status_code=403)
             if not basic_authorized(request.headers.get("authorization", ""), b"operator", remote_control_password):
@@ -2243,6 +2246,62 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         scope = project_scope(payload.get("project_id"), write=True)
         require_run_scope(scope)
         return {"ok": True, "reason": runner.set_manual_reason(str(payload["reason"]))}
+
+    def _validate_manual_aux_context(request: Request, payload: dict) -> dict | None:
+        expected = payload.get("context") if isinstance(payload, dict) else None
+        scope = project_scope(payload.get("project_id") if isinstance(payload, dict) else None, write=True)
+        manual = runner.manual_state()
+        if request.state.remote_control or expected is not None:
+            keys = ("device_id", "run_id", "task_id", "wait_id")
+            if (not isinstance(expected, dict) or set(expected) != set(keys)
+                    or any(not isinstance(expected[key], str) or not expected[key] for key in keys)
+                    or expected["device_id"] != manual_device()[0]):
+                raise HTTPException(409, "采集端或门店上下文已失效，请重读当前状态")
+        legacy_manual_session = False
+        if role == "worker" and worker and not worker._hub_supports_project_scope and manual:
+            if (not isinstance(expected, dict)
+                    or any(expected[key] != manual.get(key) for key in ("run_id", "task_id", "wait_id"))):
+                raise HTTPException(409, "采集端或门店上下文已失效，请重读当前状态")
+            legacy_manual_session = True
+        if not legacy_manual_session:
+            require_run_scope(scope)
+        current_task = runner.current_task or {}
+        if current_task.get("id") and not legacy_manual_session:
+            task_scope(str(current_task["id"]), scope, write=True)
+        return expected
+
+    @app.post("/api/manual/recognize-store-name")
+    def manual_recognize_store_name(request: Request, payload: dict | None = None):
+        """半自动独立辅助：AI 识别当前小程序画面中的实际门店名称，不占用 control_lock。"""
+        payload = payload or {}
+        if set(payload) - {"context", "project_id"}:
+            raise ValueError("AI 识别参数无效")
+        expected = _validate_manual_aux_context(request, payload)
+        try:
+            result = runner.manual_recognize_store_name(expected=expected)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        except TimeoutError:
+            raise HTTPException(504, "AI 识别超时，可重试或直接手动输入门店名称") from None
+        except Exception as exc:
+            name = type(exc).__name__
+            if "Timeout" in name:
+                raise HTTPException(504, "AI 识别超时，可重试或直接手动输入门店名称") from None
+            raise HTTPException(502, f"AI 识别失败（{name}），可重试或直接手动输入门店名称") from None
+        return result | {"manual": runner.manual_state()}
+
+    @app.post("/api/manual/store-name")
+    def manual_save_store_name(request: Request, payload: dict | None = None):
+        """保存半自动采集时人工输入或微调的实际门店名称。"""
+        payload = payload or {}
+        if set(payload) - {"store_name", "context", "project_id"} or "store_name" not in payload:
+            raise ValueError("门店名称参数无效")
+        expected = _validate_manual_aux_context(request, payload)
+        try:
+            result = runner.manual_set_store_name(str(payload.get("store_name") or ""), expected=expected)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return result | {"manual": runner.manual_state()}
 
     @app.get("/api/robot/profile")
     def robot_profile():
