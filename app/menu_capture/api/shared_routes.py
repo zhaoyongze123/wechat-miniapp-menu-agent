@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
-from menu_capture.shared.shared import MAX_RESULT_SIZE, SharedConflict, SharedHub, WorkerUnauthorized, safe_artifact
+from menu_capture.shared.shared import MAX_RESULT_SIZE, SharedHub, WorkerUnauthorized, safe_artifact
 from menu_capture.shared.shared_history import HistoryReport
 from menu_capture.shared.shared_worker import SharedWorker
 

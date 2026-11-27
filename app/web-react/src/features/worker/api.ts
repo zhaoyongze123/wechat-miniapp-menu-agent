@@ -8,6 +8,7 @@ import type {
   ManualRecognizeStoreNameResponse,
   ManualSaveStoreNameResponse,
   StartCaptureResponse,
+  WorkerQueueParams,
   WorkerStatus,
 } from './types'
 import type { WorkerConnectionStatus } from '../../api/types'
@@ -15,11 +16,21 @@ import type { WorkerConnectionStatus } from '../../api/types'
 /**
  * Windows 采集端接口适配层。
  *
- * Worker 角色的 `/api/status` 不分页（分页只在 Hub 生效），因此这里只拉一次
- * 全量任务，筛选、排序、分页与勾选都在页面内完成，与服务端口径一致。
+ * 与 Hub 工作台统一走服务端分页（queue_page/queue_size），避免千级门店场景下
+ * 每次轮询拉取数 MB 全量任务；单次轮询响应体稳定在 50KB 以内。
  */
-export function fetchWorkerStatus(signal?: AbortSignal, projectId?: string): Promise<WorkerStatus> {
-  const path = '/api/status?include_events=true'
+export function fetchWorkerStatus(params: WorkerQueueParams, signal?: AbortSignal, projectId?: string): Promise<WorkerStatus> {
+  const search = new URLSearchParams({
+    queue_page: String(params.page),
+    queue_size: String(params.size),
+    queue_batch: params.batch,
+    queue_q: params.q.trim(),
+    queue_filter: params.filter,
+    queue_sort: params.sort,
+    selected: params.selected.join(','),
+    include_events: params.includeEvents ? 'true' : 'false',
+  })
+  const path = `/api/status?${search.toString()}`
   return apiFetch<WorkerStatus>(projectId ? projectApiPath(path, projectId) : path, { signal })
 }
 

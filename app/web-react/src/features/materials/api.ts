@@ -241,6 +241,19 @@ export function returnReworkStore(batchId: string, storeId: string, projectId?: 
   })
 }
 
+export function returnReworkStores(
+  storeKeys: string[],
+  projectId?: string,
+): Promise<{ returned: number; errors: { batch_id: string; store_id: string; error: string }[] }> {
+  return apiFetch<{ returned: number; errors: { batch_id: string; store_id: string; error: string }[] }>(
+    scoped(`${BASE}/rework/return`, projectId),
+    {
+      method: 'POST',
+      json: { store_ids: storeKeys },
+    },
+  )
+}
+
 export function publishRework(storeKeys: string[], description = '跨批次返工发布', projectId?: string): Promise<ReworkPublishResponse> {
   return apiFetch<ReworkPublishResponse>(scoped(`${BASE}/rework/publish`, projectId), {
     method: 'POST',

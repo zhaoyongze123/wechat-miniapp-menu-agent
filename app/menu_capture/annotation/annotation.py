@@ -29,9 +29,8 @@ from menu_capture.vision.scene_agent import SceneAgent, SceneError
 from menu_capture.capture.uipath_runner import production_window_geometry
 
 from menu_capture.annotation.geometry import (
-    CATEGORIES, CATEGORY_KEYWORDS, CATEGORY_PAGE_STATE,
-    _compact_rows, _effect_roi, _normalize_text, _number, _pad_box, _roi_change,
-    _row_box, image_effect, map_box_to_window, suggest_target,
+    CATEGORIES, CATEGORY_PAGE_STATE,
+    _compact_rows, image_effect, map_box_to_window, suggest_target,
 )
 from menu_capture.annotation.runner_executor import AnnotationError, RunnerExecutor
 

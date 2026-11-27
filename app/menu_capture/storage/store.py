@@ -65,6 +65,8 @@ class TaskStore:
                     elapsed_ms INTEGER, result TEXT NOT NULL, details TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS run_actions_task ON run_actions(task_id, id);
+                -- 覆盖索引：反查任务最近一次所属 run_id 时无需回表扫 19 万行 run_actions（Worker 上从 16.9s 降到 <20ms）。
+                CREATE INDEX IF NOT EXISTS run_actions_task_run ON run_actions(task_id, id DESC, run_id);
                 -- 状态接口按 run_id 聚合已处理任务；缺少该索引时每次轮询都会全表扫描 run_actions。
                 CREATE INDEX IF NOT EXISTS run_actions_run ON run_actions(run_id, task_id);
                 CREATE TABLE IF NOT EXISTS publish_transactions (
@@ -85,6 +87,9 @@ class TaskStore:
             """)
 
         with self.connect() as db:
+            # 升级迁移建表/建索引时使用内存临时排序与 64MB 页缓存，避免机械硬盘上外部归并排序耗时数分钟。
+            db.execute("PRAGMA temp_store = MEMORY")
+            db.execute("PRAGMA cache_size = -65536")
             # 项目归属只从轮次逐店的批次快照回填。旧任务若没有可核实批次，保持未知。
             for table, column in (("runs", "project_id"), ("capture_run_results", "project_id")):
                 if column not in {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}:
@@ -213,11 +218,13 @@ class TaskStore:
         identity = namespace + "\0" + Path(relative_path).as_posix() + "\0" + digest
         return hashlib.sha256(identity.encode()).hexdigest()
 
-    def scan(self, source: Path, *, reuse_sources: list[Path] | None = None) -> dict:
+    def scan(self, source: Path, *, reuse_sources: list[Path] | None = None,
+             precomputed_hashes: dict[str, str] | None = None) -> dict:
         source = source.expanduser().resolve(strict=True)
         if not source.is_dir():
             raise ValueError("素材路径必须是文件夹")
         namespace = self._source_namespace(source)
+        known_hashes = precomputed_hashes or {}
         added = 0
         reusable = []
         for root in reuse_sources or []:
@@ -231,8 +238,8 @@ class TaskStore:
                 resolved = image.resolve()
                 if source not in resolved.parents:
                     continue
-                digest = hashlib.sha256(image.read_bytes()).hexdigest()
                 relative = image.relative_to(source)
+                digest = known_hashes.get(relative.as_posix()) or hashlib.sha256(image.read_bytes()).hexdigest()
                 source_key = self.scan_identity(source, relative, digest, namespace)
                 task_id = source_key[:20]
                 name = image.parent.name
@@ -355,23 +362,39 @@ class TaskStore:
 
     def rejections(self) -> list[dict]:
         with self.connect() as db:
-            rows = db.execute("""
-                SELECT t.*, a.run_id, br.material_batch_id,
-                    b.name AS material_batch_name
-                FROM tasks t
-                LEFT JOIN run_actions a ON a.id=(
-                    SELECT MAX(latest.id) FROM run_actions latest WHERE latest.task_id=t.id
-                )
-                -- 取最近一次真正绑定素材批次的运行；后续未绑定批次的运行不应让记录重新出现在不合格清单里。
-                LEFT JOIN runs br ON br.id=(
-                    SELECT r2.id FROM run_actions a2 JOIN runs r2 ON r2.id=a2.run_id
-                    WHERE a2.task_id=t.id AND r2.material_batch_id IS NOT NULL AND r2.material_batch_id<>''
-                    ORDER BY a2.id DESC LIMIT 1
-                )
-                LEFT JOIN material_batches b ON b.id=br.material_batch_id
-                WHERE t.reject_reason<>'' AND COALESCE(t.archived_at,'')='' AND (b.id IS NULL OR b.deleted_at='')
-                ORDER BY t.rejected_at DESC,t.id
-            """).fetchall()
+            # Worker 端 runs 表通常不携带 material_batch_id；先 O(1) 探测是否存在绑定批次的运行，
+            # 不存在时跳过对 19 万行 run_actions 的相关子查询，避免机械硬盘随机回表耗时十余秒。
+            has_batch_runs = db.execute(
+                "SELECT 1 FROM runs WHERE material_batch_id IS NOT NULL AND material_batch_id<>'' LIMIT 1"
+            ).fetchone() is not None
+            if has_batch_runs:
+                rows = db.execute("""
+                    SELECT t.*, a.run_id, br.material_batch_id,
+                        b.name AS material_batch_name
+                    FROM tasks t
+                    LEFT JOIN run_actions a ON a.id=(
+                        SELECT MAX(latest.id) FROM run_actions latest WHERE latest.task_id=t.id
+                    )
+                    -- 取最近一次真正绑定素材批次的运行；后续未绑定批次的运行不应让记录重新出现在不合格清单里。
+                    LEFT JOIN runs br ON br.id=(
+                        SELECT r2.id FROM run_actions a2 JOIN runs r2 ON r2.id=a2.run_id
+                        WHERE a2.task_id=t.id AND r2.material_batch_id IS NOT NULL AND r2.material_batch_id<>''
+                        ORDER BY a2.id DESC LIMIT 1
+                    )
+                    LEFT JOIN material_batches b ON b.id=br.material_batch_id
+                    WHERE t.reject_reason<>'' AND COALESCE(t.archived_at,'')='' AND (b.id IS NULL OR b.deleted_at='')
+                    ORDER BY t.rejected_at DESC,t.id
+                """).fetchall()
+            else:
+                rows = db.execute("""
+                    SELECT t.*,
+                        (SELECT latest.run_id FROM run_actions latest WHERE latest.task_id=t.id ORDER BY latest.id DESC LIMIT 1) AS run_id,
+                        '' AS material_batch_id,
+                        '' AS material_batch_name
+                    FROM tasks t
+                    WHERE t.reject_reason<>'' AND COALESCE(t.archived_at,'')=''
+                    ORDER BY t.rejected_at DESC,t.id
+                """).fetchall()
             items = [dict(row) for row in rows]
             # 部分历史任务的运行没有写 material_batch_id；按来源路径反推批次，
             # 保证控制台与按批次筛选的不合格清单使用同一归属口径。
@@ -381,25 +404,41 @@ class TaskStore:
     def review_candidates(self) -> list[dict]:
         """跨批次的待检查任务：直接以任务状态为事实源，带上最近一次绑定的素材批次。"""
         with self.connect() as db:
-            rows = db.execute("""
-                SELECT t.*, a.run_id, br.material_batch_id,
-                    b.name AS material_batch_name
-                FROM tasks t
-                LEFT JOIN run_actions a ON a.id=(
-                    SELECT MAX(latest.id) FROM run_actions latest WHERE latest.task_id=t.id
-                )
-                LEFT JOIN runs br ON br.id=(
-                    SELECT r2.id FROM run_actions a2 JOIN runs r2 ON r2.id=a2.run_id
-                    WHERE a2.task_id=t.id AND r2.material_batch_id IS NOT NULL AND r2.material_batch_id<>''
-                    ORDER BY a2.id DESC LIMIT 1
-                )
-                LEFT JOIN material_batches b ON b.id=br.material_batch_id
-                WHERE t.status IN ('needs_review','needs_retry','error','blocked','failed')
-                  AND COALESCE(t.reject_reason,'')=''
-                  AND COALESCE(t.archived_at,'')=''
-                  AND (b.id IS NULL OR b.deleted_at='')
-                ORDER BY t.updated_at DESC,t.id
-            """).fetchall()
+            has_batch_runs = db.execute(
+                "SELECT 1 FROM runs WHERE material_batch_id IS NOT NULL AND material_batch_id<>'' LIMIT 1"
+            ).fetchone() is not None
+            if has_batch_runs:
+                rows = db.execute("""
+                    SELECT t.*, a.run_id, br.material_batch_id,
+                        b.name AS material_batch_name
+                    FROM tasks t
+                    LEFT JOIN run_actions a ON a.id=(
+                        SELECT MAX(latest.id) FROM run_actions latest WHERE latest.task_id=t.id
+                    )
+                    LEFT JOIN runs br ON br.id=(
+                        SELECT r2.id FROM run_actions a2 JOIN runs r2 ON r2.id=a2.run_id
+                        WHERE a2.task_id=t.id AND r2.material_batch_id IS NOT NULL AND r2.material_batch_id<>''
+                        ORDER BY a2.id DESC LIMIT 1
+                    )
+                    LEFT JOIN material_batches b ON b.id=br.material_batch_id
+                    WHERE t.status IN ('needs_review','needs_retry','error','blocked','failed')
+                      AND COALESCE(t.reject_reason,'')=''
+                      AND COALESCE(t.archived_at,'')=''
+                      AND (b.id IS NULL OR b.deleted_at='')
+                    ORDER BY t.updated_at DESC,t.id
+                """).fetchall()
+            else:
+                rows = db.execute("""
+                    SELECT t.*,
+                        (SELECT latest.run_id FROM run_actions latest WHERE latest.task_id=t.id ORDER BY latest.id DESC LIMIT 1) AS run_id,
+                        '' AS material_batch_id,
+                        '' AS material_batch_name
+                    FROM tasks t
+                    WHERE t.status IN ('needs_review','needs_retry','error','blocked','failed')
+                      AND COALESCE(t.reject_reason,'')=''
+                      AND COALESCE(t.archived_at,'')=''
+                    ORDER BY t.updated_at DESC,t.id
+                """).fetchall()
             items = [dict(row) for row in rows]
             self._bind_missing_batches(db, items)
         return [item for item in items if not item.pop("_deleted_batch", False)]

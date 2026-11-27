@@ -43,7 +43,7 @@ from menu_capture.vision.model_usage import usage_context
 from menu_capture.desktop.chat_anchor import find_store_name_matches
 from menu_capture.desktop.chat_layout import ChatImageUnreadable, find_sent_text_bubbles
 from menu_capture.quality.failures import classify as classify_failure
-from menu_capture.desktop.window_contract import is_windows_miniapp_app, is_windows_wechat_app, select_wechat_selector, validate_target_window, window_selector, windows_app_name, windows_selectors_overlap
+from menu_capture.desktop.window_contract import is_windows_miniapp_app, is_windows_wechat_app, select_wechat_selector, window_selector, windows_app_name, windows_selectors_overlap
 from menu_capture.desktop.close_icon_locator import refine_close_icon, locate_close_icon, refine_back_arrow
 from menu_capture.desktop.checkbox_locator import refine_consent_checkbox
 from menu_capture.vision.scene_agent import SceneDecision
@@ -84,9 +84,14 @@ _INPUT_REGION_RATIO = (0.17, 0.80, 0.905, 0.925)
 _INPUT_DIFF_THRESHOLD = 24
 # 空输入框允许的残余变化比例（光标、抗锯齿），超过即认为框内还有内容。
 _INPUT_EMPTY_RATIO = .0015
-# 粘贴前清空输入框的固定按键：Ctrl+A 全选、Delete 删除。语法与 profile 的快捷键一致。
+# 粘贴前清空输入框的固定按键：Ctrl+A 全选、Delete/Backspace 删除、Esc 退出输入法组合态。
 _SELECT_ALL_SHORTCUT = "[d(hk)][d(ctrl)]a[u(ctrl)][u(hk)]"
 _DELETE_SHORTCUT = "[d(hk)][k(delete)][u(hk)]"
+_BACKSPACE_SHORTCUT = "[d(hk)][k(backspace)][u(hk)]"
+_ESC_SHORTCUT = "[d(hk)][k(esc)][u(hk)]"
+# 微信输入环境故障码集合：连续触发达到阈值时自动暂停熔断，不归为门店质量问题。
+_WECHAT_INPUT_ENV_CODES = frozenset({"wechat_input_env_error", "wechat_context_lost", "wechat_window_frame"})
+_MAX_CONSECUTIVE_INPUT_ENV_FAILURES = 3
 # Agent 判定成功后菜单页仍可能在加载/轮播：先给 2 秒稳定期，再取交接帧，
 # 避免把过渡画面当菜单交给截图环节（E01519 类“少截一屏”）。
 _HANDOFF_SETTLE_SECONDS = 2.0
@@ -120,27 +125,129 @@ def _near_white_ratio(image: Image.Image) -> float:
     return sum(1 for value in pixels if value >= 244) / max(len(pixels), 1)
 
 
+def _frame_dpi_scale(frame: dict | None) -> float:
+    """提取截图/窗口回执中的 DPI 缩放倍率，缺省或异常值回退 1.0。"""
+    if not isinstance(frame, dict):
+        return 1.0
+    raw = frame.get("dpi_scale")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and 0.5 <= float(raw) <= 4.0:
+        return float(raw)
+    return 1.0
+
+
 def _chat_pane_right(image: Image.Image) -> int:
     """返回微信聊天窗格右边界；右侧内嵌小程序面板会把窗口变成左右分栏。
 
-    WeChat 4.x 会把会员卡/部分小程序以右侧面板形式嵌进主窗口：窗口仍按 999×749
-    固定，但聊天区只剩约 62% 宽。按整窗比例裁右下角会落进面板，把面板里的绿色
-    按钮误判成“发送”按钮（实测 70 家待检查全部因此误报输入框残留）。分栏位置用
-    一条贯穿上下、位于窗口中部的竖线识别；识别不到就按整窗宽处理。
+    WeChat 4.x 会把会员卡/部分小程序以右侧面板形式嵌进主窗口：窗口固定后聊天区
+    只剩左侧部分。同时兼容 100%~200% DPI 下 1~2px 抗锯齿分栏线；识别不到按整窗宽处理。
     """
     width, height = image.size
+    if width < 80 or height < 80:
+        return width
     gray = image.convert("L")
     pixels = gray.load()
     top, bottom = int(height * .12), int(height * .88)
     rows = max(1, bottom - top)
     best_x, best_score = width, 0.0
-    # 分栏线固定出现在窗口中部；限制范围避免把菜品图/气泡的竖直边缘当成面板边界。
-    for x in range(int(width * .55), int(width * .78)):
-        edge = sum(1 for y in range(top, bottom) if abs(pixels[x, y] - pixels[x - 1, y]) >= 12)
+    # 分栏线固定出现在窗口中右侧；限制范围避免把菜品图/气泡的竖直边缘当成面板边界。
+    start_x = max(2, int(width * .52))
+    end_x = min(width - 2, int(width * .80))
+    for x in range(start_x, end_x):
+        edge = sum(
+            1 for y in range(top, bottom)
+            if max(abs(pixels[x, y] - pixels[x - 1, y]), abs(pixels[x + 1, y] - pixels[x - 1, y])) >= 10
+        )
         score = edge / rows
         if score > best_score:
             best_x, best_score = x, score
-    return best_x if best_score >= .80 else width
+    return best_x if best_score >= .75 else width
+
+
+def _chat_pane_left(image: Image.Image, pane_right: int) -> int | None:
+    """定位聊天列表与聊天正文之间的竖向分栏线（DPI 自适应）。"""
+    width, height = image.size
+    pane_right = min(width, max(1, pane_right))
+    if pane_right < 120 or height < 120:
+        return None
+    gray = image.convert("L")
+    pixels = gray.load()
+    top, bottom = int(height * .12), int(height * .88)
+    rows = max(1, bottom - top)
+    start_x = max(2, int(pane_right * .14))
+    end_x = min(pane_right - 2, int(pane_right * .46))
+    divider_x: int | None = None
+    for x in range(start_x, end_x):
+        edge = sum(
+            1 for y in range(top, bottom)
+            if max(abs(pixels[x, y] - pixels[x - 1, y]), abs(pixels[x + 1, y] - pixels[x - 1, y])) >= 8
+        )
+        if edge / rows >= .72:
+            # 取最右侧强分栏线，跳过最左侧图标栏分界。
+            divider_x = x
+    return divider_x
+
+
+def _input_divider_y(image: Image.Image, chat_left: int, pane_right: int) -> int | None:
+    """定位聊天历史区与底部输入区之间的横向分界线（DPI 自适应）。"""
+    width, height = image.size
+    left = max(1, min(chat_left + 8, pane_right - 20))
+    right = min(width - 1, pane_right - 8)
+    cols = right - left
+    if cols < 60 or height < 120:
+        return None
+    gray = image.convert("L")
+    pixels = gray.load()
+    start_y = max(2, int(height * .55))
+    end_y = min(height - 20, int(height * .88))
+    best_y: int | None = None
+    best_score = 0.0
+    step = max(1, cols // 160)
+    sampled = len(range(left, right, step))
+    for y in range(start_y, end_y):
+        edge = sum(
+            1 for x in range(left, right, step)
+            if max(abs(pixels[x, y] - pixels[x, y - 1]), abs(pixels[x, y + 1] - pixels[x, y - 1])) >= 8
+        )
+        score = edge / max(1, sampled)
+        if score > best_score:
+            best_score, best_y = score, y
+    return best_y if best_score >= .70 else None
+
+
+def _locate_wechat_input_region(image: Image.Image, dpi_scale: float = 1.0) -> dict[str, Any]:
+    """动态计算微信消息输入框区域与安全点击中心，避免高 DPI 下点偏或误触发送按钮。"""
+    scale = dpi_scale if 0.5 <= dpi_scale <= 4.0 else 1.0
+    width, height = image.size
+    pane = _chat_pane_right(image)
+    detected_left = _chat_pane_left(image, pane)
+    chat_left = detected_left if detected_left is not None else round(pane * _INPUT_REGION_RATIO[0])
+    divider_y = _input_divider_y(image, chat_left, pane)
+    if divider_y is not None:
+        span_h = max(32, height - divider_y)
+        toolbar_h = min(int(span_h * 0.35), max(22, round(38 * scale)))
+        send_h = min(int(span_h * 0.36), max(26, round(44 * scale)))
+        in_top = min(height - 20, divider_y + toolbar_h)
+        in_bottom = max(in_top + 14, height - send_h)
+        in_left = min(pane - 60, chat_left + max(8, round(12 * scale)))
+        send_reserve = max(round(105 * scale), round((pane - chat_left) * 0.14))
+        in_right = max(in_left + 40, pane - send_reserve)
+        detected = True
+    else:
+        in_left = round(pane * _INPUT_REGION_RATIO[0])
+        in_top = round(height * _INPUT_REGION_RATIO[1])
+        in_right = round(pane * _INPUT_REGION_RATIO[2])
+        in_bottom = round(height * _INPUT_REGION_RATIO[3])
+        detected = False
+    cx = (in_left + in_right) / 2.0
+    cy = (in_top + in_bottom) / 2.0
+    return {
+        "pane_right": pane,
+        "chat_left": chat_left,
+        "divider_y": divider_y,
+        "box": (in_left, in_top, in_right, in_bottom),
+        "center": (cx, cy),
+        "detected": detected,
+    }
 
 
 # 固定点位只服务于 macOS 那条“双击固定中心”的快捷路径（实测窗口 432×479 points，点 347,365）。
@@ -1398,6 +1505,7 @@ class UiPathRunner:
             # 批次版面先校准一次，后面各店复用同一窗口尺寸与几何。
             with self._trace("wechat_batch_frame"):
                 self._prepare_batch_wechat_frame(profile)
+            consecutive_input_env_failures = 0
             for index, (task_id, source) in enumerate(batch_sources.items()):
                 self._guard()
                 if self._pause_at_boundary:
@@ -1425,6 +1533,17 @@ class UiPathRunner:
                 remaining = list(batch_sources)[index + 1:]
                 self._capture_run_progress(index + 1, total, remaining[0] if remaining else "")
                 self._guard()
+                if persisted != "captured" and report.get("runtime_code") in _WECHAT_INPUT_ENV_CODES:
+                    consecutive_input_env_failures += 1
+                else:
+                    consecutive_input_env_failures = 0
+                if consecutive_input_env_failures >= _MAX_CONSECUTIVE_INPUT_ENV_FAILURES:
+                    reason = (f"连续 {consecutive_input_env_failures} 家门店触发微信输入环境故障，"
+                              "已自动暂停批量采集；请检查微信窗口、输入法与显示缩放后恢复")
+                    self.store.event(reason, "warning", task["id"])
+                    summary.update(status="paused", reason=reason,
+                                   pause_reason="wechat_input_env_circuit_breaker")
+                    break
                 if report["wechat_return"]["status"] != "ready":
                     summary.update(status="blocked", reason=report["wechat_return"]["reason"])
                     break
@@ -1541,6 +1660,7 @@ class UiPathRunner:
             )
             hotkeys.start()
             total = len(batch_sources or {})
+            consecutive_input_env_failures = 0
             for index, (task_id, source) in enumerate(list((batch_sources or {}).items())):
                 self._guard()
                 if self._pause_at_boundary:
@@ -1568,6 +1688,17 @@ class UiPathRunner:
                 remaining = list(batch_sources or {})[index + 1:]
                 self._capture_run_progress(index + 1, total, remaining[0] if remaining else "")
                 self._guard()
+                if persisted != "captured" and report.get("runtime_code") in _WECHAT_INPUT_ENV_CODES:
+                    consecutive_input_env_failures += 1
+                else:
+                    consecutive_input_env_failures = 0
+                if consecutive_input_env_failures >= _MAX_CONSECUTIVE_INPUT_ENV_FAILURES:
+                    reason = (f"连续 {consecutive_input_env_failures} 家门店触发微信输入环境故障，"
+                              "已自动暂停半自动采集；请检查微信窗口、输入法与显示缩放后恢复")
+                    self.store.event(reason, "warning", current["id"])
+                    summary.update(status="paused", reason=reason,
+                                   pause_reason="wechat_input_env_circuit_breaker")
+                    break
                 if report.get("wechat_return", {}).get("status") != "ready":
                     summary.update(status="blocked",
                                    reason=report["wechat_return"].get("reason", "未确认安全返回微信"))
@@ -2136,6 +2267,7 @@ class UiPathRunner:
                     self.store.update_run(self.run_id, status="running", message="恢复检查通过，继续采集")
             run_status = "completed"
             run_message = "批次处理结束，请在门店列表查看采集结果"
+            consecutive_input_env_failures = 0
             for batch_index, selected_id in enumerate(task_ids):
                 self._guard()
                 absolute_index = start_index + batch_index
@@ -2247,6 +2379,19 @@ class UiPathRunner:
                     self.store.update_run(self.run_id, status=run_status, current_index=absolute_index,
                                           current_task_id=task["id"], message=run_message)
                     break
+                if status != "captured" and failure_code in _WECHAT_INPUT_ENV_CODES:
+                    consecutive_input_env_failures += 1
+                else:
+                    consecutive_input_env_failures = 0
+                if consecutive_input_env_failures >= _MAX_CONSECUTIVE_INPUT_ENV_FAILURES:
+                    run_status = "paused"
+                    run_message = (f"连续 {consecutive_input_env_failures} 家门店触发微信输入环境故障，"
+                                   "已自动暂停批量采集；请检查微信窗口、输入法与显示缩放后恢复")
+                    self.store.update_run(self.run_id, status=run_status, current_index=next_index,
+                                          current_task_id=task_ids[batch_index + 1] if batch_index + 1 < len(task_ids) else "",
+                                          message=run_message)
+                    self.store.event(run_message, "warning", task["id"])
+                    break
                 if status != "captured" and not safe_to_continue:
                     # 不阻塞整批：本店已落到待检查/不合格，继续下一家。
                     self.store.event("当前门店未完成且未能确认安全回到文件传输助手；已记为待检查，继续下一家",
@@ -2344,19 +2489,45 @@ class UiPathRunner:
             return False
 
     def _normalize_wechat_frame(self, profile: dict, *, purpose: str = "wechat_window_frame") -> None:
-        """把微信主窗口校准到采集版面（999×749），保证每次执行从同一几何开始。
+        """把微信主窗口校准到按 DPI 缩放并钳位在工作区内的标准版面。
 
-        图片定位依赖 999×749 下的固定点位与模板比例阈值；窗口被改尺寸或最大化后，
-        固定点距和搜索边界全部失效，会连续点空/误判。每次执行前都重设一次，
-        由驱动回读实际矩形，不信任缓存里的旧几何。
+        999×749 为 96 DPI（100%）逻辑基准；在高 DPI（125%/150%/200%）或小屏/RDP 环境下
+        按当前显示器 DPI 缩放并钳位到工作区，不再硬要求物理像素严格等于 999×749。
         """
         if sys.platform != "win32":
             return
         selector = profile.get("wechat_selector") or self._configured_wechat_selector()
         if not selector:
             raise NeedsReview("未配置微信主窗口 selector，无法校准窗口版面", purpose)
-        width, height = _BATCH_WECHAT_FRAME
+        dpi_scale = 1.0
+        work_area: dict | None = None
+        try:
+            windows = self._window_list(self._send({"action": "discover"}).get("windows"))
+            for item in windows:
+                if windows_selectors_overlap(window_selector(item, str(item.get("title") or "")), selector):
+                    dpi_scale = _frame_dpi_scale(item)
+                    if isinstance(item.get("work_area"), dict):
+                        work_area = item["work_area"]
+                    break
+        except (RobotTimeout, RunnerPaused, RunnerTerminated):
+            raise
+        except Exception:
+            pass
+        base_w, base_h = _BATCH_WECHAT_FRAME
+        width = max(560, round(base_w * dpi_scale))
+        height = max(440, round(base_h * dpi_scale))
+        if work_area:
+            work_w = int(work_area.get("width") or 0)
+            work_h = int(work_area.get("height") or 0)
+            if work_w > 0:
+                width = min(width, max(560, work_w - 20))
+            if work_h > 0:
+                height = min(height, max(440, work_h - 20))
+        tolerance = max(4, round(4 * dpi_scale))
+        min_usable_w = max(500, round(600 * dpi_scale))
+        min_usable_h = max(400, round(460 * dpi_scale))
         last = (0, 0)
+        prev_stable: tuple[int, int] | None = None
         # 显示器休眠唤醒、远程会话重连后的头几十秒里，窗口常停在极小尺寸（实测 296×388），
         # 此时立刻判定环境异常会让整批任务作废；前 3 次快速重试，之后每 8 秒再试，
         # 累计约 45 秒仍不达标才中止。
@@ -2372,8 +2543,12 @@ class UiPathRunner:
             if actual_width is None or actual_height is None:
                 return
             last = (int(actual_width), int(actual_height))
-            if abs(actual_width - width) <= 2 and abs(actual_height - height) <= 2:
+            if abs(actual_width - width) <= tolerance and abs(actual_height - height) <= tolerance:
                 return
+            # 若微信自身最小/最大尺寸约束使窗口稳定停在可用尺寸（连续两次回读一致），放行并由后续动态布局适配。
+            if last[0] >= min_usable_w and last[1] >= min_usable_h and prev_stable == last:
+                return
+            prev_stable = last
             # 窗口被最小化/隐藏或句柄短暂失效时，SetWindowPos 只改还原尺寸、回读仍是 0×0；
             # 先按 selector 还原窗口（会激活）再重设。
             if attempt < len(delays):
@@ -2383,7 +2558,7 @@ class UiPathRunner:
                     pass
                 time.sleep(delays[attempt])
         raise NeedsReview(
-            f"微信主窗口未调整到 {width}×{height}（实际 {last[0]}×{last[1]}），未开始处理",
+            f"微信主窗口未调整到 {width}×{height}（实际 {last[0]}×{last[1]}，DPI {dpi_scale:.2f}），未开始处理",
             purpose)
 
     def _prepare_batch_wechat_frame(self, profile: dict) -> None:
@@ -3429,8 +3604,12 @@ class UiPathRunner:
         bounds, pixels = geometry.get("bounds"), geometry.get("pixels")
         if not bounds or not pixels or min(bounds) <= 0 or min(pixels) <= 0:
             return None
-        return {"width": pixels[0], "height": pixels[1],
-                "window_width": bounds[0], "window_height": bounds[1]}
+        result = {"width": pixels[0], "height": pixels[1],
+                  "window_width": bounds[0], "window_height": bounds[1]}
+        for extra in ("dpi_scale", "client_rect", "work_area"):
+            if geometry.get(extra) is not None:
+                result[extra] = geometry[extra]
+        return result
 
     def _startup_wechat_frame(self, profile: dict, output_dir: Path, *, guarded: bool) -> dict:
         """首店必须截图；后续店优先复用几何，几何缺失或动作失败时才补截图。"""
@@ -3448,39 +3627,96 @@ class UiPathRunner:
                 raise
             return self._screenshot(output_dir, selector, "wechat-before-send.png")
 
-    def _click_wechat_input(self, profile: dict, frame: dict) -> None:
+    def _click_wechat_input(self, profile: dict, frame: dict, *, x_fraction: float = 0.5) -> None:
         width = float(frame["window_width"])
         height = float(frame["window_height"])
-        # 输入框贴底且高度固定，按距右下角的固定点距计算；旧配置只有比例时按比例反推点距。
-        offset_x = profile.get("wechat_input_offset_x")
-        offset_y = profile.get("wechat_input_offset_y")
-        source = "profile_input_offset"
-        if not offset_x:
-            offset_x = width * (1 - float(profile["wechat_input_x_ratio"]))
-            source = "profile_input_ratio"
-        if not offset_y:
-            offset_y = height * (1 - float(profile["wechat_input_y_ratio"]))
-            source = "profile_input_ratio"
-        # 内嵌小程序面板会把聊天区压到窗口左侧；点距要从聊天窗格右边缘往前推，
-        # 否则会点进右侧面板，后面粘贴/回车都落在错误控件上。
-        pane_points = width
-        try:
-            with Image.open(Path(frame["path"])) as image:
-                pane_px = _chat_pane_right(image.convert("RGB"))
-            pane_points = width * pane_px / max(1, int(frame["width"]))
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
-        x = max(1.0, pane_points - float(offset_x))
-        y = max(1.0, height - float(offset_y))
+        dpi_scale = _frame_dpi_scale(frame)
+        x: float | None = None
+        y: float | None = None
+        source = "dynamic_input_center"
+        layout_meta: dict[str, Any] = {"dpi_scale": dpi_scale}
+        if frame.get("path"):
+            try:
+                with Image.open(Path(frame["path"])) as image:
+                    layout = _locate_wechat_input_region(image.convert("RGB"), dpi_scale=dpi_scale)
+                img_w = max(1, int(frame.get("width") or image.width))
+                img_h = max(1, int(frame.get("height") or image.height))
+                in_left, in_top, in_right, in_bottom = layout["box"]
+                frac = max(0.15, min(0.85, float(x_fraction)))
+                px_x = in_left + (in_right - in_left) * frac
+                px_y = (in_top + in_bottom) / 2.0
+                x = max(1.0, min(width - 1.0, px_x * width / img_w))
+                y = max(1.0, min(height - 1.0, px_y * height / img_h))
+                source = "dynamic_input_center" if layout["detected"] else "ratio_input_center"
+                layout_meta.update(input_box=list(layout["box"]), pane_right=layout["pane_right"],
+                                   divider_y=layout["divider_y"], detected=layout["detected"])
+            except (OSError, ValueError, KeyError, TypeError):
+                x = y = None
+        if x is None or y is None:
+            # 无截图兜底：Windows 上 profile 偏移为 96 DPI 逻辑值，需按当前 DPI 缩放。
+            offset_scale = dpi_scale if sys.platform == "win32" else 1.0
+            offset_x = profile.get("wechat_input_offset_x")
+            offset_y = profile.get("wechat_input_offset_y")
+            source = "profile_input_offset"
+            if not offset_x:
+                offset_x = width * (1 - float(profile["wechat_input_x_ratio"]))
+                source = "profile_input_ratio"
+            else:
+                offset_x = float(offset_x) * offset_scale
+            if not offset_y:
+                offset_y = height * (1 - float(profile["wechat_input_y_ratio"]))
+                source = "profile_input_ratio"
+            else:
+                offset_y = float(offset_y) * offset_scale
+            x = max(1.0, min(width - 1.0, width - float(offset_x)))
+            y = max(1.0, min(height - 1.0, height - float(offset_y)))
+            layout_meta["offset_from_right_bottom"] = {"x": offset_x, "y": offset_y}
         self._trace_click = {"source": source, "target": "微信消息输入区",
                              "coordinates": {"window_points": {"x": x, "y": y},
                                              "window_size_points": {"width": width, "height": height},
                                              "screenshot_size_px": {"width": frame["width"], "height": frame["height"]},
-                                             "offset_from_right_bottom": {"x": offset_x, "y": offset_y}}}
+                                             **layout_meta}}
         try:
             self._send({"action": "click", "selector": profile["wechat_selector"], "x": x, "y": y})
         finally:
             self._trace_click = {}
+
+    def _clear_wechat_input(self, profile: dict, wechat: dict, output_dir: Path) -> None:
+        """多策略清空微信输入框残留并校验结果；清空失败按输入环境故障上报。"""
+        probe = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-probe.png")
+        dpi_scale = _frame_dpi_scale(probe) or _frame_dpi_scale(wechat)
+        if not self._send_button_active(Path(probe["path"]), dpi_scale=dpi_scale):
+            return
+        strategies = (
+            ("center_ctrl_a_backspace", 0.5, (_SELECT_ALL_SHORTCUT, _BACKSPACE_SHORTCUT), 0.15),
+            ("left_ctrl_a_delete_backspace", 0.25,
+             (_SELECT_ALL_SHORTCUT, _DELETE_SHORTCUT, _SELECT_ALL_SHORTCUT, _BACKSPACE_SHORTCUT), 0.2),
+            ("esc_center_clear", 0.5,
+             (_ESC_SHORTCUT, _SELECT_ALL_SHORTCUT, _BACKSPACE_SHORTCUT, _DELETE_SHORTCUT), 0.2),
+        )
+        attempts_log: list[dict[str, Any]] = []
+        current_frame = probe
+        cleared = False
+        with self._trace("clear_stale_input", dpi_scale=dpi_scale) as trace:
+            for name, x_frac, keys, settle in strategies:
+                self._guard()
+                if name == "esc_center_clear":
+                    self._send({"action": "key", "selector": profile["wechat_selector"], "key": _ESC_SHORTCUT})
+                    keys = keys[1:]
+                self._click_wechat_input(profile, current_frame, x_fraction=x_frac)
+                for key in keys:
+                    self._send({"action": "key", "selector": profile["wechat_selector"], "key": key})
+                time.sleep(settle)
+                current_frame = self._screenshot(output_dir, profile["wechat_selector"],
+                                                 f"wechat-input-cleared-{name}.png")
+                still_active = self._send_button_active(Path(current_frame["path"]), dpi_scale=dpi_scale)
+                attempts_log.append({"strategy": name, "cleared": not still_active})
+                if not still_active:
+                    cleared = True
+                    break
+            trace.update(cleared=cleared, strategies=attempts_log)
+        if not cleared:
+            raise NeedsReview("输入框残留内容无法清空；未发送，避免串店名", "wechat_input_env_error")
 
     def _double_click_latest_image(self, profile: dict, frame: dict) -> None:
         """窗口位置固定时直接双击最新图片消息中心，不再截图、OCR、原图匹配。
@@ -3570,19 +3806,8 @@ class UiPathRunner:
         mark("input_click")
         source_name = str(task["source_name"])
         if windows:
-            # 上一家失败可能把店名或图片留在输入框；先清空再取空基线，否则本轮粘贴会串名。
-            probe = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-probe.png")
-            if self._send_button_active(Path(probe["path"])):
-                with self._trace("clear_stale_input") as trace:
-                    self._send({"action": "key", "selector": profile["wechat_selector"],
-                                "key": _SELECT_ALL_SHORTCUT})
-                    self._send({"action": "key", "selector": profile["wechat_selector"],
-                                "key": _DELETE_SHORTCUT})
-                    cleared = self._screenshot(output_dir, profile["wechat_selector"],
-                                               "wechat-input-cleared.png")
-                    trace.update(cleared=not self._send_button_active(Path(cleared["path"])))
-                if self._send_button_active(Path(cleared["path"])):
-                    raise NeedsReview("输入框残留内容无法清空；未发送，避免串店名")
+            # 上一家失败可能把店名或图片留在输入框；多策略清空并校验后再取空基线，否则本轮粘贴会串名。
+            self._clear_wechat_input(profile, wechat, output_dir)
         # 粘贴完整来源文件夹名，避免英文、数字经过中文输入法组合转换。
         with self._trace("prepare_store_name_clipboard", char_count=len(source_name)):
             self.clipboard_text_preparer(source_name)
@@ -3757,13 +3982,15 @@ class UiPathRunner:
         while True:
             self._guard()
             frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-text.png")
-            state = self._input_content(Path(frame["path"]), Path(baseline["path"]))
+            state = self._input_content(Path(frame["path"]), Path(baseline["path"]),
+                                        dpi_scale=_frame_dpi_scale(frame))
             if state["kind"] == "text":
                 frame["input_state"] = state
                 return frame
             if time.monotonic() >= deadline:
                 raise NeedsReview(
-                    f"门店名称未进入微信输入框（输入区状态：{state['kind']}）；未按回车，避免重发上一条消息")
+                    f"门店名称未进入微信输入框（输入区状态：{state['kind']}）；未按回车，避免重发上一条消息",
+                    "wechat_input_env_error")
             time.sleep(.2)
 
     def _await_image_attached(self, profile: dict, output_dir: Path,
@@ -3789,7 +4016,8 @@ class UiPathRunner:
                     self._guard()
                     frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-image-attached.png")
                     state = self._input_content(Path(frame["path"]),
-                                                Path(baseline["path"]) if baseline else None)
+                                                Path(baseline["path"]) if baseline else None,
+                                                dpi_scale=_frame_dpi_scale(frame))
                     if state["kind"] == "image":
                         trace.update(attempts=attempt + 1, input_state=state,
                                      elapsed_ms=round((time.monotonic() - started) * 1000))
@@ -3801,7 +4029,7 @@ class UiPathRunner:
                     # 第一次粘贴可能已被吞掉（焦点不在输入框），补贴前先点回输入框。
                     # 但发送按钮已变绿说明图片其实已经附着了，只是缩略图判据没认出来；
                     # 这时再粘一次会多附一张图，回车后就把同一张图发两遍。
-                    if self._send_button_active(Path(frame["path"])):
+                    if self._send_button_active(Path(frame["path"]), dpi_scale=_frame_dpi_scale(frame)):
                         trace.update(attempts=1, input_state=state, fallback="send_button_active",
                                      elapsed_ms=round((time.monotonic() - started) * 1000))
                         return frame
@@ -3809,12 +4037,12 @@ class UiPathRunner:
                     self._send({"action": "key", "selector": profile["wechat_selector"],
                                 "key": profile["paste_shortcut"]})
             # 缩略图判据失败但发送按钮已变绿：内容确实进了输入框，交给回车后的清空校验兜底。
-            if frame is not None and self._send_button_active(Path(frame["path"])):
+            if frame is not None and self._send_button_active(Path(frame["path"]), dpi_scale=_frame_dpi_scale(frame)):
                 trace.update(attempts=2, input_state=state, fallback="send_button_active",
                              elapsed_ms=round((time.monotonic() - started) * 1000))
                 return frame
             trace.update(attempts=2, input_state=state, elapsed_ms=round((time.monotonic() - started) * 1000))
-        raise NeedsReview("二维码图片未附着到微信输入框；未发送空消息")
+        raise NeedsReview("二维码图片未附着到微信输入框；未发送空消息", "wechat_input_env_error")
 
     def _press_send_until_cleared(self, profile: dict, output_dir: Path, baseline: dict | None = None,
                                   attempts: int = 5, interval: float = 1.5) -> dict:
@@ -3828,11 +4056,13 @@ class UiPathRunner:
         for attempt in range(attempts):
             if attempt:
                 frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-state.png")
+                dpi_scale = _frame_dpi_scale(frame)
                 if baseline is None:
-                    if not self._send_button_active(Path(frame["path"])):
+                    if not self._send_button_active(Path(frame["path"]), dpi_scale=dpi_scale):
                         return frame
                 else:
-                    state = self._input_content(Path(frame["path"]), Path(baseline["path"]))
+                    state = self._input_content(Path(frame["path"]), Path(baseline["path"]),
+                                                dpi_scale=dpi_scale)
                     if state["kind"] == "empty":
                         return frame
                     if state["kind"] == "unknown":
@@ -3845,20 +4075,23 @@ class UiPathRunner:
             while True:
                 self._guard()
                 frame = self._screenshot(output_dir, profile["wechat_selector"], "wechat-input-state.png")
+                dpi_scale = _frame_dpi_scale(frame)
                 if baseline is None:
-                    if not self._send_button_active(Path(frame["path"])):
+                    if not self._send_button_active(Path(frame["path"]), dpi_scale=dpi_scale):
                         return frame
                 else:
-                    state = self._input_content(Path(frame["path"]), Path(baseline["path"]))
+                    state = self._input_content(Path(frame["path"]), Path(baseline["path"]),
+                                                dpi_scale=dpi_scale)
                     if state["kind"] == "empty":
                         return frame
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(.3)
-        raise NeedsReview("二维码图片已附着但回车未能发送；大图可能仍在解码")
+        raise NeedsReview("二维码图片已附着但回车未能发送；大图可能仍在解码", "wechat_input_env_error")
 
     @classmethod
-    def _input_content(cls, image_path: Path, baseline_path: Path | None = None) -> dict:
+    def _input_content(cls, image_path: Path, baseline_path: Path | None = None,
+                       *, dpi_scale: float = 1.0) -> dict:
         """比较输入区当前帧与空基线，判断里面是空的、文本还是图片缩略图。
 
         发送按钮颜色只能说明“有内容”，既区分不了文本残留和图片，也看不出回车后
@@ -3867,6 +4100,7 @@ class UiPathRunner:
         """
         if baseline_path is None:
             return {"kind": "unknown", "changed_ratio": 0.0, "box": None}
+        scale = dpi_scale if 0.5 <= dpi_scale <= 4.0 else 1.0
         try:
             with Image.open(image_path) as raw:
                 current = raw.convert("RGB")
@@ -3877,12 +4111,8 @@ class UiPathRunner:
         if current.size != baseline.size:
             # 窗口尺寸变了，基线失效；返回 unknown 让调用方重拍或转人工，不做误判。
             return {"kind": "unknown", "changed_ratio": 1.0, "box": None}
-        width, height = current.size
-        # 输入区比例按聊天窗格宽度换算；右侧内嵌面板打开时不能把面板内容算进来。
-        pane = _chat_pane_right(current)
-        ratio = _INPUT_REGION_RATIO
-        left, top = round(pane * ratio[0]), round(height * ratio[1])
-        right, bottom = round(pane * ratio[2]), round(height * ratio[3])
+        layout = _locate_wechat_input_region(baseline, dpi_scale=scale)
+        left, top, right, bottom = layout["box"]
         current = current.crop((left, top, right, bottom))
         baseline = baseline.crop((left, top, right, bottom))
         diff = ImageChops.difference(current, baseline).convert("L")
@@ -3897,13 +4127,12 @@ class UiPathRunner:
         box_width, box_height = box[2] - box[0], box[3] - box[1]
         filled = mask.crop(box).histogram()[255] / max(1, box_width * box_height)
         kind = "text"
-        # 图片缩略图是输入区里一块高且填充密的矩形；单行店名在 1443×749 窗口里只有约 11px 高。
-        if (box_height >= max(44, round(current.height * .38))
-                and box_width >= max(60, round(current.width * .08)) and filled >= .30):
+        min_img_h = max(round(44 * scale), round(current.height * .38))
+        min_img_w = max(round(60 * scale), round(current.width * .08))
+        min_text_dim = max(6, round(8 * scale))
+        if box_height >= min_img_h and box_width >= min_img_w and filled >= .30:
             kind = "image"
-        elif box_height < 8 or box_width < 8:
-            # 光标（1~2px 竖线，已被中值滤波削掉）和抗锯齿噪点都不算内容；
-            # 真实店名在 1443×749 窗口里只有约 11px 高，阈值不能按 13px 设。
+        elif box_height < min_text_dim or box_width < min_text_dim:
             kind = "empty"
         return {"kind": kind, "changed_ratio": round(changed, 5), "fill_ratio": round(filled, 3),
                 "box": [left + box[0], top + box[1], left + box[2], top + box[3]]}
@@ -3928,15 +4157,17 @@ class UiPathRunner:
         return min(20.0, 3.0 + 1.4 * megapixels)
 
     @staticmethod
-    def _send_button_active(image_path: Path) -> bool:
-        """发送按钮可用（微信绿）说明输入框已有内容；灰色按钮表示粘贴还没生效。"""
+    def _send_button_active(image_path: Path, *, dpi_scale: float = 1.0) -> bool:
+        """发送按钮可用（微信绿）说明输入框已有内容；按 DPI 自适应搜索区域与像素面积阈值。"""
+        scale = dpi_scale if 0.5 <= dpi_scale <= 4.0 else 1.0
         try:
             with Image.open(image_path) as image:
                 rgb = image.convert("RGB")
                 # 只看聊天窗格右下角：右侧内嵌小程序面板不属于聊天区，不能参与发送按钮判定。
                 pane = _chat_pane_right(rgb)
-                region = rgb.crop((int(pane * .86), int(rgb.height * .88),
-                                   pane, int(rgb.height * .99)))
+                left = max(0, min(int(pane * .84), int(pane - round(150 * scale))))
+                top = max(0, min(int(rgb.height * .87), int(rgb.height - round(75 * scale))))
+                region = rgb.crop((left, top, pane, int(rgb.height * .995)))
         except (OSError, ValueError):
             return False
         colors = region.getcolors(maxcolors=region.width * region.height) or []
@@ -3944,7 +4175,8 @@ class UiPathRunner:
             count for count, (red, green, blue) in colors
             if green >= 150 and red <= 110 and blue <= 150 and green - max(red, blue) >= 60
         )
-        return hits >= 200
+        min_hits = max(120, round(200 * (scale ** 2)))
+        return hits >= min_hits
 
     def _preview_external_link(self, profile: dict, output_dir: Path, seconds: float = 6.0) -> bool:
         """预览里是否出现“在浏览器打开”一类提示；仅作为启动阶段的诊断证据。"""
@@ -4362,28 +4594,37 @@ class UiPathRunner:
 
     def _resize_miniapp_window(self, selector: str, window: dict | None = None,
                                trace: dict | None = None) -> None:
-        """Windows 小程序默认按宽屏打开；采集前拉到最窄、最高，减少横向留白与滚动误差。
-
-        微信会按自身最小宽度收敛，240 只是期望值，实际尺寸以随后的截图为准。
-        discover 已经拿到窗口矩形时先比对，已在目标布局就不重复 resize。
-        """
+        """Windows 小程序默认按宽屏打开；按所在显示器工作区与 DPI 缩放拉到窄高版面。"""
         if sys.platform != "win32":
             return
-        import ctypes
-
-        screen_height = int(ctypes.windll.user32.GetSystemMetrics(1))
-        target_height = max(300, screen_height - 100)
+        dpi_scale = _frame_dpi_scale(window)
+        work_area = (window or {}).get("work_area") if isinstance((window or {}).get("work_area"), dict) else None
+        if work_area:
+            work_x = int(work_area.get("x") or 0)
+            work_y = int(work_area.get("y") or 0)
+            work_h = int(work_area.get("height") or 0)
+        else:
+            import ctypes
+            work_x, work_y = 0, 0
+            work_h = int(ctypes.windll.user32.GetSystemMetrics(1))
+        target_x = work_x
+        target_y = work_y + round(35 * dpi_scale)
+        target_width = max(240, round(240 * dpi_scale))
+        target_height = max(round(300 * dpi_scale), work_h - round(100 * dpi_scale))
         position = (window or {}).get("position") or {}
         if position:
             width = float(position.get("width") or 0)
             height = float(position.get("height") or 0)
-            if abs(float(position.get("x") or 0)) <= 2 and abs(float(position.get("y") or 0) - 35) <= 2 \
-                    and 200 <= width <= 340 and height >= target_height - 60:
+            tol = max(4, round(4 * dpi_scale))
+            if (abs(float(position.get("x") or 0) - target_x) <= tol
+                    and abs(float(position.get("y") or 0) - target_y) <= tol
+                    and round(200 * dpi_scale) <= width <= round(360 * dpi_scale)
+                    and height >= target_height - round(60 * dpi_scale)):
                 if trace is not None:
                     trace["resize"] = "skipped"
                 return
-        self._send({"action": "resize", "selector": selector, "width": 240,
-                    "height": target_height, "x": 0, "y": 35})
+        self._send({"action": "resize", "selector": selector, "width": target_width,
+                    "height": target_height, "x": target_x, "y": target_y})
         if trace is not None:
             trace["resize"] = "applied"
 
@@ -4440,23 +4681,28 @@ class UiPathRunner:
                         if width and height:
                             # 小程序页面会吞掉 Cmd+W；右上角胶囊里的“关闭”才是可靠出口。
                             # 窗口可能被上一家拖到屏幕外，先挪回主屏再点，否则会报超出边界。
+                            dpi_scale = _frame_dpi_scale(shot) if sys.platform == "win32" else 1.0
+                            close_x = max(1.0, width - round(21 * dpi_scale))
+                            close_y = max(1.0, round(30 * dpi_scale))
                             try:
                                 self._send({"action": "click", "selector": candidate["selector"],
-                                            "x": width - 21, "y": 30})
+                                            "x": close_x, "y": close_y})
                             except RobotCommandError:
                                 self._move_window_on_screen(candidate["selector"])
                                 moved = self._screenshot(output_dir, candidate["selector"],
                                                          f"close-miniapp-{index}-moved.png")
                                 width = float(moved.get("window_width") or width)
+                                dpi_scale = _frame_dpi_scale(moved) if sys.platform == "win32" else 1.0
                                 self._send({"action": "click", "selector": candidate["selector"],
-                                            "x": width - 21, "y": 30})
+                                            "x": max(1.0, width - round(21 * dpi_scale)),
+                                            "y": max(1.0, round(30 * dpi_scale))})
                             self._wait_title_gone(candidate["title"], 1.0)
                             remaining = self._miniapp_candidates(
                                 self._window_list(self._send({"action": "discover"}).get("windows")))
                             if any(item["title"] == candidate["title"] for item in remaining):
                                 # 胶囊未命中时退回“点标题栏聚焦 + Cmd+W”的老路径。
                                 self._send({"action": "click", "selector": candidate["selector"],
-                                            "x": width / 2, "y": 18})
+                                            "x": width / 2, "y": max(1.0, round(18 * dpi_scale))})
                                 self._send({"action": "key", "selector": candidate["selector"],
                                             "key": close_key})
                                 self._wait_title_gone(candidate["title"], 0.8)
@@ -4514,10 +4760,13 @@ class UiPathRunner:
             if matches:
                 shot = self._screenshot(output_dir, selector, "miniapp-before-close.png")
                 width = float(shot.get("window_width") or 0)
+                dpi_scale = _frame_dpi_scale(shot)
                 # Windows 小程序会吞掉 Alt+F4，点右上角关闭按钮才可靠。
                 if width:
                     try:
-                        self._send({"action": "click", "selector": selector, "x": width - 21, "y": 30})
+                        self._send({"action": "click", "selector": selector,
+                                    "x": max(1.0, width - round(21 * dpi_scale)),
+                                    "y": max(1.0, round(30 * dpi_scale))})
                     except RobotCommandError:
                         self._send({"action": "key", "selector": selector, "key": profile["close_key"]})
                 else:

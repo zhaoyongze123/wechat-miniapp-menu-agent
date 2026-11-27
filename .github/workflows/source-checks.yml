@@ -82,12 +82,14 @@ jobs:
       - name: Ruff 门禁（配置见 pyproject.toml）
         working-directory: app
         run: uvx ruff@0.17.6 check --no-cache .
-      - name: 全量通用测试（unit / integration / contract）
+      - name: 敏感信息扫描门禁（禁止凭据与隐私数据入库）
+        run: python3 deploy/tools/audit_sensitive.py
+      - name: 全量通用测试（unit / integration / contract / perf 回归门禁）
         working-directory: app
         run: |
           uv sync --frozen --python 3.12
-          # 不再手工维护文件名清单：新增测试随目录自动纳入门禁。
-          uv run --frozen pytest -q tests/unit tests/integration tests/contract
+          # 不再手工维护文件名清单：新增测试随目录自动纳入门禁；tests/perf 锁定 SQL 次数与索引回归。
+          uv run --frozen pytest -q tests/unit tests/integration tests/contract tests/perf
 
   windows-contract:
     if: ${{ inputs.windows_contract }}

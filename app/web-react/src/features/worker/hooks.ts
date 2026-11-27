@@ -2,18 +2,34 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchWorkerStatus } from './api'
 import { useProject } from '../projects/ProjectProvider'
 import { projectQueryKey } from '../projects/scope'
+import type { WorkerQueueParams } from './types'
 
-export const WORKER_STATUS_KEY = (projectId: string) => projectQueryKey(projectId, 'worker-status')
+export const WORKER_STATUS_KEY = (projectId: string, params?: WorkerQueueParams) =>
+  params
+    ? projectQueryKey(
+        projectId,
+        'worker-status',
+        params.page,
+        params.size,
+        params.batch,
+        params.q,
+        params.filter,
+        params.sort,
+        params.selected.join(','),
+        params.includeEvents,
+      )
+    : projectQueryKey(projectId, 'worker-status')
 
-/** 运行中 3 秒轮询，空闲时也保持与旧工作台一致的轻量刷新。 */
-export function useWorkerStatus(enabled: boolean) {
+/** 服务端分页轮询：运行中 3 秒刷新，空闲时按 5 秒轻量刷新，避免全量任务传输。 */
+export function useWorkerStatus(params: WorkerQueueParams, enabled: boolean) {
   const { projectId } = useProject()
   return useQuery({
-    queryKey: WORKER_STATUS_KEY(projectId),
-    queryFn: ({ signal }) => fetchWorkerStatus(signal, projectId),
+    queryKey: WORKER_STATUS_KEY(projectId, params),
+    queryFn: ({ signal }) => fetchWorkerStatus(params, signal, projectId),
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === projectId ? previous : undefined,
     enabled: enabled && Boolean(projectId),
     staleTime: 2000,
-    refetchInterval: 3000,
+    refetchInterval: (query) => (query.state.data?.running ? 3000 : 5000),
     refetchIntervalInBackground: false,
   })
 }

@@ -255,7 +255,6 @@ def sign_manifest(manifest: dict, private_key_seed: bytes) -> dict:
 def main(argv: list[str] | None = None) -> int:
     """发布清单签名/验证入口；密钥只从环境变量读取且绝不写入日志。"""
     import argparse
-    import sys
     from pathlib import Path
 
     parser = argparse.ArgumentParser(description="Velopack 完整发布清单 Ed25519 签名")

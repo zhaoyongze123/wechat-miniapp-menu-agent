@@ -137,6 +137,10 @@ class InstallController:
             supported and role == "worker" and platform == "windows" and backend is not None
         )
         self._lock = threading.RLock()
+        # 锁外准备阶段（核验包与生成数据库基线快照）可能持续数秒；
+        # 暴露该状态让 /api/updates/status 立即显示“正在准备安装”，避免界面停留在“等待空闲”。
+        self._preparing_version = ""
+        self._preparing_message = ""
 
     @property
     def supported(self) -> bool:
@@ -166,6 +170,8 @@ class InstallController:
         with self._lock:
             journal = self._snapshot()
             stalled = self._is_stalled(journal)
+            preparing_version = self._preparing_version
+            preparing_message = self._preparing_message
         state = journal.get("status", "idle")
         # UI 继续使用既有阶段；原始事务阶段单独提供，绝不把恢复阻断映射成可重试失败。
         status = {"prepared": "restarting", "stopping": "restarting",
@@ -179,6 +185,13 @@ class InstallController:
             "transaction_status": state,
             "status": status,
         }
+        if preparing_version and state not in ACTIVE:
+            # 事务尚未消费授权，保持 status="idle" 允许随时取消，但透出准备进度给 flow 展示。
+            payload["preparing"] = True
+            payload["preparing_version"] = preparing_version
+            payload["preparing_message"] = preparing_message or "正在准备数据库基线与安装事务"
+            if not payload.get("target_version"):
+                payload["target_version"] = preparing_version
         if stalled and state != "recovery_required":
             payload["message"] = STALLED_MESSAGE
         return payload
@@ -250,70 +263,82 @@ class InstallController:
         idle, reason = self.idle_check()
         if not idle:
             raise ValueError(reason or "采集或标注仍在执行，暂不能安装")
+        with self._lock:
+            if self._preparing_version or self.active_nonblocking():
+                raise ValueError("已有安装任务正在执行")
+            self._preparing_version = version
+            self._preparing_message = "正在核验安装包与旧版恢复包"
         try:
-            pending = self.backend.verify_pending(extension, channel)
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError(f"读取待安装更新失败：{exc}") from exc
-        if not pending or str(pending.get("version")) != version:
-            raise ValueError("更新包尚未下载完成或版本不一致，请先下载并校验")
-        try:
-            recovery = self.backend.prepare_recovery_package(previous, previous_commit, extension)
-        except Exception as exc:  # noqa: BLE001 - 恢复能力不可用必须拒绝，不能先开始再找退路
-            raise ValueError(f"无法准备可信旧版恢复包：{exc}") from exc
+            try:
+                pending = self.backend.verify_pending(extension, channel)
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(f"读取待安装更新失败：{exc}") from exc
+            if not pending or str(pending.get("version")) != version:
+                raise ValueError("更新包尚未下载完成或版本不一致，请先下载并校验")
+            try:
+                recovery = self.backend.prepare_recovery_package(previous, previous_commit, extension)
+            except Exception as exc:  # noqa: BLE001 - 恢复能力不可用必须拒绝，不能先开始再找退路
+                raise ValueError(f"无法准备可信旧版恢复包：{exc}") from exc
 
-        schema = schema_fingerprint(self.data_dir)
-        if schema is None:
-            raise ValueError("无法读取有效数据库结构，拒绝自动安装")
-        from menu_capture.updates import recovery as recovery_probe
+            schema = schema_fingerprint(self.data_dir)
+            if schema is None:
+                raise ValueError("无法读取有效数据库结构，拒绝自动安装")
+            from menu_capture.updates import recovery as recovery_probe
 
-        snapshot_path = (self.data_dir / "recovery"
-                         / f"baseline-{time.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}.sqlite3")
-        snapshot = recovery_probe.snapshot_database(self.data_dir, snapshot_path)
-
-        created = False
-        try:
             with self._lock:
-                journal = self.transaction.read()
-                if journal.get("status") in ACTIVE_STATUSES:
-                    raise ValueError("已有安装任务正在执行")
-                idle, reason = self.idle_check()
-                if not idle:
-                    raise ValueError(reason or "采集或标注仍在执行，暂不能安装")
-                claimed = False
-                if require_authorization:
-                    if self.authorization_check is None or not self.authorization_check(version):
-                        raise ValueError("更新授权已取消，安装未启动")
-                    claimed = True
-                filesystem_lock = self.filesystem_lock
-                acquired_fs = False
-                if filesystem_lock is not None:
-                    if not filesystem_lock.acquire(blocking=False):
+                self._preparing_message = "正在生成数据库一致性基线快照"
+            snapshot_path = (self.data_dir / "recovery"
+                             / f"baseline-{time.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}.sqlite3")
+            snapshot = recovery_probe.snapshot_database(self.data_dir, snapshot_path)
+
+            created = False
+            try:
+                with self._lock:
+                    journal = self.transaction.read()
+                    if journal.get("status") in ACTIVE_STATUSES:
+                        raise ValueError("已有安装任务正在执行")
+                    idle, reason = self.idle_check()
+                    if not idle:
+                        raise ValueError(reason or "采集或标注仍在执行，暂不能安装")
+                    claimed = False
+                    if require_authorization:
+                        if self.authorization_check is None or not self.authorization_check(version):
+                            raise ValueError("更新授权已取消，安装未启动")
+                        claimed = True
+                    filesystem_lock = self.filesystem_lock
+                    acquired_fs = False
+                    if filesystem_lock is not None:
+                        if not filesystem_lock.acquire(blocking=False):
+                            self._release_claim(claimed, version)
+                            raise ValueError("存储清理进行中，请稍后重试")
+                        acquired_fs = True
+                    try:
+                        # 恢复包与数据库快照已在锁外落盘并复验；锁内只确认身份未变并登记事务。
+                        self.backend.require_recovery_package(recovery)
+                        self.transaction.create(
+                            previous_version=previous, previous_commit=previous_commit,
+                            target_version=version, target_commit=extension["git_commit"],
+                            channel=channel,
+                            schema_baseline={"version": previous, "schema": schema, "snapshot": snapshot},
+                            target_asset=dict(extension), recovery_asset=dict(recovery),
+                            authorization={"claimed_at": _utc_now(), "claimed_by": self.role}
+                            if claimed else {},
+                        )
+                        created = True
+                    except BaseException:
                         self._release_claim(claimed, version)
-                        raise ValueError("存储清理进行中，请稍后重试")
-                    acquired_fs = True
-                try:
-                    # 恢复包与数据库快照已在锁外落盘并复验；锁内只确认身份未变并登记事务。
-                    self.backend.require_recovery_package(recovery)
-                    self.transaction.create(
-                        previous_version=previous, previous_commit=previous_commit,
-                        target_version=version, target_commit=extension["git_commit"],
-                        channel=channel,
-                        schema_baseline={"version": previous, "schema": schema, "snapshot": snapshot},
-                        target_asset=dict(extension), recovery_asset=dict(recovery),
-                        authorization={"claimed_at": _utc_now(), "claimed_by": self.role}
-                        if claimed else {},
-                    )
-                    created = True
-                except BaseException:
-                    self._release_claim(claimed, version)
-                    raise
-                finally:
-                    if acquired_fs:
-                        filesystem_lock.release()
+                        raise
+                    finally:
+                        if acquired_fs:
+                            filesystem_lock.release()
+            finally:
+                if not created:
+                    for suffix in ("", "-wal", "-shm", "-journal"):
+                        Path(f"{snapshot_path}{suffix}").unlink(missing_ok=True)
         finally:
-            if not created:
-                for suffix in ("", "-wal", "-shm", "-journal"):
-                    Path(f"{snapshot_path}{suffix}").unlink(missing_ok=True)
+            with self._lock:
+                self._preparing_version = ""
+                self._preparing_message = ""
         return self.status()
 
     def _release_claim(self, claimed: bool, version: str) -> None:

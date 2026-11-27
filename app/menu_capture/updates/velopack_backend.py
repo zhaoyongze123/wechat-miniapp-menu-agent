@@ -108,6 +108,9 @@ def _utc_now() -> str:
 class VelopackBackend:
     """Velopack SDK 的最小适配面；所有方法都不在导入期依赖 Windows 原生模块。"""
 
+    # 下载子进程内部已执行 check_for_updates + require_target，父进程无需再做一次重复远端检查。
+    verifies_target_in_download = True
+
     def __init__(
         self,
         repository: str,
@@ -126,6 +129,11 @@ class VelopackBackend:
         self.progress_path = self.data_dir / DOWNLOAD_PROGRESS
         self._download_lock = threading.Lock()
         self._download_process: subprocess.Popen | None = None
+        # 进程内只读包摘要缓存：键为 (resolved_path, size, mtime_ns)。
+        # 避免同一更新周期内对同一个 280MB .nupkg 连续重算 5~6 次全盘 SHA-256；
+        # 文件任何大小或修改时间变化都会自动失效，且最终交接 Update.exe 前强制 force_hash=True 重算。
+        self._hash_cache: dict[tuple[str, int, int], str] = {}
+        self._hash_cache_lock = threading.Lock()
 
     # ---------- 环境探测 ----------
 
@@ -220,18 +228,48 @@ class VelopackBackend:
             return None
         return record
 
-    def package_identity(self, path: Path) -> dict:
-        stat = path.stat()
-        return {"name": path.name, "size": stat.st_size, "sha256": _file_sha256(path)}
+    def _cached_sha256(self, path: Path, *, force: bool = False) -> tuple[int, str]:
+        resolved = path.resolve()
+        stat = resolved.stat()
+        key = (str(resolved), stat.st_size, stat.st_mtime_ns)
+        if not force:
+            with self._hash_cache_lock:
+                cached = self._hash_cache.get(key)
+            if cached is not None:
+                return stat.st_size, cached
+        digest = _file_sha256(resolved)
+        with self._hash_cache_lock:
+            if len(self._hash_cache) > 64:
+                self._hash_cache.clear()
+            self._hash_cache[key] = digest
+        return stat.st_size, digest
 
-    def package_matches(self, path: Path, record: dict) -> bool:
+    def _remember_sha256(self, path: Path, digest: str) -> None:
+        try:
+            resolved = path.resolve()
+            stat = resolved.stat()
+        except OSError:
+            return
+        key = (str(resolved), stat.st_size, stat.st_mtime_ns)
+        with self._hash_cache_lock:
+            if len(self._hash_cache) > 64:
+                self._hash_cache.clear()
+            self._hash_cache[key] = str(digest).lower()
+
+    def package_identity(self, path: Path, *, force_hash: bool = False) -> dict:
+        size, digest = self._cached_sha256(path, force=force_hash)
+        return {"name": path.name, "size": size, "sha256": digest}
+
+    def package_matches(self, path: Path, record: dict, *, force_hash: bool = False) -> bool:
         """实际文件必须与可信记录或签名发布摘要逐字节一致。"""
         if not self._valid_identity(record):
             return False
         try:
             if _is_reparse(path) or not path.is_file():
                 return False
-            identity = self.package_identity(path)
+            if path.name != record["name"] or path.stat().st_size != record["size"]:
+                return False
+            identity = self.package_identity(path, force_hash=force_hash)
         except OSError:
             return False
         return (identity["name"] == record["name"] and identity["size"] == record["size"]
@@ -418,9 +456,10 @@ class VelopackBackend:
                     if copied_digest != digest:
                         raise VelopackError("恢复包复制后 SHA-256 不一致")
                     os.replace(temp, destination)
+                    self._remember_sha256(destination, copied_digest)
                 finally:
                     temp.unlink(missing_ok=True)
-            elif _file_sha256(destination) != digest:
+            elif self._cached_sha256(destination)[1] != digest:
                 raise VelopackError("恢复包复制后 SHA-256 不一致")
         if source["type"] == "official-release" and package != destination:
             # 已成功落位并校验，清理 .download 中的临时完整包，避免重复占用磁盘。
@@ -478,11 +517,10 @@ class VelopackBackend:
             raise VelopackError("恢复包不存在或大小不一致")
         return resolved
 
-    def verify_recovery_package(self, asset: dict) -> Path:
+    def verify_recovery_package(self, asset: dict, *, force_hash: bool = False) -> Path:
         path = self.require_recovery_package(asset)
-        with path.open("rb") as stream:
-            if hashlib.file_digest(stream, "sha256").hexdigest() != asset["sha256"]:
-                raise VelopackError("恢复包 SHA-256 不一致")
+        if self._cached_sha256(path, force=force_hash)[1] != asset["sha256"]:
+            raise VelopackError("恢复包 SHA-256 不一致")
         inner = inner_release_manifest(path)
         if (str(inner.get("version") or "") != asset["version"]
                 or str(inner.get("git_commit") or "") != asset["commit"]):
@@ -493,7 +531,8 @@ class VelopackBackend:
         """仅供外部恢复协调器在复核数据库与包后调用；使用官方 updater 与旧包实际渠道应用旧 full 包。"""
         if not self.available():
             raise VelopackError("当前不是 Velopack 安装环境")
-        package = self.verify_recovery_package(asset)
+        # 真正交接给官方 updater 前强制全量重算一次 SHA-256，防止 TOCTOU 篡改。
+        package = self.verify_recovery_package(asset, force_hash=True)
         recovery_channel = str(asset.get("channel") or "").strip().lower()
         if channel is not None and str(channel).strip().lower() != recovery_channel:
             raise VelopackError("回滚渠道与恢复包实际发布渠道不一致")
@@ -574,8 +613,11 @@ class VelopackBackend:
 
     def check(self, channel: str | None = None, version: str | None = None) -> dict | None:
         """返回 SDK 选中的目标版本；没有任何适用更新时返回 None。"""
+        from menu_capture.updates.velopack_worker import _call_with_network_retry
+
         try:
-            info = self.manager(channel, version).check_for_updates()
+            manager = self.manager(channel, version)
+            info = _call_with_network_retry(manager.check_for_updates, delays=(1.5, 3.0))
         except Exception as exc:  # noqa: BLE001 - 网络/解析失败统一呈现为检查失败
             raise VelopackError(f"Velopack 检查更新失败：{exc}") from exc
         if info is None:
@@ -601,7 +643,7 @@ class VelopackBackend:
             return None
         return sdk_asset_identity(asset)
 
-    def _require_pending_package(self, target: dict, identity: dict) -> dict:
+    def _require_pending_package(self, target: dict, identity: dict, *, force_hash: bool = False) -> dict:
         """本地待安装包必须与已验证产物记录逐字节一致；无记录一律拒绝。"""
         require_local_asset(identity, target)
         root = self._packages_dir()
@@ -615,7 +657,7 @@ class VelopackBackend:
         record = self.verified_package(target["version"], target["git_commit"])
         if record is None:
             raise VelopackError("缺少该版本的可信下载记录，请重新下载")
-        if not self.package_matches(path, record):
+        if not self.package_matches(path, record, force_hash=force_hash):
             raise VelopackError("待安装包与可信下载记录不一致")
         require_inner_manifest(path, version=target["version"], commit=target["git_commit"])
         return {**identity, "size": record["size"], "sha256": record["sha256"],
@@ -646,10 +688,10 @@ class VelopackBackend:
         except OSError as exc:
             raise VelopackError("目标缓存无法清理") from exc
 
-    def verify_pending(self, target: dict, channel: str) -> dict:
+    def verify_pending(self, target: dict, channel: str, *, force_hash: bool = False) -> dict:
         require_publisher_trust(target)
         pending = self.pending_restart(channel)
-        return self._require_pending_package(target, pending)
+        return self._require_pending_package(target, pending, force_hash=force_hash)
 
     def download(
         self,
@@ -791,8 +833,8 @@ class VelopackBackend:
         asset = manager.get_update_pending_restart()
         if asset is None:
             raise VelopackError("没有已下载完成的更新包")
-        # 与 verify_pending 共用同一守卫：路径、实际摘要与包内身份必须一致。
-        self._require_pending_package(target, sdk_asset_identity(asset))
+        # 与 verify_pending 共用同一守卫：交接官方 Update.exe 前强制全量重算一次 SHA-256。
+        self._require_pending_package(target, sdk_asset_identity(asset), force_hash=True)
         # 启动器在调用后必须走正常退出路径，由官方 Update.exe 完成应用与重启。
         manager.wait_exit_then_apply_updates(
             asset, silent=True, restart=True, restart_args=None,

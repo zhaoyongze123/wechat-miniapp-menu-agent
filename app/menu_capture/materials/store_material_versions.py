@@ -84,7 +84,9 @@ class StoreMaterialVersions:
         """, ((task_id,) for task_id in task_ids))
 
     def prepare(self, batch_id: str, snapshot: Path, entries: list[dict],
-                previous_release: dict | None) -> list[dict]:
+                previous_release: dict | None, *,
+                precomputed_digests: dict[str, str] | None = None,
+                unchanged_store_ids: set[str] | None = None) -> list[dict]:
         prior_entries = {}
         previous_root = None
         if previous_release:
@@ -92,18 +94,35 @@ class StoreMaterialVersions:
             marker = previous_root / ".materials-snapshot.json"
             if marker.is_file():
                 prior_entries = {row["store_id"]: row for row in json.loads(marker.read_text(encoding="utf-8"))["stores"]}
+        digests_map = precomputed_digests or {}
+        unchanged = unchanged_store_ids or set()
         with self.tasks.connect() as db:
             previous = {}
             for row in db.execute("""SELECT store_id,task_id,revision,pixel_hash FROM material_store_publications
                 WHERE batch_id=? ORDER BY revision,rowid""", (batch_id,)):
                 previous[row["store_id"]] = dict(row)
+            # 批量查出当前快照所有任务的 source_path -> id，避免 100 家店循环 N 次 SQL。
+            prefix = str(snapshot)
+            task_by_path = {
+                row["source_path"]: row["id"]
+                for row in db.execute(
+                    "SELECT id,source_path FROM tasks WHERE source_path LIKE ? ORDER BY rowid ASC",
+                    (f"{prefix}%",),
+                )
+            }
             result = []
             for entry in entries:
                 store_id = entry["store_id"]
                 relative = Path(entry["source_name"]) / "二维码.png"
                 artifact = snapshot / relative
-                digest = pixel_digest(artifact)
                 old = previous.get(store_id)
+                if store_id in digests_map:
+                    digest = digests_map[store_id]
+                elif store_id in unchanged and old is not None and old.get("pixel_hash"):
+                    # 增量发布原样复制自上一版快照的门店，像素完全一致，直接复用已落盘的 pixel_hash。
+                    digest = old["pixel_hash"]
+                else:
+                    digest = pixel_digest(artifact)
                 if old is None and previous_root and store_id in prior_entries:
                     prior_artifact = previous_root / prior_entries[store_id]["source_name"] / "二维码.png"
                     if prior_artifact.is_file():
@@ -112,12 +131,15 @@ class StoreMaterialVersions:
                         if row is not None:
                             old = {"task_id": row["id"], "pixel_hash": pixel_digest(prior_artifact), "revision": 1}
                 changed = old is None or old["pixel_hash"] != digest
-                task = db.execute("SELECT id FROM tasks WHERE source_path=? ORDER BY rowid DESC LIMIT 1",
-                                  (str(artifact),)).fetchone()
-                if task is None:
+                task_id_current = task_by_path.get(str(artifact))
+                if task_id_current is None:
+                    row = db.execute("SELECT id FROM tasks WHERE source_path=? ORDER BY rowid DESC LIMIT 1",
+                                     (str(artifact),)).fetchone()
+                    task_id_current = row["id"] if row is not None else None
+                if task_id_current is None:
                     raise ValueError(f"找不到已发布二维码对应的采集记录：{entry['source_name']}")
                 # 已回到历史图片时仍创建独立的有效采集身份，避免恢复历史审核。
-                task_id = task["id"] if changed else old["task_id"]
+                task_id = task_id_current if changed else old["task_id"]
                 result.append({"store_id": store_id, "store_name": entry["source_name"], "task_id": task_id,
                                "revision": (old["revision"] + int(changed)) if old else 1,
                                "pixel_hash": digest, "changed": changed})

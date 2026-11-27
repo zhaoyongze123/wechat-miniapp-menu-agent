@@ -1139,7 +1139,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                queue_filter: Literal["all", "pending", "running", "captured", "rejected", "review", "returned"] = "all",
                queue_sort: Literal["source", "recent", "status"] = "source",
                selected: Annotated[str, Query(max_length=9000)] = "",
-               include_events: bool = True, project_id: str | None = None):
+               include_events: bool = True, include_tasks: bool = True, project_id: str | None = None):
         # 任务表保留历史；更换成清洗后的目录时，只展示当前素材集，避免旧照片继续可选。
         settings = configs.load()
         scope = project_scope(project_id)
@@ -1148,7 +1148,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         input_dir = settings.input_dir
         current_root = Path(input_dir).expanduser().resolve() if input_dir else None
         release = None if role == "worker" else materials.active_release(current_root or Path(), project_id=scope)
-        paged = hub is not None and queue_page is not None
+        paged = queue_page is not None
         if hub:
             # 共享模式按各批次最新发布版本取数，不需要逐条解析旧任务的文件路径。
             tasks = materials.effective_capture_tasks(project_id=scope)
@@ -1161,10 +1161,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                          if current_root and current_root in Path(task["source_path"]).resolve().parents]
             ready = runner.last_readiness or {"ready": None, "issues": ["环境诊断可在设置中手动查看"],
                                               "launch_mode": profiles.load()["launch_mode"]}
-        all_tasks = [] if paged else tasks
+        all_tasks = [] if (hub is not None and paged) else tasks
         if sys.platform == "win32" and not hub:
             ready = ready | {"launch_mode": "native"}
-        run = None if paged else store.latest_run()
+        run = None if (hub is not None and paged) else store.latest_run()
         if run and not run_project_matches(run, scope):
             run = None
         if run:
@@ -1179,24 +1179,31 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             # 跨批次重跑没有单一素材批次可展示：按任务来源快照数量识别。
             snapshots = {Path(by_id[task_id]["source_path"]).parent.parent.name
                          for task_id in ids if task_id in by_id}
+            compact_run = paged or not include_tasks
             run.update(processed=processed, captured=captured, unqualified=unqualified,
                        review=processed-captured-unqualified,
                        remaining=len(ids)-processed, total=len(ids),
-                       processed_ids=progress.get("done_ids", ids[:processed]),
                        cross_batch=len(snapshots) > 1, batch_count=len(snapshots),
-                       task_list=[{"id": task_id, "name": by_id.get(task_id, {}).get("source_name", ""),
-                                   "status": by_id.get(task_id, {}).get("status", "")} for task_id in ids],
                        next_name=by_id.get(ids[processed], {}).get("source_name", "") if processed < len(ids) else "")
+            if not compact_run:
+                run.update(
+                    processed_ids=progress.get("done_ids", ids[:processed]),
+                    task_list=[{"id": task_id, "name": by_id.get(task_id, {}).get("source_name", ""),
+                                "status": by_id.get(task_id, {}).get("status", "")} for task_id in ids],
+                )
         if run:
             recorded = store.capture_run_results([run["id"]]).get(run["id"], [])
             if any(row["outcome"] for row in recorded):
                 outcomes = Counter(row["outcome"] for row in recorded)
                 processed_ids = [row["task_id"] for row in recorded if row["outcome"]]
-                run.update(processed=len(processed_ids), processed_ids=processed_ids,
-                           result_by_task={row["task_id"]: row["outcome"] for row in recorded if row["outcome"]},
+                run.update(processed=len(processed_ids),
                            captured=outcomes["captured"], review=outcomes["review"],
                            unqualified=outcomes["rejected"], remaining=len(run["task_ids"])-len(processed_ids))
-        tasks = [task | {"capture_outcome": capture_outcome(task)} for task in tasks]
+                if not (paged or not include_tasks):
+                    run.update(
+                        processed_ids=processed_ids,
+                        result_by_task={row["task_id"]: row["outcome"] for row in recorded if row["outcome"]},
+                    )
         # 素材清洗拒绝的门店可能没有采集任务，控制台必须与不合格清单同口径计入。
         material_rejected = 0
         if release:
@@ -1239,11 +1246,12 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             "native": ("Windows 原生", "本机 Windows 桌面采集已就绪"),
             "cli": ("UiPath", "已就绪，点击开始后由 UiPath CLI 自动启动 Main.xaml"),
         }.get(launch_mode, ("UiPath", "已就绪，等待手动在 Studio 运行 Main.xaml"))
+        selected_set = {value for value in selected.split(",") if value} if selected else set()
         queue = workbench_page(
             tasks, snapshot=(release["snapshot_id"] if release else "") if queue_scope == "current" else None,
             query=queue_q, status=queue_filter, sort=queue_sort, page=queue_page, size=queue_size,
-            selected_ids=set(selected.split(",")), batch_id=queue_batch,
-        ) if paged else None
+            selected_ids=selected_set, batch_id=queue_batch,
+        ) if (paged and include_tasks) else None
         events = store.events() if include_events else []
         if role != "standalone" and events:
             event_projects = task_project_ids(str(event["task_id"]) for event in events if event.get("task_id"))
@@ -1270,6 +1278,17 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         idle_unselected = bool(ready.get("selection_missing")) and len(ready.get("issues") or []) <= 1
         engine_ready = None if idle_unselected else ready["ready"]
         effective_engine_message = engine_message if idle_unselected else ("；".join(ready["issues"]) or engine_message)
+        if not include_tasks:
+            response_tasks = []
+        elif queue is not None:
+            response_tasks = queue["records"]
+        else:
+            response_tasks = [
+                task | {"capture_outcome": capture_outcome(task)}
+                | describe_failure(task.get("error_code", ""), task.get("stage", ""), task.get("message", ""))
+                | {"store_state": store_state(task)}
+                for task in tasks
+            ]
         return {"execution_engine": engine, "launch_mode": launch_mode,
                 "engine_ready": engine_ready, "engine_message": effective_engine_message,
                 "robot_readiness": (ready | {"ready": None, "issues": []}) if idle_unselected else ready,
@@ -1279,12 +1298,49 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 "material_release": release,
                 "batch_output_dir": output_path,
                 "input_name": "本机分配" if worker else (current_root.name if current_root else ""),
-                "tasks": queue["records"] if queue else [task | describe_failure(task.get("error_code", ""), task.get("stage", ""), task.get("message", "")) | {"store_state": store_state(task)} for task in tasks],
+                "tasks": response_tasks,
                 "counts": queue["counts"] if queue else state_counts(tasks),
                 **({"queue": {key: value for key, value in queue.items() if key not in {"records", "counts"}}} if queue else {}),
                 "material_rejected": material_rejected, "material_rejected_all": material_rejected_all,
                 "events": events,
                 "manual": runner.manual_state() if runner.running and run else None}
+
+    @app.get("/api/status/summary")
+    def status_summary(include_events: bool = False, project_id: str | None = None):
+        """轻量状态轮询接口：不返回全量任务列表，响应体恒定小于 50KB。"""
+        return status(include_events=include_events, include_tasks=False, project_id=project_id)
+
+    @app.get("/api/status/tasks")
+    def status_tasks(page: Annotated[int, Query(ge=1)] = 1,
+                     size: Annotated[int, Query(ge=1, le=100)] = 50,
+                     scope: Literal["all", "current"] = "all",
+                     batch: Annotated[str, Query(max_length=128)] = "",
+                     q: Annotated[str, Query(max_length=300)] = "",
+                     filter: Literal["all", "pending", "running", "captured", "rejected", "review", "returned"] = "all",
+                     sort: Literal["source", "recent", "status"] = "source",
+                     selected: Annotated[str, Query(max_length=9000)] = "",
+                     project_id: str | None = None):
+        """统一分页任务查询接口：Hub/Worker/单机共用同一筛选、排序与分页口径。"""
+        settings = configs.load()
+        proj_scope = project_scope(project_id)
+        if batch and batch != "all":
+            batch_scope(batch, proj_scope)
+        input_dir = settings.input_dir
+        current_root = Path(input_dir).expanduser().resolve() if input_dir else None
+        release = None if role == "worker" else materials.active_release(current_root or Path(), project_id=proj_scope)
+        if hub:
+            tasks = materials.effective_capture_tasks(project_id=proj_scope)
+        elif worker:
+            tasks = worker.tasks(project_id=proj_scope)
+        else:
+            tasks = [task for task in store.tasks()
+                     if current_root and current_root in Path(task["source_path"]).resolve().parents]
+        selected_set = {value for value in selected.split(",") if value} if selected else set()
+        return workbench_page(
+            tasks, snapshot=(release["snapshot_id"] if release else "") if scope == "current" else None,
+            query=q, status=filter, sort=sort, page=page, size=size,
+            selected_ids=selected_set, batch_id=batch,
+        )
 
     @app.get("/api/capture/queue")
     def capture_queue(batch_ids: str = "all", q: str = "", project_id: str | None = None):
@@ -1996,7 +2052,33 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
 
     @app.post("/api/materials/rework/return")
     def return_material_rework(payload: dict, project_id: str | None = None):
-        """打回选错码的门店：恢复待处理，等待人工在原批次重新选码。"""
+        """打回选错码的门店：支持单店 {batch_id, store_id} 与跨批次批量 {store_ids: ['batch:store', ...]}。"""
+        payload = payload or {}
+        if "store_ids" in payload:
+            if set(payload) - {"store_ids", "project_id"}:
+                raise ValueError("批量打回参数无效")
+            scope = project_scope(project_id or payload.get("project_id"), write=True)
+            raw_ids = payload.get("store_ids")
+            if not isinstance(raw_ids, list) or not raw_ids:
+                raise ValueError("请选择要打回的门店")
+            targets: list[tuple[str, str]] = []
+            seen_targets: set[tuple[str, str]] = set()
+            for value in raw_ids:
+                if not isinstance(value, str) or ":" not in value:
+                    raise ValueError("门店打回标识无效")
+                bid, _, sid = value.partition(":")
+                if not bid or not sid:
+                    raise ValueError("门店打回标识无效")
+                pair = (bid, sid)
+                if pair not in seen_targets:
+                    seen_targets.add(pair)
+                    targets.append(pair)
+            with control_lock:
+                idle()
+                result = materials.return_rework_stores(targets, project_id=scope)
+                if hub and result["returned"]:
+                    hub.reconcile_assignments()
+                return result
         if not {"batch_id", "store_id"} <= set(payload) or (set(payload) - {"batch_id", "store_id", "project_id"}):
             raise ValueError("打回参数无效")
         scope = batch_scope(str(payload["batch_id"]), project_id or payload.get("project_id"), write=True)
@@ -2027,7 +2109,14 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 raise ValueError("门店发布标识无效")
             batch_scope(batch_id, scope, write=True)
             groups.setdefault(batch_id, []).append(store_id)
-        names = {batch["batch_id"]: batch.get("name", "") for batch in materials.list_batches(project_id=scope)}
+        with store.connect() as db:
+            names = {
+                row["id"]: row["name"] or ""
+                for row in db.execute(
+                    "SELECT id,name FROM material_batches WHERE project_id=? AND deleted_at=''",
+                    (scope,),
+                )
+            }
         description = str(payload.get("description") or "跨批次返工发布")
         results, errors = [], []
         with control_lock:
@@ -2036,8 +2125,6 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 try:
                     result = materials.publish_snapshot(batch_id, description, store_ids=ids, activate=False,
                                                         project_id=scope)
-                    if hub:
-                        hub.reconcile_assignments()
                     results.append({
                         "batch_id": batch_id, "batch_name": names.get(batch_id, ""),
                         "snapshot_id": result["snapshot_id"],
@@ -2049,6 +2136,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 except Exception as exc:
                     errors.append({"batch_id": batch_id, "batch_name": names.get(batch_id, ""),
                                    "error": str(exc)})
+            # 跨批次增量发布后统一对账一次，避免 N 个批次循环执行 N 次全量对账。
+            if hub and results:
+                hub.reconcile_assignments()
         return {"results": results, "errors": errors}
 
     @app.post("/api/materials/batches/{batch_id}/activate")
@@ -2716,7 +2806,7 @@ def main():
             app.state.uvicorn_server = server
             server.run()
     except InstanceLockedError:
-        raise SystemExit("本机控制台已运行，请打开 http://127.0.0.1:8765")
+        raise SystemExit("本机控制台已运行，请打开 http://127.0.0.1:8765") from None
 
 
 if __name__ == "__main__":

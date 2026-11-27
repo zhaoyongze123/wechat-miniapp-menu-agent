@@ -56,7 +56,19 @@ export interface WorkerQueue {
   page: number
   pages: number
   total: number
+  selected?: WorkerTask[]
   batches?: { id: string; name: string }[]
+}
+
+export interface WorkerQueueParams {
+  page: number
+  size: number
+  batch: string
+  q: string
+  filter: WorkerFilter
+  sort: WorkerSort
+  selected: string[]
+  includeEvents: boolean
 }
 
 export interface ManualState {

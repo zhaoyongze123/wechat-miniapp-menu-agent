@@ -419,3 +419,76 @@ def test_copy_sqlite_consistently_runs_integrity_check_only_on_copy(
         (source.resolve(), False),
         (destination.resolve(), True),
     ]
+
+
+def test_backup_sqlite_produces_non_wal_snapshot_and_prunes_orphan_sidecars(tmp_path: Path) -> None:
+    """备份产物应切出 WAL 模式避免只读打开残留 -shm/-wal；prune 也应清理历史孤立附属文件。"""
+    data_dir = _create_data_root(tmp_path)
+    source = data_dir / "tasks.sqlite3"
+    snap = data_dir / "recovery" / "baseline-new.sqlite3"
+    recovery.backup_sqlite(source, snap)
+
+    with sqlite3.connect(snap) as db:
+        mode = db.execute("PRAGMA journal_mode").fetchone()[0]
+    assert str(mode).lower() == "delete"
+    assert not Path(f"{snap}-wal").exists()
+    assert not Path(f"{snap}-shm").exists()
+
+    # 制造孤立的历史 -wal / -shm 附属文件，验证 prune_recovery_baselines 一并清理。
+    orphan_wal = data_dir / "recovery" / "baseline-old.sqlite3-wal"
+    orphan_shm = data_dir / "recovery" / "baseline-old.sqlite3-shm"
+    orphan_wal.write_bytes(b"w")
+    orphan_shm.write_bytes(b"s")
+    recovery.prune_recovery_baselines(data_dir, keep=1)
+    assert snap.exists()
+    assert not orphan_wal.exists()
+    assert not orphan_shm.exists()
+
+
+def test_prepare_verify_home_reuses_unchanged_baseline_and_falls_back_on_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """生产库未改动时隔离验证直接流式复用已校验基线快照；若期间有写入则自动回退完整 backup。"""
+    data_root = tmp_path / "home"
+    data_dir = data_root / "data"
+    data_dir.mkdir(parents=True)
+    source = data_dir / "tasks.sqlite3"
+    with sqlite3.connect(source) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY)")
+        db.execute("CREATE TABLE runs (id TEXT PRIMARY KEY)")
+        db.execute("INSERT INTO tasks VALUES ('t1')")
+        db.execute("INSERT INTO runs VALUES ('r1')")
+        db.commit()
+
+    baseline_path = data_dir / "recovery" / "baseline-test.sqlite3"
+    snapshot = recovery.snapshot_database(data_dir, baseline_path)
+
+    backup_calls = {"n": 0}
+    real_copy = recovery.copy_sqlite_consistently
+
+    def spy_copy(src: Path, dst: Path) -> dict:
+        backup_calls["n"] += 1
+        return real_copy(src, dst)
+
+    monkeypatch.setattr(recovery, "copy_sqlite_consistently", spy_copy)
+
+    verify1 = tmp_path / "verify-1"
+    evidence1 = recovery.prepare_verify_home(
+        data_root, verify1, transaction_id="tx1", baseline_snapshot=snapshot,
+    )
+    assert backup_calls["n"] == 0
+    assert evidence1["databases"]["tasks.sqlite3"]["sha256"] == snapshot["sha256"]
+    ok, reason = recovery.database_readable(verify1 / "data")
+    assert ok, reason
+
+    # 模拟停机前生产库新增一行：必须自动回退到完整一致性 backup。
+    with sqlite3.connect(source) as db:
+        db.execute("INSERT INTO tasks VALUES ('t2')")
+        db.commit()
+    verify2 = tmp_path / "verify-2"
+    evidence2 = recovery.prepare_verify_home(
+        data_root, verify2, transaction_id="tx2", baseline_snapshot=snapshot,
+    )
+    assert backup_calls["n"] == 1
+    assert evidence2["databases"]["tasks.sqlite3"]["row_counts"]["tasks"] == 2

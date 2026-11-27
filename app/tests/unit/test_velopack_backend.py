@@ -4,10 +4,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import os
 import subprocess
 import sys
-import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -669,3 +667,61 @@ def test_download_requires_bound_target(tmp_path):
     result = backend.download("0.4.0")
     assert result["status"] == "failed"
     assert "目标" in result["message"]
+
+
+def test_network_retry_retries_transient_timeout_but_not_validation_error():
+    from menu_capture.updates.velopack_worker import _call_with_network_retry
+
+    attempts = {"n": 0}
+    retries: list[int] = []
+
+    def flaky():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise RuntimeError("Network error: Http error: timeout: connect")
+        return "ok"
+
+    assert _call_with_network_retry(flaky, delays=(0.0, 0.0), on_retry=lambda n, _e: retries.append(n)) == "ok"
+    assert attempts["n"] == 3
+    assert retries == [1, 2]
+
+    bad_attempts = {"n": 0}
+
+    def bad_hash():
+        bad_attempts["n"] += 1
+        raise ValueError("SHA256 校验不一致")
+
+    with pytest.raises(ValueError, match="SHA256"):
+        _call_with_network_retry(bad_hash, delays=(0.0, 0.0))
+    assert bad_attempts["n"] == 1
+
+
+def test_package_hash_cache_reuses_unchanged_file_and_honors_force_hash(tmp_path, monkeypatch):
+    from menu_capture.updates import velopack_backend as vb
+
+    backend = VelopackBackend("owner/repo", tmp_path)
+    pkg = tmp_path / "Yipu.MenuCapture-0.5.13-win-x64-stable-full.nupkg"
+    pkg.write_bytes(b"package-payload-v1")
+    real_sha = vb._file_sha256
+    calls = {"n": 0}
+
+    def counting_sha(path):
+        calls["n"] += 1
+        return real_sha(path)
+
+    monkeypatch.setattr(vb, "_file_sha256", counting_sha)
+    first = backend.package_identity(pkg)
+    second = backend.package_identity(pkg)
+    assert first == second
+    assert calls["n"] == 1
+
+    # force_hash=True（交接 Update.exe 前）必须重新计算真实摘要。
+    forced = backend.package_identity(pkg, force_hash=True)
+    assert forced == first
+    assert calls["n"] == 2
+
+    # 文件内容/大小变化后缓存自动失效。
+    pkg.write_bytes(b"package-payload-v2-changed")
+    third = backend.package_identity(pkg)
+    assert third["sha256"] != first["sha256"]
+    assert calls["n"] == 3

@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from menu_capture.vision.scene_agent import SceneAgent, SceneError
-from menu_capture.annotation.target_candidates import build_text_candidates, candidate_by_id, candidate_table
+from menu_capture.annotation.target_candidates import build_text_candidates, candidate_table
 
 
 class FakeVisionModel:

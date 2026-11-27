@@ -61,6 +61,19 @@ MAX_KEEP_VERSIONS = 5
 RELEASE_SIZE_CACHE_VERSION = 1
 # “空闲后更新”监控轮询；发现不空闲时只记录原因，不打断采集。
 SCHEDULE_POLL_SECONDS = 5.0
+# 瞬时网络错误重试（仅针对超时/连接抖动，不重试校验或 4xx 错误）。
+CHECK_RETRY_DELAY_SECONDS = 1.5
+_TRANSIENT_ERROR_MARKERS = (
+    "timeout", "timed out", "connect", "connection", "reset",
+    "temporarily", "eof", "broken pipe", "http error", "502", "503", "504",
+)
+
+
+def _is_transient_network_error(message_or_exc: Any) -> bool:
+    text = str(message_or_exc or "").lower()
+    if any(token in text for token in ("404", "403", "401", "sha256", "签名", "清单", "不可信", "不一致")):
+        return False
+    return any(marker in text for marker in _TRANSIENT_ERROR_MARKERS)
 # 一次授权即可完成的更新方式：immediate 为“立即更新”，idle 为“空闲后更新”。
 UPDATE_MODES = {"immediate", "idle"}
 # Hub 宿主机执行器的中间状态（下载/加载/分层拉取/切换）也属于安装进行中；
@@ -471,6 +484,7 @@ class UpdateService:
         self.schedule_installer: Callable[[str], dict] | None = None
         self._schedule = self._read_schedule()
         self._schedule_cancel: threading.Event | None = None
+        self._schedule_wakeup = threading.Event()
         self._schedule_thread: threading.Thread | None = None
         if self._schedule.get("armed") and self.schedule_installer is not None:
             self._arm_schedule_monitor()
@@ -1368,7 +1382,8 @@ class UpdateService:
 
     def _run_velopack_download(self, version: str, channel: str, target: dict, cancel: threading.Event) -> None:
         try:
-            self._verify_velopack_target(target, channel)
+            if not getattr(self.backend, "verifies_target_in_download", False):
+                self._verify_velopack_target(target, channel)
             result = self.backend.download(
                 version, channel=channel, target=target,
                 progress=self._report_velopack_progress, cancel=cancel,
@@ -1550,6 +1565,8 @@ class UpdateService:
                     self._append_history("update", "failed", str(exc), flow_version)
                 raise
         self._arm_schedule_monitor()
+        if not start_download and mode == "immediate":
+            self._schedule_wakeup.set()
         return self.update_flow()
 
     @property
@@ -1618,6 +1635,7 @@ class UpdateService:
             self._append_history("update", "ok", "已取消更新", version)
         if cancel is not None:
             cancel.set()
+        self._schedule_wakeup.set()
         return self.update_flow()
 
     def update_flow(self) -> dict:
@@ -1679,6 +1697,14 @@ class UpdateService:
             if str(schedule.get("last_result") or "") == "started":
                 # 执行器已被要求启动，但状态快照尚未刷新；如实显示“正在启动安装”。
                 return {**flow, "active": True, "stage": "installing", "message": "正在启动安装"}
+            if bound and install.get("preparing"):
+                # 事务登记前正在做包校验与数据库基线快照：如实告知进度，同时保持 waiting（仍可取消）。
+                return {
+                    **flow,
+                    "active": True,
+                    "stage": "waiting",
+                    "message": str(install.get("preparing_message") or "正在准备数据库基线与安装事务"),
+                }
             return {**flow, "active": True, "stage": "waiting",
                     "message": str(schedule.get("note") or "等待空闲后安装")}
         if download.get("active"):
@@ -1717,6 +1743,7 @@ class UpdateService:
             schedule = dict(self._schedule)
         if cancel is not None:
             cancel.set()
+        self._schedule_wakeup.set()
         return schedule
 
     def _downloaded_artifact_ready(self, version: str) -> bool:
@@ -1751,6 +1778,7 @@ class UpdateService:
                 return
             cancel = threading.Event()
             self._schedule_cancel = cancel
+            self._schedule_wakeup.clear()
             version = str(self._schedule.get("version") or "")
             self._schedule_thread = threading.Thread(
                 target=self._schedule_loop,
@@ -1762,7 +1790,11 @@ class UpdateService:
 
     def _schedule_loop(self, cancel: threading.Event, version: str) -> None:
         """后台等待下载完成与安全时机；执行器负责最终的空闲判断与闸门。"""
-        while not cancel.wait(SCHEDULE_POLL_SECONDS):
+        while True:
+            self._schedule_wakeup.wait(SCHEDULE_POLL_SECONDS)
+            self._schedule_wakeup.clear()
+            if cancel.is_set():
+                return
             with self._lock:
                 if not self._schedule.get("armed") or str(self._schedule.get("version")) != version:
                     return
@@ -1819,7 +1851,20 @@ class UpdateService:
                         self._disarm_schedule("下载已中断，请重新授权更新", version)
                         return
                     if status in {"failed", "cancelled"}:
-                        self._disarm_schedule(f"下载未完成：{download.get('error') or status}", version)
+                        error_text = str(download.get("error") or status)
+                        if status == "failed" and _is_transient_network_error(error_text):
+                            with self._lock:
+                                attempts = int(self._schedule.get("attempts") or 0)
+                                self._schedule["attempts"] = attempts + 1
+                                self._write_json(self.schedule_path, self._schedule)
+                            if attempts < 1:
+                                try:
+                                    self.start_download()
+                                except ValueError as exc:
+                                    self._disarm_schedule(f"重试下载失败：{exc}", version)
+                                    return
+                                continue
+                        self._disarm_schedule(f"下载未完成：{error_text}", version)
                         return
                     if status == "completed":
                         self._disarm_schedule("已下载的更新包版本不一致，请重新授权", version)
@@ -2053,6 +2098,9 @@ class UpdateService:
             message = error or (f"已下载 {state.get('asset_name')}" if status == "completed" else status)
             self._append_history("download", "ok" if status == "completed" else "failed",
                                  message, str(state.get("version") or ""))
+        # 仅在已有定时/自动更新安排生效时才立即唤醒调度线程，消除下载完成到启动安装之间最多 5 秒的无谓空等。
+        if status in {"completed", "failed", "interrupted", "cancelled"} and self._schedule.get("armed"):
+            self._schedule_wakeup.set()
 
     def _write_download_state(self) -> None:
         try:
@@ -2169,11 +2217,18 @@ class UpdateService:
         try:
             if channel == "stable":
                 # 正式渠道优先走静态签名清单：零 API 配额消耗；
+                # 偶发连接/读超时自动重试一次，避免单次网络抖动导致检查失败。
                 # 但当独立组件交错发布导致 latest 仅含另一端资产时，回退查 Release 列表寻找本端最新兼容版本，避免离线设备漏更。
-                status, response_headers, body = self._fetcher(
-                    STATIC_MANIFEST_URL.format(repository=self.repository),
-                    {"Accept": "application/json", "User-Agent": "menu-capture-updater"}, 10.0,
-                )
+                manifest_url = STATIC_MANIFEST_URL.format(repository=self.repository)
+                manifest_headers = {"Accept": "application/json", "User-Agent": "menu-capture-updater"}
+                for fetch_attempt in range(2):
+                    try:
+                        status, response_headers, body = self._fetcher(manifest_url, manifest_headers, 10.0)
+                        break
+                    except Exception as exc:
+                        if fetch_attempt >= 1 or not _is_transient_network_error(exc) or not still_current():
+                            raise
+                        time.sleep(CHECK_RETRY_DELAY_SECONDS)
                 if status != 200:
                     raise ValueError(f"发布清单下载失败（HTTP {status}）")
                 if not still_current():

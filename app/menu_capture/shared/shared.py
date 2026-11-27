@@ -678,6 +678,7 @@ class SharedHub:
         tasks = {task["id"]: task for task in effective}
         selected = []
         conflicts = []
+        to_verify = []
         for task_id in dict.fromkeys(task_ids):
             task = tasks.get(task_id)
             if task and waiting_for_materials(task):
@@ -687,10 +688,28 @@ class SharedHub:
             elif not task["runnable"]:
                 conflicts.append({"task_id": task_id, "reason": "unavailable"})
             else:
+                to_verify.append(task)
+        if len(to_verify) > 4:
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _check_source(item: dict) -> tuple[dict, str | None]:
                 try:
-                    selected.append((task, self._source(task).suffix.lower()))
+                    return item, self._source(item).suffix.lower()
                 except SharedConflict:
-                    conflicts.append({"task_id": task_id, "reason": "source"})
+                    return item, None
+
+            with ThreadPoolExecutor(max_workers=min(8, len(to_verify))) as pool:
+                for item, suffix in pool.map(_check_source, to_verify):
+                    if suffix is None:
+                        conflicts.append({"task_id": item["id"], "reason": "source"})
+                    else:
+                        selected.append((item, suffix))
+        else:
+            for item in to_verify:
+                try:
+                    selected.append((item, self._source(item).suffix.lower()))
+                except SharedConflict:
+                    conflicts.append({"task_id": item["id"], "reason": "source"})
         rows = []
         stamp = utc_stamp()
         with self.store.connect() as db:
@@ -709,38 +728,51 @@ class SharedHub:
                 raise SharedConflict("所选门店不属于当前项目，本次分配未生效")
             # Reconcile must always see every project's effective tasks.
             self._reconcile_assignments(db, self._store_index(effective))
-            # 在同一个写事务核对占用，整次提交全部通过后才生成分配记录。
+            # 批量读取活跃占用与同机批次快照，消除 300 家店循环 N+1 查询。
+            active_owners: dict[tuple[str, str], str] = {}
+            ongoing_snapshots: dict[str, str] = {}
+            selected_batches = list(dict.fromkeys(task["batch_id"] for task, _ in selected))
+            if selected_batches:
+                placeholders = ",".join("?" for _ in selected_batches)
+                for row in db.execute(
+                    "SELECT a.batch_id,a.store,a.worker_id,a.snapshot_id,w.name "
+                    "FROM shared_assignments a JOIN shared_workers w ON w.id=a.worker_id "
+                    f"WHERE a.status IN ('assigned','ready') AND a.batch_id IN ({placeholders}) "
+                    "ORDER BY a.rowid",
+                    selected_batches,
+                ):
+                    active_owners[(row["batch_id"], row["store"])] = row["name"]
+                    if row["worker_id"] == worker_id and row["batch_id"] not in ongoing_snapshots:
+                        ongoing_snapshots[row["batch_id"]] = row["snapshot_id"]
             for task, _ in selected:
-                owner = db.execute("""
-                    SELECT w.name FROM shared_assignments a JOIN shared_workers w ON w.id=a.worker_id
-                    WHERE a.batch_id=? AND a.store=? AND a.status IN ('assigned','ready')
-                """, (task["batch_id"], task["source_name"])).fetchone()
-                if owner:
-                    conflicts.append({"task_id": task["id"], "reason": "assigned", "worker_name": owner["name"]})
+                owner_name = active_owners.get((task["batch_id"], task["source_name"]))
+                if owner_name is not None:
+                    conflicts.append({"task_id": task["id"], "reason": "assigned", "worker_name": owner_name})
             if conflicts:
                 raise SharedConflict(f"{len(conflicts)} 家门店暂时无法分配，本次提交未生效", conflicts=conflicts)
             for task, suffix in selected:
                 # 旧采集端只能为同批次缓存一个兼容快照标记。分配标记与物理二维码路径独立，
                 # 存续分配使用同一标记，新旧素材有效性仍由当前门店任务身份校验。
-                ongoing = db.execute("""
-                    SELECT snapshot_id FROM shared_assignments WHERE worker_id=? AND batch_id=?
-                        AND status IN ('assigned','ready') ORDER BY rowid LIMIT 1
-                """, (worker_id, task["batch_id"])).fetchone()
-                record = {
+                snap_id = ongoing_snapshots.get(task["batch_id"]) or task["batch_snapshot_id"]
+                ongoing_snapshots.setdefault(task["batch_id"], snap_id)
+                rows.append({
                     "id": secrets.token_hex(16), "task_id": task["id"], "worker_id": worker_id,
                     "batch_id": task["batch_id"], "batch_name": task["batch_name"], "store": task["source_name"],
                     "store_id": task.get("store_id") or task["id"],
-                    "revision": task["version"], "snapshot_id": ongoing[0] if ongoing else task["batch_snapshot_id"],
+                    "revision": task["version"], "snapshot_id": snap_id,
                     "source_hash": task["source_hash"], "source_suffix": suffix, "status": "assigned",
                     "created_at": stamp, "project_id": project["id"], "project_code": project["code"],
                     "project_name": project["name"],
-                }
-                db.execute("INSERT INTO shared_assignments(id,task_id,worker_id,batch_id,batch_name,store,store_id,"
-                           "revision,snapshot_id,source_hash,source_suffix,status,created_at,project_id,project_code,project_name) "
-                           "VALUES(:id,:task_id,:worker_id,:batch_id,:batch_name,"
-                           ":store,:store_id,:revision,:snapshot_id,:source_hash,:source_suffix,:status,:created_at,"
-                           ":project_id,:project_code,:project_name)", record)
-                rows.append(record)
+                })
+            if rows:
+                db.executemany(
+                    "INSERT INTO shared_assignments(id,task_id,worker_id,batch_id,batch_name,store,store_id,"
+                    "revision,snapshot_id,source_hash,source_suffix,status,created_at,project_id,project_code,project_name) "
+                    "VALUES(:id,:task_id,:worker_id,:batch_id,:batch_name,"
+                    ":store,:store_id,:revision,:snapshot_id,:source_hash,:source_suffix,:status,:created_at,"
+                    ":project_id,:project_code,:project_name)",
+                    rows,
+                )
             db.executemany(
                 "UPDATE material_batches SET capture_rounds=capture_rounds+1,manual_stage='',"
                 "approved_at='',updated_at=? WHERE id=? AND deleted_at=''",

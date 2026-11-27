@@ -39,6 +39,18 @@ def _review_queue(ctx: ApiContext, batch_ids: str, query: str, project_id: str) 
             )
             if row["run_id"]
         }
+    # 一次轻量查询收集原批次内门店名计数，消除循环内逐条调用 get_batch() 反序列化全部 store_json 的 N+1 瓶颈。
+    batch_store_counts: dict[tuple[str, str], int] = {}
+    active_batch_ids = {batch["id"] for batch in batches}
+    if active_batch_ids:
+        placeholders = ",".join("?" for _ in active_batch_ids)
+        with ctx.store.connect() as db:
+            for row in db.execute(
+                f"SELECT batch_id,source_name,COUNT(*) AS cnt FROM material_decisions "
+                f"WHERE batch_id IN ({placeholders}) GROUP BY batch_id,source_name",
+                list(active_batch_ids),
+            ):
+                batch_store_counts[(row["batch_id"], row["source_name"])] = int(row["cnt"])
     selected = set()
     if batch_ids and batch_ids != "all":
         selected = {value.strip() for value in batch_ids.split(",") if value.strip()}
@@ -52,8 +64,15 @@ def _review_queue(ctx: ApiContext, batch_ids: str, query: str, project_id: str) 
             continue
         failure = describe_failure(task.get("error_code", ""), task.get("stage", ""),
                                    task.get("message", ""))
-        # 与打回接口共用同一判定，避免列表显示可操作但实际被拒。
-        blocker = ctx.rejections.return_blocker(task["id"], current=True, project_id=project_id)
+        # 与 return_blocker 保持同一判定口径（待检查任务已属于有效任务且 capture_outcome==review）。
+        if not batch_id:
+            blocker = "该任务未关联素材批次，无法打回素材清洗"
+        elif batch_id not in active_batch_ids:
+            blocker = "原素材批次已不存在，无法打回素材清洗"
+        elif batch_store_counts.get((batch_id, task.get("source_name", "")), 0) != 1:
+            blocker = "原批次中无法唯一匹配该门店，无法安全打回"
+        else:
+            blocker = ""
         records.append({
             "task_id": task["id"],
             "store_name": task["source_name"],

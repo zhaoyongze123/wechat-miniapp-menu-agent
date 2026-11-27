@@ -37,13 +37,10 @@ import {
   canRetry,
   canSwitchToManual,
   captureModeLabel,
-  filterTasks,
   formatStore,
   formatTime,
-  pageTasks,
   progressOf,
   runStatusOf,
-  sortTasks,
   stateMetaOf,
 } from './format'
 import { useRefreshWorkerStatus, useWorkerStatus } from './hooks'
@@ -82,10 +79,6 @@ export function WorkerWorkbenchPage() {
   const previousProjectId = useRef(projectId)
   const refresh = useRefreshWorkerStatus()
   const { role, status: sharedStatus } = useRole()
-  const statusQuery = useWorkerStatus(true)
-  const status = statusQuery.data
-  const tasks = useMemo(() => status?.tasks ?? [], [status])
-
   const [searchParams, setSearchParams] = useSearchParams()
   const filter = (FILTERS.includes(searchParams.get('filter') as WorkerFilter) ? searchParams.get('filter') : 'all') as WorkerFilter
   const sort = (SORTS.includes(searchParams.get('sort') as WorkerSort) ? searchParams.get('sort') : 'source') as WorkerSort
@@ -93,6 +86,16 @@ export function WorkerWorkbenchPage() {
   const q = searchParams.get('q') ?? ''
   const size = PAGE_SIZES.includes(Number(searchParams.get('size'))) ? Number(searchParams.get('size')) : DEFAULT_PAGE_SIZE
   const page = Math.max(1, Number(searchParams.get('page')) || 1)
+  const [selected, setSelected] = useState<string[]>([])
+  const [debugView, setDebugView] = useState(false)
+
+  const statusQuery = useWorkerStatus(
+    { page, size, batch, q, filter, sort, selected, includeEvents: true },
+    true,
+  )
+  const status = statusQuery.data
+  const tasks = useMemo(() => status?.tasks ?? [], [status])
+  const queue = status?.queue
 
   const [queryText, setQueryText] = useState(q)
   useEffect(() => setQueryText(q), [q])
@@ -117,35 +120,46 @@ export function WorkerWorkbenchPage() {
     [searchParams, setSearchParams],
   )
 
-  const batches = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const task of tasks) {
-      if (task.batch_id) map.set(task.batch_id, task.batch_name || '未命名批次')
-    }
-    return [...map].map(([value, label]) => ({ value, label }))
-  }, [tasks])
+  const batches = useMemo(
+    () => (queue?.batches ?? []).map((item) => ({ value: item.id, label: item.name || '未命名批次' })),
+    [queue],
+  )
 
-  const filtered = useMemo(() => filterTasks(tasks, { filter, q, batch }), [tasks, filter, q, batch])
-  const sorted = useMemo(() => sortTasks(filtered, sort), [filtered, sort])
-  const paged = useMemo(() => pageTasks(sorted, page, size), [sorted, page, size])
+  const paged = useMemo(
+    () => ({
+      rows: tasks,
+      page: queue?.page ?? page,
+      pages: queue?.pages ?? 1,
+      total: queue?.total ?? tasks.length,
+    }),
+    [tasks, queue, page],
+  )
 
-  const [selected, setSelected] = useState<string[]>([])
   const selectedSet = useMemo(() => new Set(selected), [selected])
-  const selectedTasks = useMemo(() => tasks.filter((task) => selectedSet.has(task.id)), [tasks, selectedSet])
+  const selectedTasks = useMemo(() => {
+    const byId = new Map<string, WorkerTask>()
+    for (const task of queue?.selected ?? []) byId.set(task.id, task)
+    for (const task of tasks) byId.set(task.id, task)
+    return selected.map((id) => byId.get(id)).filter((task): task is WorkerTask => Boolean(task))
+  }, [queue, tasks, selected])
   const blockedSelected = selectedTasks.filter((task) => !isRunnable(task))
 
   const run = status?.run ?? null
   const running = Boolean(status?.running)
   const resumeAvailable = canResume(run)
   const counts = status?.counts ?? {}
-  const totalStores = tasks.length
+  const totalStores = (Number(counts.pending) || 0)
+    + (Number(counts.running) || 0)
+    + (Number(counts.captured) || 0)
+    + (Number(counts.review) || 0)
+    + (Number(counts.rejected) || 0)
+    + (Number(counts.returned) || 0)
 
   const [startOpen, setStartOpen] = useState(false)
   const [startMode, setStartMode] = useState<CaptureMode>('auto')
   const [terminateOpen, setTerminateOpen] = useState(false)
   const [syncOpen, setSyncOpen] = useState(false)
   const [detailTask, setDetailTask] = useState<WorkerTask | null>(null)
-  const [debugView, setDebugView] = useState(false)
   const [commandError, setCommandError] = useState('')
   const [manualError, setManualError] = useState('')
 
@@ -540,7 +554,7 @@ export function WorkerWorkbenchPage() {
               本机任务队列
             </h2>
             <p className="mt-0.5 text-xs text-secondary">
-              共 {filtered.length} 家匹配 · 已选 {selectedTasks.length} 家
+              共 {paged.total} 家匹配 · 已选 {selectedTasks.length} 家
               {blockedSelected.length ? ` · ${blockedSelected.length} 家当前不可开跑` : ''}
             </p>
           </div>
@@ -551,7 +565,7 @@ export function WorkerWorkbenchPage() {
               setQueryText('')
               updateQuery({ batch: '', filter: 'all', sort: 'source', q: '', page: 1 })
             }}
-            summary={`共 ${filtered.length} 家匹配`}
+            summary={`共 ${paged.total} 家匹配`}
           >
             <div className="w-44">
               <Select
@@ -625,7 +639,7 @@ export function WorkerWorkbenchPage() {
             <AppPagination
               page={paged.page}
               pageCount={paged.pages}
-              total={filtered.length}
+              total={paged.total}
               pageSize={size}
               pageSizeOptions={PAGE_SIZES}
               onPageChange={(next) => updateQuery({ page: next })}

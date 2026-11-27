@@ -249,19 +249,38 @@ def _sqlite_files(data_dir: Path) -> list[Path]:
     return found
 
 
+# <= 256 MiB 的 SQLite 库先备份到内存再顺序落盘，避免机械硬盘上源/目标交替 4KB 寻道耗时数十秒。
+MEMORY_STAGE_MAX_BYTES = 256 * 1024 * 1024
+
+
 def backup_sqlite(source: Path, destination: Path) -> None:
     """使用 SQLite backup API 生成包含 WAL 已提交内容的一致性副本。"""
     destination.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("", "-wal", "-shm", "-journal"):
         Path(f"{destination}{suffix}").unlink(missing_ok=True)
+    try:
+        storage_bytes = _sqlite_storage_size(source)
+    except ValueError:
+        storage_bytes = MEMORY_STAGE_MAX_BYTES + 1
     with closing(sqlite3.connect(f"{source.resolve().as_uri()}?mode=ro", uri=True)) as src:
+        src.execute("PRAGMA cache_size = -65536")
         with closing(sqlite3.connect(destination)) as dst:
             # 目标文件是全新生成的一次性快照，写完后立刻由 PRAGMA quick_check 校验完整性；
-            # 关闭目标库的回滚日志与同步刷盘可避免 Windows 上大库备份耗时数分钟。
+            # 关闭目标库的回滚日志与同步刷盘并放大页缓存，避免机械硬盘上大库备份耗时数分钟。
             dst.execute("PRAGMA journal_mode = OFF")
             dst.execute("PRAGMA synchronous = OFF")
             dst.execute("PRAGMA locking_mode = EXCLUSIVE")
-            src.backup(dst)
+            dst.execute("PRAGMA cache_size = -131072")
+            dst.execute("PRAGMA temp_store = MEMORY")
+            if storage_bytes <= MEMORY_STAGE_MAX_BYTES:
+                with closing(sqlite3.connect(":memory:")) as mem:
+                    src.backup(mem)
+                    mem.backup(dst)
+            else:
+                src.backup(dst)
+            # 源库处于 WAL 模式时，backup 会把页头 WAL 标志一并复制过来；
+            # 切回 DELETE 可防止后续只读校验时在恢复目录残留孤立的 -shm/-wal 文件。
+            dst.execute("PRAGMA journal_mode = DELETE")
             dst.commit()
 
 
@@ -391,7 +410,12 @@ def snapshot_database(data_dir: Path, destination: Path) -> dict:
     for suffix in ("", "-wal", "-shm"):
         item = Path(str(path) + suffix)
         if item.is_file():
-            files[item.name] = {"sha256": sha256_file(item), "size": item.stat().st_size}
+            stat = item.stat()
+            files[item.name] = {
+                "sha256": sha256_file(item),
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
     return {"path": str(destination), "sha256": sha256_file(destination),
             **metadata,
             "size": destination.stat().st_size, "files": files, "created_at": time.strftime(
@@ -470,12 +494,52 @@ def database_unchanged(data_dir: Path, snapshot: dict, workdir: Path) -> bool:
         probe.unlink(missing_ok=True)
 
 
+def _can_reuse_baseline_snapshot(source: Path, baseline_snapshot: dict | None) -> Path | None:
+    """确认生产主库未改动且基线快照完整存在时，允许隔离验证顺序复制基线副本，免去第二次大库 backup。"""
+    if not isinstance(baseline_snapshot, dict):
+        return None
+    raw_path = str(baseline_snapshot.get("path") or "").strip()
+    expected_sha = str(baseline_snapshot.get("sha256") or "").lower()
+    expected_size = baseline_snapshot.get("size")
+    recorded_files = baseline_snapshot.get("files")
+    if (not raw_path or not re.fullmatch(r"[0-9a-f]{64}", expected_sha)
+            or type(expected_size) is not int or expected_size <= 0
+            or not isinstance(recorded_files, dict)
+            or not isinstance(baseline_snapshot.get("schema"), dict)
+            or not isinstance(baseline_snapshot.get("row_counts"), dict)):
+        return None
+    snap_path = Path(raw_path)
+    try:
+        if snap_path.is_symlink() or not snap_path.is_file() or snap_path.stat().st_size != expected_size:
+            return None
+        # 核对生产库主文件与 WAL：大小、修改时间（有记录时）和存在性必须完全一致，否则说明停机前有新写入。
+        for suffix in ("", "-wal"):
+            item = Path(str(source) + suffix)
+            meta = recorded_files.get(item.name)
+            if item.is_file():
+                if not isinstance(meta, dict):
+                    return None
+                stat = item.stat()
+                if stat.st_size != meta.get("size"):
+                    return None
+                if "mtime_ns" in meta and stat.st_mtime_ns != meta.get("mtime_ns"):
+                    return None
+                if "mtime_ns" not in meta and sha256_file(item) != str(meta.get("sha256") or ""):
+                    return None
+            elif meta is not None:
+                return None
+    except OSError:
+        return None
+    return snap_path
+
+
 def prepare_verify_home(
     data_root: Path,
     destination: Path,
     *,
     transaction_id: str,
     forbidden_roots: tuple[Path, ...] = (),
+    baseline_snapshot: dict | None = None,
 ) -> dict:
     """构造隔离验证目录：数据库用一致性副本，配置/身份文件只复制小文件。"""
     data_root = Path(data_root)
@@ -510,6 +574,31 @@ def prepare_verify_home(
             raise ValueError(f"SQLite 主库及 WAL 超过隔离快照上限：{item}")
         relative = item.relative_to(source_data)
         target = data_dir / relative
+        reusable = (
+            _can_reuse_baseline_snapshot(item, baseline_snapshot)
+            if str(relative) == "tasks.sqlite3"
+            else None
+        )
+        if reusable is not None and isinstance(baseline_snapshot, dict):
+            # 流式顺序复制已校验的基线快照并同步计算 SHA-256，确认与快照摘要逐字节一致；
+            # 摘要不符时立即回退到标准一致性备份，绝不跳过安全校验。
+            target.parent.mkdir(parents=True, exist_ok=True)
+            hasher = hashlib.sha256()
+            with reusable.open("rb") as src_stream, target.open("wb") as dst_stream:
+                while chunk := src_stream.read(1024 * 1024):
+                    dst_stream.write(chunk)
+                    hasher.update(chunk)
+            copied_sha = hasher.hexdigest()
+            if copied_sha == str(baseline_snapshot.get("sha256") or "").lower():
+                databases[str(relative)] = {
+                    "sha256": copied_sha,
+                    "size": target.stat().st_size,
+                    "schema": baseline_snapshot["schema"],
+                    "row_counts": baseline_snapshot["row_counts"],
+                }
+                copied.append(str(Path("data") / relative))
+                continue
+            target.unlink(missing_ok=True)
         source_metadata = copy_sqlite_consistently(item, target)
         databases[str(relative)] = {
             "sha256": sha256_file(target), "size": target.stat().st_size, **source_metadata,
@@ -591,6 +680,7 @@ def prune_recovery_baselines(data_dir: Path, *, keep: int = 1) -> int:
     except OSError:
         return 0
     candidates.sort(key=lambda pair: pair[0], reverse=True)
+    kept_names = {path.name for _mtime, path in candidates[:keep_count]}
     removed = 0
     for _mtime, path in candidates[keep_count:]:
         try:
@@ -598,6 +688,27 @@ def prune_recovery_baselines(data_dir: Path, *, keep: int = 1) -> int:
             removed += 1
         except OSError:
             continue
+        for suffix in ("-wal", "-shm", "-journal"):
+            try:
+                Path(f"{path}{suffix}").unlink(missing_ok=True)
+            except OSError:
+                pass
+    # 同步清理历史版本遗留的孤立 baseline-*.sqlite3-wal / -shm / -journal 附属文件。
+    try:
+        for item in recovery_dir.iterdir():
+            if not item.is_file() or item.is_symlink() or not item.name.startswith("baseline-"):
+                continue
+            for suffix in ("-wal", "-shm", "-journal"):
+                if item.name.endswith(f".sqlite3{suffix}"):
+                    base_name = item.name[: -len(suffix)]
+                    if base_name not in kept_names:
+                        try:
+                            item.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    break
+    except OSError:
+        pass
     return removed
 
 

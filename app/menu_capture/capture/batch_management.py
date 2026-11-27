@@ -212,8 +212,8 @@ class BatchManager:
                         self._remove_staging_contents(staging)
                 raise
 
-    def summary(self, batch: dict) -> dict:
-        state = self._state(batch)
+    def summary(self, batch: dict, *, precomputed_state: dict | None = None) -> dict:
+        state = precomputed_state if precomputed_state is not None else self._state(batch)
         reasons = []
         if batch["status"] in _ACTIVE_BATCH_STATES:
             reasons.append("批次正在分析或上传")

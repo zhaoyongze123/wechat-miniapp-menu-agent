@@ -11,7 +11,7 @@ import re
 import threading
 import time
 import urllib.request
-from typing import Any, Callable
+from typing import Callable
 
 # 执行器可能正在下载数百 MB 镜像，提交线程必须比状态查询等更久。
 APPLY_TIMEOUT_SECONDS = 1800.0
