@@ -175,6 +175,14 @@ def test_react_entry_is_default_and_only_serves_manifest_assets(tmp_path: Path) 
     assert "javascript" in asset.headers["content-type"]
     assert "immutable" in asset.headers["cache-control"]
 
+    # 分包后 HTML 的预加载资源和业务页懒加载资源也必须能从后端直接读取。
+    for key in entry.get("imports", []) + entry.get("dynamicImports", []):
+        chunk = manifest[key]
+        for path in [chunk["file"], *chunk.get("css", [])]:
+            response = client.get(f"/{path}")
+            assert response.status_code == 200, path
+            assert "immutable" in response.headers["cache-control"]
+
     version = client.get("/api/version").json()
     assert version["frontend"] == script
     assert client.get("/favicon.svg").status_code == 200

@@ -508,10 +508,12 @@ def _start_watchdog(data_root: Path, journal: dict, *, mode: str, launcher_pid: 
     }
     recovery.write_json(control_path, control)
     try:
+        # 协调器会跨越整目录切换，不能继承启动器位于 current 的工作目录句柄。
         subprocess.Popen(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-File", str(script), "-ControlFile", str(control_path)],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cwd=str(script.parent),
             creationflags=0x08000000,
         )
     except OSError as exc:

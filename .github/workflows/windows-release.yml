@@ -23,6 +23,16 @@ on:
         default: false
         required: true
         type: boolean
+      delta_base_version:
+        description: 指定 Windows Delta 基线正式版本（例如 0.5.6）
+        default: ''
+        required: false
+        type: string
+      require_oci:
+        description: 发布必须包含可按摘要拉取的 GHCR 镜像
+        default: false
+        required: false
+        type: boolean
       min_supported_version:
         description: 更新清单中的最低兼容版本（低于该版本不提供应用内更新）
         default: '0.2.0'
@@ -80,6 +90,22 @@ jobs:
           fetch-depth: 0
       - name: Validate impact policy
         run: python3 -m unittest discover -s deploy/tools -p test_change_plan.py
+      - name: 校验指定的增量交付条件
+        env:
+          DELTA_BASE_VERSION: ${{ inputs.delta_base_version }}
+          FULL_ONLY: ${{ inputs.full_only }}
+          REQUIRE_OCI: ${{ inputs.require_oci }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          COMPONENTS: ${{ inputs.components }}
+          CREATE_RELEASE: ${{ inputs.create_release }}
+        run: |
+          set -euo pipefail
+          if [ -n "$DELTA_BASE_VERSION" ]; then
+            [[ "$DELTA_BASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$FULL_ONLY" != true && -z "$SOURCE_RUN_ID" && "$COMPONENTS" != hub ]]
+          fi
+          if [ "$REQUIRE_OCI" = true ]; then
+            [[ "$CREATE_RELEASE" = true && -z "$SOURCE_RUN_ID" && "$COMPONENTS" != windows ]]
+          fi
       - name: Lock release candidate and analyze cumulative changes
         id: detect
         env:
@@ -192,6 +218,8 @@ jobs:
         env:
           BUILD_VERSION: ${{ inputs.version || '0.1.0' }}
           GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          DELTA_BASE_VERSION: ${{ inputs.delta_base_version }}
           MC_RUNTIME_CACHE: ${{ runner.temp }}\mc-runtime-downloads
           MC_RUNTIME_ENV_CACHE: ${{ runner.temp }}\mc-runtime-env
           MC_LAUNCHER_CACHE: ${{ runner.temp }}\mc-launcher-cache
@@ -202,7 +230,7 @@ jobs:
           # 产物只包含本次版本：Setup、full/delta nupkg 与对应渠道的 releases JSON；
           # 历史包仅用于生成 delta，由构建脚本在临时目录下载，不进入发布资产。
           $fullOnly = $env:FULL_ONLY -eq 'true'
-          ./deploy/windows/build.ps1 -Version $version -FullOnly:$fullOnly
+          ./deploy/windows/build.ps1 -Version $version -FullOnly:$fullOnly -DeltaBaseVersion $env:DELTA_BASE_VERSION
       - uses: actions/upload-artifact@v4
         with:
           name: menu-capture-windows-x64
@@ -263,8 +291,11 @@ jobs:
           auth="admin:$MENU_CAPTURE_ADMIN_PASSWORD"
           curl --fail -u "$auth" http://127.0.0.1:8766/ | grep -q '<div id="root"></div>'
           curl --fail -u "$auth" http://127.0.0.1:8766/api/version | jq -e --arg version "$MENU_CAPTURE_VERSION" '.version == $version and (.frontend | length > 0)'
-          entry=$(curl --fail -u "$auth" http://127.0.0.1:8766/ | grep -o '/assets/[^"]*\.js' | head -n1)
-          test -n "$entry" && curl --fail -u "$auth" -o /dev/null "http://127.0.0.1:8766$entry"
+          assets=$(curl --fail -u "$auth" http://127.0.0.1:8766/ | grep -oE '/assets/[^"]*\.(js|css)' | sort -u)
+          test -n "$assets"
+          while IFS= read -r asset; do
+            curl --fail -u "$auth" -o /dev/null "http://127.0.0.1:8766$asset"
+          done <<< "$assets"
           curl --fail -u "$auth" -o /dev/null http://127.0.0.1:8766/favicon.svg
           docker compose -f deploy/hub/compose.yaml exec -T hub tesseract --list-langs | grep -w chi_sim
           docker compose -f deploy/hub/compose.yaml exec -T hub test -s /var/lib/menu-capture/data/tasks.sqlite3
@@ -518,12 +549,21 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.create_release
         env:
           GHCR_TOKEN: ${{ github.token }}
+          REQUIRE_OCI: ${{ inputs.require_oci }}
         run: |
           set -uo pipefail
           # 只有正式发布授权才允许推送：单纯集成验收不得产生可被客户端拉取的镜像。
-          # 推送与摘要属于可选 OCI 交付，任何失败都必须继续完整归档交付。
+          # 要求增量的发布必须拿到已验收镜像的摘要，任何失败都禁止退到仅归档交付。
+          oci_unavailable() {
+            if [ "$REQUIRE_OCI" = "true" ]; then
+              printf '::error::%s 本次发布要求 OCI，停止发布。\n' "$1"
+              exit 1
+            fi
+            printf '::warning::%s 跳过 OCI 交付，继续归档交付。\n' "$1"
+            exit 0
+          }
           registry="ghcr.io"
-          repo="${GITHUB_REPOSITORY,,}"
+          repo=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
           repository="$registry/$repo"
           remote="$repository:$MENU_CAPTURE_VERSION"
           # 先确认标签状态：已存在说明该版本已正式发布过，禁止用重新构建的镜像覆盖其摘要。
@@ -531,8 +571,7 @@ jobs:
             "https://$registry/token?service=$registry&scope=repository:$repo:pull" \
             | jq -r '.token // empty' || true)
           if [ -z "$token" ]; then
-            echo "::warning::无法获取 GHCR 只读令牌，跳过 OCI 推送，继续归档交付。"
-            exit 0
+            oci_unavailable "无法获取 GHCR 只读令牌。"
           fi
           code=$(curl -s -o /dev/null -w '%{http_code}' \
             -H "Authorization: Bearer $token" \
@@ -540,29 +579,24 @@ jobs:
             "https://$registry/v2/$repo/manifests/$MENU_CAPTURE_VERSION")
           case "$code" in
             200)
-              echo "::warning::GHCR 已存在 $remote，保留已发布镜像，跳过推送。"
-              exit 0
+              oci_unavailable "GHCR 已存在 $remote，保留既有镜像。"
               ;;
             404) ;;
             *)
-              echo "::warning::无法确认 GHCR 标签状态（HTTP $code），为避免覆盖已发布镜像跳过推送，继续归档交付。"
-              exit 0
+              oci_unavailable "无法确认 GHCR 标签状态（HTTP $code），禁止覆盖既有镜像。"
               ;;
           esac
           if ! echo "$GHCR_TOKEN" | docker login "$registry" -u "$GITHUB_ACTOR" --password-stdin; then
-            echo "::warning::GHCR 登录失败，跳过 OCI 推送，继续归档交付。"
-            exit 0
+            oci_unavailable "GHCR 登录失败。"
           fi
           if ! docker tag "$MENU_CAPTURE_IMAGE" "$remote" || ! docker push "$remote"; then
-            echo "::warning::GHCR 推送失败，跳过 OCI 摘要，继续归档交付。"
-            exit 0
+            oci_unavailable "GHCR 推送失败。"
           fi
           # 只采用本仓库固定地址下的 RepoDigest，避免多仓库镜像取到无关摘要。
-          digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$MENU_CAPTURE_IMAGE" \
+          digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$remote" \
             | awk -v prefix="$repository@" 'index($0, prefix) == 1 && !found {print substr($0, length(prefix) + 1); found = 1}' || true)
           if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::warning::无法获取镜像摘要，跳过 OCI 交付，继续归档交付。"
-            exit 0
+            oci_unavailable "无法获取已推送镜像摘要。"
           fi
           mkdir -p hub-artifacts
           jq -nc --arg registry "$repository" --arg digest "$digest" \
@@ -846,6 +880,8 @@ jobs:
           FULL_ONLY: ${{ inputs.full_only }}
           HAS_WINDOWS: ${{ (inputs.source_run_id == '' && needs.windows.result == 'success') || (inputs.source_run_id != '' && needs.verify-source.outputs.has_windows == 'true') }}
           HAS_HUB: ${{ (inputs.source_run_id == '' && needs.hub.result == 'success') || (inputs.source_run_id != '' && needs.verify-source.outputs.has_hub == 'true') }}
+          DELTA_BASE_VERSION: ${{ inputs.delta_base_version }}
+          REQUIRE_OCI: ${{ inputs.require_oci }}
           # 签名清单必须绑定产物的真实构建 commit，而不是本次发布工作流的 commit。
           SOURCE_COMMIT: ${{ needs.verify-source.outputs.commit || github.sha }}
           MENU_CAPTURE_RELEASE_SIGNING_KEY: ${{ secrets.MENU_CAPTURE_RELEASE_SIGNING_KEY }}
@@ -880,8 +916,12 @@ jobs:
           (tag, channel, commit, min_version, hub_name, hub_size, hub_sha) = sys.argv[1:8]
           has_windows = os.environ.get("HAS_WINDOWS") == "true"
           has_hub = os.environ.get("HAS_HUB") == "true"
+          require_oci = os.environ.get("REQUIRE_OCI") == "true"
+          delta_base = os.environ.get("DELTA_BASE_VERSION", "")
           if not has_windows and not has_hub:
               raise SystemExit("必须至少包含 Hub 或 Windows 之一的可发布产物")
+          if (require_oci and not has_hub) or (delta_base and not has_windows):
+              raise SystemExit("指定的增量交付组件没有成功构建")
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}"
           root = Path("release-assets")
           version = tag.lstrip("v")
@@ -900,6 +940,8 @@ jobs:
                       oci = {"registry": registry, "digest": digest}
               except (OSError, ValueError):
                   oci = {}
+              if require_oci and not oci:
+                  raise SystemExit("本次发布要求 OCI，但缺少经验证的镜像摘要")
               hub_asset = {"kind": "hub_image", "name": hub_name, "size": int(hub_size),
                            "sha256": hub_sha, "url": f"{base}/{hub_name}",
                            "platform": "linux", "arch": "amd64"}
@@ -924,6 +966,8 @@ jobs:
                   raise ValueError('Windows candidate version/commit mismatch')
               if os.environ.get("FULL_ONLY") == "true" and rest:
                   raise SystemExit(f"FullOnly 发布不得包含 Delta：{rest}")
+              if delta_base and not rest:
+                  raise SystemExit(f"本次发布要求从 {delta_base} 增量更新，但没有生成 Delta")
               def vp_asset(name):
                   path = root / name
                   with path.open("rb") as stream:
