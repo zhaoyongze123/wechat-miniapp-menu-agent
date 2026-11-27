@@ -25,11 +25,30 @@ class PolicyTests(unittest.TestCase):
         prompt = cp.classify(["app/ui_tars/prompts/menu.md"])
         self.assertEqual(prompt["risk"], "L1")
         self.assertTrue(prompt["prompts"] and prompt["backend"] and prompt["build"])
+        self.assertTrue(prompt["build_windows"])
+        self.assertFalse(prompt["build_hub"])
+        self.assertEqual(prompt["components"], "windows")
         self.assertFalse(prompt["hub_regression"] or prompt["frontend"])
         ui = cp.classify(["app/web-react/src/features/tasks/Panel.tsx", "app/web/react/index.html"])
         self.assertEqual(ui["risk"], "L2")
-        self.assertTrue(ui["frontend"])
+        self.assertTrue(ui["frontend"] and ui["build_windows"] and ui["build_hub"])
+        self.assertEqual(ui["components"], "both")
         self.assertFalse(ui["hub_regression"])
+
+    def test_component_independent_classification(self):
+        hub_only = cp.classify(["deploy/hub/Dockerfile.hub", "app/menu_capture/shared/delivery.py"])
+        self.assertTrue(hub_only["build_hub"])
+        self.assertFalse(hub_only["build_windows"])
+        self.assertEqual(hub_only["components"], "hub")
+
+        win_only = cp.classify(["deploy/windows/MenuCaptureLauncher.py", "app/menu_capture/updates/recovery.py"])
+        self.assertTrue(win_only["build_windows"])
+        self.assertFalse(win_only["build_hub"])
+        self.assertEqual(win_only["components"], "windows")
+
+        shared = cp.classify(["app/menu_capture/api/server.py"])
+        self.assertTrue(shared["build_windows"] and shared["build_hub"])
+        self.assertEqual(shared["components"], "both")
 
     def test_reviewed_business_path(self):
         p = cp.classify(["app/menu_capture/vision/purpose_classifier.py"])
@@ -68,18 +87,22 @@ class PolicyTests(unittest.TestCase):
     def test_stable_baseline_rejects_preview_and_draft(self):
         with self.assertRaises(ValueError):
             cp.stable_baseline("1.2.0-rc.1")
-        with patch.object(cp, "command", return_value=b'{"tagName":"v1.0.0","isDraft":true,"isPrerelease":false}'):
-            with self.assertRaises(ValueError):
-                cp.stable_baseline("1.1.0")
+        with (
+            patch.object(cp, "command", return_value=b'{"tagName":"v1.0.0","isDraft":true,"isPrerelease":false}'),
+            self.assertRaises(ValueError),
+        ):
+            cp.stable_baseline("1.1.0")
         with patch.object(cp, "command", return_value=b'{"tagName":"v1.0.0","isDraft":false,"isPrerelease":false}') as cmd:
             with patch.object(cp, "git", return_value="abc"):
                 self.assertEqual(cp.stable_baseline("1.1.0"), "abc")
             cmd.assert_any_call("git", "merge-base", "--is-ancestor", "abc", "HEAD")
 
     def test_failed_baseline_never_becomes_docs_only(self):
-        with patch.object(cp, "git", return_value="abc"):
-            with patch.object(cp, "stable_baseline", side_effect=ValueError):
-                plan = cp.plan_for("release", "1.1.0")
+        with (
+            patch.object(cp, "git", return_value="abc"),
+            patch.object(cp, "stable_baseline", side_effect=ValueError),
+        ):
+            plan = cp.plan_for("release", "1.1.0")
         self.assertEqual(plan["risk"], "L3")
         self.assertTrue(plan["build"])
         self.assertFalse(plan["docs_only"])

@@ -33,6 +33,16 @@ on:
         default: ''
         required: false
         type: string
+      components:
+        description: 构建与发布组件范围（auto 按变更自动选择；both 双端；hub 仅后台；windows 仅采集端）
+        default: auto
+        required: true
+        type: choice
+        options:
+          - auto
+          - both
+          - hub
+          - windows
 
 permissions:
   contents: read
@@ -61,6 +71,9 @@ jobs:
       hub_regression: ${{ steps.detect.outputs.hub_regression }}
       release_needed: ${{ steps.detect.outputs.release_needed }}
       build: ${{ steps.detect.outputs.build }}
+      build_windows: ${{ steps.detect.outputs.build_windows }}
+      build_hub: ${{ steps.detect.outputs.build_hub }}
+      components: ${{ steps.detect.outputs.components }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,6 +87,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           CREATE_RELEASE: ${{ inputs.create_release }}
           FORCE_FULL: ${{ inputs.force_full }}
+          COMPONENTS: ${{ inputs.components }}
         run: |
           set -euo pipefail
           if [[ "$CREATE_RELEASE" == "true" && "$GITHUB_REF" != "refs/heads/main" ]]; then
@@ -83,6 +97,24 @@ jobs:
           args=()
           if [[ "$FORCE_FULL" == "true" ]]; then args+=(--force-full); fi
           python3 deploy/tools/change_plan.py --mode release --version "$VERSION" "${args[@]}"
+          # 若显式指定 components（both / hub / windows），按维护者选择覆盖组件开关。
+          case "$COMPONENTS" in
+            both)
+              echo "build_windows=true" >> "$GITHUB_OUTPUT"
+              echo "build_hub=true" >> "$GITHUB_OUTPUT"
+              echo "components=both" >> "$GITHUB_OUTPUT"
+              ;;
+            hub)
+              echo "build_windows=false" >> "$GITHUB_OUTPUT"
+              echo "build_hub=true" >> "$GITHUB_OUTPUT"
+              echo "components=hub" >> "$GITHUB_OUTPUT"
+              ;;
+            windows)
+              echo "build_windows=true" >> "$GITHUB_OUTPUT"
+              echo "build_hub=false" >> "$GITHUB_OUTPUT"
+              echo "components=windows" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
   checks:
     needs: changes
@@ -99,11 +131,20 @@ jobs:
   windows:
     # 安装包使用仓库中已提交的前端产物，无需等待门禁；发布仍由 draft 统一等待全部门禁。
     needs: [changes]
-    # 复用候选 run 产物时不重新打包，直接下载该 run 的已校验安装包。
-    if: ${{ inputs.source_run_id == '' && needs.changes.outputs.build == 'true' }}
+    # 复用候选 run 产物或本次变更仅涉及 Hub 时跳过 Windows 打包。
+    if: ${{ inputs.source_run_id == '' && needs.changes.outputs.build == 'true' && needs.changes.outputs.build_windows == 'true' }}
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
+      - name: 排除构建临时目录免受 Defender 实时扫描
+        shell: pwsh
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath $env:RUNNER_TEMP, (Join-Path $env:GITHUB_WORKSPACE 'deploy\artifacts') -ErrorAction SilentlyContinue
+            Write-Host 'Defender 临时构建目录排除已配置'
+          } catch {
+            Write-Host "跳过 Defender 排除配置（$($_.Exception.Message)）"
+          }
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
@@ -126,7 +167,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}\mc-runtime-env
-          key: ${{ runner.os }}-mc-runtime-env-v1-${{ hashFiles('deploy/windows/runtimes.json', 'app/uv.lock', 'app/ui_tars/package-lock.json', 'deploy/windows/prepare_python_bundle.py') }}
+          key: ${{ runner.os }}-mc-runtime-env-v2-${{ hashFiles('deploy/windows/runtimes.json', 'app/uv.lock', 'app/ui_tars/package-lock.json', 'deploy/windows/prepare_python_bundle.py') }}
       - name: 缓存 Windows 启动器产物
         uses: actions/cache@v4
         with:
@@ -174,8 +215,8 @@ jobs:
   hub:
     # Registry publication follows successful source gates; Windows packing remains parallel.
     needs: [changes, checks]
-    # 复用候选 run 产物时不重建镜像，GHCR 由 verify-source 从已归档镜像推送。
-    if: ${{ inputs.source_run_id == '' && needs.changes.outputs.build == 'true' }}
+    # 复用候选 run 产物或本次变更仅涉及 Windows 时跳过 Hub 镜像构建。
+    if: ${{ inputs.source_run_id == '' && needs.changes.outputs.build == 'true' && needs.changes.outputs.build_hub == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # 仅向 GHCR 推送本仓库镜像；不授予无关写权限。
@@ -554,6 +595,8 @@ jobs:
       packages: write
     outputs:
       commit: ${{ steps.inspect.outputs.commit }}
+      has_windows: ${{ steps.jobs.outputs.has_windows }}
+      has_hub: ${{ steps.jobs.outputs.has_hub }}
     steps:
       - name: 核验源 run 身份与结论
         id: inspect
@@ -583,31 +626,38 @@ jobs:
           ref: ${{ steps.inspect.outputs.commit }}
           fetch-depth: 0
       - name: 校验源 run 必要作业成功且 commit 属于受信 main
+        id: jobs
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ inputs.source_run_id }}
           COMMIT: ${{ steps.inspect.outputs.commit }}
         run: |
           set -euo pipefail
-          # run 级 success 可能来自全部作业被跳过，必须核对真实构建作业结论。
+          # run 级 success 可能来自全部作业被跳过，必须核对至少有一个真实构建作业成功且无失败/取消作业。
           jobs_file="$RUNNER_TEMP/source-jobs.json"
           gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" \
             | jq -s 'map(.jobs[]) | map({name, conclusion})' > "$jobs_file"
           jq -e '
-            ([.[] | select(.name == "windows" or .name == "hub") | select(.conclusion == "success")] | length) == 2
+            ([.[] | select(.name == "windows" or .name == "hub") | select(.conclusion == "success")] | length) >= 1
             and ([.[] | select(.conclusion == "failure" or .conclusion == "cancelled")] | length) == 0
           ' "$jobs_file"
+          has_win=$(jq -r '[.[] | select(.name == "windows" and .conclusion == "success")] | length > 0' "$jobs_file")
+          has_hub=$(jq -r '[.[] | select(.name == "hub" and .conclusion == "success")] | length > 0' "$jobs_file")
+          echo "has_windows=$has_win" >> "$GITHUB_OUTPUT"
+          echo "has_hub=$has_hub" >> "$GITHUB_OUTPUT"
           # 用 Git 原生祖先关系确认候选 commit 已进入 main。
           git fetch --no-tags origin main:refs/remotes/origin/main
           git merge-base --is-ancestor "$COMMIT" refs/remotes/origin/main
-          echo "源 run 必要作业成功，commit $COMMIT 属于受信 main"
+          echo "源 run 必要作业成功（windows=$has_win, hub=$has_hub），commit $COMMIT 属于受信 main"
       - uses: actions/download-artifact@v4
+        if: ${{ steps.jobs.outputs.has_windows == 'true' }}
         with:
           name: menu-capture-windows-x64
           path: release-assets
           run-id: ${{ inputs.source_run_id }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
+        if: ${{ steps.jobs.outputs.has_hub == 'true' }}
         with:
           name: menu-capture-hub-linux-amd64
           path: release-assets
@@ -618,10 +668,12 @@ jobs:
           VERSION: ${{ inputs.version }}
           FULL_ONLY: ${{ inputs.full_only }}
           COMMIT: ${{ steps.inspect.outputs.commit }}
+          HAS_WINDOWS: ${{ steps.jobs.outputs.has_windows }}
         run: |
           set -euo pipefail
           (cd release-assets && sha256sum -c ./*.sha256)
-          python3 - "$VERSION" "$FULL_ONLY" "$COMMIT" <<'PY'
+          if [ "$HAS_WINDOWS" = "true" ]; then
+            python3 - "$VERSION" "$FULL_ONLY" "$COMMIT" <<'PY'
           import sys
           from pathlib import Path
           sys.path.insert(0, "app")
@@ -645,7 +697,9 @@ jobs:
               raise SystemExit(f"包内 commit {inner.get('git_commit')} 与源 run {commit} 不一致")
           print(f"产物核验通过：{setup} / {full} / {index_name}，Delta 数量 {len(rest)}")
           PY
+          fi
       - name: 从归档镜像准备 GHCR（不重新构建）
+        if: ${{ steps.jobs.outputs.has_hub == 'true' }}
         env:
           GHCR_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
@@ -730,14 +784,16 @@ jobs:
           retention-days: 14
 
   draft:
-    # 普通构建看本次改动是否需要发布；复用模式以已核验源候选为准，
-    # 不因后续仅文档/测试变更（本次工作流 commit 相对最新 release）而误跳过。
+    # 普通构建支持双端或单组件（hub / windows）；复用模式以已核验源候选为准。
     if: >-
       ${{ always() && inputs.create_release && !cancelled() && (
         (inputs.source_run_id != '' && needs.changes.result == 'success'
          && needs.verify-source.result == 'success') ||
         (inputs.source_run_id == '' && needs.changes.outputs.release_needed == 'true'
-         && needs.checks.result == 'success' && needs.windows.result == 'success' && needs.hub.result == 'success')
+         && needs.checks.result == 'success'
+         && (needs.windows.result == 'success' || needs.windows.result == 'skipped')
+         && (needs.hub.result == 'success' || needs.hub.result == 'skipped')
+         && (needs.windows.result == 'success' || needs.hub.result == 'success'))
       ) }}
     # 发布草稿必须依赖全部质量门禁，任一检查失败都不生成发布准备。
     needs: [changes, verify-source, checks, windows, hub]
@@ -753,32 +809,32 @@ jobs:
         with:
           ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
-        if: ${{ inputs.source_run_id == '' }}
+        if: ${{ inputs.source_run_id == '' && needs.windows.result == 'success' }}
         with:
           name: menu-capture-windows-x64
           path: release-assets
       - uses: actions/download-artifact@v4
-        if: ${{ inputs.source_run_id == '' }}
+        if: ${{ inputs.source_run_id == '' && needs.hub.result == 'success' }}
         with:
           name: menu-capture-hub-linux-amd64
           path: release-assets
       - uses: actions/download-artifact@v4
-        if: ${{ inputs.source_run_id != '' }}
+        if: ${{ inputs.source_run_id != '' && needs.verify-source.outputs.has_windows == 'true' }}
         with:
           name: menu-capture-windows-x64
           path: release-assets
           run-id: ${{ inputs.source_run_id }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
-        if: ${{ inputs.source_run_id != '' }}
+        if: ${{ inputs.source_run_id != '' && needs.verify-source.outputs.has_hub == 'true' }}
         with:
           name: menu-capture-hub-linux-amd64
           path: release-assets
           run-id: ${{ inputs.source_run_id }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
-        # OCI 摘要由本次 verify-source 生成；推送被跳过时不存在，允许缺失。
-        if: ${{ inputs.source_run_id != '' }}
+        # OCI 摘要由本次 verify-source 生成；推送被跳过或仅 Windows 发布时不存在，允许缺失。
+        if: ${{ inputs.source_run_id != '' && needs.verify-source.outputs.has_hub == 'true' }}
         continue-on-error: true
         with:
           name: menu-capture-hub-oci
@@ -788,6 +844,8 @@ jobs:
           VERSION: ${{ inputs.version }}
           MIN_SUPPORTED: ${{ inputs.min_supported_version }}
           FULL_ONLY: ${{ inputs.full_only }}
+          HAS_WINDOWS: ${{ (inputs.source_run_id == '' && needs.windows.result == 'success') || (inputs.source_run_id != '' && needs.verify-source.outputs.has_windows == 'true') }}
+          HAS_HUB: ${{ (inputs.source_run_id == '' && needs.hub.result == 'success') || (inputs.source_run_id != '' && needs.verify-source.outputs.has_hub == 'true') }}
           # 签名清单必须绑定产物的真实构建 commit，而不是本次发布工作流的 commit。
           SOURCE_COMMIT: ${{ needs.verify-source.outputs.commit || github.sha }}
           MENU_CAPTURE_RELEASE_SIGNING_KEY: ${{ secrets.MENU_CAPTURE_RELEASE_SIGNING_KEY }}
@@ -798,12 +856,17 @@ jobs:
           # 与 app/uv.lock 一致；该临时环境只用于清单签名，不保存私钥或签名环境。
           python3 -m venv "$RUNNER_TEMP/manifest-signing"
           "$RUNNER_TEMP/manifest-signing/bin/python" -m pip install --disable-pip-version-check 'cryptography==46.0.7'
-          hub=$(find release-assets -maxdepth 1 -name 'menu-capture-hub-*.tar.gz' -print -quit)
-          test -n "$hub" && test -s "$hub.sha256"
-          hub_name=$(basename "$hub")
-          hub_sha=$(cut -d' ' -f1 < "$hub.sha256")
-          hub_size=$(stat -c%s "$hub")
-          (cd release-assets && sha256sum -c "$hub_name.sha256")
+          hub_name=""
+          hub_sha=""
+          hub_size="0"
+          if [ "$HAS_HUB" = "true" ]; then
+            hub=$(find release-assets -maxdepth 1 -name 'menu-capture-hub-*.tar.gz' -print -quit)
+            test -n "$hub" && test -s "$hub.sha256"
+            hub_name=$(basename "$hub")
+            hub_sha=$(cut -d' ' -f1 < "$hub.sha256")
+            hub_size=$(stat -c%s "$hub")
+            (cd release-assets && sha256sum -c "$hub_name.sha256")
+          fi
           "$RUNNER_TEMP/manifest-signing/bin/python" - "$tag" "$channel" "$SOURCE_COMMIT" "$MIN_SUPPORTED" \
             "$hub_name" "$hub_size" "$hub_sha" <<'PY'
           import hashlib, json, os, sys
@@ -815,56 +878,65 @@ jobs:
           from velopack_assets import release_assets
           from menu_capture.updates.velopack_identity import inner_release_manifest
           (tag, channel, commit, min_version, hub_name, hub_size, hub_sha) = sys.argv[1:8]
+          has_windows = os.environ.get("HAS_WINDOWS") == "true"
+          has_hub = os.environ.get("HAS_HUB") == "true"
+          if not has_windows and not has_hub:
+              raise SystemExit("必须至少包含 Hub 或 Windows 之一的可发布产物")
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}"
           root = Path("release-assets")
           version = tag.lstrip("v")
-          setup_name, full_name, *rest = release_assets(
-              root, version, full_only=os.environ.get("FULL_ONLY") == "true")
-          index_name = rest.pop()
-          inner = inner_release_manifest(root / full_name)
-          if inner.get('version') != version or inner.get('git_commit') != commit:
-              raise ValueError('Windows candidate version/commit mismatch')
-          if os.environ.get("FULL_ONLY") == "true" and rest:
-              raise SystemExit(f"FullOnly 发布不得包含 Delta：{rest}")
-          def vp_asset(name):
-              path = root / name
-              with path.open("rb") as stream:
-                  digest = hashlib.file_digest(stream, "sha256").hexdigest()
-              return {"name": name, "size": path.stat().st_size, "sha256": digest,
-                      "url": f"{base}/{quote(name, safe='')}"}
-          extension = {
-              "schema_version": 1, "pack_id": "Yipu.MenuCapture", "platform": "windows", "arch": "x64",
-              "channel": f"win-x64-{channel}", "version": version, "git_commit": commit, "tag": tag,
-              "setup": vp_asset(setup_name), "full": vp_asset(full_name),
-              "deltas": [vp_asset(name) for name in rest], "index": vp_asset(index_name),
-          }
-          # OCI 是 hub_image 的可选扩展：摘要文件缺失或非法时只影响分层拉取，
-          # 完整归档资产照常发布，旧客户端完全不受影响。
-          oci = {}
-          try:
-              with open("release-assets/hub-image-digest.json", encoding="utf-8") as handle:
-                  candidate = json.load(handle)
-              registry = str(candidate.get("registry") or "")
-              digest = str(candidate.get("digest") or "")
-              if (registry.startswith("ghcr.io/") and digest.startswith("sha256:")
-                      and len(digest) == 71 and all(c in "0123456789abcdef" for c in digest[7:])):
-                  oci = {"registry": registry, "digest": digest}
-          except (OSError, ValueError):
+          components = []
+          assets = []
+          if has_hub:
+              components.append("hub")
               oci = {}
-          hub_asset = {"kind": "hub_image", "name": hub_name, "size": int(hub_size),
-                       "sha256": hub_sha, "url": f"{base}/{hub_name}",
-                       "platform": "linux", "arch": "amd64"}
-          hub_asset.update(oci)
+              try:
+                  with open("release-assets/hub-image-digest.json", encoding="utf-8") as handle:
+                      candidate = json.load(handle)
+                  registry = str(candidate.get("registry") or "")
+                  digest = str(candidate.get("digest") or "")
+                  if (registry.startswith("ghcr.io/") and digest.startswith("sha256:")
+                          and len(digest) == 71 and all(c in "0123456789abcdef" for c in digest[7:])):
+                      oci = {"registry": registry, "digest": digest}
+              except (OSError, ValueError):
+                  oci = {}
+              hub_asset = {"kind": "hub_image", "name": hub_name, "size": int(hub_size),
+                           "sha256": hub_sha, "url": f"{base}/{hub_name}",
+                           "platform": "linux", "arch": "amd64"}
+              hub_asset.update(oci)
+              assets.append(hub_asset)
           manifest = {
-              "version": tag.lstrip("v"),
+              "version": version,
               "channel": channel,
               "git_commit": commit,
               "built_at": os.popen("date -u +%Y-%m-%dT%H:%M:%SZ").read().strip(),
               "min_supported_version": min_version,
               "rollback": "supported",
-              "assets": [hub_asset],
-              "velopack": extension,
+              "assets": assets,
           }
+          if has_windows:
+              components.append("windows")
+              setup_name, full_name, *rest = release_assets(
+                  root, version, full_only=os.environ.get("FULL_ONLY") == "true")
+              index_name = rest.pop()
+              inner = inner_release_manifest(root / full_name)
+              if inner.get('version') != version or inner.get('git_commit') != commit:
+                  raise ValueError('Windows candidate version/commit mismatch')
+              if os.environ.get("FULL_ONLY") == "true" and rest:
+                  raise SystemExit(f"FullOnly 发布不得包含 Delta：{rest}")
+              def vp_asset(name):
+                  path = root / name
+                  with path.open("rb") as stream:
+                      digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                  return {"name": name, "size": path.stat().st_size, "sha256": digest,
+                          "url": f"{base}/{quote(name, safe='')}"}
+              manifest["velopack"] = {
+                  "schema_version": 1, "pack_id": "Yipu.MenuCapture", "platform": "windows", "arch": "x64",
+                  "channel": f"win-x64-{channel}", "version": version, "git_commit": commit, "tag": tag,
+                  "setup": vp_asset(setup_name), "full": vp_asset(full_name),
+                  "deltas": [vp_asset(name) for name in rest], "index": vp_asset(index_name),
+              }
+          manifest["components"] = components
           # 密钥缺失、信任根未固定或签名不匹配均终止发布，不生成 unsigned 清单。
           manifest = sign_manifest(manifest, signing_key_from_env())
           with open("release-assets/update-manifest.json", "w", encoding="utf-8") as handle:
@@ -872,7 +944,7 @@ jobs:
           PY
           test -s release-assets/update-manifest.json
       - name: 校验 FullOnly 发布不包含本次 Delta
-        if: ${{ inputs.full_only }}
+        if: ${{ inputs.full_only && ((inputs.source_run_id == '' && needs.windows.result == 'success') || (inputs.source_run_id != '' && needs.verify-source.outputs.has_windows == 'true')) }}
         env:
           VERSION: ${{ inputs.version }}
         run: |

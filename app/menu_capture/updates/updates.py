@@ -28,7 +28,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from menu_capture.updates.install_transaction import InstallTransaction
 from menu_capture.updates.velopack_identity import require_publisher_trust, require_target, validate_extension
-from menu_capture.updates.velopack_trust import release_policy_from_manifest
+from menu_capture.updates.velopack_trust import release_policy_from_manifest, verify_manifest_policy
 
 DEFAULT_REPOSITORY = "zhaoyongze123/wechat-miniapp-menu-agent"
 CHANNELS = {"stable", "preview"}
@@ -306,7 +306,8 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
     if min_supported:
         Version.parse(min_supported)
     raw_assets = manifest.get("assets")
-    if not isinstance(raw_assets, list) or not raw_assets:
+    has_velopack = "velopack" in manifest
+    if not isinstance(raw_assets, list) or (not raw_assets and not has_velopack):
         raise ValueError("发布清单缺少资产列表")
     # 静态清单入口拿不到 Release 资产列表；此时只依赖 Ed25519 签名与清单内自洽校验。
     known = (
@@ -367,8 +368,10 @@ def _validate_manifest(manifest: dict, tag: str, channel: str, release_assets: l
         extension["velopack"] = validate_extension(
             manifest["velopack"], version=version, commit=str(manifest.get("git_commit") or ""),
             channel=manifest_channel, repository=repository, tag=tag, published=known,
-            release_policy=release_policy_from_manifest(manifest),
+            release_policy=release_policy_from_manifest(manifest, allow_empty_assets=True),
         )
+    elif "trust" in manifest:
+        verify_manifest_policy(manifest)
     return {
         **extension,
         "version": version,

@@ -22,7 +22,7 @@ $runtime = Get-Content (Join-Path $PSScriptRoot 'runtimes.json') -Raw | ConvertF
 $utf8NoBom = [Text.UTF8Encoding]::new($false)
 
 # 稳定运行环境缓存与启动器缓存的结构版本号；目录布局或清理策略变更时递增以自动失效旧缓存。
-$runtimeEnvCacheSchema = 'v1'
+$runtimeEnvCacheSchema = 'v2'
 $launcherCacheSchema = 'v1'
 
 function Invoke-Checked {
@@ -476,6 +476,13 @@ try {
         Invoke-Checked $uv @('export', '--project', $runner, '--locked', '--no-dev', '--no-emit-project', '--output-file', $requirements)
         Invoke-Checked $python @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-compile', '--only-binary=:all:', '--require-hashes', '-r', $requirements)
         Get-ChildItem -LiteralPath $pythonDir -Filter '*.pdb' -Recurse -File | Remove-Item -Force
+        # 裁剪确定不参与运行的标准库教学/测试目录，降低 Velopack 打包与 Delta 扫描文件数。
+        foreach ($unusedStdlib in 'Lib\idlelib', 'Lib\turtledemo', 'Lib\test') {
+            $unusedPath = Join-Path $pythonDir $unusedStdlib
+            if (Test-Path -LiteralPath $unusedPath) {
+                Remove-Item -LiteralPath $unusedPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
         # 提前规范化 Python 运行时目录（清除未入 PATH 的 Scripts 启动器与残余字节码），保证缓存内容干净且幂等。
         Invoke-Checked $python @('-B', $preparePyScript, $pythonDir)
 
@@ -511,14 +518,16 @@ try {
             $env:PATH = $savedPath
         }
         $nodeModulesDir = Join-Path $adapter 'node_modules'
-        Get-ChildItem -LiteralPath $nodeModulesDir -Recurse -Force -Directory -Filter '__image_snapshots__' |
-            Remove-Item -Recurse -Force
+        # 裁剪不参与运行的测试、文档、示例、sourcemap 与类型声明，显著减少 Velopack 扫描与差分文件数。
+        Get-ChildItem -LiteralPath $nodeModulesDir -Recurse -Force -Directory |
+            Where-Object { $_.Name -in '__image_snapshots__', '__tests__', 'test', 'tests', 'docs', 'example', 'examples' } |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
         Get-ChildItem -LiteralPath $nodeModulesDir -Recurse -Force -File |
             Where-Object {
-                $_.Extension -eq '.map' -or
+                $_.Extension -in '.map', '.md', '.markdown' -or
                 $_.Name -like '*.d.ts' -or $_.Name -like '*.d.mts' -or $_.Name -like '*.d.cts'
             } |
-            Remove-Item -Force
+            Remove-Item -Force -ErrorAction SilentlyContinue
 
         if ($envCacheDir) {
             try {
@@ -741,6 +750,8 @@ try {
     Write-StageTiming 'vpk_download' $vpkDownloadStopwatch
 
     # ---------- 阶段 5：Velopack 打包与资产摘要输出 ----------
+    $bundleFileCount = (Get-ChildItem -LiteralPath $bundle -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
+    Write-Host "[build.ps1] bundle_files=$bundleFileCount"
     $vpkPackStopwatch = [Diagnostics.Stopwatch]::StartNew()
     $packArgs = @(
         'pack',
@@ -756,9 +767,13 @@ try {
         '-c', $channel,
         '--outputDir', $packDir
     )
-    if ($FullOnly) { $packArgs += @('--delta', 'None') }
+    if ($FullOnly) {
+        $packArgs += @('--delta', 'None')
+    } else {
+        $packArgs += @('--delta', 'BestSpeed')
+    }
     Invoke-Checked $vpk $packArgs
-    Write-StageTiming 'vpk_pack' $vpkPackStopwatch
+    Write-StageTiming 'vpk_pack' $vpkPackStopwatch ("files=$bundleFileCount")
 
     $artifactStopwatch = [Diagnostics.Stopwatch]::StartNew()
     # 复用同一索引解析器选择本次资产；不依赖 vpk 文件名的通道后缀。
