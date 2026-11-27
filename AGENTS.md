@@ -54,7 +54,7 @@
 
 ## 代码结构
 
-- 唯一源码根为 `app/`；`compat/uipath/` 只保留历史 UiPath 兼容工程，不进入安装包。
+- 唯一源码根为 `app/`；历史 `compat/uipath/` 已正式退役并移除，Windows 桌面采集全面采用原生 Win32 驱动。
 - 后端 `app/menu_capture/` 按域分包：`api/`、`capture/`、`desktop/`、`vision/`、`agent/`、`materials/`、`annotation/`、`quality/`、`shared/`、`storage/`、`updates/`、`core/`；跨域依赖只走显式接口。
 - 测试在 `app/tests/`，按 `unit/`、`integration/`、`contract/`、`platform/` 与 `fixtures/` 组织；测试不得依赖个人机器路径或未提交的运行数据。
 - 部署脚本在 `deploy/hub/`、`deploy/hub-update/`、`deploy/migration/`、`deploy/windows/`；文档入口为 [docs/README.md](docs/README.md)。

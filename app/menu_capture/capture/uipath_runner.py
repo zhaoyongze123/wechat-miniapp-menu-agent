@@ -58,7 +58,6 @@ from menu_capture.capture.robot_profile import RobotProfile
 from menu_capture.capture.capture_outputs import (
     archive_unqualified, retire_store_dir, store_output_dir, unqualified_store_dir,
 )
-from menu_capture.capture.uipath_cli import cli_entry
 from menu_capture.capture.runner_paths import (
     _atomic_write_json, _inside, _runtime_root, _staging_root, production_window_geometry,
 )
@@ -451,12 +450,7 @@ class UiPathRunner:
         if not native and launch_mode not in {"cli", "manual"}:
             issues.append("launch_mode 只能是 cli 或 manual")
         if launch_mode == "cli":
-            if not cli_entry():
-                issues.append("未找到 UiPath CLI（uip）；请确认已安装并位于 PATH")
-            if not self.project_dir.is_dir():
-                issues.append("UiPath 项目目录不存在")
-            elif not (self.project_dir / "Main.xaml").is_file():
-                issues.append("UiPath 项目缺少 Main.xaml")
+            issues.append("UiPath CLI 启动方式已退役；请在 Windows 上使用原生桌面采集")
         task_id = profile.get("selected_task_id")
         raw_task_ids = task_ids_override if task_ids_override is not None else profile.get("selected_task_ids", [])
         task_ids: list[str] = []
@@ -1116,84 +1110,8 @@ class UiPathRunner:
 
     def _launch_cli(self, run_directory: Path, settings, profile: dict, *, task_count: int | None = None,
                     timeout_seconds: float | None = None, allow_skip_build: bool = True) -> None:
-        """只启动当前这轮自己的 Main.xaml 进程，并把 CLI 工件留在私有 run 目录。"""
-        entry = cli_entry()
-        if not entry:
-            raise ValueError("未找到 UiPath CLI（uip）；请确认已安装并位于 PATH")
-        args_path = run_directory / "args.json"
-        log_path = self.debug_log.cli_log_path(self.run_id or run_directory.name) if self.debug_log else run_directory / "cli.log"
-        metadata_path = run_directory / "cli-process.json"
-        _atomic_write_json(args_path, {"in_RunDirectory": str(run_directory)})
-
-        environment = os.environ.copy()
-        dotnet_root = Path("/Users/mac/.dotnet")
-        if sys.platform != "win32" and dotnet_root.is_dir():
-            environment["DOTNET_ROOT"] = str(dotnet_root)
-            environment["PATH"] = str(dotnet_root) + os.pathsep + environment.get("PATH", "")
-        else:
-            dotnet_path = shutil.which("dotnet", path=environment.get("PATH"))
-            if dotnet_path:
-                environment.setdefault("DOTNET_ROOT", str(Path(dotnet_path).resolve().parent))
-        environment["UIPATH_CLI_DISABLE_VERSION_SYNC"] = "true"
-
-        startup_timeout = 300
-        max_tasks = task_count if task_count is not None else len(profile.get("selected_task_ids", []))
-        # 人工标注按人工节奏进行，不能用自动采集的单店上限计算 CLI 生命周期。
-        cli_timeout = (int(timeout_seconds) if timeout_seconds else
-                       settings.capture.max_task_seconds * max_tasks + startup_timeout + 60)
-        command = [
-            *entry, "rpa", "run",
-            "--project-dir", str(self.project_dir),
-            "--file-path", "Main.xaml",
-            "--input-arguments-file", str(args_path),
-            "--timeout", str(cli_timeout),
-            "--output", "json",
-        ]
-        self._build_fingerprint = self._project_build_fingerprint()
-        self._build_cache_path = Path(settings.output_dir).expanduser().resolve() / ".uipath-build" / "state.json"
-        self._skip_build_requested = allow_skip_build and self._build_cache_matches()
-        if self._skip_build_requested:
-            # 源文件与上次成功构建一致，直接复用 .local/install 产物。
-            command.append("--skip-build")
-        self._launch_params = (run_directory, settings, profile, task_count, timeout_seconds)
-        log_stream = None
-        try:
-            if self.debug_log:
-                process = self.process_factory(
-                    command, cwd=str(self.project_dir), env=environment,
-                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    shell=False, close_fds=True,
-                )
-            else:
-                fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                log_stream = os.fdopen(fd, "ab")
-                process = self.process_factory(
-                    command, cwd=str(self.project_dir), env=environment,
-                    stdin=subprocess.DEVNULL, stdout=log_stream, stderr=subprocess.STDOUT,
-                    shell=False, close_fds=True,
-                )
-        except Exception as exc:
-            if log_stream:
-                log_stream.close()
-            _atomic_write_json(metadata_path, {
-                "pid": None, "exit_code": None, "status": "start_failed",
-                "error_type": type(exc).__name__, "log": str(log_path),
-            })
-            raise ValueError(f"UiPath CLI 启动失败（{type(exc).__name__}）") from None
-        finally:
-            if log_stream:
-                log_stream.close()
-
-        self._cli_process = process
-        self._cli_args_path, self._cli_log_path, self._cli_metadata_path = args_path, log_path, metadata_path
-        self._cli_info = {"pid": int(process.pid), "exit_code": None, "status": "running"}
-        if self.debug_log and getattr(process, "stdout", None) is not None:
-            self._cli_reader_thread = threading.Thread(
-                target=self._drain_cli_output, args=(process.stdout, str(self.run_id or run_directory.name)),
-                name="uipath-cli-log-reader", daemon=True,
-            )
-            self._cli_reader_thread.start()
-        self._write_cli_metadata()
+        """UiPath CLI 启动链路已退役；保留方法签名仅兼容历史测试替身。"""
+        raise ValueError("UiPath CLI 启动方式已退役；请在 Windows 上使用原生桌面采集")
 
     def _drain_cli_output(self, stream, run_key: str) -> None:
         try:

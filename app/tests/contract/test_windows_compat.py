@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -9,8 +8,6 @@ import pytest
 from pydantic import ValidationError
 
 from menu_capture.capture import robot_profile
-
-from menu_capture.capture import uipath_cli
 
 from menu_capture.capture import uipath_runner
 
@@ -35,22 +32,6 @@ def test_instance_lock_excludes_another_service_and_keeps_file(tmp_path):
         assert subprocess.run(command, timeout=5).returncode == 23
     assert subprocess.run(command, timeout=5).returncode == 0
     assert path.read_bytes() == b"owner"
-
-
-def test_windows_uipath_npm_entry_avoids_batch_shell(monkeypatch, tmp_path):
-    shim = tmp_path / "uip.cmd"
-    package = tmp_path / "node_modules/@uipath/cli"
-    entry = package / "dist/index.js"
-    entry.parent.mkdir(parents=True)
-    entry.touch()
-    manifest = package / "package.json"
-    manifest.write_text(json.dumps({"bin": {"uip": "dist/index.js"}}), encoding="utf-8")
-    monkeypatch.setattr(uipath_cli, "sys", SimpleNamespace(platform="win32"))
-    monkeypatch.setattr(uipath_cli.shutil, "which", {"uip": str(shim), "node": "node.exe"}.get)
-
-    assert uipath_cli.cli_entry() == ["node.exe", str(entry.resolve())]
-    manifest.write_text(json.dumps({"bin": {"uip": "../../../other.js"}}), encoding="utf-8")
-    assert uipath_cli.cli_entry() == []
 
 
 def test_windows_profile_defaults_and_executable_validation(monkeypatch):
