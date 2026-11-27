@@ -196,13 +196,27 @@ class SharedHub:
                     "INSERT OR IGNORE INTO shared_result_names(assignment_id,store_name) "
                     "SELECT assignment_id,observed_store_name FROM shared_results"
                 )
-            assignment_columns = {row["name"] for row in db.execute("PRAGMA table_info(shared_assignments)")}
-            for column in ("project_id", "project_code", "project_name", "store_id"):
-                if column not in assignment_columns:
-                    db.execute(f"ALTER TABLE shared_assignments ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
-            db.execute(
-                "CREATE INDEX IF NOT EXISTS shared_assignments_project_status "
-                "ON shared_assignments(project_id,status,created_at DESC)"
+            from menu_capture.storage.migrations import Migration, apply_migrations
+
+            def _migrate_shared_assignments_project_cols(conn) -> None:
+                assignment_columns = {row["name"] for row in conn.execute("PRAGMA table_info(shared_assignments)")}
+                for column in ("project_id", "project_code", "project_name", "store_id"):
+                    if column not in assignment_columns:
+                        conn.execute(f"ALTER TABLE shared_assignments ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS shared_assignments_project_status "
+                    "ON shared_assignments(project_id,status,created_at DESC)"
+                )
+
+            apply_migrations(
+                db,
+                [
+                    Migration(
+                        version="20261128_01_shared_assignments_project_cols_and_index",
+                        description="为 shared_assignments 补齐项目与门店列并按顺序建立复合索引",
+                        apply=_migrate_shared_assignments_project_cols,
+                    ),
+                ],
             )
             # 只依据稳定的批次外键回填既有分配；项目删除/改名不会改变已存下来的归属快照。
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'").fetchone():

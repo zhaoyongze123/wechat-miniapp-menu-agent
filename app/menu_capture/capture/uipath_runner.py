@@ -53,6 +53,12 @@ from menu_capture.capture.capture_results import waiting_for_materials
 from menu_capture.desktop.preview_locator import PreviewIconNotFound, locate_preview_recognize
 from menu_capture.desktop.chat_image_locator import (ChatImageNotFound, locate_chat_image_bubble, locate_sent_image,
                                  match_preview_source)
+from menu_capture.desktop.wechat_input import (
+    chat_pane_right as _chat_pane_right,  # noqa: F401  # 兼容既有单测导出
+    frame_dpi_scale as _frame_dpi_scale,
+    locate_wechat_input_region as _locate_wechat_input_region,
+    send_button_active as _wechat_send_button_active,
+)
 from menu_capture.agent.ui_tars_trial import GUI_PLUS_MODEL, TrialModel, TrialProtocolError, run_navigation, trial_model_from_env
 from menu_capture.capture.robot_profile import RobotProfile
 from menu_capture.capture.capture_outputs import (
@@ -75,10 +81,6 @@ _WINDOWS_MINIAPP_POLL_TIMEOUT = 13.0
 # 批次开始前把微信主窗口固定成三家测试通过时的版面。最新图片缩略图的固定点位与
 # 模板匹配阈值都是按这个尺寸标定的：窗口变窄后点位落到图片下方、匹配分跌破阈值，整批会稳定点空。
 _BATCH_WECHAT_FRAME = (999, 749)
-# 微信输入区裁剪比例（按 999×749 实测版面）：左边界必须覆盖输入框左端——短店名从约
-# 17% 处起排，取 26% 会整段落在裁剪区外，粘贴成功也会被判成空；右侧避开发送按钮，
-# 底部避开工具栏图标行（约 694px），工具栏图标会随悬停闪烁，落进框内会被误判成文本。
-_INPUT_REGION_RATIO = (0.17, 0.80, 0.905, 0.925)
 # 输入区差分阈值：低于 24 的像素变化视为抗锯齿/焦点描边噪声。
 _INPUT_DIFF_THRESHOLD = 24
 # 空输入框允许的残余变化比例（光标、抗锯齿），超过即认为框内还有内容。
@@ -122,131 +124,6 @@ def _near_white_ratio(image: Image.Image) -> float:
     gray = image.convert("L").resize((96, 96))
     pixels = gray.tobytes()
     return sum(1 for value in pixels if value >= 244) / max(len(pixels), 1)
-
-
-def _frame_dpi_scale(frame: dict | None) -> float:
-    """提取截图/窗口回执中的 DPI 缩放倍率，缺省或异常值回退 1.0。"""
-    if not isinstance(frame, dict):
-        return 1.0
-    raw = frame.get("dpi_scale")
-    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and 0.5 <= float(raw) <= 4.0:
-        return float(raw)
-    return 1.0
-
-
-def _chat_pane_right(image: Image.Image) -> int:
-    """返回微信聊天窗格右边界；右侧内嵌小程序面板会把窗口变成左右分栏。
-
-    WeChat 4.x 会把会员卡/部分小程序以右侧面板形式嵌进主窗口：窗口固定后聊天区
-    只剩左侧部分。同时兼容 100%~200% DPI 下 1~2px 抗锯齿分栏线；识别不到按整窗宽处理。
-    """
-    width, height = image.size
-    if width < 80 or height < 80:
-        return width
-    gray = image.convert("L")
-    pixels = gray.load()
-    top, bottom = int(height * .12), int(height * .88)
-    rows = max(1, bottom - top)
-    best_x, best_score = width, 0.0
-    # 分栏线固定出现在窗口中右侧；限制范围避免把菜品图/气泡的竖直边缘当成面板边界。
-    start_x = max(2, int(width * .52))
-    end_x = min(width - 2, int(width * .80))
-    for x in range(start_x, end_x):
-        edge = sum(
-            1 for y in range(top, bottom)
-            if max(abs(pixels[x, y] - pixels[x - 1, y]), abs(pixels[x + 1, y] - pixels[x - 1, y])) >= 10
-        )
-        score = edge / rows
-        if score > best_score:
-            best_x, best_score = x, score
-    return best_x if best_score >= .75 else width
-
-
-def _chat_pane_left(image: Image.Image, pane_right: int) -> int | None:
-    """定位聊天列表与聊天正文之间的竖向分栏线（DPI 自适应）。"""
-    width, height = image.size
-    pane_right = min(width, max(1, pane_right))
-    if pane_right < 120 or height < 120:
-        return None
-    gray = image.convert("L")
-    pixels = gray.load()
-    top, bottom = int(height * .12), int(height * .88)
-    rows = max(1, bottom - top)
-    start_x = max(2, int(pane_right * .14))
-    end_x = min(pane_right - 2, int(pane_right * .46))
-    divider_x: int | None = None
-    for x in range(start_x, end_x):
-        edge = sum(
-            1 for y in range(top, bottom)
-            if max(abs(pixels[x, y] - pixels[x - 1, y]), abs(pixels[x + 1, y] - pixels[x - 1, y])) >= 8
-        )
-        if edge / rows >= .72:
-            # 取最右侧强分栏线，跳过最左侧图标栏分界。
-            divider_x = x
-    return divider_x
-
-
-def _input_divider_y(image: Image.Image, chat_left: int, pane_right: int) -> int | None:
-    """定位聊天历史区与底部输入区之间的横向分界线（DPI 自适应）。"""
-    width, height = image.size
-    left = max(1, min(chat_left + 8, pane_right - 20))
-    right = min(width - 1, pane_right - 8)
-    cols = right - left
-    if cols < 60 or height < 120:
-        return None
-    gray = image.convert("L")
-    pixels = gray.load()
-    start_y = max(2, int(height * .55))
-    end_y = min(height - 20, int(height * .88))
-    best_y: int | None = None
-    best_score = 0.0
-    step = max(1, cols // 160)
-    sampled = len(range(left, right, step))
-    for y in range(start_y, end_y):
-        edge = sum(
-            1 for x in range(left, right, step)
-            if max(abs(pixels[x, y] - pixels[x, y - 1]), abs(pixels[x, y + 1] - pixels[x, y - 1])) >= 8
-        )
-        score = edge / max(1, sampled)
-        if score > best_score:
-            best_score, best_y = score, y
-    return best_y if best_score >= .70 else None
-
-
-def _locate_wechat_input_region(image: Image.Image, dpi_scale: float = 1.0) -> dict[str, Any]:
-    """动态计算微信消息输入框区域与安全点击中心，避免高 DPI 下点偏或误触发送按钮。"""
-    scale = dpi_scale if 0.5 <= dpi_scale <= 4.0 else 1.0
-    width, height = image.size
-    pane = _chat_pane_right(image)
-    detected_left = _chat_pane_left(image, pane)
-    chat_left = detected_left if detected_left is not None else round(pane * _INPUT_REGION_RATIO[0])
-    divider_y = _input_divider_y(image, chat_left, pane)
-    if divider_y is not None:
-        span_h = max(32, height - divider_y)
-        toolbar_h = min(int(span_h * 0.35), max(22, round(38 * scale)))
-        send_h = min(int(span_h * 0.36), max(26, round(44 * scale)))
-        in_top = min(height - 20, divider_y + toolbar_h)
-        in_bottom = max(in_top + 14, height - send_h)
-        in_left = min(pane - 60, chat_left + max(8, round(12 * scale)))
-        send_reserve = max(round(105 * scale), round((pane - chat_left) * 0.14))
-        in_right = max(in_left + 40, pane - send_reserve)
-        detected = True
-    else:
-        in_left = round(pane * _INPUT_REGION_RATIO[0])
-        in_top = round(height * _INPUT_REGION_RATIO[1])
-        in_right = round(pane * _INPUT_REGION_RATIO[2])
-        in_bottom = round(height * _INPUT_REGION_RATIO[3])
-        detected = False
-    cx = (in_left + in_right) / 2.0
-    cy = (in_top + in_bottom) / 2.0
-    return {
-        "pane_right": pane,
-        "chat_left": chat_left,
-        "divider_y": divider_y,
-        "box": (in_left, in_top, in_right, in_bottom),
-        "center": (cx, cy),
-        "detected": detected,
-    }
 
 
 # 固定点位只服务于 macOS 那条“双击固定中心”的快捷路径（实测窗口 432×479 points，点 347,365）。
@@ -4076,25 +3953,8 @@ class UiPathRunner:
 
     @staticmethod
     def _send_button_active(image_path: Path, *, dpi_scale: float = 1.0) -> bool:
-        """发送按钮可用（微信绿）说明输入框已有内容；按 DPI 自适应搜索区域与像素面积阈值。"""
-        scale = dpi_scale if 0.5 <= dpi_scale <= 4.0 else 1.0
-        try:
-            with Image.open(image_path) as image:
-                rgb = image.convert("RGB")
-                # 只看聊天窗格右下角：右侧内嵌小程序面板不属于聊天区，不能参与发送按钮判定。
-                pane = _chat_pane_right(rgb)
-                left = max(0, min(int(pane * .84), int(pane - round(150 * scale))))
-                top = max(0, min(int(rgb.height * .87), int(rgb.height - round(75 * scale))))
-                region = rgb.crop((left, top, pane, int(rgb.height * .995)))
-        except (OSError, ValueError):
-            return False
-        colors = region.getcolors(maxcolors=region.width * region.height) or []
-        hits = sum(
-            count for count, (red, green, blue) in colors
-            if green >= 150 and red <= 110 and blue <= 150 and green - max(red, blue) >= 60
-        )
-        min_hits = max(120, round(200 * (scale ** 2)))
-        return hits >= min_hits
+        """发送按钮可用（微信绿）说明输入框已有内容；委托给 desktop.wechat_input。"""
+        return _wechat_send_button_active(image_path, dpi_scale=dpi_scale)
 
     def _preview_external_link(self, profile: dict, output_dir: Path, seconds: float = 6.0) -> bool:
         """预览里是否出现“在浏览器打开”一类提示；仅作为启动阶段的诊断证据。"""

@@ -64,7 +64,18 @@ def test_shared_hub_migrates_legacy_shared_assignments_table_before_indexing(tmp
         row = conn.execute("SELECT id, store, status FROM shared_assignments WHERE id='a1'").fetchone()
         assert dict(row) == {"id": "a1", "store": "旧门店", "status": "completed"}
 
-    # 确认 status() 读写链路正常
+    # 确认 status() 读写链路正常且迁移审计表已登记
     status = hub.status(include_history=False)
     assert status["role"] == "hub"
     assert len(status["workers"]) == 1
+
+    from menu_capture.storage.migrations import applied_versions
+
+    with store.connect() as conn:
+        versions = applied_versions(conn)
+    assert "20261128_01_shared_assignments_project_cols_and_index" in versions
+
+    # 再次初始化必须幂等，不重复报错或重复写审计记录
+    SharedHub(store, materials)
+    with store.connect() as conn:
+        assert applied_versions(conn) == versions
