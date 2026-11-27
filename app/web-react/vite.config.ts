@@ -37,6 +37,17 @@ export default defineConfig({
     assetsDir: 'assets',
     manifest: true,
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (id.includes('@openai/apps-sdk-ui') || id.includes('@radix-ui')) return 'vendor-ui'
+          if (id.includes('@tanstack/react-query')) return 'vendor-query'
+          if (id.includes('react-router') || id.includes('react-dom') || id.includes('/react/')) return 'vendor-react'
+          return undefined
+        },
+      },
+    },
   },
   server: {
     port: 5173,

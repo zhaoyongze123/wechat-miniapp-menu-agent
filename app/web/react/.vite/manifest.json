@@ -1,11 +1,41 @@
 {
+  "_vendor-query-DEQhX93d.js": {
+    "file": "assets/vendor-query-DEQhX93d.js",
+    "name": "vendor-query",
+    "imports": [
+      "_vendor-react-CwVrQmi-.js"
+    ]
+  },
+  "_vendor-react-CwVrQmi-.js": {
+    "file": "assets/vendor-react-CwVrQmi-.js",
+    "name": "vendor-react"
+  },
+  "_vendor-ui-CxKnfBGj.css": {
+    "file": "assets/vendor-ui-CxKnfBGj.css",
+    "src": "_vendor-ui-CxKnfBGj.css"
+  },
+  "_vendor-ui-DerWOveF.js": {
+    "file": "assets/vendor-ui-DerWOveF.js",
+    "name": "vendor-ui",
+    "imports": [
+      "_vendor-react-CwVrQmi-.js"
+    ],
+    "css": [
+      "assets/vendor-ui-CxKnfBGj.css"
+    ]
+  },
   "index.html": {
-    "file": "assets/index-IAMaae6o.js",
+    "file": "assets/index-BYq_rRMb.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
+    "imports": [
+      "_vendor-react-CwVrQmi-.js",
+      "_vendor-query-DEQhX93d.js",
+      "_vendor-ui-DerWOveF.js"
+    ],
     "css": [
-      "assets/index-Bd9W0LOw.css"
+      "assets/index-C4pFhqY6.css"
     ]
   }
 }

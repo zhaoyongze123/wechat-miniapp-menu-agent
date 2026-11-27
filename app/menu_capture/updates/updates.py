@@ -2428,8 +2428,34 @@ class _TrustedRedirectHandler(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-# 进程级复用；所有发布发现与资产请求统一经过受信任重定向策略。
-_TRUSTED_OPENER = build_opener(_TrustedRedirectHandler())
+def external_proxies() -> dict[str, str]:
+    """解析用于外部 GitHub 更新请求的系统代理。
+
+    主服务启动时会清空进程环境代理并设置 `NO_PROXY=*` 以保证本机/局域网直连，
+    因此 Windows 上需要直接读取系统注册表代理，让 GitHub 更新检查与下载不受影响。
+    """
+    if sys.platform == "win32":
+        try:
+            from urllib.request import getproxies_registry
+
+            reg = getproxies_registry()
+            if reg:
+                return dict(reg)
+        except Exception:  # noqa: BLE001 - 注册表不可用时退回直连
+            pass
+    proxies: dict[str, str] = {}
+    for scheme in ("https", "http"):
+        val = os.environ.get(f"{scheme.upper()}_PROXY") or os.environ.get(f"{scheme}_proxy")
+        if val:
+            proxies[scheme] = val
+    return proxies
+
+
+def _trusted_opener():
+    """按当前系统代理构建受信任更新 opener，既遵守重定向白名单又支持系统代理。"""
+    from urllib.request import ProxyHandler
+
+    return build_opener(ProxyHandler(external_proxies()), _TrustedRedirectHandler())
 
 
 @contextmanager
@@ -2437,7 +2463,7 @@ def _http_open(url: str, headers: dict[str, str], timeout: float):
     """流式打开受信任资产地址以支持 Range 续传；416 交由调用方判定是否需要重下。"""
     request = Request(url, headers=headers)
     try:
-        response = _TRUSTED_OPENER.open(request, timeout=timeout)  # noqa: S310 - 地址已在清单校验阶段限定
+        response = _trusted_opener().open(request, timeout=timeout)  # noqa: S310 - 地址已在清单校验阶段限定
     except HTTPError as exc:
         if exc.code == 416:
             yield 416, dict(exc.headers.items()) if exc.headers else {}, exc
@@ -2513,7 +2539,7 @@ def _iso(timestamp: Any) -> str:
 def _http_request(url: str, headers: dict[str, str], timeout: float) -> tuple[int, dict[str, str], bytes]:
     request = Request(url, headers=headers)
     try:
-        with _TRUSTED_OPENER.open(request, timeout=timeout) as response:  # noqa: S310 - 固定受信任仓库
+        with _trusted_opener().open(request, timeout=timeout) as response:  # noqa: S310 - 固定受信任仓库
             return response.status, dict(response.headers.items()), response.read(4 * 1024 * 1024)
     except Exception as exc:
         status = getattr(exc, "code", None)
