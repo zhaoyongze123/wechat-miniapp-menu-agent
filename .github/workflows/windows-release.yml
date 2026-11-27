@@ -561,8 +561,11 @@ jobs:
           set -euo pipefail
           [[ "$RUN_ID" =~ ^[0-9]+$ ]]
           run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID")
+          # 只接受受信 main 上派发的候选构建，避免任意开发分支产物进入正式签名与 GHCR。
           jq -e --arg repo "$GITHUB_REPOSITORY" '
             .repository.full_name == $repo
+            and .head_repository.full_name == $repo
+            and .head_branch == "main"
             and .path == ".github/workflows/windows-release.yml"
             and .event == "workflow_dispatch"
             and .status == "completed"
@@ -575,6 +578,26 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.inspect.outputs.commit }}
+          fetch-depth: 0
+      - name: 校验源 run 必要作业成功且 commit 属于受信 main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.source_run_id }}
+          COMMIT: ${{ steps.inspect.outputs.commit }}
+        run: |
+          set -euo pipefail
+          # run 级 success 可能来自全部作业被跳过，必须核对真实构建作业结论。
+          jobs_file="$RUNNER_TEMP/source-jobs.json"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" \
+            | jq -s 'map(.jobs[]) | map({name, conclusion})' > "$jobs_file"
+          jq -e '
+            ([.[] | select(.name == "windows" or .name == "hub") | select(.conclusion == "success")] | length) == 2
+            and ([.[] | select(.conclusion == "failure" or .conclusion == "cancelled")] | length) == 0
+          ' "$jobs_file"
+          # 用 Git 原生祖先关系确认候选 commit 已进入 main。
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$COMMIT" refs/remotes/origin/main
+          echo "源 run 必要作业成功，commit $COMMIT 属于受信 main"
       - uses: actions/download-artifact@v4
         with:
           name: menu-capture-windows-x64
@@ -623,6 +646,7 @@ jobs:
         env:
           GHCR_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
+          COMMIT: ${{ steps.inspect.outputs.commit }}
         run: |
           set -uo pipefail
           # 只做官方 docker load/tag/push，镜像内容来自源 run 的已归档产物。
@@ -632,6 +656,26 @@ jobs:
           docker load -i "$archive" || exit 1
           image="menu-capture-hub:$VERSION"
           docker image inspect "$image" > /dev/null || exit 1
+          # 在任何 GHCR 写入前核对镜像自带的 revision/version 标签。
+          labels=$(docker image inspect --format '{{json .Config.Labels}}' "$image")
+          revision=$(jq -r '(. // {})["org.opencontainers.image.revision"] // empty' <<<"$labels")
+          version_label=$(jq -r '(. // {})["org.opencontainers.image.version"] // empty' <<<"$labels")
+          if [ -n "$revision" ] && [ "$revision" != "$COMMIT" ]; then
+            echo "::error::Hub 镜像 revision=$revision 与源 commit $COMMIT 不一致。"
+            exit 1
+          fi
+          if [ -n "$version_label" ] && [ "$version_label" != "$VERSION" ]; then
+            echo "::error::Hub 镜像 version=$version_label 与目标版本 $VERSION 不一致。"
+            exit 1
+          fi
+          if [ -z "$revision" ]; then
+            # 兼容策略：0.5.3 及更早镜像在引入 revision 标签前构建，仅凭摘要与版本校验。
+            if [ "$(printf '%s\n0.5.3\n' "$VERSION" | sort -V | tail -1)" != "0.5.3" ]; then
+              echo "::error::缺少 revision 标签的旧镜像仅允许 0.5.3 及更早版本。"
+              exit 1
+            fi
+            echo "::warning::Hub 镜像缺少 revision 标签（0.5.3 及更早构建），按摘要与版本校验。"
+          fi
           registry="ghcr.io"
           repo="${GITHUB_REPOSITORY,,}"
           repository="$registry/$repo"
@@ -683,11 +727,14 @@ jobs:
           retention-days: 14
 
   draft:
+    # 普通构建看本次改动是否需要发布；复用模式以已核验源候选为准，
+    # 不因后续仅文档/测试变更（本次工作流 commit 相对最新 release）而误跳过。
     if: >-
-      ${{ always() && inputs.create_release && needs.changes.outputs.release_needed == 'true' && (
-        (inputs.source_run_id != '' && needs.verify-source.result == 'success') ||
-        (inputs.source_run_id == '' && needs.checks.result == 'success'
-         && needs.windows.result == 'success' && needs.hub.result == 'success')
+      ${{ always() && inputs.create_release && !cancelled() && (
+        (inputs.source_run_id != '' && needs.changes.result == 'success'
+         && needs.verify-source.result == 'success') ||
+        (inputs.source_run_id == '' && needs.changes.outputs.release_needed == 'true'
+         && needs.checks.result == 'success' && needs.windows.result == 'success' && needs.hub.result == 'success')
       ) }}
     # 发布草稿必须依赖全部质量门禁，任一检查失败都不生成发布准备。
     needs: [changes, verify-source, checks, windows, hub]
@@ -697,10 +744,11 @@ jobs:
       contents: write
       actions: read
     steps:
-      # 复用模式下按产物 commit 检出，确保清单由同版本代码生成。
+      # 签名实现固定取受信 main（当前工作流 ref），避免用源候选代码接触签名私钥；
+      # 清单 git_commit 仍绑定源产物 commit。
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.verify-source.outputs.commit || github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         if: ${{ inputs.source_run_id == '' }}
         with:
