@@ -64,6 +64,11 @@ from menu_capture.capture.robot_profile import RobotProfile
 from menu_capture.capture.capture_outputs import (
     archive_unqualified, retire_store_dir, store_output_dir, unqualified_store_dir,
 )
+from menu_capture.capture.circuit_breaker import (
+    ConsecutiveFailureBreaker,
+    MAX_CONSECUTIVE_INPUT_ENV_FAILURES as _MAX_CONSECUTIVE_INPUT_ENV_FAILURES,  # noqa: F401
+    WECHAT_INPUT_ENV_CODES as _WECHAT_INPUT_ENV_CODES,  # noqa: F401
+)
 from menu_capture.capture.runner_paths import (
     _atomic_write_json, _inside, _runtime_root, _staging_root, production_window_geometry,
 )
@@ -90,9 +95,6 @@ _SELECT_ALL_SHORTCUT = "[d(hk)][d(ctrl)]a[u(ctrl)][u(hk)]"
 _DELETE_SHORTCUT = "[d(hk)][k(delete)][u(hk)]"
 _BACKSPACE_SHORTCUT = "[d(hk)][k(backspace)][u(hk)]"
 _ESC_SHORTCUT = "[d(hk)][k(esc)][u(hk)]"
-# 微信输入环境故障码集合：连续触发达到阈值时自动暂停熔断，不归为门店质量问题。
-_WECHAT_INPUT_ENV_CODES = frozenset({"wechat_input_env_error", "wechat_context_lost", "wechat_window_frame"})
-_MAX_CONSECUTIVE_INPUT_ENV_FAILURES = 3
 # Agent 判定成功后菜单页仍可能在加载/轮播：先给 2 秒稳定期，再取交接帧，
 # 避免把过渡画面当菜单交给截图环节（E01519 类“少截一屏”）。
 _HANDOFF_SETTLE_SECONDS = 2.0
@@ -1300,7 +1302,7 @@ class UiPathRunner:
             # 批次版面先校准一次，后面各店复用同一窗口尺寸与几何。
             with self._trace("wechat_batch_frame"):
                 self._prepare_batch_wechat_frame(profile)
-            consecutive_input_env_failures = 0
+            breaker = ConsecutiveFailureBreaker()
             for index, (task_id, source) in enumerate(batch_sources.items()):
                 self._guard()
                 if self._pause_at_boundary:
@@ -1328,12 +1330,9 @@ class UiPathRunner:
                 remaining = list(batch_sources)[index + 1:]
                 self._capture_run_progress(index + 1, total, remaining[0] if remaining else "")
                 self._guard()
-                if persisted != "captured" and report.get("runtime_code") in _WECHAT_INPUT_ENV_CODES:
-                    consecutive_input_env_failures += 1
-                else:
-                    consecutive_input_env_failures = 0
-                if consecutive_input_env_failures >= _MAX_CONSECUTIVE_INPUT_ENV_FAILURES:
-                    reason = (f"连续 {consecutive_input_env_failures} 家门店触发微信输入环境故障，"
+                if breaker.record(succeeded=persisted == "captured",
+                                  failure_code=str(report.get("runtime_code") or ""), task_id=task["id"]):
+                    reason = (f"连续 {breaker.streak} 家门店触发微信输入环境故障，"
                               "已自动暂停批量采集；请检查微信窗口、输入法与显示缩放后恢复")
                     self.store.event(reason, "warning", task["id"])
                     summary.update(status="paused", reason=reason,
@@ -1455,7 +1454,7 @@ class UiPathRunner:
             )
             hotkeys.start()
             total = len(batch_sources or {})
-            consecutive_input_env_failures = 0
+            breaker = ConsecutiveFailureBreaker()
             for index, (task_id, source) in enumerate(list((batch_sources or {}).items())):
                 self._guard()
                 if self._pause_at_boundary:
@@ -1483,12 +1482,9 @@ class UiPathRunner:
                 remaining = list(batch_sources or {})[index + 1:]
                 self._capture_run_progress(index + 1, total, remaining[0] if remaining else "")
                 self._guard()
-                if persisted != "captured" and report.get("runtime_code") in _WECHAT_INPUT_ENV_CODES:
-                    consecutive_input_env_failures += 1
-                else:
-                    consecutive_input_env_failures = 0
-                if consecutive_input_env_failures >= _MAX_CONSECUTIVE_INPUT_ENV_FAILURES:
-                    reason = (f"连续 {consecutive_input_env_failures} 家门店触发微信输入环境故障，"
+                if breaker.record(succeeded=persisted == "captured",
+                                  failure_code=str(report.get("runtime_code") or ""), task_id=current["id"]):
+                    reason = (f"连续 {breaker.streak} 家门店触发微信输入环境故障，"
                               "已自动暂停半自动采集；请检查微信窗口、输入法与显示缩放后恢复")
                     self.store.event(reason, "warning", current["id"])
                     summary.update(status="paused", reason=reason,
@@ -2062,7 +2058,7 @@ class UiPathRunner:
                     self.store.update_run(self.run_id, status="running", message="恢复检查通过，继续采集")
             run_status = "completed"
             run_message = "批次处理结束，请在门店列表查看采集结果"
-            consecutive_input_env_failures = 0
+            breaker = ConsecutiveFailureBreaker()
             for batch_index, selected_id in enumerate(task_ids):
                 self._guard()
                 absolute_index = start_index + batch_index
@@ -2174,13 +2170,9 @@ class UiPathRunner:
                     self.store.update_run(self.run_id, status=run_status, current_index=absolute_index,
                                           current_task_id=task["id"], message=run_message)
                     break
-                if status != "captured" and failure_code in _WECHAT_INPUT_ENV_CODES:
-                    consecutive_input_env_failures += 1
-                else:
-                    consecutive_input_env_failures = 0
-                if consecutive_input_env_failures >= _MAX_CONSECUTIVE_INPUT_ENV_FAILURES:
+                if breaker.record(succeeded=status == "captured", failure_code=failure_code, task_id=task["id"]):
                     run_status = "paused"
-                    run_message = (f"连续 {consecutive_input_env_failures} 家门店触发微信输入环境故障，"
+                    run_message = (f"连续 {breaker.streak} 家门店触发微信输入环境故障，"
                                    "已自动暂停批量采集；请检查微信窗口、输入法与显示缩放后恢复")
                     self.store.update_run(self.run_id, status=run_status, current_index=next_index,
                                           current_task_id=task_ids[batch_index + 1] if batch_index + 1 < len(task_ids) else "",

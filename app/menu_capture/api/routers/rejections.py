@@ -9,13 +9,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 
 from menu_capture.api.context import ApiContext
+from menu_capture.api.schemas import RejectionsListResponse
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
     rejections, store, materials, hub = ctx.rejections, ctx.store, ctx.materials, ctx.hub
     control_lock, idle = ctx.control_lock, ctx.idle
 
-    @app.get("/api/rejections")
+    @app.get("/api/rejections", response_model=RejectionsListResponse)
     def list_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all",
                         reviewed: str = "all", project_id: str | None = None):
         scope = ctx.project_scope(project_id)

@@ -14,14 +14,46 @@ def test_openapi_schema_exposes_typed_status_and_observability_contracts(tmp_pat
     app = create_app(tmp_path / "hub", role="hub", admin_password="secret")
     schema = app.openapi()
     components = schema.get("components", {}).get("schemas", {})
-    assert "StatusSummaryResponse" in components
-    assert "StatusTasksResponse" in components
-    assert "SlowRequestsResponse" in components
+    required_models = {
+        "VersionResponse",
+        "SessionResponse",
+        "StatusSummaryResponse",
+        "StatusTasksResponse",
+        "CaptureQueueResponse",
+        "SharedStatusResponse",
+        "SharedAssignmentsResponse",
+        "MaterialBatchesResponse",
+        "MaterialReworkResponse",
+        "ReviewsPendingResponse",
+        "RejectionsListResponse",
+        "ActiveTasksResponse",
+        "TaskHistoryResponse",
+        "ProjectItemModel",
+        "SlowRequestsResponse",
+    }
+    missing = required_models - set(components)
+    assert not missing, f"缺少核心 API 响应契约模型：{sorted(missing)}"
 
     paths = schema.get("paths", {})
-    assert "/api/status/summary" in paths
-    assert "/api/status/tasks" in paths
-    assert "/api/diagnostics/slow-requests" in paths
+    for endpoint in (
+        "/api/version",
+        "/api/session",
+        "/api/status",
+        "/api/status/summary",
+        "/api/status/tasks",
+        "/api/capture/queue",
+        "/api/shared/status",
+        "/api/shared/assignments",
+        "/api/materials/batches",
+        "/api/materials/rework",
+        "/api/reviews/pending",
+        "/api/rejections",
+        "/api/tasks/active",
+        "/api/tasks/history",
+        "/api/projects",
+        "/api/diagnostics/slow-requests",
+    ):
+        assert endpoint in paths, f"OpenAPI 缺少核心接口：{endpoint}"
 
 
 def test_observability_middleware_adds_timing_header_and_records_alerts(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
+from menu_capture.api.schemas import SharedAssignmentsResponse, SharedStatusResponse
 from menu_capture.shared.shared import MAX_RESULT_SIZE, SharedHub, WorkerUnauthorized, safe_artifact
 from menu_capture.shared.shared_history import HistoryReport
 from menu_capture.shared.shared_worker import SharedWorker
@@ -33,7 +34,7 @@ def register_shared_routes(app: FastAPI, role: str, hub: SharedHub | None,
     def health():
         return {"ok": True, "role": role}
 
-    @app.get("/api/shared/status")
+    @app.get("/api/shared/status", response_model=SharedStatusResponse)
     def shared_status(include_history: bool = True, project_id: str | None = None):
         if hub:
             status = hub.status(include_history=include_history, project_id=project_id)
@@ -95,7 +96,7 @@ def register_shared_routes(app: FastAPI, role: str, hub: SharedHub | None,
         with control_lock:
             return hub.set_update_rollout(payload["mode"], payload["worker_ids"])
 
-    @app.get("/api/shared/assignments")
+    @app.get("/api/shared/assignments", response_model=SharedAssignmentsResponse)
     def assignment_records(worker_id: Annotated[str, Query(max_length=64)] = "",
                            phase: Literal["", "assigned", "ready", "completed", "reclaimed", "history"] = "",
                            q: Annotated[str, Query(max_length=240)] = "",

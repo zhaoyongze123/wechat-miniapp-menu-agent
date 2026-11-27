@@ -7,8 +7,11 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --noEmit",
+    "lint:code": "eslint src",
     "lint:design": "node scripts/check-design-system.mjs",
-    "test": "vitest run",
+    "test": "vitest run src",
+    "test:e2e": "playwright test",
+    "generate:api-types": "openapi-typescript ../openapi.json -o src/api/generated.d.ts",
     "test:watch": "vitest",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"
@@ -22,6 +25,8 @@
     "react-router-dom": "^7.8.2"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.65.1",
     "@storybook/addon-a11y": "^10.6.8",
     "@storybook/addon-docs": "^10.6.8",
     "@storybook/react-vite": "^10.6.8",
@@ -33,10 +38,14 @@
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.2",
+    "eslint": "^10.16.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "jsdom": "^26.1.0",
+    "openapi-typescript": "^7.13.0",
     "storybook": "^10.6.8",
     "tailwindcss": "^4.1.12",
     "typescript": "^5.9.2",
+    "typescript-eslint": "^8.74.0",
     "vite": "^7.1.3",
     "vitest": "^3.2.4"
   }

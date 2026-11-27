@@ -66,7 +66,18 @@ from menu_capture.projects.service import (
 from menu_capture.api.workbench_page import workbench_page
 from menu_capture.api.context import ApiContext
 from menu_capture.api.observability import install_observability
-from menu_capture.api.schemas import SlowRequestsResponse, StatusSummaryResponse, StatusTasksResponse
+from menu_capture.api.schemas import (
+    ActiveTasksResponse,
+    CaptureQueueResponse,
+    MaterialBatchesResponse,
+    MaterialReworkResponse,
+    SessionResponse,
+    SlowRequestsResponse,
+    StatusSummaryResponse,
+    StatusTasksResponse,
+    TaskHistoryResponse,
+    VersionResponse,
+)
 from menu_capture.api.routers import (
     annotation as annotation_routes,
     delivery as delivery_routes,
@@ -1016,7 +1027,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return FileResponse(target, media_type="image/svg+xml",
                             headers={"Cache-Control": "public, max-age=86400"})
 
-    @app.get("/api/version")
+    @app.get("/api/version", response_model=VersionResponse)
     def version_info():
         # 发布版本由安装启动器或镜像环境的 MENU_CAPTURE_VERSION 提供；
         # 入口哈希文件名即前端构建 ID，便于升级/回滚后核对实际运行产物。
@@ -1091,7 +1102,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             raise HTTPException(400, "所选目录不可用")
         return {"cancelled": False, "path": str(path)}
 
-    @app.get("/api/session")
+    @app.get("/api/session", response_model=SessionResponse)
     def local_session(request: Request):
         # 远程控制与本机控制台使用不同权限范围的令牌。
         return {"token": remote_token if request.state.remote_control else token}
@@ -1133,7 +1144,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             done = ids[:min(max(int(run.get("current_index") or 0), 0), len(ids))]
         return {"ids": ids, "processed": len(done), "done_ids": done}
 
-    @app.get("/api/status")
+    @app.get("/api/status", response_model=StatusSummaryResponse)
     def status(queue_page: Annotated[int | None, Query(ge=1)] = None,
                queue_size: Annotated[int, Query(ge=1, le=100)] = 50,
                queue_scope: Literal["all", "current"] = "all",
@@ -1354,7 +1365,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             "alerts": observability.recent_alerts(limit=limit),
         }
 
-    @app.get("/api/capture/queue")
+    @app.get("/api/capture/queue", response_model=CaptureQueueResponse)
     def capture_queue(batch_ids: str = "all", q: str = "", project_id: str | None = None):
         """跨批次有效任务清单：列表、统计、全选和开跑共用这一份数据。"""
         scope = project_scope(project_id)
@@ -1385,7 +1396,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                         "batches": len(batches)},
         }
 
-    @app.get("/api/materials/batches")
+    @app.get("/api/materials/batches", response_model=MaterialBatchesResponse)
     def material_batches(view: Literal["full", "options"] = "full", project_id: str | None = None):
         scope = project_scope(project_id)
         return {"batches": materials.batch_options(project_id=scope) if view == "options"
@@ -1574,7 +1585,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from None
 
-    @app.get("/api/tasks/active")
+    @app.get("/api/tasks/active", response_model=ActiveTasksResponse)
     def active_tasks(project_id: str | None = None):
         """任务中心唯一入口：把素材分析与采集运行统一成同一结构，前端不再自行合并两个接口。"""
         scope = project_scope(project_id)
@@ -1726,7 +1737,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         record["project_id"] = project_id
         return record
 
-    @app.get("/api/tasks/history")
+    @app.get("/api/tasks/history", response_model=TaskHistoryResponse)
     def task_history(kind: str = "all", status: str = "", q: str = "", page: int = 1,
                      page_size: int = 20, worker_id: str = "", project_id: str | None = None):
         """任务中心历史页：采集运行与素材分析任务统一成同一结构，按时间倒序分页。"""
@@ -2041,7 +2052,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 hub.reconcile_assignments()
             return result
 
-    @app.get("/api/materials/rework")
+    @app.get("/api/materials/rework", response_model=MaterialReworkResponse)
     def material_rework(batch_ids: str = "all", q: str = "", project_id: str | None = None):
         """跨批次返工清单：待处理 / 不合格 / 已选码待发布。"""
         scope = project_scope(project_id)

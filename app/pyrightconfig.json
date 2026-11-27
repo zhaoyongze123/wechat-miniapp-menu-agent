@@ -1,0 +1,14 @@
+{
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+  "include": [
+    "menu_capture/storage/migrations.py",
+    "menu_capture/api/observability.py",
+    "menu_capture/api/schemas.py",
+    "menu_capture/desktop/wechat_input.py",
+    "menu_capture/quality/failures.py",
+    "menu_capture/capture/robot_profile.py",
+    "menu_capture/capture/circuit_breaker.py"
+  ],
+  "reportMissingImports": "warning"
+}

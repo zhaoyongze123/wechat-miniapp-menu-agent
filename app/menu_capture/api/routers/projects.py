@@ -5,6 +5,7 @@ from typing import Callable
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict
 
+from menu_capture.api.schemas import ProjectItemModel
 from menu_capture.projects import service
 
 
@@ -40,7 +41,7 @@ def register(app: FastAPI, *, store, role: str, archive_blockers: Callable,
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
 
-    @app.get("/api/projects")
+    @app.get("/api/projects", response_model=list[ProjectItemModel])
     def projects(include_archived: bool = False):
         if role == "worker":
             return [row for row in (worker.projects() if worker else [])
