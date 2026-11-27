@@ -4,7 +4,7 @@ import pytest
 
 from menu_capture.projects.service import (
     LEGACY_ID, ProjectConflict, ProjectNotFound, assert_batch_scope, create_project,
-    migrate_projects, resolve_batch_project, select_version,
+    migrate_projects, resolve_batch_project, resolve_task_projects, select_version,
 )
 
 
@@ -130,3 +130,51 @@ def test_project_crud_selection_and_bulk_scope(db):
     assert len(service.list_projects(db)) == 1
     assert len(service.list_projects(db, include_archived=True)) == 2
     assert not service.restore_project(db, p['id'])['archived_at']
+
+
+def test_bulk_task_owners_preserve_mixed_and_legacy_evidence_in_bounded_queries(db):
+    db.execute("BEGIN IMMEDIATE")
+    migrate_projects(db)
+    other = create_project(db, "other", "另一项目")["id"]
+    db.execute("ALTER TABLE material_batches ADD COLUMN source_root TEXT NOT NULL DEFAULT ''")
+    db.execute("UPDATE material_batches SET source_root='C:/legacy' WHERE id='b1'")
+    db.execute("INSERT INTO material_batches VALUES('b3','','t',?,'C:/other')", (other,))
+    db.execute("ALTER TABLE material_versions ADD COLUMN snapshot_id TEXT NOT NULL DEFAULT ''")
+    db.execute("INSERT INTO material_versions VALUES('v3','b3','other-snapshot')")
+    db.execute("CREATE TABLE capture_run_results(run_id TEXT,task_id TEXT,batch_id TEXT,project_id TEXT)")
+    db.execute("CREATE TABLE runs(id TEXT,project_id TEXT)")
+    db.execute("CREATE TABLE worker_assignments(task_id TEXT,project_id TEXT)")
+    db.execute("CREATE TABLE tasks(id TEXT PRIMARY KEY, source_path TEXT)")
+    db.executemany("INSERT INTO capture_run_results VALUES(?,?,?,?)", [
+        ("mixed-run", "legacy", "b1", ""),
+        ("mixed-run", "mixed-other", "", other),
+        ("mixed-run", "conflict", "b3", LEGACY_ID),
+        ("mixed-run", "invalid-project", "", "nonexistent-project"),
+        ("other-run", "run-only", "", ""),
+    ])
+    db.executemany("INSERT INTO runs VALUES(?,?)", [("mixed-run", ""), ("other-run", other)])
+    db.execute("INSERT INTO worker_assignments VALUES('assignment-only',?)", (other,))
+    db.executemany("INSERT INTO tasks VALUES(?,?)", [
+        ("legacy-root", r"C:\legacy\store.png"),
+        ("prefix-is-not-root", "C:/legacy-old/store.png"),
+        ("snapshot", "C:/published/other-snapshot/store.png"),
+        ("partial-snapshot", "C:/published/other-snapshot-old/store.png"),
+        ("conflict", "C:/legacy/store.png"),
+        ("invalid-project", "C:/legacy/store.png"),
+    ])
+    expected = {
+        "legacy": LEGACY_ID, "mixed-other": other, "conflict": None, "invalid-project": None,
+        "run-only": other, "assignment-only": other, "legacy-root": LEGACY_ID,
+        "prefix-is-not-root": None, "snapshot": other, "partial-snapshot": None,
+    }
+    missing = [f"missing-{n}" for n in range(505)]
+    statements = []
+    db.set_trace_callback(statements.append)
+    try:
+        resolved = resolve_task_projects(db, [*missing, *expected, "legacy", ""])
+    finally:
+        db.set_trace_callback(None)
+    assert {key: resolved[key]["id"] if resolved[key] else None for key in expected} == expected
+    assert all(resolved[key] is None for key in missing)
+    assert "" not in resolved and len(resolved) == len(expected) + len(missing)
+    assert len(statements) <= 20

@@ -2,6 +2,7 @@
 
 The integrated service owns startup migration and supplies its write transaction.
 """
+from collections.abc import Iterable
 from datetime import datetime, timezone
 import re
 import sqlite3
@@ -242,70 +243,83 @@ def resolve_task_project(db, task_id: str) -> dict | None:
     """依据轮次、批次或精确来源路径解析；不能可靠证明时保留为待核验。"""
     if not isinstance(task_id, str) or not task_id:
         return None
-    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    known: set[str] = set()
-    result_columns = ({row[1] for row in db.execute("PRAGMA table_info(capture_run_results)")}
-                      if "capture_run_results" in tables else set())
-    if "worker_assignments" in tables:
-        assignment_columns = {row[1] for row in db.execute("PRAGMA table_info(worker_assignments)")}
-        if "project_id" in assignment_columns:
-            known.update(row[0] for row in db.execute(
-                "SELECT DISTINCT project_id FROM worker_assignments WHERE task_id=? AND project_id!=''",
-                (task_id,)))
-    if "project_id" in result_columns:
-        known.update(row[0] for row in db.execute(
-            "SELECT DISTINCT project_id FROM capture_run_results WHERE task_id=? AND project_id!=''",
-            (task_id,)))
-    batch_columns = ({row[1] for row in db.execute("PRAGMA table_info(material_batches)")}
-                     if "material_batches" in tables else set())
-    if "batch_id" in result_columns and "project_id" in batch_columns:
-        known.update(row[0] for row in db.execute(
-            "SELECT DISTINCT b.project_id FROM capture_run_results c "
-            "JOIN material_batches b ON b.id=c.batch_id "
-            "WHERE c.task_id=? AND c.batch_id!='' AND b.project_id!=''", (task_id,)))
-    run_columns = ({row[1] for row in db.execute("PRAGMA table_info(runs)")}
-                   if "runs" in tables else set())
-    if "project_id" in run_columns and "capture_run_results" in tables:
-        known.update(row[0] for row in db.execute(
-            "SELECT DISTINCT r.project_id FROM runs r JOIN capture_run_results c ON c.run_id=r.id "
-            "WHERE c.task_id=? AND r.project_id!=''", (task_id,)))
-    if len(known) > 1:
-        return None
-    if known:
-        try:
-            return get_project(db, next(iter(known)))
-        except ProjectNotFound:
-            return None
+    return resolve_task_projects(db, (task_id,))[task_id]
 
-    if "tasks" not in tables or "project_id" not in batch_columns:
-        return None
-    task = db.execute("SELECT source_path FROM tasks WHERE id=?", (task_id,)).fetchone()
-    if task is None or not task[0]:
-        return None
-    source = str(task[0]).replace("\\", "/").rstrip("/")
-    if "material_versions" in tables:
-        batch_rows = db.execute(
-            "SELECT b.project_id,b.source_root,v.snapshot_id FROM material_batches b "
-            "LEFT JOIN material_versions v ON v.batch_id=b.id").fetchall()
-    else:
-        batch_rows = db.execute(
-            "SELECT project_id,source_root,'' FROM material_batches").fetchall()
-    matches: set[str] = set()
-    for row in batch_rows:
-        project_id = str(row[0] or "")
-        if not project_id:
+
+def resolve_task_projects(db, task_ids: Iterable[str]) -> dict[str, dict | None]:
+    """批量读取归属证据，保持单个任务的冲突及来源路径回退规则。"""
+    ids = list(dict.fromkeys(task_id for task_id in task_ids if isinstance(task_id, str) and task_id))
+    if not ids:
+        return {}
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+    def columns(table: str) -> set[str]:
+        return {row[1] for row in db.execute(f"PRAGMA table_info({table})")} if table in tables else set()
+
+    known: dict[str, set[str]] = {task_id: set() for task_id in ids}
+    lookups = []
+    result_columns = columns("capture_run_results")
+    batch_columns = columns("material_batches")
+    if "project_id" in columns("worker_assignments"):
+        lookups.append(
+            "SELECT DISTINCT task_id,project_id FROM worker_assignments WHERE project_id!='' AND task_id")
+    if "project_id" in result_columns:
+        lookups.append(
+            "SELECT DISTINCT task_id,project_id FROM capture_run_results WHERE project_id!='' AND task_id")
+    if "batch_id" in result_columns and "project_id" in batch_columns:
+        lookups.append(
+            "SELECT DISTINCT c.task_id,b.project_id FROM capture_run_results c "
+            "JOIN material_batches b ON b.id=c.batch_id WHERE c.batch_id!='' AND b.project_id!='' AND c.task_id")
+    if "capture_run_results" in tables and "project_id" in columns("runs"):
+        lookups.append(
+            "SELECT DISTINCT c.task_id,r.project_id FROM runs r JOIN capture_run_results c ON c.run_id=r.id "
+            "WHERE r.project_id!='' AND c.task_id")
+
+    def select_by_ids(query: str, selected: list[str]):
+        for offset in range(0, len(selected), 500):
+            chunk = selected[offset:offset + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            yield from db.execute(f"{query} IN ({placeholders})", chunk)
+
+    for query in lookups:
+        for task_id, project_id in select_by_ids(query, ids):
+            known[task_id].add(project_id)
+
+    # 只有完全没有关联证据的任务才允许按路径匹配；冲突任务保持待核验。
+    unresolved = [task_id for task_id in ids if not known[task_id]]
+    if unresolved and "tasks" in tables and "project_id" in batch_columns:
+        paths = [(task_id, str(source).replace("\\", "/").rstrip("/")) for task_id, source
+                 in select_by_ids("SELECT id,source_path FROM tasks WHERE id", unresolved) if source]
+        if paths:
+            batch_sql = (
+                "SELECT b.project_id,b.source_root,v.snapshot_id FROM material_batches b "
+                "LEFT JOIN material_versions v ON v.batch_id=b.id" if "material_versions" in tables else
+                "SELECT project_id,source_root,'' FROM material_batches"
+            )
+            batches = [(str(project_id), str(root or "").replace("\\", "/").rstrip("/"), str(snapshot or ""))
+                       for project_id, root, snapshot in db.execute(batch_sql) if project_id]
+            for task_id, source in paths:
+                delimited_source = f"/{source}/"
+                known[task_id].update(
+                    project_id for project_id, root, snapshot in batches
+                    if (root and (source == root or source.startswith(root + "/")))
+                    or (snapshot and f"/{snapshot}/" in delimited_source)
+                )
+
+    projects = {}
+    resolved: dict[str, dict | None] = dict.fromkeys(ids)
+    for task_id, candidates in known.items():
+        if len(candidates) != 1:
             continue
-        source_root = str(row[1] or "").replace("\\", "/").rstrip("/")
-        snapshot_id = str(row[2] or "")
-        if ((source_root and (source == source_root or source.startswith(source_root + "/"))) or
-                (snapshot_id and ("/" + snapshot_id + "/") in ("/" + source + "/"))):
-            matches.add(project_id)
-    if len(matches) != 1:
-        return None
-    try:
-        return get_project(db, next(iter(matches)))
-    except ProjectNotFound:
-        return None
+        project_id = next(iter(candidates))
+        if project_id not in projects:
+            try:
+                projects[project_id] = get_project(db, project_id)
+            except ProjectNotFound:
+                projects[project_id] = None
+        project = projects[project_id]
+        resolved[task_id] = dict(project) if project is not None else None
+    return resolved
 
 
 def assert_task_scope(db, project_id: str, task_id: str, *, write: bool = False) -> dict:

@@ -1,10 +1,12 @@
 """覆盖共享工作台分页、统计口径和跨页勾选的真实 HTTP 契约。"""
 import base64
+import json
 
 from fastapi.testclient import TestClient
 
+from menu_capture.api import server
 from menu_capture.api.server import create_app
-from menu_capture.projects.service import LEGACY_ID, ensure_legacy_project
+from menu_capture.projects.service import LEGACY_ID, create_project, ensure_legacy_project
 
 
 def test_shared_overview_pages_without_resolving_task_paths(tmp_path, monkeypatch):
@@ -32,6 +34,10 @@ def test_shared_overview_pages_without_resolving_task_paths(tmp_path, monkeypatc
     def legacy_tasks():
         return [{"id": "legacy", "source_path": object()}]
     monkeypatch.setattr(app.state.store, "tasks", legacy_tasks)
+
+    def unexpected_rejections():
+        raise AssertionError("没有素材不合格门店时不应读取采集不合格历史")
+    monkeypatch.setattr(app.state.store, "rejections", unexpected_rejections)
     auth = {"Authorization": "Basic " + base64.b64encode(b"admin:isolated-test").decode()}
     with TestClient(app, base_url="http://127.0.0.1", headers=auth) as client:
         page = client.get("/api/status?queue_page=1&include_events=false").json()
@@ -53,6 +59,45 @@ def test_shared_overview_pages_without_resolving_task_paths(tmp_path, monkeypatc
         current = client.get("/api/status?queue_page=2&queue_scope=current").json()
         assert len(current["tasks"]) == 10 and current["queue"]["total"] == 60
         assert len(client.get("/api/status").json()["tasks"]) == 125
+
+
+def test_hub_status_deduplicates_only_matching_rejections_in_same_project(tmp_path, monkeypatch):
+    app = create_app(tmp_path, role="hub", admin_password="isolated-test")
+    with app.state.store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        ensure_legacy_project(db)
+        other = create_project(db, "other", "另一项目")["id"]
+        db.execute("INSERT INTO material_batches(id,source_kind,source_root,status,created_at,updated_at,project_id)"
+                   " VALUES('batch','local','','completed','t','t',?)", (LEGACY_ID,))
+        db.executemany(
+            "INSERT INTO material_decisions(batch_id,store_id,source_folder,source_name,analysis_status,"
+            "decision,store_json,updated_at) VALUES('batch',?,?,?,'completed','skipped',?,'t')",
+            [(code, code, code, json.dumps({"source_folder": code})) for code in ("E1001", "E1002", "E1003")],
+        )
+        db.executemany(
+            "INSERT INTO capture_run_results(run_id,task_id,store_name,project_id) VALUES('run',?,'',?)",
+            [("same-project", LEGACY_ID), ("other-project", other)],
+        )
+    monkeypatch.setattr(app.state.store, "rejections", lambda: [
+        {"id": "same-project", "source_name": "E1001-同项目采集不合格"},
+        {"id": "other-project", "source_name": "E1002-其他项目采集不合格"},
+        {"id": "unknown", "source_name": "E1003-归属待核验"},
+        {"id": "unrelated", "source_name": "E2001-无对应素材不合格"},
+    ])
+    requested = []
+    resolve = server.resolve_task_projects
+
+    def track_resolver(db, task_ids):
+        requested.extend(task_ids)
+        return resolve(db, task_ids)
+
+    monkeypatch.setattr(server, "resolve_task_projects", track_resolver)
+    auth = {"Authorization": "Basic " + base64.b64encode(b"admin:isolated-test").decode()}
+    with TestClient(app, base_url="http://127.0.0.1", headers=auth) as client:
+        response = client.get("/api/status?queue_page=1&include_events=false")
+    assert response.status_code == 200
+    assert response.json()["material_rejected_all"] == 2
+    assert requested == ["same-project", "other-project", "unknown"]
 
 
 def test_closed_assignment_history_can_be_omitted(tmp_path):
