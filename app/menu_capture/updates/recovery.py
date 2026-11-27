@@ -116,6 +116,7 @@ def process_created_at(pid: int) -> float | None:
             completed = subprocess.run(
                 ["ps", "-o", "lstart=", "-p", str(pid)], check=True,
                 capture_output=True, text=True, timeout=3,
+                env={**os.environ, "LC_ALL": "C"},
             )
             value = datetime.strptime(completed.stdout.strip(), "%a %b %d %H:%M:%S %Y")
             return value.timestamp()
@@ -205,9 +206,11 @@ def verify_release(current_dir: Path, version: str, commit: str) -> dict:
     if (not entry or relative.is_absolute() or ".." in relative.parts
             or not re.fullmatch(r"[0-9a-f]{64}", digest)):
         raise ValueError("发布清单缺少有效前端入口指纹")
-    target = Path(current_dir) / "web" / "react" / relative
-    if not target.is_file() or sha256_file(target) != digest:
-        raise ValueError("前端入口文件哈希与发布清单不一致")
+    target = Path(current_dir) / "app" / "web" / "react" / relative
+    if not target.is_file():
+        raise ValueError(f"前端入口文件缺失：{relative.as_posix()}")
+    if sha256_file(target) != digest:
+        raise ValueError(f"前端入口文件哈希与发布清单不一致：{relative.as_posix()}")
     return manifest
 
 

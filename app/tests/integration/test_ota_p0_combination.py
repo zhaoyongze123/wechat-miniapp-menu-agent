@@ -65,14 +65,15 @@ def _create_real_data_root(root: Path) -> Path:
 
 
 def _write_release_dir(current: Path, *, version: str, commit: str) -> None:
-    frontend = current / "web" / "react" / "index.html"
+    # 与 deploy/windows/build.ps1 的实际打包结构一致：current/app/web/react/...
+    frontend = current / "app" / "web" / "react" / "assets" / "index-test.js"
     frontend.parent.mkdir(parents=True, exist_ok=True)
-    body = f"<html>{version}-{commit[:8]}</html>".encode("utf-8")
+    body = f"// {version}-{commit[:8]}\n".encode("utf-8")
     frontend.write_bytes(body)
     manifest = {
         "version": version,
         "git_commit": commit,
-        "frontend_entry": "index.html",
+        "frontend_entry": "assets/index-test.js",
         "frontend_sha256": hashlib.sha256(body).hexdigest(),
     }
     (current / "release-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -629,3 +630,27 @@ def test_p1_6_verifying_transaction_blocks_background_services_until_release_gat
         assert released.json() == {"ok": True, "business_started": True}
         assert app.state.business_gate_active is False
         assert called == ["recover_publishes", "store.recover", "materials.start", "worker.start"]
+
+
+def test_verify_release_uses_real_velopack_app_web_layout(tmp_path: Path) -> None:
+    """verify_release 必须校验真实安装结构 current/app/web/react，而非缺失 app/ 的假想路径。"""
+    current = tmp_path / "current"
+    _write_release_dir(current, version="0.5.5", commit="c" * 40)
+
+    # 1. 真实打包结构 current/app/web/react 通过校验
+    manifest = recovery.verify_release(current, "0.5.5", "c" * 40)
+    assert manifest["frontend_entry"] == "assets/index-test.js"
+
+    # 2. 篡改前端入口文件内容必须拒绝
+    target = current / "app" / "web" / "react" / "assets" / "index-test.js"
+    target.write_bytes(b"// tampered\n")
+    with pytest.raises(ValueError, match="前端入口文件哈希与发布清单不一致"):
+        recovery.verify_release(current, "0.5.5", "c" * 40)
+
+    # 3. 缺失 app/web/react 时即使存在旧假想路径 current/web/react 也必须报缺失
+    target.unlink()
+    wrong_layout = current / "web" / "react" / "assets" / "index-test.js"
+    wrong_layout.parent.mkdir(parents=True, exist_ok=True)
+    wrong_layout.write_bytes(f"// 0.5.5-{'c' * 8}\n".encode("utf-8"))
+    with pytest.raises(ValueError, match="前端入口文件缺失"):
+        recovery.verify_release(current, "0.5.5", "c" * 40)
