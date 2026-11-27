@@ -258,17 +258,37 @@ def test_hub_migrates_published_v032_names_without_losing_rollback_compatibility
 def test_store_names_export_covers_all_states_and_current_round(tmp_path: Path) -> None:
     app = create_app(tmp_path)
     task = _rejected_task(app)
+    app.state.store.update(task["id"], message="页面展示为本轮观察店名，但已暂停营业")
     app.state.store.create_run("run-0", "auto", [task["id"]])
     app.state.store.record_observed_store_name("run-0", task["id"], "历史轮次店名")
     app.state.store.create_run("run-1", "auto", [task["id"]])
     app.state.store.record_observed_store_name("run-1", task["id"], "本轮观察店名")
 
     client = TestClient(app, base_url="http://127.0.0.1")
+    preview = client.get("/api/rejections/export-store-names/preview")
+    assert preview.status_code == 200
+    preview_body = preview.json()
+    assert [col["label"] for col in preview_body["columns"]] == [
+        "原始任务编号", "原始门店名称", "实际观察门店名称", "采集状态", "原因（reason）",
+    ]
+    assert preview_body["total"] == 1
+    assert preview_body["summary"]["extracted"] == 1
+    assert preview_body["rows"][0]["reason"] == "页面展示为本轮观察店名，但已暂停营业｜未采集成功"
+
     exported = client.get("/api/rejections/export-store-names.xlsx")
 
     assert exported.status_code == 200
     rows = list(load_workbook(BytesIO(exported.content), read_only=True).active.iter_rows(values_only=True))
-    assert rows[0] == ("原始任务编号", "原始门店名称", "实际观察门店名称", "采集状态")
+    assert rows[0] == ("原始任务编号", "原始门店名称", "实际观察门店名称", "采集状态", "原因（reason）")
     by_id = {row[0]: row for row in rows[1:]}
-    assert by_id[task["id"]] == (task["id"], task["source_name"], "本轮观察店名", "不合格")
+    assert by_id[task["id"]] == (
+        task["id"], task["source_name"], "本轮观察店名", "不合格", "页面展示为本轮观察店名，但已暂停营业｜未采集成功",
+    )
+
+    rej_preview = client.get("/api/rejections/export-preview?source=capture")
+    assert rej_preview.status_code == 200
+    rej_body = rej_preview.json()
+    assert rej_body["filename"] == "不合格门店清单.xlsx"
+    assert rej_body["total"] == 1
+    assert rej_body["rows"][0]["observed_store_name"] == "本轮观察店名"
 

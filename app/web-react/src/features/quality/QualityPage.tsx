@@ -46,11 +46,12 @@ import {
   useRejections,
   useReviewActions,
 } from './hooks'
+import { ExportPreviewDialog } from './ExportPreviewDialog'
 import { PendingReviewDrawer } from './PendingReviewDrawer'
 import { RejectPendingDialog } from './RejectPendingDialog'
 import { adjacentVisibleKey, useContinuityPreference, nextVisibleKey } from '../continuity/useContinuityPreference'
 import { RejectionDetailDrawer } from './RejectionDetailDrawer'
-import type { PendingReviewRecord, RejectionRecord, ReviewBucket } from './types'
+import type { ExportPreviewKind, PendingReviewRecord, RejectionRecord, ReviewBucket } from './types'
 
 type QualityView = 'rejections' | 'review' | 'qualified'
 type SourceFilter = 'all' | 'materials' | 'capture'
@@ -89,6 +90,7 @@ export function QualityPage() {
   const rejectionOrderRef = useRef<string[]>([])
   const [exporting, setExporting] = useState(false)
   const [exportingNames, setExportingNames] = useState(false)
+  const [exportPreviewKind, setExportPreviewKind] = useState<ExportPreviewKind | null>(null)
   const [selectedRejections, setSelectedRejections] = useState<Set<string>>(new Set())
   const [undoBatchOpen, setUndoBatchOpen] = useState(false)
   const [undoBatchResult, setUndoBatchResult] = useState<{ succeeded: number; failures: string[] } | null>(null)
@@ -99,6 +101,7 @@ export function QualityPage() {
     previousProjectId.current = projectId
     setDrawerKey(null)
     setDrawerSnapshot(null)
+    setExportPreviewKind(null)
     setSelectedRejections(new Set())
     setSelectedTasks(new Set())
     setReviewDrawerId(null)
@@ -431,11 +434,17 @@ export function QualityPage() {
     )
   }
 
+  const exportRejectionQuery = useMemo(
+    () => ({ batchId, source, reason, q: query, reviewed: reviewState }),
+    [batchId, source, reason, query, reviewState],
+  )
+
   const exportExcel = async () => {
     setExporting(true)
     try {
-      await downloadRejections({ batchId, source, reason, q: query, reviewed: reviewState }, projectId)
+      await downloadRejections(exportRejectionQuery, projectId)
       toast.push('已导出当前筛选的不合格门店', 'success')
+      setExportPreviewKind(null)
     } catch (error) {
       toast.push(errorMessage(error), 'danger')
     } finally {
@@ -448,6 +457,7 @@ export function QualityPage() {
     try {
       await downloadStoreNames(projectId)
       toast.push('已导出全量门店名称与采集状态', 'success')
+      setExportPreviewKind(null)
     } catch (error) {
       toast.push(errorMessage(error), 'danger')
     } finally {
@@ -844,10 +854,10 @@ export function QualityPage() {
                 <Button color="secondary" variant="outline" size="sm" onClick={() => void rejectionsQuery.refetch()}>
                   刷新
                 </Button>
-                <Button color="secondary" variant="outline" size="sm" disabled={exporting} onClick={() => void exportExcel()}>
+                <Button color="secondary" variant="outline" size="sm" disabled={exporting} onClick={() => setExportPreviewKind('rejections')}>
                   {exporting ? '导出中…' : '导出 Excel'}
                 </Button>
-                <Button color="secondary" variant="outline" size="sm" disabled={exportingNames} onClick={() => void exportStoreNames()}>
+                <Button color="secondary" variant="outline" size="sm" disabled={exportingNames} onClick={() => setExportPreviewKind('store-names')}>
                   {exportingNames ? '导出中…' : '导出全量门店名称'}
                 </Button>
               </div>
@@ -1348,6 +1358,18 @@ export function QualityPage() {
           void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-status') })
           void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-shared-status') })
           void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, 'hub-assignments') })
+        }}
+      />
+
+      <ExportPreviewDialog
+        open={exportPreviewKind !== null}
+        kind={exportPreviewKind}
+        rejectionQuery={exportRejectionQuery}
+        projectId={projectId}
+        exporting={exportPreviewKind === 'store-names' ? exportingNames : exporting}
+        onConfirmExport={exportPreviewKind === 'store-names' ? exportStoreNames : exportExcel}
+        onOpenChange={(open) => {
+          if (!open) setExportPreviewKind(null)
         }}
       />
     </section>
