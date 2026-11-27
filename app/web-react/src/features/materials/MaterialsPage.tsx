@@ -23,7 +23,7 @@ import { BatchManagementDialog } from './BatchManagementDialog'
 import { ImportBatchDialog } from './ImportBatchDialog'
 import { PublishDialog } from './PublishDialog'
 import { ReworkPanel } from './ReworkPanel'
-import { StoreDetailDrawer } from './StoreDetailDrawer'
+import { StoreReviewWorkspace } from './StoreReviewWorkspace'
 import {
   RECOMMENDATION_LEVEL_LABELS,
   WECHAT_VALIDATION_LABELS,
@@ -130,15 +130,15 @@ export function MaterialsPage() {
   const currentPage = Math.min(page, pageCount)
   const pageRows = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize)
   const detailIndex = detailStoreId ? filtered.findIndex((store) => store.store_id === detailStoreId) : -1
-  // 操作后若门店因筛选条件而离开列表，仍在详情中展示其已保存结果。
-  const detailStore = detailStoreId ? stores.find((store) => store.store_id === detailStoreId) ?? null : null
   const adjacentStoreId = (direction: -1 | 1) => {
     if (!detailStoreId) return null
     if (detailIndex >= 0) return filtered[detailIndex + direction]?.store_id ?? null
     return adjacentVisibleKey(detailOrderRef.current, detailStoreId, filtered, (store) => store.store_id, direction)
   }
-  const hasPreviousStore = Boolean(adjacentStoreId(-1))
-  const hasNextStore = Boolean(adjacentStoreId(1))
+  const prevStoreId = adjacentStoreId(-1)
+  const nextStoreId = adjacentStoreId(1)
+  const hasPreviousStore = Boolean(prevStoreId)
+  const hasNextStore = Boolean(nextStoreId)
 
   const job = batch?.job ?? null
   const selectedOption = (optionsQuery.data ?? []).find((option) => option.batch_id === batchId)
@@ -628,49 +628,67 @@ export function MaterialsPage() {
         onSelectBatch={selectBatch}
       />
 
-      <StoreDetailDrawer
-        open={Boolean(detailStoreId)}
-        batchId={batchId}
-        batchStatus={status}
-        store={detailStore ?? null}
-        positionLabel={detailIndex >= 0 ? `第 ${detailIndex + 1} / ${filtered.length} 家` : '已不在当前筛选范围'}
-        hasPrev={hasPreviousStore}
-        hasNext={hasNextStore}
-        onDecisionSaved={async (storeId) => {
-          if (!continuousReview) return
-          const refreshed = await batchQuery.refetch()
-          if (refreshed.isError || !refreshed.data) {
-            toast.push('已保存当前门店，但刷新列表失败；请手动继续处理', 'info')
-            return
-          }
-          const needle = search.trim().toLowerCase()
-          const currentScope = refreshed.data.stores.filter((item) => {
-            if (filter !== 'all' && normalizeDecision(item.decision) !== filter) return false
-            return !needle || `${item.source_name} ${item.source_folder}`.toLowerCase().includes(needle)
-          })
-          const nextId = nextVisibleKey(detailOrderRef.current, storeId, currentScope, (item) => item.store_id)
-          if (!nextId) {
-            setDetailStoreId(null)
-            toast.push('已处理完当前筛选范围内的后续门店', 'success')
-            return
-          }
-          const nextIndex = currentScope.findIndex((store) => store.store_id === nextId)
-          if (nextIndex >= 0) {
-            setPage(Math.floor(nextIndex / pageSize) + 1)
+      {detailStoreId && batch ? (
+        <StoreReviewWorkspace
+          batchId={batchId}
+          batchName={batch.name}
+          batchStatus={status}
+          stores={stores}
+          filteredStores={filtered}
+          activeStoreId={detailStoreId}
+          filter={filter}
+          search={search}
+          continuousReview={continuousReview}
+          hasPrev={hasPreviousStore}
+          hasNext={hasNextStore}
+          prevStoreId={prevStoreId}
+          nextStoreId={nextStoreId}
+          onFilterChange={setFilter}
+          onSearchChange={setSearch}
+          onContinuousReviewChange={setContinuousReview}
+          onSelectStore={(storeId) => {
+            const idx = filtered.findIndex((item) => item.store_id === storeId)
+            if (idx >= 0) setPage(Math.floor(idx / pageSize) + 1)
+            setDetailStoreId(storeId)
+          }}
+          onDecisionSaved={async (storeId) => {
+            if (!continuousReview) return
+            const refreshed = await batchQuery.refetch()
+            if (refreshed.isError || !refreshed.data) {
+              toast.push('已保存当前门店，但刷新列表失败；请手动继续处理', 'info')
+              return
+            }
+            const needle = search.trim().toLowerCase()
+            const currentScope = refreshed.data.stores.filter((item) => {
+              if (filter !== 'all' && normalizeDecision(item.decision) !== filter) return false
+              return !needle || `${item.source_name} ${item.source_folder}`.toLowerCase().includes(needle)
+            })
+            // 优先进入下一家仍为待审核的门店；若当前筛选无后续待审则按列表顺序推进。
+            const pendingScope = currentScope.filter((item) => normalizeDecision(item.decision) === 'pending')
+            const nextId =
+              nextVisibleKey(detailOrderRef.current, storeId, pendingScope, (item) => item.store_id) ??
+              nextVisibleKey(detailOrderRef.current, storeId, currentScope, (item) => item.store_id)
+            if (!nextId) {
+              setDetailStoreId(null)
+              toast.push('已处理完当前筛选范围内的后续待审核门店', 'success')
+              return
+            }
+            const nextIndex = currentScope.findIndex((store) => store.store_id === nextId)
+            if (nextIndex >= 0) {
+              setPage(Math.floor(nextIndex / pageSize) + 1)
+            }
             setDetailStoreId(nextId)
-          }
-        }}
-        onOpenChange={(next) => {
-          if (!next) setDetailStoreId(null)
-        }}
-        onNavigate={(delta) => {
-          const nextId = adjacentStoreId(delta)
-          if (!nextId) return
-          const nextIndex = filtered.findIndex((store) => store.store_id === nextId)
-          if (nextIndex >= 0) setPage(Math.floor(nextIndex / pageSize) + 1)
-          setDetailStoreId(nextId)
-        }}
-      />
+          }}
+          onClose={() => setDetailStoreId(null)}
+          onNavigate={(delta) => {
+            const nextId = adjacentStoreId(delta)
+            if (!nextId) return
+            const nextIndex = filtered.findIndex((store) => store.store_id === nextId)
+            if (nextIndex >= 0) setPage(Math.floor(nextIndex / pageSize) + 1)
+            setDetailStoreId(nextId)
+          }}
+        />
+      ) : null}
 
       <ConfirmActionDialog
         open={confirmKind !== null}
