@@ -4,6 +4,7 @@ import { ApiError, apiFetch } from '../../api/client'
 import { projectApiPath } from '../projects/scope'
 import { REJECTION_REASONS } from '../materials/format'
 import type {
+  ExportPreviewResponse,
   PendingReviewsResponse,
   RejectionQuery,
   RejectionReviewPayload,
@@ -25,6 +26,25 @@ function rejectionSearch(query: RejectionQuery): URLSearchParams {
 export function fetchRejections(query: RejectionQuery, signal?: AbortSignal, projectId?: string): Promise<RejectionsResponse> {
   const path = `${BASE}?${rejectionSearch(query).toString()}`
   return apiFetch<RejectionsResponse>(projectId ? projectApiPath(path, projectId) : path, { signal })
+}
+
+/** 预览当前服务端筛选下的不合格门店导出表格，与 export.xlsx 同源。 */
+export function fetchRejectionsExportPreview(
+  query: RejectionQuery,
+  signal?: AbortSignal,
+  projectId?: string,
+): Promise<ExportPreviewResponse> {
+  const path = `${BASE}/export-preview?${rejectionSearch(query).toString()}`
+  return apiFetch<ExportPreviewResponse>(projectId ? projectApiPath(path, projectId) : path, { signal })
+}
+
+/** 预览全量门店名称、采集状态与原因表格，与 export-store-names.xlsx 同源。 */
+export function fetchStoreNamesExportPreview(
+  signal?: AbortSignal,
+  projectId?: string,
+): Promise<ExportPreviewResponse> {
+  const path = `${BASE}/export-store-names/preview`
+  return apiFetch<ExportPreviewResponse>(projectId ? projectApiPath(path, projectId) : path, { signal })
 }
 
 /** 导出当前服务端筛选结果，含人工确认状态筛选。 */

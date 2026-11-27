@@ -1371,8 +1371,10 @@ class UiPathRunner:
                 for page in pages:
                     shutil.copy2(page, staging / page.name)
                 warning = (report.get("wechat_return") or {}).get("status") not in {"", "ready", None}
-                message = ("已保存菜单截图；窗口清理未确认，不影响本店结果" if warning
-                           else "已保存菜单截图；覆盖完整性待复核")
+                base_message = ("已保存菜单截图；窗口清理未确认，不影响本店结果" if warning
+                                else "已保存菜单截图；覆盖完整性待复核")
+                agent_reason = str(report.get("agent_reason") or nav.get("reason") or "").strip()
+                message = (f"{base_message}｜{agent_reason}"[:500] if agent_reason else base_message)
                 self._publish_store_output(settings.output_dir, task, staging,
                                            batch_id=binding.get("batch_id", ""), message=message)
                 return "captured"

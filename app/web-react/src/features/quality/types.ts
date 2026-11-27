@@ -132,3 +132,29 @@ export interface PendingReviewsResponse {
     retryable: number
   }
 }
+
+export type ExportPreviewKind = 'rejections' | 'store-names'
+
+export interface ExportPreviewColumn {
+  key: string
+  label: string
+  width: number
+}
+
+export interface ExportPreviewSummary {
+  total: number
+  reviewed?: number
+  unreviewed?: number
+  extracted?: number
+  missing?: number
+  states?: Record<string, number>
+}
+
+export interface ExportPreviewResponse {
+  filename: string
+  sheet_name: string
+  columns: ExportPreviewColumn[]
+  rows: Record<string, string>[]
+  total: number
+  summary: ExportPreviewSummary
+}

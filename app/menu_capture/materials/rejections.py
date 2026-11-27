@@ -359,42 +359,96 @@ class RejectionService:
         if reason == "other" and not detail.strip():
             raise ValueError("请选择其他时请填写具体原因")
 
+    @staticmethod
+    def _task_reason(task: dict) -> str:
+        """提取任务关联的判定/导航原因，辅助人工从模型描述中核对门店名称。"""
+        message = str(task.get("message") or "").strip()
+        detail = str(task.get("reject_detail") or "").strip()
+        if message and detail and detail not in message:
+            return f"{message}｜{detail}"
+        return message or detail
+
+    def export_rejection_preview(
+        self, source: str = "all", reason: str = "all", query: str = "", batch_id: str = "all",
+        reviewed: str = "all", *, project_id: str | None = None,
+    ) -> dict:
+        """返回与不合格门店 Excel 导出完全同源的在线预览数据。"""
+        records = self.list(source, reason, query, batch_id, reviewed, project_id=project_id)["records"]
+        columns = [
+            {"key": "store_name", "label": "门店", "width": 34},
+            {"key": "source_label", "label": "来源", "width": 14},
+            {"key": "batch_name", "label": "批次", "width": 22},
+            {"key": "source_item", "label": "来源文件", "width": 28},
+            {"key": "stage", "label": "处理阶段", "width": 18},
+            {"key": "reason_label", "label": "不合格原因", "width": 24},
+            {"key": "detail", "label": "备注", "width": 42},
+            {"key": "status", "label": "任务状态", "width": 18},
+            {"key": "marked_at", "label": "标记时间", "width": 24},
+            {"key": "task_id", "label": "任务编号", "width": 22},
+            {"key": "reviewed", "label": "人工确认", "width": 14},
+            {"key": "observed_store_name", "label": "实际观察门店名称", "width": 28},
+        ]
+        rows = [
+            {
+                "store_name": str(record.get("store_name") or ""),
+                "source_label": str(record.get("source_label") or ""),
+                "batch_name": str(record.get("batch_name") or ""),
+                "source_item": str(record.get("source_item") or ""),
+                "stage": str(record.get("stage") or ""),
+                "reason_label": str(record.get("reason_label") or ""),
+                "detail": str(record.get("detail") or ""),
+                "status": str(record.get("status") or ""),
+                "marked_at": str(record.get("marked_at") or ""),
+                "task_id": str(record.get("task_id") or ""),
+                "reviewed": "✓ 已确认" if record.get("reviewed_at") else "",
+                "observed_store_name": str(record.get("observed_store_name") or ""),
+            }
+            for record in records
+        ]
+        reviewed_count = sum(1 for row in rows if row["reviewed"])
+        return {
+            "filename": "不合格门店清单.xlsx",
+            "sheet_name": "不合格门店",
+            "columns": columns,
+            "rows": rows,
+            "total": len(rows),
+            "summary": {
+                "total": len(rows),
+                "reviewed": reviewed_count,
+                "unreviewed": len(rows) - reviewed_count,
+            },
+        }
+
     def export_xlsx(self, source: str = "all", reason: str = "all", query: str = "", batch_id: str = "all",
                     reviewed: str = "all", *, project_id: str | None = None) -> bytes:
-        records = self.list(source, reason, query, batch_id, reviewed, project_id=project_id)["records"]
+        preview = self.export_rejection_preview(source, reason, query, batch_id, reviewed, project_id=project_id)
+        columns = preview["columns"]
+        rows = preview["rows"]
         workbook = Workbook(write_only=True)
-        sheet = workbook.create_sheet("不合格门店")
+        sheet = workbook.create_sheet(preview["sheet_name"])
         sheet.freeze_panes = "A2"
-        sheet.auto_filter.ref = f"A1:L{max(1, len(records) + 1)}"
-        headers = ["门店", "来源", "批次", "来源文件", "处理阶段", "不合格原因", "备注", "任务状态", "标记时间", "任务编号", "人工确认",
-                   "实际观察门店名称"]
+        sheet.auto_filter.ref = f"A1:L{max(1, len(rows) + 1)}"
         header_font = Font(bold=True, color="FFFFFF")
         header_fill = PatternFill("solid", fgColor="167A70")
         header_cells = []
-        for value in headers:
-            cell = WriteOnlyCell(sheet, value=value)
+        for col in columns:
+            cell = WriteOnlyCell(sheet, value=col["label"])
             cell.font = header_font
             cell.fill = header_fill
             cell.alignment = Alignment(vertical="center")
             header_cells.append(cell)
         sheet.append(header_cells)
         # 所有外部文本都显式写成字符串，避免以 = 开头的备注被 Excel 当成公式。
-        for record in records:
-            values = [
-                record["store_name"], record["source_label"], record["batch_name"],
-                record["source_item"], record["stage"], record["reason_label"],
-                record["detail"], record["status"], record["marked_at"], record["task_id"],
-                "✓ 已确认" if record.get("reviewed_at") else "",
-                record.get("observed_store_name", ""),
-            ]
+        keys = [col["key"] for col in columns]
+        for row in rows:
             cells = []
-            for value in values:
-                cell = WriteOnlyCell(sheet, value=str(value or ""))
+            for key in keys:
+                cell = WriteOnlyCell(sheet, value=str(row.get(key) or ""))
                 cell.data_type = "s"
                 cells.append(cell)
             sheet.append(cells)
-        for column, width in zip("ABCDEFGHIJKL", (34, 14, 22, 28, 18, 24, 42, 18, 24, 22, 14, 28)):
-            sheet.column_dimensions[column].width = width
+        for column_letter, col in zip("ABCDEFGHIJKL", columns):
+            sheet.column_dimensions[column_letter].width = col["width"]
         output = BytesIO()
         workbook.save(output)
         return output.getvalue()
@@ -404,7 +458,7 @@ class RejectionService:
 
         以全部未归档任务为范围；原始任务编号与原始门店名称来自任务本身，
         实际观察名称按当前有效结果归属（Hub）或当前采集轮次（Worker/单机）读取，
-        不跨轮次回退，避免历史名称掩盖本轮撤销或换版。
+        不跨轮次回退，避免历史名称掩盖本轮撤销或换版；同时附带任务/模型 reason 便于人工核对。
         """
         rows: list[dict] = []
         for task in self.tasks.tasks():
@@ -418,37 +472,70 @@ class RejectionService:
                 "store_name": str(task.get("source_name") or ""),
                 "observed_store_name": self._observed_name(task_id, project_id),
                 "state": STORE_STATE_LABELS.get(store_state(task), ""),
+                "reason": self._task_reason(task),
             })
         return rows
 
-    def export_store_names(self, *, project_id: str | None = None) -> bytes:
-        """导出全量门店名称与采集状态，供人工核对名称提取覆盖率。"""
+    def export_store_names_preview(self, *, project_id: str | None = None) -> dict:
+        """返回与全量门店名称 Excel 导出完全同源的在线预览数据。"""
         rows = self.store_name_rows(project_id=project_id)
+        columns = [
+            {"key": "task_id", "label": "原始任务编号", "width": 40},
+            {"key": "store_name", "label": "原始门店名称", "width": 30},
+            {"key": "observed_store_name", "label": "实际观察门店名称", "width": 30},
+            {"key": "state", "label": "采集状态", "width": 18},
+            {"key": "reason", "label": "原因（reason）", "width": 48},
+        ]
+        extracted = sum(1 for row in rows if str(row.get("observed_store_name") or "").strip())
+        total = len(rows)
+        states: dict[str, int] = {}
+        for row in rows:
+            label = str(row.get("state") or "未知")
+            states[label] = states.get(label, 0) + 1
+        return {
+            "filename": "全量门店名称.xlsx",
+            "sheet_name": "全量门店名称",
+            "columns": columns,
+            "rows": rows,
+            "total": total,
+            "summary": {
+                "total": total,
+                "extracted": extracted,
+                "missing": total - extracted,
+                "states": states,
+            },
+        }
+
+    def export_store_names(self, *, project_id: str | None = None) -> bytes:
+        """导出全量门店名称、采集状态与原因，供人工核对名称提取覆盖率。"""
+        preview = self.export_store_names_preview(project_id=project_id)
+        columns = preview["columns"]
+        rows = preview["rows"]
         workbook = Workbook(write_only=True)
-        sheet = workbook.create_sheet("全量门店名称")
+        sheet = workbook.create_sheet(preview["sheet_name"])
         sheet.freeze_panes = "A2"
-        sheet.auto_filter.ref = f"A1:D{max(1, len(rows) + 1)}"
-        headers = ["原始任务编号", "原始门店名称", "实际观察门店名称", "采集状态"]
+        sheet.auto_filter.ref = f"A1:E{max(1, len(rows) + 1)}"
         header_font = Font(bold=True, color="FFFFFF")
         header_fill = PatternFill("solid", fgColor="167A70")
         header_cells = []
-        for value in headers:
-            cell = WriteOnlyCell(sheet, value=value)
+        for col in columns:
+            cell = WriteOnlyCell(sheet, value=col["label"])
             cell.font = header_font
             cell.fill = header_fill
             cell.alignment = Alignment(vertical="center")
             header_cells.append(cell)
         sheet.append(header_cells)
-        # 外部文本统一写成字符串，避免以 = 开头的门店名被 Excel 当作公式执行。
+        # 外部文本统一写成字符串，避免以 = 开头的门店名或 reason 被 Excel 当作公式执行。
+        keys = [col["key"] for col in columns]
         for row in rows:
             cells = []
-            for value in (row["task_id"], row["store_name"], row["observed_store_name"], row["state"]):
-                cell = WriteOnlyCell(sheet, value=str(value or ""))
+            for key in keys:
+                cell = WriteOnlyCell(sheet, value=str(row.get(key) or ""))
                 cell.data_type = "s"
                 cells.append(cell)
             sheet.append(cells)
-        for column, width in zip("ABCD", (40, 30, 30, 18)):
-            sheet.column_dimensions[column].width = width
+        for column_letter, col in zip("ABCDE", columns):
+            sheet.column_dimensions[column_letter].width = col["width"]
         output = BytesIO()
         workbook.save(output)
         return output.getvalue()

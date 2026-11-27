@@ -21,6 +21,12 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         scope = ctx.project_scope(project_id)
         return rejections.list(source, reason, q, batch_id, reviewed, project_id=scope)
 
+    @app.get("/api/rejections/export-preview")
+    def export_rejections_preview(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all",
+                                  reviewed: str = "all", project_id: str | None = None):
+        scope = ctx.project_scope(project_id)
+        return rejections.export_rejection_preview(source, reason, q, batch_id, reviewed, project_id=scope)
+
     @app.get("/api/rejections/export.xlsx")
     def export_rejections(source: str = "all", reason: str = "all", q: str = "", batch_id: str = "all",
                           reviewed: str = "all", project_id: str | None = None):
@@ -32,6 +38,12 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f"attachment; filename=unqualified-stores.xlsx; filename*=UTF-8''{quote(filename)}"},
         )
+
+    @app.get("/api/rejections/export-store-names/preview")
+    def export_store_names_preview(project_id: str | None = None):
+        """全量门店名称在线预览：与 export-store-names.xlsx 完全同源。"""
+        scope = ctx.project_scope(project_id)
+        return rejections.export_store_names_preview(project_id=scope)
 
     @app.get("/api/rejections/export-store-names.xlsx")
     def export_store_names(project_id: str | None = None):
