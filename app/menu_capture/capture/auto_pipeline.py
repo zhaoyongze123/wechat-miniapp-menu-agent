@@ -16,7 +16,6 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
-from pathlib import Path
 
 BASE = "http://127.0.0.1:8765"
 VERSION = "v1.0.0"

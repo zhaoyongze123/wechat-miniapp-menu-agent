@@ -580,7 +580,7 @@ class SharedWorker:
                 except (FileNotFoundError, PermissionError):
                     continue
                 with source:
-                    valid = self._copy_source(iter(lambda: source.read(256 * 1024), b""),
+                    valid = self._copy_source(iter(lambda src=source: src.read(256 * 1024), b""),
                                               temporary, assigned["source_hash"])
                 if valid:
                     temporary.replace(path)

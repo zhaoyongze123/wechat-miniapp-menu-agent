@@ -187,7 +187,7 @@ def apply_plan(plan_path: Path):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+") as lock:
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError: raise RuntimeError("runner.lock 被占用；服务必须离线")
+        except BlockingIOError: raise RuntimeError("runner.lock 被占用；服务必须离线") from None
         with connect(db_path) as db:
             if db.execute("SELECT 1 FROM publish_transactions LIMIT 1").fetchone():
                 raise RuntimeError("尚有发布事务待恢复")

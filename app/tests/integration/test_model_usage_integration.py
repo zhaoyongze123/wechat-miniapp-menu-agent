@@ -9,7 +9,6 @@ from PIL import Image
 
 from menu_capture.core.config import ModelConfig
 from menu_capture.vision.model import ModelError, VisionModel
-from menu_capture.vision.model_usage import usage_context
 from menu_capture.api.server import create_app
 
 

@@ -383,7 +383,7 @@ export function MaterialsPage() {
         summary={
           <SegmentedControl<MaterialsView> value={view} onChange={switchView} aria-label="素材视图">
             <SegmentedControl.Option value="batch">批次清洗</SegmentedControl.Option>
-            <SegmentedControl.Option value="rework">跨批次返工</SegmentedControl.Option>
+            <SegmentedControl.Option value="rework">跨批次处理</SegmentedControl.Option>
           </SegmentedControl>
         }
       >

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import ctypes
 import fnmatch
-import io
 import logging
 import re
 import time
@@ -48,6 +47,8 @@ SM_YVIRTUALSCREEN = 77
 SM_CXVIRTUALSCREEN = 78
 SM_CYVIRTUALSCREEN = 79
 GA_ROOT = 2
+MONITOR_DEFAULTTONEAREST = 2
+LOGPIXELSX = 88
 # 右键菜单、工具提示这类系统弹窗也会被 GetWindow(GW_ENABLEDPOPUP) 命中，
 # 但它们不是模态对话框，不能因此中止整店采集。
 # Qt51514QWindowToolSaveBits 是微信 4.x 图片工具栏/气泡浮层的窗口类（实测 4 家连续命中），
@@ -63,6 +64,11 @@ class RECT(ctypes.Structure):
 
 class POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", RECT),
+                ("rcWork", RECT), ("dwFlags", wintypes.DWORD)]
 
 
 class BITMAPINFOHEADER(ctypes.Structure):
@@ -91,6 +97,24 @@ def _declare() -> None:
     user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
     user32.GetWindow.restype = wintypes.HWND
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
+    user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
+    user32.GetClientRect.restype = wintypes.BOOL
+    user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(POINT)]
+    user32.ClientToScreen.restype = wintypes.BOOL
+    user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    user32.MonitorFromWindow.restype = wintypes.HMONITOR
+    user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFO)]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
+    try:
+        user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        user32.SetProcessDpiAwarenessContext.restype = wintypes.BOOL
+    except AttributeError:
+        pass
+    try:
+        user32.GetDpiForWindow.argtypes = [wintypes.HWND]
+        user32.GetDpiForWindow.restype = wintypes.UINT
+    except AttributeError:
+        pass
     user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
     user32.GetWindowThreadProcessId.restype = wintypes.DWORD
     user32.GetForegroundWindow.restype = wintypes.HWND
@@ -136,6 +160,8 @@ def _declare() -> None:
                              wintypes.HDC, ctypes.c_int, ctypes.c_int, wintypes.DWORD]
     gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
     gdi32.DeleteDC.argtypes = [wintypes.HDC]
+    gdi32.GetDeviceCaps.argtypes = [wintypes.HDC, ctypes.c_int]
+    gdi32.GetDeviceCaps.restype = ctypes.c_int
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -196,6 +222,66 @@ def _rect(hwnd) -> tuple[int, int, int, int]:
     rect = RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(rect))
     return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+
+
+def _window_dpi_scale(hwnd) -> float:
+    """读取窗口所在显示器的 DPI 缩放倍率（96 DPI = 1.0），适配多显示器与远程桌面。"""
+    try:
+        dpi = int(user32.GetDpiForWindow(hwnd))
+        if 48 <= dpi <= 480:
+            return round(dpi / 96.0, 4)
+    except Exception:
+        pass
+    dc = user32.GetDC(None)
+    if dc:
+        try:
+            dpi = int(gdi32.GetDeviceCaps(dc, LOGPIXELSX))
+            if 48 <= dpi <= 480:
+                return round(dpi / 96.0, 4)
+        except Exception:
+            pass
+        finally:
+            user32.ReleaseDC(None, dc)
+    return 1.0
+
+
+def _client_rect_in_window(hwnd) -> dict[str, int]:
+    """返回客户区相对窗口左上角的物理像素矩形，用于统一窗口/客户区/截图坐标。"""
+    win_left, win_top, win_width, win_height = _rect(hwnd)
+    client = RECT()
+    origin = POINT(0, 0)
+    if (user32.GetClientRect(hwnd, ctypes.byref(client))
+            and user32.ClientToScreen(hwnd, ctypes.byref(origin))):
+        rel_x = max(0, origin.x - win_left)
+        rel_y = max(0, origin.y - win_top)
+        width = max(0, min(win_width - rel_x, client.right - client.left))
+        height = max(0, min(win_height - rel_y, client.bottom - client.top))
+        if width > 0 and height > 0:
+            return {"x": rel_x, "y": rel_y, "width": width, "height": height}
+    return {"x": 0, "y": 0, "width": max(0, win_width), "height": max(0, win_height)}
+
+
+def _monitor_work_area(hwnd) -> dict[str, int]:
+    """返回窗口所在显示器的可用工作区（排除任务栏），多显示器与 RDP 下均准确。"""
+    try:
+        monitor = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        if monitor:
+            info = MONITORINFO()
+            info.cbSize = ctypes.sizeof(MONITORINFO)
+            if user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                work = info.rcWork
+                width = work.right - work.left
+                height = work.bottom - work.top
+                if width > 0 and height > 0:
+                    return {"x": work.left, "y": work.top, "width": width, "height": height}
+    except Exception:
+        pass
+    return {
+        "x": int(user32.GetSystemMetrics(SM_XVIRTUALSCREEN)),
+        "y": int(user32.GetSystemMetrics(SM_YVIRTUALSCREEN)),
+        "width": max(1, int(user32.GetSystemMetrics(SM_CXVIRTUALSCREEN))),
+        "height": max(1, int(user32.GetSystemMetrics(SM_CYVIRTUALSCREEN))),
+    }
 
 
 def _ensure_hit_target(hwnd, x: float, y: float) -> None:
@@ -307,8 +393,11 @@ class WindowsDesktop:
             if not item["visible"]:
                 continue
             left, top, width, height = item["rect"]
+            hwnd = item["hwnd"]
             windows.append({"app": item["app"], "title": item["title"], "cls": item["cls"], "role": "",
                             "window_id": item["window_id"],
+                            "dpi_scale": _window_dpi_scale(hwnd),
+                            "work_area": _monitor_work_area(hwnd),
                             "position": {"x": left, "y": top, "width": width, "height": height}})
         return windows
 
@@ -397,7 +486,13 @@ class WindowsDesktop:
 
     def _geometry(self, window: dict) -> dict:
         left, top, width, height = window["rect"]
-        return {"window_x": left, "window_y": top, "window_width": width, "window_height": height}
+        result: dict = {"window_x": left, "window_y": top, "window_width": width, "window_height": height}
+        hwnd = window.get("hwnd")
+        if hwnd:
+            result["dpi_scale"] = _window_dpi_scale(hwnd)
+            result["client_rect"] = _client_rect_in_window(hwnd)
+            result["work_area"] = _monitor_work_area(hwnd)
+        return result
 
     def _visible_windows(self) -> list[dict]:
         """当前可见顶层窗口快照，随截图一起回传；Agent 靠它感知新窗口出现。"""
@@ -408,7 +503,7 @@ class WindowsDesktop:
                 for item in _windows() if item.get("visible") and item["title"]]
 
     def _resize(self, window: dict, command: dict) -> dict:
-        """把窗口拉到目标尺寸与位置；系统仍会按窗口最小尺寸约束自动收敛。"""
+        """把窗口拉到目标尺寸与位置；按显示器工作区钳位，避免超屏或跨屏失位。"""
         hwnd = window["hwnd"]
         if user32.IsIconic(hwnd) or user32.IsZoomed(hwnd):
             # 最小化/最大化时 SetWindowPos 都改不了当前矩形（最大化只会改还原尺寸），
@@ -416,15 +511,20 @@ class WindowsDesktop:
             user32.ShowWindow(hwnd, SW_RESTORE)
             time.sleep(0.15)
         left, top, _, _ = _rect(hwnd)
+        work = _monitor_work_area(hwnd)
+        width = min(int(command["width"]), max(240, work["width"]))
+        height = min(int(command["height"]), max(300, work["height"]))
         x = left if command.get("x") is None else int(command["x"])
         y = top if command.get("y") is None else int(command["y"])
-        width, height = int(command["width"]), int(command["height"])
+        # 保证窗口左上角与右下角尽量留在所在显示器工作区内（多显示器/RDP 安全）。
+        x = max(work["x"], min(x, work["x"] + max(0, work["width"] - width)))
+        y = max(work["y"], min(y, work["y"] + max(0, work["height"] - height)))
         if not user32.SetWindowPos(hwnd, HWND_TOP, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE):
             raise RuntimeError("调整窗口尺寸失败")
         time.sleep(0.2)
         left, top, width, height = _rect(hwnd)
-        return {"ok": True, "action": "resize", "window_x": left, "window_y": top,
-                "window_width": width, "window_height": height}
+        return {"ok": True, "action": "resize",
+                **self._geometry({"hwnd": hwnd, "rect": (left, top, width, height)})}
 
     def _selector_attributes(self, command: dict) -> dict:
         try:
@@ -496,7 +596,7 @@ class WindowsDesktop:
         return {"ok": True, "action": command["action"], "path": str(path.resolve()),
                 "width": image.width, "height": image.height,
                 "window_id": window.get("window_id"),
-                **self._geometry({"rect": (left, top, width, height)}),
+                **self._geometry({"hwnd": hwnd, "rect": (left, top, width, height)}),
                 "target_window": self._identity(window, foreground),
                 "windows": self._visible_windows()}
 
@@ -623,7 +723,7 @@ class WindowsDesktop:
             user32.mouse_event(up, 0, 0, 0, None)
             if action == "double_click":
                 time.sleep(0.06)
-        return {"ok": True, "action": action, **self._geometry({"rect": (left, top, width, height)})}
+        return {"ok": True, "action": action, **self._geometry({"hwnd": hwnd, "rect": (left, top, width, height)})}
 
     def _scroll(self, window: dict, command: dict) -> dict:
         x, y = float(command["x"]), float(command["y"])
@@ -631,7 +731,7 @@ class WindowsDesktop:
             raise RuntimeError("目标窗口未置前；未执行滚动")
         left, top, width, height = self._point(window, x, y, command)
         self._wheel(window, x, y, command["direction"], int(command["units"]))
-        return {"ok": True, "action": "scroll", **self._geometry({"rect": (left, top, width, height)})}
+        return {"ok": True, "action": "scroll", **self._geometry({"hwnd": window["hwnd"], "rect": (left, top, width, height)})}
 
     def _wheel(self, window: dict, x: float, y: float, direction: str, units: int) -> None:
         left, top, _, _ = _rect(window["hwnd"])

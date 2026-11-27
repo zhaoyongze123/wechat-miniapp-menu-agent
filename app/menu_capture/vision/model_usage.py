@@ -13,7 +13,7 @@ _FIELDS = (
     "step", "material_batch_id", "material_version",
 )
 _ALLOWED_SOURCES = {"capture", "annotation", "connection_test", "material_analysis", "agent", "other"}
-_usage_fields = contextvars.ContextVar("model_usage_fields", default={})
+_usage_fields: contextvars.ContextVar[dict | None] = contextvars.ContextVar("model_usage_fields", default=None)
 _TOKEN_FIELDS = ("input_tokens", "output_tokens", "total_tokens", "cached_tokens",
                  "cache_write_tokens", "reasoning_tokens", "image_tokens")
 _SQLITE_MAX = 2**63 - 1
@@ -25,7 +25,7 @@ def usage_context(**fields):
     unknown = set(fields) - set(_FIELDS) - {"source"}
     if unknown:
         raise ValueError(f"不支持的 usage context 字段: {', '.join(sorted(unknown))}")
-    merged = dict(_usage_fields.get())
+    merged = dict(_usage_fields.get() or {})
     merged.update(fields)
     token = _usage_fields.set(merged)
     try:
@@ -161,7 +161,7 @@ class UsageLedger:
                 local_now = (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone()
         stamp = local_now.astimezone(timezone.utc).isoformat(timespec="milliseconds")
         local_day = local_now.date().isoformat()
-        fields = dict(_usage_fields.get())
+        fields = dict(_usage_fields.get() or {})
         if context:
             fields.update({k: v for k, v in context.items() if k in _FIELDS or k == "source"})
         source = fields.pop("source", "other")

@@ -1,5 +1,5 @@
 """共享工作台门店分页与汇总，按当前有效任务计算筛选和勾选状态。"""
-from menu_capture.capture.capture_results import state_counts, store_state
+from menu_capture.capture.capture_results import capture_outcome, state_counts, store_state
 from menu_capture.quality.failures import describe
 
 SELECTED_FIELDS = ("id", "source_name", "status", "reject_reason", "runnable", "batch_name", "version")
@@ -36,7 +36,8 @@ def workbench_page(tasks, *, snapshot, query, status, sort, page, size, selected
     pages = max(1, (total + size - 1) // size)
     page = min(page, pages)
     first = (page - 1) * size
-    return {"records": [row | describe(row.get("error_code", ""), row.get("stage", ""), row.get("message", ""))
+    return {"records": [row | {"capture_outcome": capture_outcome(row)}
+                        | describe(row.get("error_code", ""), row.get("stage", ""), row.get("message", ""))
                         | {"store_state": store_state(row)} for row in rows[first:first + size]],
             "counts": counts, "selected": selected, "page": page, "pages": pages, "total": total,
             **({"batches": [{"id": key, "name": name} for key, name in sorted(batches.items(), key=lambda item: item[1])]}

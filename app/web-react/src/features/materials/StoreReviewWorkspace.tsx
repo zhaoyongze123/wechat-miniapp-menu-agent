@@ -54,6 +54,10 @@ import type {
 
 export type QueueFilter = 'all' | StoreDecision
 
+function summaryQueueKey(item: MaterialStoreSummary): string {
+  return item.queue_key ?? item.store_id
+}
+
 interface StoreReviewWorkspaceProps {
   batchId: string
   batchName: string
@@ -117,12 +121,21 @@ export function StoreReviewWorkspace({
   useUnsavedChanges(hasDraft, '门店选码或补图尚未保存，离开将丢弃未保存修改。')
 
   const storeSummary = useMemo(
-    () => stores.find((item) => item.store_id === activeStoreId) ?? null,
-    [activeStoreId, stores],
+    () =>
+      stores.find((item) => summaryQueueKey(item) === activeStoreId) ??
+      filteredStores.find((item) => summaryQueueKey(item) === activeStoreId) ??
+      null,
+    [activeStoreId, filteredStores, stores],
   )
-  const query = useStore(batchId, activeStoreId)
+  const effectiveBatchId = storeSummary?.batch_id || batchId
+  const effectiveBatchName = storeSummary?.batch_name || batchName
+  const effectiveBatchStatus = storeSummary?.batch_status || batchStatus
+  const effectiveStoreId = storeSummary?.store_id || activeStoreId
+  const effectiveStoreIdRef = useRef(effectiveStoreId)
+  effectiveStoreIdRef.current = effectiveStoreId
+  const query = useStore(effectiveBatchId, effectiveStoreId)
 
-  // 计算审核进度与剩余待审数量（基于整个批次，便于高频审核实时掌握剩余工作量）。
+  // 计算审核进度与剩余待审数量（基于整个批次或跨批次清单，便于高频审核实时掌握剩余工作量）。
   const progress = useMemo(() => {
     let pending = 0
     let confirmed = 0
@@ -139,28 +152,34 @@ export function StoreReviewWorkspace({
 
   // 仅预加载相邻 ±1 家门店详情与首图，绝不整批预加载。
   useEffect(() => {
-    if (!projectId || !batchId) return
+    if (!projectId) return
     const neighbors = [nextStoreId, prevStoreId].filter((id): id is string => Boolean(id && id !== activeStoreId))
-    for (const neighborId of neighbors) {
+    for (const neighborKey of neighbors) {
+      const neighborItem =
+        stores.find((item) => summaryQueueKey(item) === neighborKey) ??
+        filteredStores.find((item) => summaryQueueKey(item) === neighborKey)
+      const neighborBatchId = neighborItem?.batch_id || batchId
+      const neighborStoreId = neighborItem?.store_id || neighborKey
+      if (!neighborBatchId || !neighborStoreId) continue
       void queryClient
         .prefetchQuery({
-          queryKey: materialsKeys.store(projectId, batchId, neighborId),
-          queryFn: ({ signal }) => fetchStore(batchId, neighborId, signal, projectId),
+          queryKey: materialsKeys.store(projectId, neighborBatchId, neighborStoreId),
+          queryFn: ({ signal }) => fetchStore(neighborBatchId, neighborStoreId, signal, projectId),
           staleTime: 30_000,
         })
         .then(() => {
           const cached = queryClient.getQueryData<MaterialStoreDetail>(
-            materialsKeys.store(projectId, batchId, neighborId),
+            materialsKeys.store(projectId, neighborBatchId, neighborStoreId),
           )
           if (cached && cached.images.length > 0) {
             const { imageIndex } = findInitialImageAndRecommendation(cached)
             const preload = new Image()
-            preload.src = storeImageUrl(batchId, neighborId, imageIndex, projectId)
+            preload.src = storeImageUrl(neighborBatchId, neighborStoreId, imageIndex, projectId)
           }
         })
         .catch(() => undefined)
     }
-  }, [activeStoreId, batchId, nextStoreId, prevStoreId, projectId, queryClient])
+  }, [activeStoreId, batchId, filteredStores, nextStoreId, prevStoreId, projectId, queryClient, stores])
 
   // 浏览器关闭/刷新保护。
   useEffect(() => {
@@ -188,7 +207,7 @@ export function StoreReviewWorkspace({
   const handleSaved = useCallback(
     (savedStoreId: string) => {
       // 防止异步回调串店：仅当前门店的保存结果才触发后续跳转。
-      if (savedStoreId !== activeStoreIdRef.current) return
+      if (savedStoreId !== effectiveStoreIdRef.current) return
       setHasDraft(false)
       if (saveBeforeLeaveRef.current) {
         saveBeforeLeaveRef.current = false
@@ -198,7 +217,7 @@ export function StoreReviewWorkspace({
         action?.()
         return
       }
-      void onDecisionSaved(savedStoreId)
+      void onDecisionSaved(activeStoreIdRef.current)
     },
     [onDecisionSaved],
   )
@@ -235,9 +254,9 @@ export function StoreReviewWorkspace({
             {queueCollapsed ? '展开队列' : '收起队列'}
           </Button>
           <div className="flex min-w-0 items-center gap-2 pl-1">
-            {batchName ? (
-              <span className="hidden max-w-44 truncate text-xs text-tertiary md:inline" title={batchName}>
-                {batchName} /
+            {effectiveBatchName ? (
+              <span className="hidden max-w-44 truncate text-xs text-tertiary md:inline" title={effectiveBatchName}>
+                {effectiveBatchName} /
               </span>
             ) : null}
             <h1 className="max-w-72 truncate text-sm font-semibold text-default" title={storeSummary?.source_name ?? parsedName}>
@@ -322,16 +341,25 @@ export function StoreReviewWorkspace({
               ) : (
                 <ul className="space-y-1">
                   {filteredStores.map((item) => {
-                    const active = item.store_id === activeStoreId
+                    const key = summaryQueueKey(item)
+                    const active = key === activeStoreId
                     const meta = decisionMeta(item.decision)
                     const name = formatStore(item.source_name).name
+                    const detailLabel = item.recommendation
+                      ? RECOMMENDATION_LEVEL_LABELS[item.recommendation_level] ?? '已推荐'
+                      : item.rejection
+                        ? item.rejection.label || item.rejection.code
+                        : item.analysis_status
+                          ? analysisStatusLabel(item.analysis_status)
+                          : ''
+                    const subline = [item.batch_name, detailLabel].filter(Boolean).join(' · ')
                     return (
-                      <li key={item.store_id}>
+                      <li key={key}>
                         <button
                           type="button"
                           onClick={() => {
-                            if (item.store_id === activeStoreId) return
-                            performOrGuard(() => onSelectStore(item.store_id))
+                            if (key === activeStoreId) return
+                            performOrGuard(() => onSelectStore(key))
                           }}
                           aria-current={active ? 'true' : undefined}
                           className={[
@@ -345,12 +373,8 @@ export function StoreReviewWorkspace({
                             <span className="block truncate text-xs font-medium text-default" title={item.source_name}>
                               {name}
                             </span>
-                            <span className="mt-0.5 block truncate text-2xs text-tertiary">
-                              {item.recommendation
-                                ? RECOMMENDATION_LEVEL_LABELS[item.recommendation_level] ?? '已推荐'
-                                : item.rejection
-                                  ? item.rejection.label || item.rejection.code
-                                  : analysisStatusLabel(item.analysis_status)}
+                            <span className="mt-0.5 block truncate text-2xs text-tertiary" title={subline}>
+                              {subline || '—'}
                             </span>
                           </div>
                           <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
@@ -392,9 +416,9 @@ export function StoreReviewWorkspace({
           </div>
         ) : query.data ? (
           <WorkspaceStoreBody
-            key={query.data.store_id}
-            batchId={batchId}
-            batchStatus={batchStatus}
+            key={`${effectiveBatchId}:${query.data.store_id}`}
+            batchId={effectiveBatchId}
+            batchStatus={effectiveBatchStatus}
             detail={query.data}
             hasPrev={hasPrev}
             hasNext={hasNext}

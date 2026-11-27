@@ -175,6 +175,9 @@ class FileRobotTransport:
                 "pixels": self._window_pixels,
                 "origin": self._window_origin,
                 "window_id": reply.get("window_id"),
+                "dpi_scale": reply.get("dpi_scale"),
+                "client_rect": reply.get("client_rect"),
+                "work_area": reply.get("work_area"),
             }
         elif payload["action"] == "resize":
             # 窗口被移动/改尺寸后，旧矩形立即失效；下一次截图必须重新确认。

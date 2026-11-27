@@ -754,10 +754,12 @@ def _verify_candidate(ctx: Context, journal: dict) -> str:
         return "recovery"
     try:
         verify_home = _verify_home_path(ctx.data_root, journal["transaction_id"])
+        baseline_snapshot = (journal.get("schema_baseline") or {}).get("snapshot")
         recovery.prepare_verify_home(
             ctx.data_root, verify_home,
             transaction_id=journal["transaction_id"],
             forbidden_roots=(_install_root(), current, _install_root() / "packages"),
+            baseline_snapshot=baseline_snapshot if isinstance(baseline_snapshot, dict) else None,
         )
     except Exception as exc:  # noqa: BLE001
         _transition(ctx, journal, "recovery_required", error=str(exc),

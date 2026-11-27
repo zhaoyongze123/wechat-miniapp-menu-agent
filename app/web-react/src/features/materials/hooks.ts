@@ -31,6 +31,7 @@ import {
   resumeJob,
   retryFailed,
   returnReworkStore,
+  returnReworkStores,
   setBatchStage,
   startAnalysis,
   startReanalysis,
@@ -360,9 +361,13 @@ export function useReworkActions() {
       returnReworkStore(payload.batchId, payload.storeId, projectId),
     onSuccess: invalidate,
   })
+  const returnStores = useMutation({
+    mutationFn: (storeKeys: string[]) => returnReworkStores(storeKeys, projectId),
+    onSuccess: invalidate,
+  })
   const publish = useMutation({
     mutationFn: (storeKeys: string[]) => publishRework(storeKeys, '跨批次返工发布', projectId),
     onSuccess: invalidate,
   })
-  return { returnStore, publish }
+  return { returnStore, returnStores, publish }
 }

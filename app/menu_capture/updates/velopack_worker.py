@@ -10,8 +10,52 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+
+_TRANSIENT_NETWORK_MARKERS = (
+    "timeout",
+    "timed out",
+    "connect",
+    "connection",
+    "reset",
+    "temporarily",
+    "eof",
+    "broken pipe",
+    "http error",
+    "502",
+    "503",
+    "504",
+)
+_NETWORK_RETRY_DELAYS = (2.0, 4.0)
+
+
+def _is_transient_network_error(exc: BaseException) -> bool:
+    """只对瞬时网络/连接故障重试；校验、签名、版本或本地文件错误一律立即失败。"""
+    text = str(exc or "").lower()
+    if any(token in text for token in ("404", "403", "401", "sha256", "签名", "清单", "不可信", "不一致")):
+        return False
+    return any(marker in text for marker in _TRANSIENT_NETWORK_MARKERS)
+
+
+def _call_with_network_retry(
+    operation: Callable[[], Any],
+    *,
+    on_retry: Callable[[int, BaseException], None] | None = None,
+    delays: tuple[float, ...] = _NETWORK_RETRY_DELAYS,
+) -> Any:
+    for attempt in range(len(delays) + 1):
+        try:
+            return operation()
+        except Exception as exc:  # noqa: BLE001
+            if attempt >= len(delays) or not _is_transient_network_error(exc):
+                raise
+            if on_retry is not None:
+                on_retry(attempt + 1, exc)
+            time.sleep(delays[attempt])
+    raise RuntimeError("unreachable")
 
 
 def _write_progress(path: Path, payload: dict) -> None:
@@ -105,7 +149,12 @@ def main(argv: list[str] | None = None) -> int:
 
         backend = VelopackBackend(args.repo, progress_path.parent, channel=args.channel)
         manager = backend.manager(args.channel, args.version)
-        info = manager.check_for_updates()
+        info = _call_with_network_retry(
+            manager.check_for_updates,
+            on_retry=lambda n, _e: _write_progress(
+                progress_path, {"stage": "retrying", "percent": 0, "attempt": n + 1},
+            ),
+        )
         if info is None or info.IsDowngrade:
             raise ValueError("发布源没有合法的升级目标")
         require_target(sdk_asset_identity(info.TargetFullRelease), target)
@@ -141,7 +190,12 @@ def main(argv: list[str] | None = None) -> int:
             _write_progress(progress_path, {"stage": "downloading", "percent": _percent(progress)})
 
         _write_progress(progress_path, {"stage": "downloading", "percent": 0})
-        manager.download_updates(info, on_progress)
+        _call_with_network_retry(
+            lambda: manager.download_updates(info, on_progress),
+            on_retry=lambda n, _e: _write_progress(
+                progress_path, {"stage": "retrying", "percent": 0, "attempt": n + 1},
+            ),
+        )
         _record_downloaded_package(backend, target, delta_used=delta_trusted,
                                    baseline_signed=baseline_signed)
         _write_progress(progress_path, {"stage": "completed", "percent": 100})

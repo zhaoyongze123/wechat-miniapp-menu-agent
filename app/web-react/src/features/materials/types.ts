@@ -166,6 +166,11 @@ export interface MaterialStoreSummary {
   wechat_validation_status: string
   rejection: StoreRejection | null
   selected: SelectedQr | null
+  /** 跨批次工作台场景下的可选批次上下文，单批次场景缺省。 */
+  batch_id?: string
+  batch_name?: string
+  batch_status?: string
+  queue_key?: string
 }
 
 export interface QrCandidate {
@@ -295,6 +300,7 @@ export interface CommitStoreUploadResponse {
 export interface ReworkRecord {
   batch_id: string
   batch_name: string
+  batch_status?: string
   store_id: string
   store_name: string
   source_folder: string

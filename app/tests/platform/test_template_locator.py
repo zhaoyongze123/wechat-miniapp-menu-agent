@@ -8,7 +8,6 @@ import cv2
 import numpy as np
 import pytest
 
-from menu_capture.desktop import template_locator
 from menu_capture.desktop.template_locator import (
     ASSETS_DIR,
     TemplateNotFound,

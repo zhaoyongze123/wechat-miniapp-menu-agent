@@ -32,6 +32,8 @@ FAILURE_CODES: dict[str, tuple[str, str]] = {
     "login_required": (MANUAL, "需要登录或协议确认"),
     "payment_interface": (MANUAL, "交易或支付界面"),
     "wechat_context_lost": (MANUAL, "微信聊天上下文丢失"),
+    "wechat_input_env_error": (RETRYABLE, "微信输入环境异常"),
+    "wechat_window_frame": (RETRYABLE, "微信窗口版面异常"),
     "image_not_found": (MANUAL, "未找到本轮图片消息"),
     "preview_icon_missing": (MANUAL, "未找到识别入口"),
     "miniapp_window": (MANUAL, "未确定小程序窗口"),
@@ -123,6 +125,7 @@ CODE_BUCKETS: dict[str, str] = {
     "network_error": ENVIRONMENT,
     "network_unavailable": ENVIRONMENT,
     "wechat_context_lost": ENVIRONMENT,
+    "wechat_input_env_error": ENVIRONMENT,
     "wechat_window_frame": ENVIRONMENT,
     # 其他·未分类：兜底与人工介入类，保证任何原因都有归属。
     "agent_needs_review": OTHER,
@@ -142,6 +145,7 @@ _BUCKET_KEYWORDS = (
     ("门店已", STORE), ("打烊", STORE), ("未开通", STORE), ("暂无菜单", STORE),
     ("未设置点餐", STORE), ("到期", STORE), ("超出点餐距离", STORE), ("不支持扫码", STORE),
     ("网络", ENVIRONMENT), ("窗口", ENVIRONMENT), ("缩放", ENVIRONMENT), ("显示器", ENVIRONMENT),
+    ("输入框", ENVIRONMENT),
     ("截图", TECHNICAL), ("滚动", TECHNICAL), ("步数", TECHNICAL), ("定位", TECHNICAL),
     ("加载", TECHNICAL), ("空白", TECHNICAL), ("白屏", TECHNICAL), ("点击", TECHNICAL),
     ("无变化", TECHNICAL), ("未进入", TECHNICAL), ("未找到", TECHNICAL),
@@ -183,6 +187,9 @@ _STAGE_CODES = {
 # 只在没有显式 code 时兜底；显式 code 始终优先于文字推断。
 _MESSAGE_CODES = (
     ("未找到本轮图片", "image_not_found"),
+    ("输入框残留", "wechat_input_env_error"),
+    ("未进入微信输入框", "wechat_input_env_error"),
+    ("未附着到微信输入框", "wechat_input_env_error"),
     ("文件传输助手", "wechat_context_lost"),
     ("识别二维码", "preview_icon_missing"),
     ("预览", "preview_icon_missing"),
