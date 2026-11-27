@@ -717,30 +717,45 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                     return scope
         raise HTTPException(404, "任务不属于当前项目或归属待核验")
 
-    def task_project_id(task_id: str) -> str | None:
-        if worker:
-            with store.connect() as db:
-                rows = db.execute(
-                    "SELECT DISTINCT project_id FROM worker_assignments WHERE task_id=? AND worker_id=?",
-                    (task_id, worker._current_worker_id()),
-                ).fetchall()
-            projects = {str(row[0] or "") for row in rows}
-            if worker._hub_supports_project_scope:
-                return next(iter(projects)) if len(projects) == 1 and "" not in projects else None
-            return LEGACY_ID if rows else None
+    def task_project_ids(task_ids) -> dict[str, str | None]:
+        """批量解析多个任务的归属项目，复用单次 SQLite 连接，消除 /api/status 等高频接口的 N+1 连接开销。"""
+        unique = [tid for tid in dict.fromkeys(str(t) for t in task_ids if t)]
+        if not unique:
+            return {}
+        out: dict[str, str | None] = {}
         with store.connect() as db:
-            owner = resolve_task_project(db, task_id)
-        if owner:
-            return owner["id"] if role != "standalone" or owner["id"] == LEGACY_ID else None
-        if role == "standalone":
-            try:
-                store.get(task_id)
-                # 独立模式只有一个历史兼容工作区；旧的本机任务仍能读取和处置，
-                # 但不会把这条临时兼容判断写回未知历史归属。
-                return LEGACY_ID
-            except ValueError:
-                return None
-        return None
+            if worker:
+                wid = worker._current_worker_id()
+                for offset in range(0, len(unique), 500):
+                    chunk = unique[offset : offset + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    rows = db.execute(
+                        f"SELECT task_id, project_id FROM worker_assignments WHERE worker_id=? AND task_id IN ({placeholders})",
+                        [wid, *chunk],
+                    ).fetchall()
+                    by_task: dict[str, set[str]] = {}
+                    for r in rows:
+                        by_task.setdefault(str(r[0]), set()).add(str(r[1] or ""))
+                    for tid in chunk:
+                        projs = by_task.get(tid, set())
+                        if worker._hub_supports_project_scope:
+                            out[tid] = next(iter(projs)) if len(projs) == 1 and "" not in projs else None
+                        else:
+                            out[tid] = LEGACY_ID if projs else None
+                return out
+            for tid in unique:
+                owner = resolve_task_project(db, tid)
+                if owner:
+                    out[tid] = owner["id"] if role != "standalone" or owner["id"] == LEGACY_ID else None
+                elif role == "standalone":
+                    row = db.execute("SELECT 1 FROM tasks WHERE id=?", (tid,)).fetchone()
+                    out[tid] = LEGACY_ID if row else None
+                else:
+                    out[tid] = None
+        return out
+
+    def task_project_id(task_id: str) -> str | None:
+        return task_project_ids((task_id,)).get(str(task_id))
 
     def run_project_matches(run: dict | None, project_id: str) -> bool:
         if not run:
@@ -1148,8 +1163,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 "JOIN material_batches b ON b.id=d.batch_id "
                 "WHERE d.decision='skipped' AND b.deleted_at='' AND b.project_id=?", (scope,)
             ).fetchall()
-        capture_codes = {_rejection_store_code(task.get("source_name")) for task in store.rejections()
-                         if task_project_id(task["id"]) == scope}
+        all_rejections = store.rejections()
+        rej_projects = task_project_ids(task["id"] for task in all_rejections)
+        capture_codes = {_rejection_store_code(task.get("source_name")) for task in all_rejections
+                         if rej_projects.get(str(task["id"])) == scope}
         all_material_codes = set()
         for row in all_rows:
             try:
@@ -1172,9 +1189,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             selected_ids=set(selected.split(",")), batch_id=queue_batch,
         ) if paged else None
         events = store.events() if include_events else []
-        if role != "standalone":
+        if role != "standalone" and events:
+            event_projects = task_project_ids(str(event["task_id"]) for event in events if event.get("task_id"))
             events = [event for event in events
-                      if event.get("task_id") and task_project_id(str(event["task_id"])) == scope]
+                      if event.get("task_id") and event_projects.get(str(event["task_id"])) == scope]
         output_path = ""
         if settings.output_dir:
             if role == "worker" and worker:
