@@ -19,6 +19,11 @@ import { fetchActiveTasks } from '../features/task-center/api'
 import { NotificationRuntime } from '../features/notifications/NotificationRuntime'
 import { ProjectSwitcher } from '../features/projects/ProjectSwitcher'
 import { useProject } from '../features/projects/ProjectProvider'
+import {
+  UpdateProgressBanner,
+  UpdatingReconnectOverlay,
+  useActiveUpdateSession,
+} from '../features/updates/UpdateStatusRuntime'
 
 interface NavItem {
   key: string
@@ -49,6 +54,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const role = useRole()
   const project = useProject()
   const location = useLocation()
+  const activeUpdate = useActiveUpdateSession()
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
@@ -66,12 +72,20 @@ export function AppShell({ children }: { children: ReactNode }) {
   const currentKey = location.pathname.replace(/^\//, '') || 'task-center'
   const visibleItems = NAV_ITEMS.filter((item) => item.roles.includes(role.role))
   const currentItem = NAV_ITEMS.find((item) => item.key === currentKey)
-  // 加载中或读取失败时不能把未知角色显示成“本机独立模式”。
-  const connection = role.loading ? '正在读取连接状态…' : role.error ? '角色状态读取失败' : connectionText(role.role, role.status)
+  // 加载中或读取失败时不能把未知角色显示成“本机独立模式”；更新重启期间明确提示正在更新。
+  const updatingReconnect = Boolean(activeUpdate && (role.error || role.loading))
+  const connection = updatingReconnect
+    ? '正在更新并重启服务…'
+    : role.loading
+      ? '正在读取连接状态…'
+      : role.error
+        ? '角色状态读取失败'
+        : connectionText(role.role, role.status)
 
   return (
     <div className="flex h-full overflow-hidden bg-surface text-default">
       <NotificationRuntime />
+      <UpdatingReconnectOverlay />
       <aside
         className={[
           'hidden shrink-0 flex-col overflow-hidden bg-surface-secondary md:flex',
@@ -127,11 +141,13 @@ export function AppShell({ children }: { children: ReactNode }) {
             {currentKey === 'task-center' ? null : <ActiveTaskIndicator />}
             <ProjectSwitcher />
             <span className="hidden text-xs text-tertiary sm:inline">{connection}</span>
-            <Badge color={role.role === 'standalone' ? 'warning' : 'secondary'} variant="soft" size="sm">
-              {role.loading ? '正在确认角色' : role.error ? '角色未知' : ROLE_LABEL[role.role]}
+            <Badge color={updatingReconnect || role.role === 'standalone' ? 'warning' : 'secondary'} variant="soft" size="sm">
+              {updatingReconnect ? '正在更新' : role.loading ? '正在确认角色' : role.error ? '角色未知' : ROLE_LABEL[role.role]}
             </Badge>
           </div>
         </header>
+
+        <UpdateProgressBanner />
 
         <nav
           className="flex shrink-0 gap-1 overflow-x-auto border-b border-subtle bg-surface px-3 py-2 md:hidden"

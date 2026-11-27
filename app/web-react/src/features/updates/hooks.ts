@@ -15,6 +15,7 @@ import {
   startUpdateDownload,
   startUpdateInstall,
 } from './api'
+import { hasActiveUpdateSession } from './updateSession'
 
 export const updateKeys = {
   status: ['updates', 'status'] as const,
@@ -23,7 +24,7 @@ export const updateKeys = {
   cleanup: ['updates', 'cleanup'] as const,
 }
 
-/** 一次授权更新期间保持短间隔轮询；服务重启导致读取失败时也继续重试直到恢复。 */
+/** 一次授权更新期间保持短间隔轮询；服务重启导致读取失败时也继续每 2 秒重试直到恢复。 */
 export function useUpdateStatus(enabled = true) {
   return useQuery({
     queryKey: updateKeys.status,
@@ -32,7 +33,7 @@ export function useUpdateStatus(enabled = true) {
     staleTime: 5_000,
     refetchInterval: (query) => {
       const data = query.state.data
-      if (data?.flow.active || data?.download.active) return 2_000
+      if (data?.flow.active || data?.download.active || hasActiveUpdateSession()) return 2_000
       // 版本目录体积由服务端后台统计，未补齐前短间隔刷新，避免页面一直显示“正在统计”。
       if (data?.inventory?.sizes_pending) return 5_000
       return 5 * 60_000

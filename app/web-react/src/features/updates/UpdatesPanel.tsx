@@ -14,6 +14,7 @@ import { formatTime } from '../hub/format'
 import { formatBytes } from '../settings/format'
 import { useUpdateActions, useUpdateCleanup, useUpdateHistory, useUpdateInstall, useUpdateStatus } from './hooks'
 import type { UpdateFlowStage, UpdateHistoryRow, UpdateMode } from './types'
+import { clearActiveUpdateSession, readActiveUpdateSession, writeActiveUpdateSession } from './updateSession'
 
 const PLATFORM_LABEL: Record<string, string> = {
   windows: 'Windows 采集端',
@@ -114,6 +115,21 @@ export function UpdatesPanel() {
     return <StatePanel variant="loading" title="正在读取更新状态…" />
   }
   if (!status) {
+    const activeSession = readActiveUpdateSession()
+    if (activeSession) {
+      return (
+        <StatePanel
+          variant="loading"
+          title={activeSession.targetVersion ? `正在更新至 v${activeSession.targetVersion}，服务重启中…` : '正在更新并重启服务…'}
+          description="安装与切换期间服务会短暂断开，页面每 2 秒自动重连，无需手动重启或重复点击。"
+          action={
+            <Button color="secondary" variant="outline" size="sm" onClick={() => void statusQuery.refetch()}>
+              立即重试连接
+            </Button>
+          }
+        />
+      )
+    }
     return (
       <StatePanel
         variant="error"
@@ -187,17 +203,30 @@ export function UpdatesPanel() {
 
   const authorize = (mode: UpdateMode) => {
     actions.update.mutate(mode, {
-      onSuccess: () => toast.push(
-        mode === 'immediate' ? '已开始更新，后台会自动完成安装与重启' : '已安排空闲后更新，采集结束会自动开始',
-        'info',
-      ),
+      onSuccess: () => {
+        writeActiveUpdateSession({
+          targetVersion: latest?.version || flowVersion || '',
+          fromVersion: status.current_version,
+          role: status.role,
+          stage: mode === 'immediate' ? 'installing' : 'waiting',
+          message: mode === 'immediate' ? '已开始更新，正在准备安装与重启' : '已安排空闲后更新',
+          progress: 0,
+        })
+        toast.push(
+          mode === 'immediate' ? '已开始更新，后台会自动完成安装与重启' : '已安排空闲后更新，采集结束会自动开始',
+          'info',
+        )
+      },
       onError: (error) => toast.push(errorMessage(error), 'danger'),
     })
   }
 
   const cancelUpdate = () => {
     actions.cancelUpdate.mutate(undefined, {
-      onSuccess: () => toast.push('已取消本次更新，已下载部分会保留', 'info'),
+      onSuccess: () => {
+        clearActiveUpdateSession()
+        toast.push('已取消本次更新，已下载部分会保留', 'info')
+      },
       onError: (error) => toast.push(errorMessage(error), 'danger'),
     })
   }

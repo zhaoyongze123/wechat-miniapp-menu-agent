@@ -28,7 +28,10 @@ from typing import Any
 
 SKIP_DIRS = {
     "materials", "output", "outputs", "screenshots", "logs", "debug-logs",
-    "cache", "recovery", "web", "node_modules", "__pycache__",
+    "cache", "recovery", "backups", "updates",
+    "shared-inputs", "shared-outbox", "action-evidence", "rejection-evidence",
+    ".uipath-runs", ".uipath-staging",
+    "web", "node_modules", "__pycache__",
 }
 SKIP_SUFFIXES = {
     ".log", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".mp4", ".mov", ".zip",
@@ -228,7 +231,10 @@ def _sqlite_files(data_dir: Path) -> list[Path]:
     def walk_error(error: OSError) -> None:
         raise ValueError(f"无法完整枚举 SQLite 数据目录：{error}") from error
 
-    for directory, _dirs, names in os.walk(root, onerror=walk_error, followlinks=False):
+    for directory, dirs, names in os.walk(root, topdown=True, onerror=walk_error, followlinks=False):
+        # 跳过历史恢复快照（data/recovery/baseline-*.sqlite3）、备份与非业务目录，
+        # 避免隔离验证把历史快照当成业务库反复复制和校验。
+        dirs[:] = [name for name in dirs if name not in SKIP_DIRS]
         for name in names:
             if not DB_NAMES.fullmatch(name):
                 continue
@@ -350,6 +356,7 @@ def database_readable(data_dir: Path) -> tuple[bool, str]:
             expected = evidence.get("databases") if isinstance(evidence, dict) else None
             if not isinstance(expected, dict) or "tasks.sqlite3" not in expected:
                 return False, "隔离验证缺少主数据库来源清单"
+            resolved_main = path.resolve()
             for relative, baseline in expected.items():
                 source = Path(relative)
                 if (source.is_absolute() or ".." in source.parts or not isinstance(baseline, dict)):
@@ -357,7 +364,8 @@ def database_readable(data_dir: Path) -> tuple[bool, str]:
                 copied_path = Path(data_dir) / source
                 if not copied_path.is_file():
                     return False, f"隔离数据库副本缺失：{relative}"
-                copied = database_metadata(copied_path)
+                # 主库已在上方校验过，直接复用结果避免对大型 SQLite 重复跑 quick_check 与全表统计。
+                copied = actual if copied_path.resolve() == resolved_main else database_metadata(copied_path)
                 if not _preserves_database(baseline, copied):
                     return False, f"隔离数据库结构或行数不完整：{relative}"
         return True, ""
@@ -534,6 +542,55 @@ def prepare_verify_home(
                 "databases": databases, "files": sorted(copied)}
     write_json(destination / "verify-source.json", evidence)
     return evidence
+
+
+def cleanup_verify_home(verify_home: Path, *, data_root: Path) -> bool:
+    """事务完成后清理临时隔离验证目录；严格校验边界，失败不阻塞主流程。"""
+    try:
+        target = Path(verify_home).resolve()
+        resolved_data = Path(data_root).resolve()
+    except OSError:
+        return False
+    if not target.is_dir() or not target.name.startswith("verify-"):
+        return False
+    if (target == resolved_data or target.is_relative_to(resolved_data)
+            or resolved_data.is_relative_to(target)):
+        return False
+    try:
+        shutil.rmtree(target)
+        return True
+    except OSError:
+        return False
+
+
+def prune_recovery_baselines(data_dir: Path, *, keep: int = 1) -> int:
+    """清理 data/recovery 下超期的历史基线 SQLite 快照，避免磁盘与验证耗时持续膨胀。"""
+    recovery_dir = Path(data_dir) / "recovery"
+    if not recovery_dir.is_dir():
+        return 0
+    keep_count = max(0, int(keep))
+    candidates: list[tuple[float, Path]] = []
+    try:
+        for item in recovery_dir.iterdir():
+            if not item.is_file() or item.is_symlink():
+                continue
+            if not (item.name.startswith("baseline-") and item.name.endswith(".sqlite3")):
+                continue
+            try:
+                candidates.append((item.stat().st_mtime, item))
+            except OSError:
+                continue
+    except OSError:
+        return 0
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    removed = 0
+    for _mtime, path in candidates[keep_count:]:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def decide_after_apply(*, installed_version: str, target_version: str, previous_version: str,

@@ -320,3 +320,78 @@ def test_request_recovery_shutdown_returns_false_on_transport_failure(
     assert recovery.request_recovery_shutdown(
         8765, "secret", transaction_id="tx-1", target_version="0.3.4"
     ) is False
+
+
+def test_prepare_verify_home_skips_recovery_baselines_and_runtime_artifacts(tmp_path: Path) -> None:
+    """隔离验证只复制业务库与小配置，跳过历史 baseline 快照与 .uipath-runs 等运行产物。"""
+    source = tmp_path / "source"
+    data = _create_data_root(source)
+    (data / "recovery").mkdir()
+    (data / "recovery" / "baseline-20261127-old.sqlite3").write_bytes((data / "tasks.sqlite3").read_bytes())
+    (data / "backups").mkdir()
+    (data / "backups" / "backup.sqlite3").write_bytes((data / "tasks.sqlite3").read_bytes())
+    (data / "shared-inputs").mkdir()
+    (data / "shared-inputs" / "meta.json").write_text("{}", encoding="utf-8")
+    (source / ".uipath-runs" / "run-1").mkdir(parents=True)
+    (source / ".uipath-runs" / "run-1" / "entry.json").write_text("{}", encoding="utf-8")
+    (source / ".uipath-staging" / "pkg").mkdir(parents=True)
+    (source / ".uipath-staging" / "pkg" / "info.json").write_text("{}", encoding="utf-8")
+
+    destination = tmp_path / "verify-tx-skip"
+    evidence = recovery.prepare_verify_home(source, destination, transaction_id="tx-skip")
+
+    assert list(evidence["databases"].keys()) == ["tasks.sqlite3"]
+    assert not (destination / "data" / "recovery").exists()
+    assert not (destination / "data" / "backups").exists()
+    assert not (destination / "data" / "shared-inputs").exists()
+    assert not (destination / ".uipath-runs").exists()
+    assert not (destination / ".uipath-staging").exists()
+    assert (destination / "settings.json").is_file()
+
+
+def test_database_readable_does_not_scan_main_database_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _destination, data_dir, _evidence = _prepare(tmp_path, monkeypatch)
+    real_metadata = recovery.database_metadata
+    calls: list[Path] = []
+
+    def counting_metadata(database: Path) -> dict:
+        calls.append(Path(database).resolve())
+        return real_metadata(database)
+
+    monkeypatch.setattr(recovery, "database_metadata", counting_metadata)
+    readable, reason = recovery.database_readable(data_dir)
+    assert readable is True
+    assert reason == ""
+    assert calls == [(data_dir / "tasks.sqlite3").resolve()]
+
+
+def test_cleanup_verify_home_and_prune_recovery_baselines(tmp_path: Path) -> None:
+    data_root = tmp_path / "MenuCapture"
+    data = _create_data_root(data_root)
+    verify_dir = tmp_path / "MenuCapture-verify" / "verify-tx-clean"
+    recovery.prepare_verify_home(data_root, verify_dir, transaction_id="tx-clean")
+
+    assert recovery.cleanup_verify_home(data_root, data_root=data_root) is False
+    assert recovery.cleanup_verify_home(tmp_path / "other", data_root=data_root) is False
+    assert recovery.cleanup_verify_home(verify_dir, data_root=data_root) is True
+    assert not verify_dir.exists()
+
+    rec_dir = data / "recovery"
+    rec_dir.mkdir()
+    b1 = rec_dir / "baseline-1.sqlite3"
+    b2 = rec_dir / "baseline-2.sqlite3"
+    b3 = rec_dir / "baseline-3.sqlite3"
+    other = rec_dir / "keep-me.json"
+    for idx, f in enumerate((b1, b2, b3)):
+        f.write_bytes(b"x")
+        os.utime(f, (1000 + idx, 1000 + idx))
+    other.write_text("{}", encoding="utf-8")
+
+    removed = recovery.prune_recovery_baselines(data, keep=1)
+    assert removed == 2
+    assert not b1.exists()
+    assert not b2.exists()
+    assert b3.exists()
+    assert other.exists()

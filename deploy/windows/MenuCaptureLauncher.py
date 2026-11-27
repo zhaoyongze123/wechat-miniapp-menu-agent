@@ -819,6 +819,14 @@ def _verify_candidate(ctx: Context, journal: dict) -> str:
             _port(), ctx.token, transaction_id=journal["transaction_id"],
             target_version=journal["target_version"]):
         _log(ctx.data_root, "事务已完成，但放行后台业务闸门请求未获确认")
+    try:
+        if recovery.cleanup_verify_home(verify_home, data_root=ctx.data_root):
+            _log(ctx.data_root, f"已清理隔离验证目录：{verify_home.name}")
+        pruned = recovery.prune_recovery_baselines(ctx.data_root / "data", keep=1)
+        if pruned:
+            _log(ctx.data_root, f"已清理 {pruned} 个历史更新基线快照")
+    except Exception as exc:  # noqa: BLE001 - 清理失败不影响已完成的更新
+        _log(ctx.data_root, f"清理隔离验证副本或历史快照失败：{exc}")
     ctx.worker = normal
     _log(ctx.data_root, "新版本安装验证完成，业务 Worker 继续运行")
     return "running"
