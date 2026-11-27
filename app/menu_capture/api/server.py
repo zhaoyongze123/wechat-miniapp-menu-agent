@@ -65,6 +65,8 @@ from menu_capture.projects.service import (
 )
 from menu_capture.api.workbench_page import workbench_page
 from menu_capture.api.context import ApiContext
+from menu_capture.api.observability import install_observability
+from menu_capture.api.schemas import SlowRequestsResponse, StatusSummaryResponse, StatusTasksResponse
 from menu_capture.api.routers import (
     annotation as annotation_routes,
     delivery as delivery_routes,
@@ -373,6 +375,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     # 仅压缩可压缩的 JSON/文本/前端脚本响应，避免对 PNG/JPG/ZIP/XLSX 重复压缩浪费 CPU。
     app.add_middleware(_SelectiveGZipMiddleware, minimum_size=1024)
+    observability = install_observability(app)
     app.state.runner, app.state.configs, app.state.store = runner, configs, store
     app.state.debug_log = debug_log
     app.state.model_usage = model_usage
@@ -1305,12 +1308,12 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 "events": events,
                 "manual": runner.manual_state() if runner.running and run else None}
 
-    @app.get("/api/status/summary")
+    @app.get("/api/status/summary", response_model=StatusSummaryResponse)
     def status_summary(include_events: bool = False, project_id: str | None = None):
         """轻量状态轮询接口：不返回全量任务列表，响应体恒定小于 50KB。"""
         return status(include_events=include_events, include_tasks=False, project_id=project_id)
 
-    @app.get("/api/status/tasks")
+    @app.get("/api/status/tasks", response_model=StatusTasksResponse)
     def status_tasks(page: Annotated[int, Query(ge=1)] = 1,
                      size: Annotated[int, Query(ge=1, le=100)] = 50,
                      scope: Literal["all", "current"] = "all",
@@ -1341,6 +1344,15 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             query=q, status=filter, sort=sort, page=page, size=size,
             selected_ids=selected_set, batch_id=batch,
         )
+
+    @app.get("/api/diagnostics/slow-requests", response_model=SlowRequestsResponse)
+    def slow_requests(limit: Annotated[int, Query(ge=1, le=50)] = 50):
+        """只读返回近期慢请求与大响应体告警，辅助生产性能巡检。"""
+        return {
+            "slow_ms_threshold": observability.slow_ms,
+            "large_bytes_threshold": observability.large_bytes,
+            "alerts": observability.recent_alerts(limit=limit),
+        }
 
     @app.get("/api/capture/queue")
     def capture_queue(batch_ids: str = "all", q: str = "", project_id: str | None = None):
