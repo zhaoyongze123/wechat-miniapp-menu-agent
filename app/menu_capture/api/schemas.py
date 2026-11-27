@@ -1,7 +1,7 @@
 """核心高频 API 的 Pydantic v2 响应契约模型。
 
-目标：为高频轮询与分页接口建立显式 OpenAPI Schema 契约，防止字段漂移与隐性大包回归；
-同时使用 extra="allow" 保持前向扩展兼容。
+目标：为高频轮询、工作台分页、素材/审核/分配等核心接口建立显式 OpenAPI Schema 契约，
+防止字段漂移与隐性大包回归；统一采用 extra="allow" 保持前向扩展兼容。
 """
 
 from __future__ import annotations
@@ -13,6 +13,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class _CompatModel(BaseModel):
     model_config = ConfigDict(extra="allow")
+
+
+class VersionResponse(_CompatModel):
+    version: str = ""
+    role: str = ""
+
+
+class SessionResponse(_CompatModel):
+    token: str
 
 
 class StatusCountsModel(_CompatModel):
@@ -47,6 +56,59 @@ class StatusTasksResponse(_CompatModel):
     page: int
     pages: int
     total: int
+
+
+class CaptureQueueResponse(_CompatModel):
+    records: list[dict[str, Any]] = Field(default_factory=list)
+    batches: list[dict[str, Any]] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class SharedStatusResponse(_CompatModel):
+    role: str
+
+
+class SharedAssignmentsResponse(_CompatModel):
+    records: list[dict[str, Any]] = Field(default_factory=list)
+    page: int = 1
+    pages: int = 1
+    total: int = 0
+
+
+class MaterialBatchesResponse(_CompatModel):
+    batches: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class MaterialReworkResponse(_CompatModel):
+    records: list[dict[str, Any]] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReviewsPendingResponse(_CompatModel):
+    records: list[dict[str, Any]] = Field(default_factory=list)
+    batches: list[dict[str, Any]] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class RejectionsListResponse(_CompatModel):
+    records: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ActiveTasksResponse(_CompatModel):
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class TaskHistoryResponse(_CompatModel):
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    page: int = 1
+    page_size: int = 20
+    total: int = 0
+
+
+class ProjectItemModel(_CompatModel):
+    id: str
+    code: str
+    name: str
 
 
 class SlowRequestAlert(_CompatModel):

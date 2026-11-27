@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from menu_capture.api.context import ApiContext
+from menu_capture.api.schemas import ReviewsPendingResponse
 from menu_capture.capture.capture_results import capture_outcome
 from menu_capture.quality.failures import describe as describe_failure
 
@@ -123,7 +124,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     materials, runner, hub = ctx.materials, ctx.runner, ctx.hub
     control_lock, idle = ctx.control_lock, ctx.idle
 
-    @app.get("/api/reviews/pending")
+    @app.get("/api/reviews/pending", response_model=ReviewsPendingResponse)
     def pending_reviews(batch_ids: str = "all", q: str = "", project_id: str | None = None):
         scope = ctx.project_scope(project_id)
         return _review_queue(ctx, batch_ids, q, scope)

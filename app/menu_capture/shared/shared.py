@@ -247,6 +247,19 @@ class SharedHub:
             runs = {row["worker_id"]: dict(row) for row in db.execute("SELECT * FROM shared_worker_runs")}
             software = {row["worker_id"]: dict(row) for row in db.execute("SELECT * FROM shared_worker_software")}
             history_times = dict(db.execute("SELECT worker_id,MAX(synced_at) FROM shared_run_history GROUP BY worker_id"))
+            # 聚合各设备近期（最近 24 小时）微信输入/窗口类环境故障次数，供 Hub 主动识别异常设备（如 xue 机连败）。
+            env_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
+            env_failure_counts: dict[str, int] = {}
+            for row in db.execute(
+                "SELECT a.worker_id, COUNT(*) AS cnt "
+                "FROM shared_results r JOIN shared_assignments a ON a.id=r.assignment_id "
+                "WHERE r.received_at >= ? AND r.status != 'captured' "
+                "AND (r.message LIKE '%输入框残留%' OR r.message LIKE '%微信输入框%' "
+                "OR r.message LIKE '%文件传输助手%' OR r.message LIKE '%微信主窗口%') "
+                "GROUP BY a.worker_id",
+                (env_cutoff,),
+            ):
+                env_failure_counts[row["worker_id"]] = int(row["cnt"])
             rollout_row = db.execute(
                 "SELECT mode,worker_ids,updated_at FROM shared_update_rollout WHERE id=1").fetchone()
             now_utc = datetime.now(timezone.utc)
@@ -260,6 +273,11 @@ class SharedHub:
                     last_run = None
                 worker["last_run"] = last_run
                 worker["history_synced_at"] = history_times.get(worker["id"], "")
+                env_failures = env_failure_counts.get(worker["id"], 0)
+                worker["env_health"] = {
+                    "recent_env_failures": env_failures,
+                    "degraded": env_failures >= 3,
+                }
                 row = software.get(worker["id"])
                 # 未上报过的设备明确为 null，不用空对象冒充“已是最新”。
                 worker["software"] = ({
