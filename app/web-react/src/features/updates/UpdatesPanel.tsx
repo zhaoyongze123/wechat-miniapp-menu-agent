@@ -179,6 +179,7 @@ export function UpdatesPanel() {
     ? [
         { key: 'releases', label: '历史程序版本', scope: storage.scopes.releases },
         { key: 'downloads', label: '下载缓存', scope: storage.scopes.downloads },
+        ...(storage.scopes.recovery ? [{ key: 'recovery', label: '历史恢复包', scope: storage.scopes.recovery }] : []),
         { key: 'logs', label: 'CLI 日志（超过 7 天）', scope: storage.scopes.logs },
       ]
     : []
