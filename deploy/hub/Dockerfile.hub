@@ -28,8 +28,10 @@ COPY app/web ./web
 RUN test -s web/react/index.html && test -s web/react/.vite/manifest.json
 # 发布版本后置到所有文件层之后：仅版本号或业务代码改动时，OS/OCR/venv 层 100% 复用 BuildKit 缓存与 OCI 镜像层。
 ARG VERSION=0.1.0
+ARG REVISION=unknown
 LABEL org.opencontainers.image.title="menu-capture-hub" \
       org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$REVISION" \
       org.opencontainers.image.description="菜单采集共享后台（含 React 控制台静态产物）"
 ENV MENU_CAPTURE_VERSION=$VERSION
 USER 10001:10001

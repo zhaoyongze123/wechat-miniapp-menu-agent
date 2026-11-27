@@ -107,16 +107,16 @@ Review 结论为通过、条件通过、需修复或证据不足。P0 为严重�
 
 ## 发布与云端构建
 
-所有当前及后续开发任务采用本地按风险验证，完整 CI 集中在交付末期。
+所有当前及后续开发任务采用本地按风险验证；轻量源码 CI 与候选集成/正式发布分离，复用同一源码门禁工作流。
 
 - 正式 Release 必须附 `update-manifest.json`（契约见 [docs/updates/README.md](../updates/README.md)）；缺清单或校验失败的版本不得作为可更新版本提供。
 - 更新发现只允许固定仓库正式 Release；禁止接受前端传入的任意 URL、版本路径、镜像或命令。
 - 下载/安装/镜像切换必须有独立执行器、事务锁与健康检查；不得把 Docker Socket、宿主机 shell 或任意路径暴露给业务容器/浏览器。
 - CI 临时 artifact 默认保留 14 天；正式 Release 资产独立永久保留。
 
-1. **开发与评审**期间，Issue 实施、提交、PR、合并及标签推送均不得主动触发 GitHub Actions。禁止在此期间构建完整 Windows 安装包、Hub 镜像或发布归档。合并依据本地验证证据及仓库现行保护规则。
-2. **集成交付**在本轮所有开发任务完成后集中进行。锁定候选提交、版本和必要的升级基线，默认同一交付手动运行一次 [发布工作流](../../.github/workflows/windows-release.yml)。各 Issue 共用这次完整验收。工作流覆盖前端、Python 静态检查、Windows 安装与恢复、Hub 数据卷与升级回滚。
-3. **集成失败**时先读取该次日志，针对失败原因在本地隔离修复和验证。重新派发、重跑失败作业或重跑整条工作流前，均须在维护者明确授权范围内（可在本轮开始时一次授权有界重试）；超出范围另行确认。更换提交、分支或版本号不重置本轮次数。
+1. **开发与评审**期间，Issue 实施、提交、PR、合并及标签推送不得主动触发完整发布工作流。维护者授权时可手动运行 `ci.yml`（分支相对 main merge-base，仅源码检查，不使用发布密钥或完整打包）；自动 PR 触发须完成验证后单独启用。合并依据本地验证、必要轻量 CI 证据及仓库现行保护规则。
+2. **集成交付**在本轮所有开发任务完成后集中进行。锁定候选提交、版本和必要的升级基线，默认同一交付手动运行一次 [发布工作流](../../.github/workflows/windows-release.yml)。各 Issue 共用这次验收。统一 `deploy/tools/change_plan.py` 使用 Git 与 GitHub CLI 确认累计变更；纯文档/测试默认不打包，普通版本保留通用后端测试、静态前端产物与平台契约、构建/健康/签名检查；高风险或未知变更执行完整适用验收。`force_full` 可要求完整隔离验收但不能绕过发布资格。
+3. **集成失败**时先读取该次日志，针对失败原因在本地隔离修复和验证。同一 SHA/版本/渠道及输入不变时优先使用 GitHub 原生失败任务重跑，确认同 run 成功产物仍可用；新提交不得冒用旧最终产物。重新派发、重跑失败作业或重跑整条工作流前，均须在维护者明确授权范围内（可在本轮开始时一次授权有界重试）；超出范围另行确认。更换提交、分支或版本号不重置本轮次数。
 4. **交付产物**使用已验收的同一份 EXE、Hub 镜像归档、更新清单和校验值，按提交、版本与摘要核对。显式选择 `create_release` 时，工作流可用验收产物准备 Release 草稿。正式发布和生产部署须在用户明确授权范围内（可一次授权本轮两者），已正式发布的版本禁止覆盖。
 
 ## 文档规范
@@ -139,4 +139,4 @@ Review 结论为通过、条件通过、需修复或证据不足。P0 为严重�
 - [Google Review Standard](https://google.github.io/eng-practices/review/reviewer/standard.html) 与 [Small CLs](https://google.github.io/eng-practices/review/developer/small-cls.html)：小批量、证据优先、持续改善。
 - [SemVer 2.0.0](https://semver.org/) 与 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)：版本与用户变更记录。
 - [Google SRE Release Engineering](https://sre.google/sre-book/release-engineering/) 与 [Canarying Releases](https://sre.google/workbook/canarying-releases/)：可重复发布、分阶段验证及回滚。
-- 构建缓存、变更分析与快速发布的实现见 #92；在实际验证完成之前不改变现有 CI 门禁或触发方式。
+- 构建缓存见 #92；轻量 CI、风险门禁及产物复用优化见 #119。Windows 实机、CI runner 与发布验收未完成前不启用自动 PR 触发或削弱安全门禁。
