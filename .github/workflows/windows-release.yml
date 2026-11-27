@@ -542,7 +542,10 @@ jobs:
   # 只复用已验收候选 run 的产物：不重新构建、不重跑源码门禁，
   # 但必须核验源 run 的成功状态、仓库、工作流、版本、commit 与产物摘要。
   verify-source:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_release && inputs.source_run_id != '' }}
+    # 仅允许在受信 main 上、且本次变更分析作业成功时复用候选产物。
+    needs: [changes]
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+      && inputs.create_release && inputs.source_run_id != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
