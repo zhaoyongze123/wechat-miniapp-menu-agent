@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -17,7 +18,9 @@ from zipfile import ZIP_STORED, ZipFile
 import httpx
 
 from menu_capture.core.config import atomic_json
-from menu_capture.shared.shared import IMAGE_SUFFIXES, MAX_RESULT_SIZE, MAX_SOURCE_SIZE, REPORTED_RUN_STATUSES, safe_artifact
+from menu_capture.shared.shared import (
+    IMAGE_SUFFIXES, MAX_RESULT_SIZE, MAX_SOURCE_SIZE, REPORTED_RUN_STATUSES, safe_artifact, utc_stamp,
+)
 from menu_capture.shared.shared_history import WorkerHistoryDelivery
 from menu_capture.storage.store import TaskStore, now
 from menu_capture.projects.service import LEGACY_ID
@@ -25,6 +28,10 @@ from menu_capture.projects.service import LEGACY_ID
 
 TAILSCALE_IPV4 = ip_network("100.64.0.0/10")
 WORKER_CAPABILITIES = "project_scope,run_history,run_summary,software_status"
+POLL_INTERVAL_SECONDS = 5
+POLL_BACKOFF_MAX_SECONDS = 15
+HEARTBEAT_KEEPALIVE_SECONDS = 15.0
+OFFLINE_FAILURE_THRESHOLD = 3
 
 
 def local_http_host(host: str) -> bool:
@@ -74,6 +81,9 @@ class SharedWorker:
         self._state_lock = threading.RLock()
         self._thread: threading.Thread | None = None
         self.online = False
+        self._consecutive_failures = 0
+        self._last_heartbeat_mono = 0.0
+        self._last_connected_at = ""
         self._hub_reports_runs = False
         self._hub_reports_software = False
         self._hub_supports_history = False
@@ -157,7 +167,11 @@ class SharedWorker:
             while not self._stop.is_set():
                 if self.connection:
                     self.poll()
-                self._wake.wait(3)
+                wait_seconds = min(
+                    POLL_BACKOFF_MAX_SECONDS,
+                    POLL_INTERVAL_SECONDS + self._consecutive_failures * 3,
+                ) if self.connection else POLL_INTERVAL_SECONDS
+                self._wake.wait(wait_seconds)
                 self._wake.clear()
         finally:
             self._http.close()
@@ -191,6 +205,9 @@ class SharedWorker:
                 atomic_json(self.credentials, connection)
                 self.connection = connection
                 self.online = True
+                self._consecutive_failures = 0
+                self._last_heartbeat_mono = time.monotonic()
+                self._last_connected_at = utc_stamp()
                 self.error = ""
                 self._hub_supports_project_scope = False
             if connection.get("detach_from"):
@@ -248,6 +265,18 @@ class SharedWorker:
     def _headers(self) -> dict:
         return self._auth(self.connection)
 
+    def _connection_state(self) -> str:
+        """区分未配对、凭证失效、在线、瞬时波动（degraded）和确认离线（offline）。"""
+        if not self.connection:
+            return "unpaired"
+        if self.connection.get("invalid"):
+            return "credential_invalid"
+        if self.online:
+            return "online"
+        if 0 < self._consecutive_failures < OFFLINE_FAILURE_THRESHOLD:
+            return "degraded"
+        return "offline"
+
     def status(self, project_id: str | None = None) -> dict:
         abandoned = int(self.connection.get("abandoned_pending") or 0)
         if project_id is not None and project_id not in {row["id"] for row in self.projects()}:
@@ -274,6 +303,9 @@ class SharedWorker:
                 WHERE status IN ('completed','reclaimed') AND """ + worker_filter +
                 " ORDER BY created_at DESC,id LIMIT 100", params))
         return {"role": "worker", "paired": bool(self.connection), "online": self.online,
+                "connection_state": self._connection_state(),
+                "consecutive_failures": self._consecutive_failures,
+                "last_connected_at": self._last_connected_at,
                 "supports_project_scope": self._hub_supports_project_scope,
                 "name": self.connection.get("name", ""), "error": self.error,
                 "history_error": self.history_error,
@@ -749,14 +781,44 @@ class SharedWorker:
                     db.executemany("UPDATE worker_assignments SET status='reclaimed' WHERE id=? AND status='ready'",
                                    ((row_id,) for row_id in local - active_ids))
             self.online = True
+            self._consecutive_failures = 0
+            self._last_heartbeat_mono = time.monotonic()
+            self._last_connected_at = utc_stamp()
         for assigned in active:
-            if self.connection is not connection:
+            if self._stop.is_set() or self.connection is not connection:
                 break
+            self._send_keepalive_if_due(connection)
             try:
                 self._ensure_source(assigned, connection)
             except (httpx.HTTPError, OSError, ValueError, KeyError) as exc:
                 self.error = str(exc)[:200]
         return active_ids
+
+    def _send_keepalive_if_due(self, connection: dict) -> None:
+        """大批量上传结果或下载二维码期间穿插轻量心跳，避免 Hub 侧超过离线窗口误判掉线。"""
+        if self._stop.is_set() or self.connection is not connection or connection.get("invalid"):
+            return
+        if time.monotonic() - self._last_heartbeat_mono < HEARTBEAT_KEEPALIVE_SECONDS:
+            return
+        worker_id = str(connection.get("id") or "")
+        try:
+            with self.store.connect() as db:
+                pending = db.execute(
+                    "SELECT COUNT(*) FROM worker_assignments WHERE status='pending_upload'"
+                    " AND (worker_id='' OR worker_id=?)", (worker_id,)).fetchone()[0]
+            response = self._http.post(
+                self._url("/sync", connection),
+                headers=self._capability_headers(connection),
+                json={"ready_ids": [], "pending_uploads": pending},
+                timeout=10,
+            )
+            response.raise_for_status()
+            if self.connection is connection:
+                self._last_heartbeat_mono = time.monotonic()
+                self._last_connected_at = utc_stamp()
+        except (httpx.HTTPError, OSError, ValueError):
+            # 保活穿插失败不中断当前传输，交由下一轮主 poll 统一判定连接状态。
+            pass
 
     def _sync_run_history(self, connection: dict | None = None) -> None:
         connection = connection or self.connection
@@ -771,7 +833,7 @@ class SharedWorker:
             if report is None:
                 return
             response = self._http.put(self._url("/run-history", connection),
-                                      headers=self._capability_headers(connection), json=report, timeout=5)
+                                      headers=self._capability_headers(connection), json=report, timeout=15)
             response.raise_for_status()
             if self.connection is not connection:
                 return
@@ -942,6 +1004,7 @@ class SharedWorker:
         for assignment_id in pending:
             if self._stop.is_set() or self.connection is not connection:
                 return
+            self._send_keepalive_if_due(connection)
             path = self.outbox / (assignment_id + ".zip")
             try:
                 with path.open("rb") as stream:
@@ -993,11 +1056,12 @@ class SharedWorker:
             self.error = ""
             with self.control_lock:
                 self.prepare_results()
-            if not connection.get("invalid"):
-                self._upload_pending(connection)
+            # 先发核心心跳保活，再上传大体积截图包，避免连续上传阻塞心跳导致 Hub 侧误判离线。
+            self._heartbeat(connection)
             if self.connection is not connection:
                 return
-            self._heartbeat(connection)
+            if not connection.get("invalid"):
+                self._upload_pending(connection)
             if self.connection is not connection:
                 return
             self._sync_run_history(connection)
@@ -1015,6 +1079,7 @@ class SharedWorker:
                 if self.connection is not connection:
                     return
                 self.online = False
+                self._consecutive_failures += 1
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
                     if not self.connection.get("invalid"):
                         self.connection["invalid"] = True

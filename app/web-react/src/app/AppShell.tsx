@@ -17,6 +17,7 @@ import { ROLE_LABEL, useRole } from './RoleProvider'
 import type { AppRole } from '../api/types'
 import { fetchActiveTasks } from '../features/task-center/api'
 import { NotificationRuntime } from '../features/notifications/NotificationRuntime'
+import { NotificationCenterTrigger } from '../features/notifications/NotificationCenter'
 import { ProjectSwitcher } from '../features/projects/ProjectSwitcher'
 import { useProject } from '../features/projects/ProjectProvider'
 import {
@@ -140,6 +141,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="ml-auto flex shrink-0 items-center gap-2.5">
             {currentKey === 'task-center' ? null : <ActiveTaskIndicator />}
             <ProjectSwitcher />
+            <NotificationCenterTrigger />
             <span className="hidden text-xs text-tertiary sm:inline">{connection}</span>
             <Badge color={updatingReconnect || role.role === 'standalone' ? 'warning' : 'secondary'} variant="soft" size="sm">
               {updatingReconnect ? '正在更新' : role.loading ? '正在确认角色' : role.error ? '角色未知' : ROLE_LABEL[role.role]}
@@ -251,6 +253,7 @@ function connectionText(role: AppRole, status: ReturnType<typeof useRole>['statu
   if (status.role === 'worker') {
     if (!status.paired) return '尚未配对共享后台'
     if (status.credential_invalid) return '配对凭证已失效，请联系管理员'
+    if (status.connection_state === 'degraded') return '共享后台连接波动，正在重连…'
     if (!status.online) {
       const pending = status.pending_uploads ? `，${status.pending_uploads} 个结果待补传` : ''
       return `共享后台离线${pending}`

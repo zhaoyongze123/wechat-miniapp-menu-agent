@@ -29,6 +29,28 @@ ACTIVE = ("assigned", "ready")
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 # 与 action-schema.json observation.max_chars 一致；Hub 只做防御性校验，异常值按未提供处理。
 OBSERVED_NAME_MAX_CHARS = 40
+# 服务端统一设备在线判定窗口：避免客户端时钟偏差及 60 秒单阈值边界震荡。
+WORKER_ONLINE_SECONDS = 30
+WORKER_OFFLINE_SECONDS = 90
+
+
+def worker_connection_state(last_seen: str | None, *, now: datetime | None = None) -> tuple[str, int | None]:
+    """根据服务端时间计算设备连接态（online / degraded / offline）及心跳距今秒数。"""
+    if not last_seen or not isinstance(last_seen, str):
+        return "offline", None
+    try:
+        parsed = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+    except ValueError:
+        return "offline", None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    age = max(0, int((current - parsed).total_seconds()))
+    if age <= WORKER_ONLINE_SECONDS:
+        return "online", age
+    if age <= WORKER_OFFLINE_SECONDS:
+        return "degraded", age
+    return "offline", age
 
 
 def _observed_store_name(manifest: dict) -> str:
@@ -208,7 +230,11 @@ class SharedHub:
             history_times = dict(db.execute("SELECT worker_id,MAX(synced_at) FROM shared_run_history GROUP BY worker_id"))
             rollout_row = db.execute(
                 "SELECT mode,worker_ids,updated_at FROM shared_update_rollout WHERE id=1").fetchone()
+            now_utc = datetime.now(timezone.utc)
             for worker in workers:
+                state, age = worker_connection_state(worker.get("last_seen"), now=now_utc)
+                worker["connection_state"] = state
+                worker["last_seen_age_seconds"] = age
                 last_run = runs.get(worker["id"])
                 if project_id is None or not last_run or last_run.get("project_id") != project_id:
                     # 摘要没有可核验的本项目归属时不跨项目展示。
@@ -277,6 +303,7 @@ class SharedHub:
         }
         return {
             "role": "hub",
+            "server_time": utc_stamp(),
             "workers": workers,
             "assignments": assignments,
             "update_summary": update_summary,
