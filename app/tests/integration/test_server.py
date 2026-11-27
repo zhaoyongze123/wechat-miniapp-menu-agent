@@ -161,6 +161,10 @@ def test_react_entry_is_default_and_only_serves_manifest_assets(tmp_path: Path) 
     assert "/assets/" in response.text
     assert "__CAPTURE_TOKEN__" not in response.text
     assert response.headers["cache-control"] == "no-store"
+    # 组件 CSS 可能由 Vite 先输出；在所有样式表之前确定层级，防止基础重置覆盖组件。
+    assert response.text.index("@layer properties, theme, base, components, utilities;") < response.text.index(
+        'rel="stylesheet"'
+    )
 
     # 迁移期临时入口不再存在：旧参数与旧版横幅都会被忽略。
     assert client.get("/", params={"ui": "vue"}).text == response.text

@@ -59,7 +59,9 @@ from menu_capture.shared.shared import SharedConflict, SharedHub, WorkerUnauthor
 from menu_capture.shared.delivery import DeliveryService
 from menu_capture.api.shared_routes import register_shared_routes
 from menu_capture.shared.shared_worker import SharedWorker
-from menu_capture.projects.service import LEGACY_ID, ProjectNotFound, get_project, resolve_batch_project, resolve_task_project
+from menu_capture.projects.service import (
+    LEGACY_ID, ProjectNotFound, get_project, resolve_batch_project, resolve_task_project, resolve_task_projects,
+)
 from menu_capture.api.workbench_page import workbench_page
 from menu_capture.api.context import ApiContext
 from menu_capture.api.routers import (
@@ -719,7 +721,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         raise HTTPException(404, "任务不属于当前项目或归属待核验")
 
     def task_project_ids(task_ids) -> dict[str, str | None]:
-        """批量解析多个任务的归属项目，复用单次 SQLite 连接，消除 /api/status 等高频接口的 N+1 连接开销。"""
+        """批量解析任务归属，避免高频接口为每条记录查询相同的历史表。"""
         unique = [tid for tid in dict.fromkeys(str(t) for t in task_ids if t)]
         if not unique:
             return {}
@@ -744,8 +746,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                         else:
                             out[tid] = LEGACY_ID if projs else None
                 return out
-            for tid in unique:
-                owner = resolve_task_project(db, tid)
+            for tid, owner in resolve_task_projects(db, unique).items():
                 if owner:
                     out[tid] = owner["id"] if role != "standalone" or owner["id"] == LEGACY_ID else None
                 elif role == "standalone":
@@ -1188,10 +1189,6 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 "JOIN material_batches b ON b.id=d.batch_id "
                 "WHERE d.decision='skipped' AND b.deleted_at='' AND b.project_id=?", (scope,)
             ).fetchall()
-        all_rejections = store.rejections()
-        rej_projects = task_project_ids(task["id"] for task in all_rejections)
-        capture_codes = {_rejection_store_code(task.get("source_name")) for task in all_rejections
-                         if rej_projects.get(str(task["id"])) == scope}
         all_material_codes = set()
         for row in all_rows:
             try:
@@ -1201,7 +1198,15 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             code = _rejection_store_code(data.get("source_folder") or data.get("name") or "")
             if code:
                 all_material_codes.add(code)
-        material_rejected_all = len(all_material_codes - capture_codes)
+        if all_material_codes:
+            # 只有与当前素材不合格清单同门店编号的历史记录才影响去重结果。
+            candidates = [(task["id"], code) for task in store.rejections()
+                          if (code := _rejection_store_code(task.get("source_name"))) in all_material_codes]
+            rej_projects = task_project_ids(task_id for task_id, _ in candidates)
+            all_material_codes.difference_update(
+                code for task_id, code in candidates if rej_projects.get(str(task_id)) == scope
+            )
+        material_rejected_all = len(all_material_codes)
         launch_mode = ready.get("launch_mode", "manual")
         engine, engine_message = {
             "shared": ("共享工作台", "请将门店分配给已配对的 Windows 电脑"),
