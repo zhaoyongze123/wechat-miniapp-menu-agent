@@ -1,12 +1,21 @@
 # A 机仅保存业务数据和提供 API，桌面采集在登录用户的 Windows 会话运行。
 FROM ghcr.io/astral-sh/uv:0.11.3 AS uv
+# Node 版本与 Windows 采集端 deploy/windows/runtimes.json 保持一致，仅用于圆形小程序码定位 worker。
+FROM node:22.23.5-bookworm-slim AS nodejs
 FROM python:3.12.16-slim-bookworm AS dependencies
 
 COPY --from=uv /uv /usr/local/bin/uv
 WORKDIR /opt/menu-capture
 ENV UV_PROJECT_ENVIRONMENT=/opt/menu-venv UV_NO_MANAGED_PYTHON=1 UV_LINK_MODE=copy
 COPY app/pyproject.toml app/uv.lock ./
+# OpenCV（Linux headless）与 ZXing-C++ 由 uv 锁文件安装，与 Windows 采集端同一套检测依赖。
 RUN uv sync --frozen --no-install-project --no-dev
+
+# 圆形小程序码 worker 依赖：与 Windows 打包脚本一致，用锁文件 npm ci，运行时不联网安装。
+FROM node:22.23.5-bookworm-slim AS qr-detector
+WORKDIR /opt/qr_detector
+COPY app/qr_detector/package.json app/qr_detector/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
 
 FROM python:3.12.16-slim-bookworm
 
@@ -17,15 +26,23 @@ RUN apt-get update \
     && useradd --uid 10001 --gid 10001 --no-create-home menu-capture \
     && install -d -o 10001 -g 10001 /var/lib/menu-capture \
     && install -d -o 10001 -g 10001 /var/lib/menu-delivery
+# Node 只提供 worker 运行时；镜像仍自带完整前端产物，浏览器端不依赖 Node。
+COPY --from=nodejs /usr/local/bin/node /usr/local/bin/node
 ENV PATH="/opt/menu-venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     MENU_CAPTURE_ROLE=hub MENU_CAPTURE_HOME=/var/lib/menu-capture MENU_CAPTURE_BIND=0.0.0.0 MENU_CAPTURE_PORT=8765
 WORKDIR /opt/menu-capture
 COPY --from=dependencies /opt/menu-venv /opt/menu-venv
 COPY app/menu_capture ./menu_capture
+COPY app/qr_detector ./qr_detector
+COPY --from=qr-detector /opt/qr_detector/node_modules ./qr_detector/node_modules
 COPY app/web ./web
 # 镜像必须自带完整前端产物，运行时不依赖 Node、npm 或外部 CDN。
-RUN test -s web/react/index.html && test -s web/react/.vite/manifest.json
+RUN test -s web/react/index.html && test -s web/react/.vite/manifest.json \
+    && test -s qr_detector/detect.mjs \
+    && test -d qr_detector/node_modules/@weapp-vite/qr \
+    && node --version \
+    && python -c "import cv2, zxingcpp"
 # 发布版本后置到所有文件层之后：仅版本号或业务代码改动时，OS/OCR/venv 层 100% 复用 BuildKit 缓存与 OCI 镜像层。
 ARG VERSION=0.1.0
 ARG REVISION=unknown

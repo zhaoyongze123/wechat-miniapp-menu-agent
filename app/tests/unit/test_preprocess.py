@@ -142,6 +142,7 @@ def test_inspection_error_is_reviewed_without_echoing_exception_text(tmp_path: P
     store = build_materials(source, output, inspector=broken)["stores"][0]
     serialized = (output / "manifest.json").read_text(encoding="utf-8")
     assert store["status"] == "needs_review"
+    assert store["detection_state"] == "image_error"
     assert store["images"][0]["detection_count"] == 0
     assert PAYLOAD not in serialized
     assert "RuntimeError" in store["images"][0]["error"]
@@ -230,20 +231,50 @@ def test_qr_detections_keeps_second_undecodable_box(monkeypatch, tmp_path: Path)
     cv2 = pytest.importorskip("cv2")
     import numpy as np
 
-    from menu_capture.desktop import windows_image
+    from menu_capture.vision import qr_detection
 
     image_path = tmp_path / "menu.png"
     cv2.imwrite(str(image_path), np.full((400, 600, 3), 255, dtype=np.uint8))
     monkeypatch.setattr(
-        windows_image, "_zxing_scan",
+        qr_detection, "_zxing_scan",
         lambda _image: [{"box": (20.0, 20.0, 100.0, 100.0), "payload": "first"}],
     )
     monkeypatch.setattr(
-        windows_image, "_qr_scan",
+        qr_detection, "_qr_scan",
         lambda _detector, _image: [{"box": (300.0, 20.0, 100.0, 100.0), "payload": None}],
     )
-    monkeypatch.setattr(windows_image, "_qr_refine", lambda _image, _box: None)
+    monkeypatch.setattr(qr_detection, "_qr_refine", lambda _image, _box: None)
 
-    result = windows_image.qr_detections(image_path)
+    result = qr_detection.qr_detections(image_path)
     assert len(result) == 2
     assert sum(1 for item in result if item["payload"] is None) == 1
+
+
+def test_store_detection_state_separates_not_detected_from_detected(tmp_path: Path) -> None:
+    source, output = tmp_path / "source", tmp_path / "result"
+    _image(source / "Shop" / "menu.webp")
+    store = build_materials(source, output, inspector=lambda _path: [])["stores"][0]
+    assert store["detection_state"] == "not_detected"
+    assert store["square_checked"] is True
+
+
+def test_store_detection_state_marks_detected_when_candidates_exist(tmp_path: Path) -> None:
+    source, output = tmp_path / "source", tmp_path / "result"
+    _image(source / "Shop" / "menu.webp")
+    inspector = lambda _path: [{"box": {"x": 10, "y": 10, "width": 100, "height": 100}, "payload": PAYLOAD}]
+    store = build_materials(source, output, inspector=inspector)["stores"][0]
+    assert store["detection_state"] == "detected"
+
+
+def test_detector_unavailable_is_not_swallowed_as_single_image_error(tmp_path: Path) -> None:
+    """系统性检测失败必须向上抛出，不能被吞成门店级 error 后仍产出成功清单。"""
+    from menu_capture.vision.qr_detection import DetectorUnavailable
+
+    source = tmp_path / "source"
+    _image(source / "Shop" / "menu.webp")
+
+    def unavailable(_path):
+        raise DetectorUnavailable("OpenCV 不可用")
+
+    with pytest.raises(DetectorUnavailable):
+        build_materials(source, tmp_path / "result", inspector=unavailable)

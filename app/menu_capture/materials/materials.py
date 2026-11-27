@@ -25,8 +25,11 @@ from PIL import Image
 from menu_capture.core.config import ConfigStore, atomic_json
 from menu_capture.materials.preprocess import (
     CROP_MARGIN_RATIO, SUPPORTED_EXTENSIONS,
-    _apple_vision_inspector, _apply_orientation, _crop_candidate, _enumerate_images,
+    _apply_orientation, _crop_candidate, _enumerate_images,
     _inspect_image, analyze_store, discover_stores,
+)
+from menu_capture.vision.qr_detection import (
+    DetectorUnavailable, detect_qr, probe_detector_capability,
 )
 from menu_capture.desktop.image_tools import image_ocr
 from menu_capture.materials.material_jobs import JobRunner, JobStore, OPEN_STATUSES
@@ -105,6 +108,8 @@ _PURPOSES = {"ordering", "not_ordering", "enterprise_wechat", "unknown", "confli
 _LEGACY_PURPOSES = {"other": "not_ordering"}
 _RECOMMENDATION_LEVELS = {"high", "ocr", "low", "none"}
 _WECHAT_VALIDATION_STATUSES = {"unverified", "not_applicable"}
+# 门店检测状态：detected=有候选；not_detected=图可读、检测器可用但无候选；image_error=单图异常。
+_DETECTION_STATES = {"detected", "not_detected", "image_error"}
 
 
 class MaterialService:
@@ -546,6 +551,7 @@ class MaterialService:
     def reanalyze_store(self, batch_id: str, store_id: str, *, project_id: str | None = None) -> dict:
         """只重跑当前门店的本地二维码检测与 OCR；批次其他门店和决定不变。"""
         self._check_batch_scope(batch_id, project_id, write=True)
+        self._detector_precheck()
         with self._lock:
             batch = self._batch_row(batch_id)
             if batch["status"] != "completed":
@@ -561,7 +567,7 @@ class MaterialService:
         store = json.loads(row["store_json"])
         if not store.get("images"):
             raise ValueError("当前门店没有图片，请先补充素材")
-        inspect = self.inspector or _apple_vision_inspector
+        inspect = self.inspector or detect_qr
         analysis_dir = self.batch_root / batch_id / "repair-analysis"
         _mkdir_ok(analysis_dir)
         self._ocr_local.cache = {}
@@ -611,12 +617,31 @@ class MaterialService:
         return [{"store_id": _store_id(store["source_folder"]), "source_folder": store["source_folder"]}
                 for store in stores]
 
+    def _detector_precheck(self) -> dict:
+        """检测器能力预检：默认检测器不可用时阻止任务创建，避免跑完仍显示 completed。
+
+        注入检测器（测试或平台适配）由调用方保证可用性，这里只探测默认链路。
+        """
+        if self.inspector is not None:
+            return {"backend": "injected", "available": True, "detail": "使用注入的检测器"}
+        try:
+            capability = probe_detector_capability()
+        except Exception as exc:
+            raise ValueError(f"本地二维码检测器预检失败（{type(exc).__name__}）；已阻止素材清洗任务") from None
+        if not capability.get("available"):
+            raise ValueError(f"本地二维码检测器不可用：{capability.get('detail', '')}；已阻止素材清洗任务")
+        return capability
+
+    def _detector_event(self, job_id: str, capability: dict) -> None:
+        self.jobs.event(job_id, "info", f"检测器预检通过：{capability.get('detail', '')}")
+
     def start_analysis(self, batch_id: str, *, project_id: str | None = None) -> dict:
         """把整批分析转成持久化 job；立即返回，前端通过任务中心观察进度。"""
         self._check_batch_scope(batch_id, project_id, write=True)
         batch = self._batch_row(batch_id)
         if batch["status"] != "ready_to_analyze":
             raise ValueError("只有 ready_to_analyze 批次可以开始分析")
+        capability = self._detector_precheck()
         source_root = Path(batch["source_root"])
         files = _enumerate_images(source_root)
         self._validate_local_limits(files)
@@ -629,6 +654,7 @@ class MaterialService:
         concurrency = self._analysis_concurrency()
         job = self.jobs.create(batch_id, "analyze", items, concurrency)
         self.jobs.event(job["id"], "info", f"任务已创建：{len(items)} 家门店，并发 {concurrency}")
+        self._detector_event(job["id"], capability)
         self.job_runner.wake()
         return {**self.get_batch(batch_id, project_id=project_id), "job": self.jobs.get(job["id"])}
 
@@ -638,6 +664,7 @@ class MaterialService:
         batch = self._batch_row(batch_id)
         if batch["status"] != "completed":
             raise ValueError("只有分析完成的批次可以重新分析")
+        capability = self._detector_precheck()
         ids = list(dict.fromkeys(store_ids))
         if not ids:
             raise ValueError("请选择要重新分析的门店")
@@ -654,6 +681,7 @@ class MaterialService:
         concurrency = self._analysis_concurrency()
         job = self.jobs.create(batch_id, "reanalyze", items, concurrency)
         self.jobs.event(job["id"], "info", f"重新分析任务已创建：{len(items)} 家门店，并发 {concurrency}")
+        self._detector_event(job["id"], capability)
         self.job_runner.wake()
         return {**self.get_batch(batch_id, project_id=project_id), "job": self.jobs.get(job["id"])}
 
@@ -661,6 +689,7 @@ class MaterialService:
         """只重跑上一次任务里失败且未确认的门店；会先取消旧任务再建新任务。"""
         self._check_batch_scope(batch_id, project_id, write=True)
         batch = self._batch_row(batch_id)
+        capability = self._detector_precheck()
         latest = self.jobs.latest(batch_id)
         if latest is None:
             raise ValueError("该批次还没有分析任务")
@@ -675,6 +704,7 @@ class MaterialService:
         concurrency = self._analysis_concurrency()
         job = self.jobs.create_replacing(batch_id, "retry_failed", items, concurrency)
         self.jobs.event(job["id"], "info", f"重试任务已创建：{len(items)} 家失败门店")
+        self._detector_event(job["id"], capability)
         self.job_runner.wake()
         return {**self.get_batch(batch_id, project_id=project_id), "job": self.jobs.get(job["id"])}
 
@@ -791,7 +821,7 @@ class MaterialService:
         resolve = lambda image: context["source_root"] / image["path"]  # noqa: E731 - 与整批 build_materials 同口径
         analyze_store(
             store, context["source_root"],
-            inspector=self.inspector or _apple_vision_inspector,
+            inspector=self.inspector or detect_qr,
             resolve_path=resolve,
         )
         manifest = {"stores": [store]}
@@ -830,7 +860,7 @@ class MaterialService:
         counts = job.get("counts") or self.jobs.counts(job["id"])
         with self.task_store.connect() as db:
             if job["status"] == "completed":
-                self._refresh_batch_summary(db, batch_id)
+                self._refresh_batch_summary(db, batch_id, extra={"detector_capability": self._capability_snapshot()})
                 error = (f"部分门店未能分析（{counts['failed']} 家），可在任务详情重试"
                          if counts["failed"] else "")
                 db.execute(
@@ -840,6 +870,10 @@ class MaterialService:
             else:
                 # 暂停/中断/取消不改变批次可用性，只镜像进度；已完成的门店决策照常保留。
                 message = job.get("message") or job.get("error") or ""
+                capability = self._capability_snapshot()
+                if job["status"] == "failed" and not capability.get("available"):
+                    # 系统性失败必须带明确原因，不能只留“所有门店处理失败”。
+                    message = f"{message}；检测器不可用：{capability.get('detail', '')}"
                 db.execute(
                     "UPDATE material_batches SET progress_done=?,progress_total=?,error=?,updated_at=? WHERE id=?",
                     (counts["done"] + counts["failed"], counts["total"], message, _now(), batch_id),
@@ -919,12 +953,24 @@ class MaterialService:
             shutil.rmtree(self.upload_root / batch["batch_id"], ignore_errors=True)
             raise
 
+    def _capability_snapshot(self) -> dict:
+        """任务结束后记录能力快照；探测失败只写缺失说明，不能影响收尾。"""
+        if self.inspector is not None:
+            return {"backend": "injected", "available": True, "detail": "使用注入的检测器"}
+        try:
+            return probe_detector_capability()
+        except Exception as exc:
+            return {"backend": "unknown", "available": False, "detail": f"检测器预检失败（{type(exc).__name__}）"}
+
     @staticmethod
     def _detection_stats(stores: list[dict], total_ms: float) -> dict:
         """方形检测的聚合指标；只含计数与耗时，不含路径或二维码内容。"""
         return {
             "square": {
                 "scanned_stores": sum(bool(store.get("square_checked")) for store in stores),
+                "detected_stores": sum(store.get("detection_state") == "detected" for store in stores),
+                "not_detected_stores": sum(store.get("detection_state") == "not_detected" for store in stores),
+                "image_error_stores": sum(store.get("detection_state") == "image_error" for store in stores),
                 "hit_stores": sum(
                     bool(store.get("square_checked"))
                     and any(
@@ -1150,6 +1196,9 @@ class MaterialService:
             return False
         try:
             record = _inspect_image(source, image["path"], self.inspector)
+        except DetectorUnavailable:
+            # 检测器能力在任务中途失效同样属于系统性失败，不能被辅助重试吞掉。
+            raise
         except Exception:
             return False
         incoming = record.get("candidates") or []
@@ -2285,6 +2334,8 @@ class MaterialService:
         }
         if isinstance(summary.get("detection_stats"), dict):
             counts["detection_stats"] = summary["detection_stats"]
+        if isinstance(summary.get("detector_capability"), dict):
+            counts["detector_capability"] = summary["detector_capability"]
         return counts
 
     def _batch_summary(self, row: dict) -> dict:
@@ -2601,6 +2652,14 @@ class MaterialService:
                 "selected_artifact": raw_store.get("selected_artifact") if has_recommendation and isinstance(raw_store.get("selected_artifact"), str) else None,
                 "images": images,
             }
+            # 检测统计必须随门店清单持久化，否则批次 summary 会把已扫描门店显示为 0。
+            if raw_store.get("square_checked") is True:
+                safe_store["square_checked"] = True
+            square_ms = raw_store.get("square_ms")
+            if isinstance(square_ms, (int, float)) and not isinstance(square_ms, bool) and math.isfinite(square_ms) and square_ms >= 0:
+                safe_store["square_ms"] = round(float(square_ms), 1)
+            if raw_store.get("detection_state") in _DETECTION_STATES:
+                safe_store["detection_state"] = raw_store["detection_state"]
             safe_stores.append(safe_store)
         summary = {
             "total_stores": len(safe_stores), "total_images": total_images,
