@@ -178,6 +178,9 @@ class SharedHub:
                 CREATE UNIQUE INDEX IF NOT EXISTS shared_current_store
                     ON shared_assignments(batch_id, store) WHERE status IN ('assigned','ready');
                 CREATE INDEX IF NOT EXISTS shared_worker_assignments ON shared_assignments(worker_id,status);
+                CREATE INDEX IF NOT EXISTS shared_assignments_task_status ON shared_assignments(task_id,status);
+                CREATE INDEX IF NOT EXISTS shared_assignments_project_status
+                    ON shared_assignments(project_id,status,created_at DESC);
                 CREATE TABLE IF NOT EXISTS shared_results (
                     assignment_id TEXT PRIMARY KEY, digest TEXT NOT NULL, disposition TEXT NOT NULL,
                     status TEXT NOT NULL, message TEXT NOT NULL, received_at TEXT NOT NULL
@@ -514,29 +517,85 @@ class SharedHub:
         task_id = str(task_id or "")
         if not task_id:
             return ""
+        return self.observed_store_names((task_id,), project_id=project_id).get(task_id, "")
+
+    def observed_store_names(self, task_ids, project_id: str | None = None) -> dict[str, str]:
+        """批量按原始任务编号取当前有效采集结果伴随的门店名称，避免全量导出/预览产生 N+1 查库。"""
+        unique = [str(tid) for tid in dict.fromkeys(str(t or "") for t in task_ids) if tid]
+        if not unique:
+            return {}
         with self.store.connect() as db:
-            owners: list[str] = []
-            current = task_id
-            # inherited_from 只在换版复用结果时写入，正常情况下不超过一级；带环保护防脏数据死循环。
+            # 1. 批量展开 inherited_from 链（最多 5 层，带环保护）
+            inherited_map: dict[str, str] = {}
+            frontier = set(unique)
             for _ in range(5):
-                if not current or current in owners:
+                to_fetch = [tid for tid in frontier if tid not in inherited_map]
+                if not to_fetch:
                     break
-                owners.append(current)
-                row = db.execute("SELECT inherited_from FROM tasks WHERE id=?", (current,)).fetchone()
-                current = str(row["inherited_from"] or "") if row else ""
-            if not owners:
-                return ""
-            placeholders = ",".join("?" * len(owners))
+                next_frontier: set[str] = set()
+                for offset in range(0, len(to_fetch), 500):
+                    chunk = to_fetch[offset : offset + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    for row in db.execute(f"SELECT id, inherited_from FROM tasks WHERE id IN ({placeholders})", chunk):
+                        parent = str(row["inherited_from"] or "")
+                        inherited_map[str(row["id"])] = parent
+                        if parent and parent not in inherited_map:
+                            next_frontier.add(parent)
+                for tid in to_fetch:
+                    inherited_map.setdefault(tid, "")
+                frontier = next_frontier
+
+            owners_by_task: dict[str, list[str]] = {}
+            all_owners: set[str] = set()
+            for tid in unique:
+                chain: list[str] = []
+                cur = tid
+                for _ in range(5):
+                    if not cur or cur in chain:
+                        break
+                    chain.append(cur)
+                    cur = inherited_map.get(cur, "")
+                owners_by_task[tid] = chain
+                all_owners.update(chain)
+
+            if not all_owners:
+                return {tid: "" for tid in unique}
+
+            # 2. 批量查询所有归属任务对应的最新 accepted 结果名称
             project_filter = " AND a.project_id=?" if project_id is not None else ""
-            params = (*owners, project_id) if project_id is not None else tuple(owners)
-            row = db.execute(
-                "SELECT n.store_name AS observed_store_name FROM shared_results r"
-                " JOIN shared_assignments a ON a.id=r.assignment_id"
-                " LEFT JOIN shared_result_names n ON n.assignment_id=r.assignment_id"
-                f" WHERE a.task_id IN ({placeholders}) AND r.disposition='accepted'"
-                + project_filter + " ORDER BY r.received_at DESC, r.assignment_id DESC LIMIT 1",
-                params).fetchone()
-        return str(row["observed_store_name"] or "") if row else ""
+            latest_by_owner: dict[str, tuple[str, str, str]] = {}
+            owner_list = list(all_owners)
+            for offset in range(0, len(owner_list), 500):
+                chunk = owner_list[offset : offset + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                params = (*chunk, project_id) if project_id is not None else tuple(chunk)
+                rows = db.execute(
+                    "SELECT a.task_id, r.received_at, r.assignment_id, n.store_name AS observed_store_name"
+                    " FROM shared_results r"
+                    " JOIN shared_assignments a ON a.id=r.assignment_id"
+                    " LEFT JOIN shared_result_names n ON n.assignment_id=r.assignment_id"
+                    f" WHERE a.task_id IN ({placeholders}) AND r.disposition='accepted'"
+                    + project_filter + " ORDER BY r.received_at DESC, r.assignment_id DESC",
+                    params,
+                ).fetchall()
+                for row in rows:
+                    owner_id = str(row["task_id"])
+                    if owner_id not in latest_by_owner:
+                        latest_by_owner[owner_id] = (
+                            str(row["received_at"] or ""),
+                            str(row["assignment_id"] or ""),
+                            str(row["observed_store_name"] or ""),
+                        )
+
+        result: dict[str, str] = {}
+        for tid, chain in owners_by_task.items():
+            best: tuple[str, str, str] | None = None
+            for owner_id in chain:
+                cand = latest_by_owner.get(owner_id)
+                if cand is not None and (best is None or (cand[0], cand[1]) > (best[0], best[1])):
+                    best = cand
+            result[tid] = best[2] if best is not None else ""
+        return result
 
     def reclaim_many(self, assignment_ids: list[str], *, project_id: str | None = None) -> dict:
         if (not isinstance(assignment_ids, list) or not 1 <= len(assignment_ids) <= 300
@@ -934,7 +993,7 @@ class SharedHub:
         if supported_project_scope:
             response["supports_project_scope"] = True
             response["projects"] = projects_for_worker
-            response["assignments"] = assignments
+            response["assignments"] = response_assignments
         return response
 
     def record_run_history(self, worker_id: str, report: HistoryReport,

@@ -279,6 +279,7 @@ class MaterialService:
                     db.execute(f"ALTER TABLE material_decisions ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
             # 管理列表按批次查询引用运行；索引避免每个批次都扫描完整 runs 表。
             db.execute("CREATE INDEX IF NOT EXISTS runs_material_batch ON runs(material_batch_id)")
+            db.execute("CREATE INDEX IF NOT EXISTS material_decisions_batch_decision ON material_decisions(batch_id,decision)")
 
     def _read_ocr(self, path: Path) -> list[dict] | None:
         """按线程缓存本地 OCR 结果，避免方形判定与用途分类重复调用。"""
@@ -1711,17 +1712,27 @@ class MaterialService:
         manifests: dict[str, dict[str, tuple]] = {}
         _, blocked = self.store_versions.current(set())
         with self.task_store.connect() as db:
+            where = ["b.deleted_at=''"]
+            params: list[object] = []
+            if project_id is not None:
+                where.append("b.project_id=?")
+                params.append(project_id)
+            if wanted:
+                placeholders = ",".join("?" for _ in wanted)
+                where.append(f"d.batch_id IN ({placeholders})")
+                params.extend(wanted)
+            # 仅查询轻量元数据列，不读取体积庞大的 store_json，避免跨批次返工列表加载缓慢。
             rows = [dict(row) for row in db.execute(
-                "SELECT * FROM material_decisions ORDER BY batch_id,source_folder,store_id")]
-            names = {row["id"]: row["name"] for row in db.execute(
-                "SELECT id,name FROM material_batches WHERE deleted_at=''" +
-                (" AND project_id=?" if project_id is not None else ""),
-                ((project_id,) if project_id is not None else ())) }
+                "SELECT d.batch_id,d.store_id,d.source_name,d.source_folder,d.decision,"
+                "d.selected_json,d.selected_source_hash,d.reject_reason,d.reject_detail,"
+                "d.updated_at,b.name AS batch_name "
+                "FROM material_decisions d JOIN material_batches b ON b.id=d.batch_id "
+                f"WHERE {' AND '.join(where)} ORDER BY d.batch_id,d.source_folder,d.store_id",
+                params,
+            )]
         records: list[dict] = []
         for row in rows:
             batch_id = row["batch_id"]
-            if batch_id not in names or (wanted and batch_id not in wanted):
-                continue
             decision = row["decision"]
             if decision == "confirmed":
                 if batch_id not in manifests:
@@ -1747,7 +1758,7 @@ class MaterialService:
             code = row.get("reject_reason", "")
             version = (latest.get(batch_id) or {}).get("version") or {}
             records.append({
-                "batch_id": batch_id, "batch_name": names[batch_id] or batch_id,
+                "batch_id": batch_id, "batch_name": row.get("batch_name") or batch_id,
                 "store_id": row["store_id"], "store_name": row["source_name"],
                 "source_folder": row["source_folder"], "decision": decision, "category": category,
                 "reason_code": code, "reason_label": REJECTION_REASONS.get(code, "") if code else "",
@@ -2355,7 +2366,9 @@ class MaterialService:
 
     def _batch_summary(self, row: dict) -> dict:
         with self.task_store.connect() as db:
-            decisions = [dict(item) for item in db.execute("SELECT * FROM material_decisions WHERE batch_id=?", (row["id"],))]
+            # 仅取计数所需列，避免为每个批次加载大体积 store_json。
+            decisions = [dict(item) for item in db.execute(
+                "SELECT decision,recommendation FROM material_decisions WHERE batch_id=?", (row["id"],))]
         return {
             "batch_id": row["id"], "source_kind": row["source_kind"], "status": row["status"],
             "progress": {"done": row["progress_done"], "total": row["progress_total"]},

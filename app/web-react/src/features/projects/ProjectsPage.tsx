@@ -65,8 +65,8 @@ export function ProjectsPage() {
   const invalidateProjects = () => client.invalidateQueries({ queryKey: projectsKeys.all })
   const saveMutation = useMutation({
     mutationFn: () => editing ? updateProject(editing.id, { name: draft.name.trim(), description: draft.description.trim() }) : createProject({ code: draft.code.trim(), name: draft.name.trim(), description: draft.description.trim() }),
-    onSuccess: (project) => {
-      void invalidateProjects()
+    onSuccess: async (project) => {
+      await invalidateProjects()
       closeForm()
       toast.push(editing ? '项目资料已更新' : '项目已创建', 'success')
       if (!editing) navigate(`/workbench?project=${encodeURIComponent(project.id)}`)

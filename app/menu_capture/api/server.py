@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from PIL import Image
 from starlette.background import BackgroundTask
@@ -89,6 +90,33 @@ def _rejection_store_code(text: str) -> str:
 def _project_record(store: TaskStore, project_id: str) -> dict:
     with store.connect() as db:
         return get_project(db, project_id)
+
+
+class _SelectiveGZipMiddleware:
+    """仅对可压缩的 JSON/文本/静态脚本响应启用 GZip，跳过已压缩的图片、ZIP 与 Excel 下载。"""
+
+    _SKIP_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".zip", ".xlsx", ".nupkg", ".exe", ".gz")
+
+    def __init__(self, app, *, minimum_size: int = 1024):
+        self.app = app
+        self.gzip = GZipMiddleware(app, minimum_size=minimum_size)
+
+    @classmethod
+    def _should_skip(cls, path: str) -> bool:
+        lower = path.lower()
+        if lower.endswith(cls._SKIP_SUFFIXES):
+            return True
+        if lower.startswith(("/api/artifact/", "/api/source/", "/api/action-evidence/", "/api/annotation/frame", "/api/shared/worker/")):
+            return True
+        if "/images/" in lower or lower.endswith(("/selected", "/source", "/last-frame", "/evidence")):
+            return True
+        return False
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and not self._should_skip(str(scope.get("path") or "")):
+            await self.gzip(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
@@ -343,6 +371,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     remote_token = secrets.token_urlsafe(32) if remote_control_host else ""
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    # 仅压缩可压缩的 JSON/文本/前端脚本响应，避免对 PNG/JPG/ZIP/XLSX 重复压缩浪费 CPU。
+    app.add_middleware(_SelectiveGZipMiddleware, minimum_size=1024)
     app.state.runner, app.state.configs, app.state.store = runner, configs, store
     app.state.debug_log = debug_log
     app.state.model_usage = model_usage
@@ -535,7 +565,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return JSONResponse({"detail": "请在已配对的 Windows 采集端执行此操作"}, status_code=409)
         if worker and request.method not in {"GET", "HEAD"} and (
             path in {"/api/start", "/api/scan", "/api/ui-tars/trial"}
-            or path.startswith(("/api/materials/", "/api/reviews/", "/api/rejections/"))
+            or (path.startswith(("/api/materials/", "/api/reviews/", "/api/rejections/"))
+                and path != "/api/reviews/pending/rerun")
             or re.fullmatch(r"/api/tasks/[^/]+/(reject|retry|mark-review|rejection/undo)", path)
         ):
             return JSONResponse({"detail": "请在共享工作台管理素材和审核结果"}, status_code=409)
@@ -770,7 +801,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return owner == project_id
         if role == "standalone":
             return project_id == LEGACY_ID
-        return bool(run.get("task_ids")) and {task_project_id(task_id) for task_id in run["task_ids"]} == {project_id}
+        return bool(run.get("task_ids")) and set(task_project_ids(run["task_ids"]).values()) == {project_id}
 
     def require_run_scope(project_id: str) -> dict:
         run = store.latest_run()
@@ -779,8 +810,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return run
 
     rejections.task_project_provider = task_project_id
+    rejections.task_project_ids_provider = task_project_ids
     if hub:
         rejections.observed_names = hub.observed_store_name
+        rejections.observed_names_batch = hub.observed_store_names
 
     # 各业务域通过 ApiContext 注入依赖后自行注册路由，server.py 不再持有这些 handler。
     ctx = ApiContext(
@@ -1169,38 +1202,28 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         if release:
             with store.connect() as db:
                 rows = db.execute(
-                    "SELECT store_json FROM material_decisions WHERE batch_id=? AND decision='skipped'",
+                    "SELECT source_folder, source_name FROM material_decisions WHERE batch_id=? AND decision='skipped'",
                     (release["batch_id"],),
                 ).fetchall()
             task_codes = {_rejection_store_code(task.get("source_name")) for task in tasks if task.get("reject_reason")
                           and (not paged or task.get("snapshot_id") == release["snapshot_id"])}
-            material_codes = set()
-            for row in rows:
-                try:
-                    data = json.loads(row["store_json"] or "{}")
-                except (TypeError, json.JSONDecodeError):
-                    data = {}
-                code = _rejection_store_code(data.get("source_folder") or data.get("name") or "")
-                if code:
-                    material_codes.add(code)
+            material_codes = {
+                code for row in rows
+                if (code := _rejection_store_code(row["source_folder"] or row["source_name"] or ""))
+            }
             material_rejected = len(material_codes - task_codes)
         # 全部批次口径与批次管理列表保持一致：只算未删除批次（回收站不计），
         # 并扣除已经有采集不合格记录的同一门店，避免同一家店被计两次。
         with store.connect() as db:
             all_rows = db.execute(
-                "SELECT d.store_json FROM material_decisions d "
+                "SELECT d.source_folder, d.source_name FROM material_decisions d "
                 "JOIN material_batches b ON b.id=d.batch_id "
                 "WHERE d.decision='skipped' AND b.deleted_at='' AND b.project_id=?", (scope,)
             ).fetchall()
-        all_material_codes = set()
-        for row in all_rows:
-            try:
-                data = json.loads(row["store_json"] or "{}")
-            except (TypeError, json.JSONDecodeError):
-                data = {}
-            code = _rejection_store_code(data.get("source_folder") or data.get("name") or "")
-            if code:
-                all_material_codes.add(code)
+        all_material_codes = {
+            code for row in all_rows
+            if (code := _rejection_store_code(row["source_folder"] or row["source_name"] or ""))
+        }
         if all_material_codes:
             # 只有与当前素材不合格清单同门店编号的历史记录才影响去重结果。
             candidates = [(task["id"], code) for task in store.rejections()
@@ -1243,9 +1266,14 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                                                    release.get("batch_name", "")))
             else:
                 output_path = str(Path(settings.output_dir).expanduser().resolve())
+        # 空闲未选门店属于正常待命态，不应把执行引擎标为“不可用”。
+        idle_unselected = bool(ready.get("selection_missing")) and len(ready.get("issues") or []) <= 1
+        engine_ready = None if idle_unselected else ready["ready"]
+        effective_engine_message = engine_message if idle_unselected else ("；".join(ready["issues"]) or engine_message)
         return {"execution_engine": engine, "launch_mode": launch_mode,
-                "engine_ready": ready["ready"], "engine_message": "；".join(ready["issues"]) or engine_message,
-                "robot_readiness": ready, "run_directory": str(getattr(runner, "run_directory", "") or ""),
+                "engine_ready": engine_ready, "engine_message": effective_engine_message,
+                "robot_readiness": (ready | {"ready": None, "issues": []}) if idle_unselected else ready,
+                "run_directory": str(getattr(runner, "run_directory", "") or ""),
                 "running": runner.running, "stop_requested": runner.stop.is_set(),
                 "run": run, "current_task": runner.current_task if run else None,
                 "material_release": release,
@@ -1557,9 +1585,23 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 })
         return {"tasks": items}
 
-    def capture_history_task_index(project_id: str | None = None) -> dict:
+    def capture_history_task_index(project_id: str | None = None,
+                                   needed_task_ids: set[str] | None = None) -> dict:
         # 在采集端按分配记录补充旧轮次来源；在共享后台按当前发布快照提取批次。
-        tasks = {task["id"]: task for task in store.tasks()}
+        if needed_task_ids is not None:
+            unique = [tid for tid in needed_task_ids if tid]
+            tasks: dict[str, dict] = {}
+            if unique:
+                with store.connect() as db:
+                    for offset in range(0, len(unique), 500):
+                        chunk = unique[offset : offset + 500]
+                        placeholders = ",".join("?" for _ in chunk)
+                        for row in db.execute(f"SELECT * FROM tasks WHERE id IN ({placeholders})", chunk):
+                            tasks[str(row["id"])] = dict(row)
+        else:
+            tasks = {task["id"]: task for task in store.tasks()}
+        if not tasks:
+            return {}
         if worker:
             with store.connect() as db:
                 if worker._hub_supports_project_scope:
@@ -1582,8 +1624,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 if row["id"] in tasks:
                     tasks[row["id"]] = row
             if project_id is not None:
+                proj_map = task_project_ids(tasks.keys())
                 tasks = {task_id: task for task_id, task in tasks.items()
-                         if task_project_id(task_id) == project_id}
+                         if proj_map.get(str(task_id)) == project_id}
         return tasks
 
     def scoped_capture_history(run: dict, result_rows: list[dict], task_index: dict, project_id: str) -> dict | None:
@@ -1599,8 +1642,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                     selected_results.append(row | {"project_id": project_id})
         else:
             selected_results = [row for row in result_rows if row.get("project_id") == project_id]
-            selected_ids = [task_id for task_id in ids
-                            if any(row.get("task_id") == task_id for row in selected_results)]
+            selected_result_ids = {row.get("task_id") for row in selected_results}
+            selected_ids = [task_id for task_id in ids if task_id in selected_result_ids]
         if not selected_ids:
             return None
         by_id = {row.get("task_id"): row for row in selected_results}
@@ -1627,7 +1670,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             # 单机历史没有多项目边界；保留旧版无 project_id 轮次的读取兼容。
             runs = store.run_history(500, project_id=None if role == "standalone" else scope) if not worker_id else []
             results = store.capture_run_results([run["id"] for run in runs])
-            task_index = capture_history_task_index(scope) if runs else {}
+            needed_ids = {tid for run in runs for tid in (run.get("task_ids") or [])}
+            task_index = capture_history_task_index(scope, needed_task_ids=needed_ids) if runs else {}
             for run in runs:
                 item = scoped_capture_history(run, results.get(run["id"], []), task_index, scope)
                 if item is None:
@@ -1637,13 +1681,24 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             if hub:
                 rows.extend(hub.history_records(worker_id=worker_id, project_id=scope))
         if kind in ("all", "materials") and not worker_id:
-            for job in materials.jobs.history(500, project_id=scope):
+            jobs = materials.jobs.history(500, project_id=scope)
+            batch_names: dict[str, str] = {}
+            if jobs:
+                unique_batches = list(dict.fromkeys(str(job["batch_id"]) for job in jobs if job.get("batch_id")))
+                with store.connect() as db:
+                    for offset in range(0, len(unique_batches), 500):
+                        chunk = unique_batches[offset : offset + 500]
+                        placeholders = ",".join("?" for _ in chunk)
+                        for brow in db.execute(f"SELECT id,name FROM material_batches WHERE id IN ({placeholders})", chunk):
+                            batch_names[str(brow["id"])] = str(brow["name"] or "")
+            for job in jobs:
+                bname = batch_names.get(str(job["batch_id"]), "") or str(job["batch_id"])
                 rows.append({
                     "kind": "materials",
                     "id": job["id"],
-                    "title": _batch_name(job["batch_id"]),
+                    "title": bname,
                     "batch_id": job["batch_id"],
-                    "batch_name": _batch_name(job["batch_id"]),
+                    "batch_name": bname,
                     "mode": job.get("kind", ""),
                     "status": job.get("status", ""),
                     "created_at": job.get("created_at", ""),
@@ -1778,11 +1833,13 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         scope = project_scope(project_id, write=True)
         run = store.get_run(run_id)
         results = store.capture_run_results([run_id]).get(run_id, [])
-        if scoped_capture_history(run, results, capture_history_task_index(scope), scope) is None:
+        needed = set(run.get("task_ids") or [])
+        task_index = capture_history_task_index(scope, needed_task_ids=needed)
+        if scoped_capture_history(run, results, task_index, scope) is None:
             raise HTTPException(404, "运行记录不属于当前项目")
         store.rename_run(run_id, name)
         results = store.capture_run_results([run_id]).get(run_id, [])
-        record = scoped_capture_history(store.get_run(run_id), results, capture_history_task_index(), scope)
+        record = scoped_capture_history(store.get_run(run_id), results, task_index, scope)
         return record
 
     @app.get("/api/materials/batches/{batch_id}")
@@ -1940,9 +1997,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     @app.post("/api/materials/rework/return")
     def return_material_rework(payload: dict, project_id: str | None = None):
         """打回选错码的门店：恢复待处理，等待人工在原批次重新选码。"""
-        if set(payload) != {"batch_id", "store_id"}:
+        if not {"batch_id", "store_id"} <= set(payload) or (set(payload) - {"batch_id", "store_id", "project_id"}):
             raise ValueError("打回参数无效")
-        scope = batch_scope(str(payload["batch_id"]), project_id, write=True)
+        scope = batch_scope(str(payload["batch_id"]), project_id or payload.get("project_id"), write=True)
         with control_lock:
             idle()
             result = materials.return_rework_store(str(payload["batch_id"]), str(payload["store_id"]),
@@ -1955,9 +2012,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     def publish_material_rework(payload: dict, project_id: str | None = None):
         """统一发布已处理门店：按原批次分组，各自在最新快照上增量更新。"""
         payload = payload or {}
-        if set(payload) - {"store_ids", "description"}:
+        if set(payload) - {"store_ids", "description", "project_id"}:
             raise ValueError("发布参数无效")
-        scope = project_scope(project_id, write=True)
+        scope = project_scope(project_id or payload.get("project_id"), write=True)
         store_ids = payload.get("store_ids")
         if not isinstance(store_ids, list) or not store_ids:
             raise ValueError("请勾选要发布的门店")
@@ -2163,8 +2220,24 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         connection = worker.connection if worker else {}
         return connection.get("id") or local_name, connection.get("name") or local_name
 
+    def _manual_scope(project_id: str | None, *, write: bool = False) -> str | None:
+        """半自动独立/远程控制窗不加载项目列表：未显式传入 project_id 时按当前轮次自动定位项目。"""
+        if project_id:
+            return project_scope(project_id, write=write)
+        if role == "standalone":
+            return project_scope(None, write=write)
+        run = store.latest_run()
+        run_project = str((run or {}).get("project_id") or "")
+        if run_project:
+            return project_scope(run_project, write=write)
+        if role == "worker" and worker and not worker._hub_supports_project_scope:
+            return LEGACY_ID
+        if not write:
+            return None
+        return project_scope(None, write=True)
+
     def _manual_action(request: Request, kind: str, payload: dict) -> dict:
-        scope = project_scope(payload.get("project_id"), write=True)
+        scope = _manual_scope(payload.get("project_id"), write=True)
         expected = payload.get("context")
         manual = runner.manual_state()
         if request.state.remote_control or expected is not None:
@@ -2198,8 +2271,12 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
 
     @app.get("/api/manual/state")
     def manual_state(project_id: str | None = None):
-        scope = project_scope(project_id)
+        scope = _manual_scope(project_id, write=False)
         device_id, device_name = manual_device()
+        if scope is None:
+            return {"device_id": device_id, "device_name": device_name, "project_id": "",
+                    "manual": None, "run_name": "", "run_status": "",
+                    "remote_url": f"https://{remote_control_host}/remote-control" if remote_control_host else ""}
         run = store.latest_run()
         visible = run if run_project_matches(run, scope) else None
         manual = runner.manual_state()
@@ -2209,8 +2286,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         if role == "worker" and worker and not worker._hub_supports_project_scope and not visible and manual:
             # 旧 Hub 的单工作区协议没有项目快照，旧半自动会话继续按 legacy 本地读取。
             visible = {"name": "", "status": ""}
-        return {"device_id": device_id, "device_name": device_name,
-                "manual": manual if visible else {},
+        return {"device_id": device_id, "device_name": device_name, "project_id": scope,
+                "manual": (manual or None) if visible else None,
                 "run_name": (visible.get("name") or "半自动采集") if visible else "",
                 "run_status": visible["status"] if visible else "",
                 "remote_url": f"https://{remote_control_host}/remote-control" if remote_control_host else ""}
@@ -2249,7 +2326,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
 
     def _validate_manual_aux_context(request: Request, payload: dict) -> dict | None:
         expected = payload.get("context") if isinstance(payload, dict) else None
-        scope = project_scope(payload.get("project_id") if isinstance(payload, dict) else None, write=True)
+        scope = _manual_scope(payload.get("project_id") if isinstance(payload, dict) else None, write=True)
         manual = runner.manual_state()
         if request.state.remote_control or expected is not None:
             keys = ("device_id", "run_id", "task_id", "wait_id")

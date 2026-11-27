@@ -240,8 +240,26 @@ class JobStore:
                          "WHERE b.project_id=? ORDER BY j.created_at DESC,j.rowid DESC LIMIT ?")
                 params = (project_id, max(1, int(limit)))
             rows = [dict(row) for row in db.execute(query, params)]
-        for row in rows:
-            row["counts"] = self.counts(row["id"])
+            if rows:
+                job_ids = [str(row["id"]) for row in rows]
+                counts_by_job: dict[str, dict[str, int]] = {}
+                for offset in range(0, len(job_ids), 500):
+                    chunk = job_ids[offset : offset + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    for crow in db.execute(
+                        "SELECT job_id, COUNT(*) AS total, "
+                        "SUM(status='done') AS done, SUM(status='failed') AS failed, "
+                        "SUM(status IN ('pending','running')) AS remaining, "
+                        "SUM(status='running') AS running "
+                        f"FROM material_job_items WHERE job_id IN ({placeholders}) GROUP BY job_id",
+                        chunk,
+                    ):
+                        counts_by_job[str(crow["job_id"])] = {
+                            key: int(crow[key] or 0) for key in ("total", "done", "failed", "remaining", "running")
+                        }
+                empty_counts = {"total": 0, "done": 0, "failed": 0, "remaining": 0, "running": 0}
+                for row in rows:
+                    row["counts"] = dict(counts_by_job.get(str(row["id"]), empty_counts))
         return rows
 
     def counts(self, job_id: str) -> dict:

@@ -94,6 +94,7 @@ export interface ManualSaveStoreNameResponse {
 export interface ManualControlState {
   device_id: string
   device_name: string
+  project_id?: string
   manual: ManualState | null
   run_name: string
   run_status: string

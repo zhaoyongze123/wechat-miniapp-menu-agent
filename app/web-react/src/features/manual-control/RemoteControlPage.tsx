@@ -15,7 +15,6 @@ import {
   manualReject,
   manualSaveStoreName,
 } from '../worker/api'
-import { useProject } from '../projects/ProjectProvider'
 
 interface DocumentPictureInPicture {
   window: Window | null
@@ -25,7 +24,9 @@ interface DocumentPictureInPicture {
 type Decision = { kind: 'capture' } | { kind: 'reject'; reason: string; detail: string }
 
 export function RemoteControlPage() {
-  const { projectId } = useProject()
+  // /remote-control 是独立轻量控制入口（未挂载 ProjectProvider，远程 HTTPS 亦禁止调用 /api/projects）；
+  // 优先读取 URL 可选 project_id，否则由后端 /api/manual/state 自动绑定当前运行轮次所属项目。
+  const urlProjectId = new URLSearchParams(window.location.search).get('project_id') || ''
   const [pinned, setPinned] = useState<Window | null>(null)
   const opening = useRef(false)
   const [windowError, setWindowError] = useState('')
@@ -43,15 +44,15 @@ export function RemoteControlPage() {
 
   const api = (window as Window & { documentPictureInPicture?: DocumentPictureInPicture }).documentPictureInPicture
   const query = useQuery({
-    queryKey: ['project', projectId || 'unselected', 'manual-control'],
-    queryFn: ({ signal }) => fetchManualState(signal, projectId),
-    enabled: Boolean(projectId),
+    queryKey: ['remote-manual-control', urlProjectId || 'active'],
+    queryFn: ({ signal }) => fetchManualState(signal, urlProjectId || undefined),
     refetchInterval: 1_500,
     refetchIntervalInBackground: Boolean(pinned),
     staleTime: 1_250,
   })
   const state = query.data
-  const manual = state?.manual
+  const manual = state?.manual && state.manual.task_id ? state.manual : null
+  const effectiveProjectId = urlProjectId || state?.project_id || undefined
 
   const requireFreshContext = () => {
     const context = manualCommandContext(state)
@@ -65,8 +66,8 @@ export function RemoteControlPage() {
     mutationFn: (decision: Decision) => {
       const context = requireFreshContext()
       return decision.kind === 'capture'
-        ? manualCapture(context, projectId)
-        : manualReject(context, decision.reason, decision.detail, projectId)
+        ? manualCapture(context, effectiveProjectId)
+        : manualReject(context, decision.reason, decision.detail, effectiveProjectId)
     },
     onSettled: () => {
       void query.refetch()
@@ -168,13 +169,13 @@ export function RemoteControlPage() {
           onReject={(reason, detail) => command.mutate({ kind: 'reject', reason, detail })}
           onRecognizeStoreName={async () => {
             const context = requireFreshContext()
-            const res = await manualRecognizeStoreName(context, projectId)
+            const res = await manualRecognizeStoreName(context, effectiveProjectId)
             void query.refetch()
             return res
           }}
           onSaveStoreName={async (storeName) => {
             const context = requireFreshContext()
-            await manualSaveStoreName(context, storeName, projectId)
+            await manualSaveStoreName(context, storeName, effectiveProjectId)
             void query.refetch()
           }}
           extraSettings={extraSettings}

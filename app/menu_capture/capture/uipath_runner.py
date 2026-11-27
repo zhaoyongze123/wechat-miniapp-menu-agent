@@ -363,12 +363,27 @@ class UiPathRunner:
                 task_ids = [value.strip() for value in raw_task_ids]
                 if len(set(task_ids)) != len(task_ids):
                     issues.append("selected_task_ids 不能包含重复任务")
+                elif self.assignment_source is not None and task_ids_override is None:
+                    # 共享派单空闲诊断时，profile 中可能残留上一轮已完成或已收回的任务 ID；
+                    # 仅保留仍在当前可采集分配中的任务，若全部已过期则按“尚未选择采集任务”提示。
+                    active_ids = [tid for tid in task_ids if self.assignment_source(tid)]
+                    if not active_ids:
+                        task_ids = []
+                        issues.append("automatic 模式请按顺序选择至少一个来源任务 ID")
+                        selection_missing = True
+                    else:
+                        task_ids = active_ids
         else:
             if not isinstance(task_id, str) or not task_id.strip():
                 issues.append("请先在任务列表中手动指定一个来源任务 ID")
                 selection_missing = True
             else:
-                task_ids = [task_id.strip()]
+                candidate_id = task_id.strip()
+                if self.assignment_source is not None and task_ids_override is None and not self.assignment_source(candidate_id):
+                    issues.append("请先在任务列表中手动指定一个来源任务 ID")
+                    selection_missing = True
+                else:
+                    task_ids = [candidate_id]
         max_tasks = profile.get("max_tasks", 1)
         if mode == "attached" and (isinstance(max_tasks, bool) or not isinstance(max_tasks, int) or max_tasks != 1):
             issues.append("attached 模式只允许一个明确选定的任务；max_tasks 必须为 1")
@@ -2823,6 +2838,8 @@ class UiPathRunner:
 
     def _validate_source(self, task: dict, input_dir: str, trial_source: bool = False) -> Path:
         if not input_dir:
+            if trial_source:
+                raise NeedsReview("所选门店分配已完成或已收回，请重新选择可采集门店")
             raise NeedsReview("请先选择用于采集的发布版本")
         root = Path(input_dir).expanduser().resolve()
         # 双机试验批次的来源快照由 Hub 分配，发布标记与文件 hash 已在分级校验里核对；

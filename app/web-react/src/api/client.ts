@@ -76,6 +76,8 @@ async function readError(response: Response): Promise<{ detail: string; conflict
   return { detail, conflicts }
 }
 
+const DEFAULT_GET_TIMEOUT_MS = 30_000
+
 async function send(path: string, request: ApiRequest, freshSession: boolean): Promise<Response> {
   const method = request.method ?? 'GET'
   const headers: Record<string, string> = { Accept: 'application/json', ...request.headers }
@@ -85,13 +87,40 @@ async function send(path: string, request: ApiRequest, freshSession: boolean): P
     headers['Content-Type'] = 'application/json'
     body = JSON.stringify(request.json)
   }
-  return fetch(path, {
-    method,
-    headers,
-    body: body ?? null,
-    signal: request.signal ?? null,
-    cache: 'no-store',
-  })
+  let controller: AbortController | null = null
+  let timer: number | undefined
+  let onExternalAbort: (() => void) | undefined
+  let signal = request.signal ?? null
+  if (method === 'GET') {
+    controller = new AbortController()
+    if (request.signal) {
+      if (request.signal.aborted) {
+        controller.abort()
+      } else {
+        onExternalAbort = () => controller?.abort()
+        request.signal.addEventListener('abort', onExternalAbort, { once: true })
+      }
+    }
+    timer = window.setTimeout(() => controller?.abort(), DEFAULT_GET_TIMEOUT_MS)
+    signal = controller.signal
+  }
+  try {
+    return await fetch(path, {
+      method,
+      headers,
+      body: body ?? null,
+      signal,
+      cache: 'no-store',
+    })
+  } catch (error) {
+    if (controller && controller.signal.aborted && !request.signal?.aborted) {
+      throw new ApiError('请求超时，请检查服务连接后重试', 408)
+    }
+    throw error
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer)
+    if (request.signal && onExternalAbort) request.signal.removeEventListener('abort', onExternalAbort)
+  }
 }
 
 /** 发起同源 API 请求并解析 JSON；错误按 HTTP 语义抛出 ApiError。 */

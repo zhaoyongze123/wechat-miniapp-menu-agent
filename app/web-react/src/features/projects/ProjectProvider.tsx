@@ -92,17 +92,18 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, [location.pathname, location.search])
 
   const displayProject = project ?? (!isBusinessPage ? defaultProject : null)
+  const redirectingToDefault = Boolean(isBusinessPage && !requestedId && !listQuery.isPending && !listQuery.isError && defaultProject)
   const value = useMemo<ProjectContextValue>(() => ({
     projectId: displayProject?.id ?? '',
     project: displayProject,
     displayProject,
     projects,
-    loading: listQuery.isPending || role.loading,
+    loading: listQuery.isPending || role.loading || redirectingToDefault,
     error: listQuery.error instanceof Error ? listQuery.error.message : role.error,
-    invalid: Boolean(requestedId && !listQuery.isPending && !project),
+    invalid: Boolean(requestedId && !listQuery.isPending && !listQuery.isFetching && !project),
     isBusinessPage,
     switchHref,
-  }), [displayProject, isBusinessPage, listQuery.error, listQuery.isPending, projects, requestedId, role.error, role.loading, switchHref])
+  }), [displayProject, isBusinessPage, listQuery.error, listQuery.isFetching, listQuery.isPending, projects, redirectingToDefault, requestedId, role.error, role.loading, switchHref])
 
   return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>
 }
@@ -111,6 +112,11 @@ export function useProject(): ProjectContextValue {
   const value = useContext(ProjectContext)
   if (!value) throw new Error('useProject 必须在 ProjectProvider 内使用')
   return value
+}
+
+/** 供 /remote-control 等不挂载 ProjectProvider 的独立轻量入口安全读取项目上下文。 */
+export function useOptionalProject(): ProjectContextValue | null {
+  return useContext(ProjectContext)
 }
 
 /** 项目业务页统一处理加载、错误、无项目与失效深链。归档项目保留读取能力。 */

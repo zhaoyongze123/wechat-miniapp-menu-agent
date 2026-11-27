@@ -15,6 +15,7 @@ import { ImagePreview } from '../../components/ImagePreview'
 import { StatePanel } from '../../components/StatePanel'
 import { StatusBadge } from '../../components/StatusBadge'
 import { useToast } from '../../components/ToastProvider'
+import { useRole } from '../../app/RoleProvider'
 import { errorMessage } from '../../api/client'
 import { projectApiPath, projectQueryKey } from '../projects/scope'
 import { formatStore } from '../hub/format'
@@ -75,6 +76,7 @@ interface TaskDetailDrawerProps {
 export function TaskDetailDrawer({ projectId, selection, summary, onClose, onRenamed }: TaskDetailDrawerProps) {
   const queryClient = useQueryClient()
   const toast = useToast()
+  const role = useRole()
   const [dispositionTaskId, setDispositionTaskId] = useState<string | null>(null)
   const [renaming, setRenaming] = useState(false)
   const [name, setName] = useState('')
@@ -433,7 +435,7 @@ export function TaskDetailDrawer({ projectId, selection, summary, onClose, onRen
       widthClass="w-[min(720px,94vw)]"
       footer={
         <div className="flex flex-wrap justify-end gap-2">
-          {storeDetail?.status === 'review' ? (
+          {storeDetail?.status === 'review' && role.role !== 'worker' ? (
             <Button
               color="primary"
               size="sm"

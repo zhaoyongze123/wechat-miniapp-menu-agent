@@ -7,7 +7,7 @@ import { roleOf } from '../../api/types'
 import { fetchActiveTasks, fetchTaskDetail } from '../task-center/api'
 import type { ManualState } from '../worker/types'
 import { deviceStateOf } from '../hub/format'
-import { useProject } from '../projects/ProjectProvider'
+import { useOptionalProject } from '../projects/ProjectProvider'
 import { fetchManualState } from '../worker/api'
 import { useActiveUpdateSession } from '../updates/UpdateStatusRuntime'
 import {
@@ -62,10 +62,12 @@ interface CenterDispatchOptions {
  */
 export function NotificationRuntime() {
   const toast = useToast()
-  const { projectId } = useProject()
+  const optionalProject = useOptionalProject()
   const activeUpdate = useActiveUpdateSession()
-  // 远程控制是受限路由，不允许访问共享状态和任务历史 API。
+  // 远程控制是受限路由，未挂载 ProjectProvider 且不允许访问共享状态和任务历史 API。
   const remoteControl = window.location.pathname === '/remote-control'
+  const urlProjectId = remoteControl ? (new URLSearchParams(window.location.search).get('project_id') ?? '') : ''
+  const projectId = optionalProject?.projectId ?? urlProjectId
   const roleQuery = useQuery({
     queryKey: ['shared-status'],
     queryFn: ({ signal }) => apiFetch<SharedStatus>('/api/shared/status?include_history=false', { signal }),
@@ -82,9 +84,11 @@ export function NotificationRuntime() {
     staleTime: 4_000,
   })
   const manualQuery = useQuery({
-    queryKey: ['project', projectId || 'unselected', 'manual-control'],
-    queryFn: ({ signal }) => fetchManualState(signal, projectId),
-    enabled: role === 'worker' && Boolean(projectId),
+    queryKey: remoteControl
+      ? ['remote-manual-control', urlProjectId || 'active']
+      : ['project', projectId || 'unselected', 'manual-control'],
+    queryFn: ({ signal }) => fetchManualState(signal, projectId || undefined),
+    enabled: remoteControl || (role === 'worker' && Boolean(projectId)),
     refetchInterval: 1_500,
     refetchIntervalInBackground: true,
     staleTime: 1_250,
@@ -232,7 +236,10 @@ export function NotificationRuntime() {
             : 'abnormal'
           const failedCount = Number(task.extra.failed) || 0
           const fallbackSummary = `${task.progress.done} / ${task.progress.total} 家${task.source === 'materials' ? ` · 失败 ${failedCount}` : ''}`
-          const route = `/task-center?${new URLSearchParams({ detail: `${task.source}:${task.id}` })}`
+          const targetProject = task.project_id || projectId
+          const routeParams = new URLSearchParams({ detail: `${task.source}:${task.id}` })
+          if (targetProject) routeParams.set('project', targetProject)
+          const route = `/task-center?${routeParams.toString()}`
           const title = isSuccess ? `${task.source === 'materials' ? '素材分析' : '采集任务'}已完成` : `${task.source === 'materials' ? '素材分析' : '采集任务'}异常结束`
           const eventId = `task-terminal:${task.source}:${task.id}:${task.status}:${changedAt}`
           const send = (summary: string, detailMessage = '') => {
@@ -257,7 +264,7 @@ export function NotificationRuntime() {
             )
           }
           if (task.source === 'capture') {
-            void fetchTaskDetail('capture', task.id).then((detail) => {
+            void fetchTaskDetail('capture', task.id, undefined, targetProject || undefined).then((detail) => {
               const counts = detail.counts
               const summary = counts
                 ? `已截图 ${counts.done ?? 0} · 待检查 ${counts.attention ?? 0} · 不合格 ${counts.rejected ?? 0} · 共 ${counts.total ?? task.progress.total} 家`

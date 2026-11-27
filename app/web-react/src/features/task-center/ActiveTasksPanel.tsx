@@ -62,15 +62,16 @@ export function ActiveTasksPanel({ onOpen }: ActiveTasksPanelProps) {
   const control = useMutation({
     mutationFn: async ({ task, action }: { task: ActiveTask; action: PendingAction }) => {
       if (task.source === 'materials') {
-        if (action === 'pause') return pauseJob(task.id)
-        if (action === 'resume') return resumeJob(task.id)
-        return cancelJob(task.id)
+        const targetProject = task.project_id ?? projectId
+        if (action === 'pause') return pauseJob(task.id, targetProject)
+        if (action === 'resume') return resumeJob(task.id, targetProject)
+        return cancelJob(task.id, targetProject)
       }
       if (!task.project_id) throw new Error('任务缺少项目归属，无法安全控制')
-      const projectId = task.project_id
-      if (action === 'pause') return pauseCapture(projectId)
-      if (action === 'resume') return resumeCapture(undefined, projectId)
-      return terminateCapture(projectId)
+      const captureProjectId = task.project_id
+      if (action === 'pause') return pauseCapture(captureProjectId)
+      if (action === 'resume') return resumeCapture(undefined, captureProjectId)
+      return terminateCapture(captureProjectId)
     },
     onSuccess: (_data, variables) => {
       const label = variables.action === 'pause' ? '已请求暂停'

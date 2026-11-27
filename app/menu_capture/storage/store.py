@@ -109,6 +109,7 @@ class TaskStore:
                           AND (SELECT COUNT(DISTINCT c.project_id) FROM capture_run_results c
                                WHERE c.run_id=runs.id AND c.project_id<>'')=1""")
             db.execute("CREATE INDEX IF NOT EXISTS capture_run_project ON capture_run_results(project_id,run_id)")
+            db.execute("CREATE INDEX IF NOT EXISTS capture_run_task ON capture_run_results(task_id)")
             for column in ("material_version_id", "material_batch_id", "material_version", "material_snapshot"):
                 if column not in {row["name"] for row in db.execute("PRAGMA table_info(runs)")}:
                     db.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
@@ -143,6 +144,8 @@ class TaskStore:
                 db.execute("ALTER TABLE tasks ADD COLUMN error_code TEXT NOT NULL DEFAULT ''")
             db.execute("CREATE INDEX IF NOT EXISTS tasks_source_path_hash ON tasks(source_path,source_hash)")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS tasks_source_key_unique ON tasks(source_key) WHERE source_key!=''")
+            db.execute("CREATE INDEX IF NOT EXISTS tasks_archived_updated ON tasks(archived_at,updated_at DESC)")
+            db.execute("CREATE INDEX IF NOT EXISTS tasks_reject_reason ON tasks(reject_reason) WHERE reject_reason!=''")
             # 旧任务没有原因码：按既有阶段与文字补齐一次，历史失败也能按三类分流。
             for row in db.execute(
                     "SELECT id,stage,message FROM tasks WHERE status='needs_review' AND error_code=''").fetchall():
@@ -607,16 +610,33 @@ class TaskStore:
         task_id = str(task_id or "")
         if not task_id:
             return ""
+        return self.observed_store_names_current((task_id,), project_id=project_id).get(task_id, "")
+
+    def observed_store_names_current(self, task_ids, *, project_id: str | None = None) -> dict[str, str]:
+        """批量按任务当前采集轮次读取名称，避免全量导出/预览逐条查库。"""
+        unique = [str(tid) for tid in dict.fromkeys(str(t or "") for t in task_ids) if tid]
+        if not unique:
+            return {}
+        result: dict[str, str] = {}
         with self.connect() as db:
             project_filter = " AND c.project_id=?" if project_id is not None else ""
-            params = (task_id, project_id) if project_id is not None else (task_id,)
-            row = db.execute(
-                "SELECT o.store_name FROM capture_run_results c"
-                " JOIN runs r ON r.id=c.run_id"
-                " LEFT JOIN observed_store_names o ON o.run_id=c.run_id AND o.task_id=c.task_id"
-                " WHERE c.task_id=?" + project_filter + " ORDER BY r.updated_at DESC, r.rowid DESC LIMIT 1",
-                params).fetchone()
-        return str(row["store_name"] or "") if row else ""
+            for offset in range(0, len(unique), 500):
+                chunk = unique[offset : offset + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                params = (*chunk, project_id) if project_id is not None else tuple(chunk)
+                rows = db.execute(
+                    "SELECT c.task_id, o.store_name FROM capture_run_results c"
+                    " JOIN runs r ON r.id=c.run_id"
+                    " LEFT JOIN observed_store_names o ON o.run_id=c.run_id AND o.task_id=c.task_id"
+                    f" WHERE c.task_id IN ({placeholders})" + project_filter
+                    + " ORDER BY r.updated_at DESC, r.rowid DESC",
+                    params,
+                ).fetchall()
+                for row in rows:
+                    tid = str(row["task_id"])
+                    if tid not in result:
+                        result[tid] = str(row["store_name"] or "")
+        return result
 
     def observed_store_name_record(self, run_id: str, task_id: str) -> dict:
         """按轮次 + 任务取完整观察记录，供跨会话恢复名称时带出同一帧引用。"""
