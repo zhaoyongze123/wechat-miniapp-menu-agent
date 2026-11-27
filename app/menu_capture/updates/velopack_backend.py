@@ -258,7 +258,9 @@ class VelopackBackend:
 
     @staticmethod
     def _http_open(url: str):
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        from menu_capture.updates.updates import external_proxies
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler(external_proxies()))
         return opener.open(url, timeout=120)
 
     def fetch_release_manifest(self, version: str, channel: str) -> dict:
@@ -691,8 +693,23 @@ class VelopackBackend:
             "--target-json", json.dumps(target, ensure_ascii=False, separators=(",", ":")),
         ]
         _write_json(progress_path, {"stage": "starting", "percent": 0})
+        from menu_capture.updates.updates import external_proxies
+
+        sub_env = dict(os.environ)
+        sub_env.pop("NO_PROXY", None)
+        sub_env.pop("no_proxy", None)
+        proxies = external_proxies()
+        if proxies.get("https"):
+            sub_env["HTTPS_PROXY"] = proxies["https"]
+            sub_env["https_proxy"] = proxies["https"]
+        if proxies.get("http"):
+            sub_env["HTTP_PROXY"] = proxies["http"]
+            sub_env["http_proxy"] = proxies["http"]
+        sub_env["NO_PROXY"] = "127.0.0.1,localhost,::1"
+        sub_env["no_proxy"] = "127.0.0.1,localhost,::1"
         kwargs: dict[str, Any] = {
             "cwd": str(self.app_dir),
+            "env": sub_env,
             "stdin": subprocess.DEVNULL,
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,

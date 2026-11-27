@@ -1645,12 +1645,16 @@ class MaterialService:
     def effective_capture_tasks(self, *, project_id: str | None = None) -> list[dict]:
         """有门店发布记录的批次按门店选取任务，旧快照按原有方式兼容。"""
         latest = self._latest_versions(project_id=project_id)
+        if not latest:
+            return []
         publications, blocked = self.store_versions.current({item["version"]["id"] for item in latest.values()})
         tasks = self.task_store.tasks()
         by_id = {task["id"]: task for task in tasks if not task["archived_at"]}
+        needs_snapshot_index = any(publications.get(item["version"]["id"]) is None for item in latest.values())
         by_snapshot: dict[str, list[dict]] = {}
-        for task in by_id.values():
-            by_snapshot.setdefault(Path(task["source_path"]).parent.parent.name, []).append(task)
+        if needs_snapshot_index:
+            for task in by_id.values():
+                by_snapshot.setdefault(Path(task["source_path"]).parent.parent.name, []).append(task)
         result: list[dict] = []
         for batch_id, item in latest.items():
             release, batch = item["version"], item["batch"]

@@ -579,6 +579,13 @@ class JobRunner:
                                      name=f"material-job-heartbeat-{job_id[:8]}", daemon=True)
         heartbeat.start()
         try:
+            try:
+                import cv2  # noqa: PLC0415
+
+                # 限制 OpenCV 单线程执行，避免并发分析线程把容器所有 CPU 核心打满导致 Web API 饥饿超时。
+                cv2.setNumThreads(1)
+            except Exception:  # noqa: BLE001
+                pass
             workers = max(1, min(4, int(job.get("concurrency") or 2)))
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="material-store") as pool:
                 futures = [pool.submit(self._worker_loop, job_id, context) for _ in range(workers)]
