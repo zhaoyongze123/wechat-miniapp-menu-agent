@@ -92,6 +92,33 @@ def _project_record(store: TaskStore, project_id: str) -> dict:
         return get_project(db, project_id)
 
 
+class _SelectiveGZipMiddleware:
+    """仅对可压缩的 JSON/文本/静态脚本响应启用 GZip，跳过已压缩的图片、ZIP 与 Excel 下载。"""
+
+    _SKIP_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".zip", ".xlsx", ".nupkg", ".exe", ".gz")
+
+    def __init__(self, app, *, minimum_size: int = 1024):
+        self.app = app
+        self.gzip = GZipMiddleware(app, minimum_size=minimum_size)
+
+    @classmethod
+    def _should_skip(cls, path: str) -> bool:
+        lower = path.lower()
+        if lower.endswith(cls._SKIP_SUFFIXES):
+            return True
+        if lower.startswith(("/api/artifact/", "/api/source/", "/api/action-evidence/", "/api/annotation/frame")):
+            return True
+        if "/images/" in lower or lower.endswith(("/selected", "/source", "/last-frame", "/evidence")):
+            return True
+        return False
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and not self._should_skip(str(scope.get("path") or "")):
+            await self.gzip(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                admin_password: str = "", allowed_hosts: tuple[str, ...] = (),
                remote_control_host: str = "", remote_control_password: str = "") -> FastAPI:
@@ -344,8 +371,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     remote_token = secrets.token_urlsafe(32) if remote_control_host else ""
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
-    # 压缩大体积 JSON 列表响应（如 /api/status、/api/capture/queue、/api/shared/status），提升内网/远程刷新速度。
-    app.add_middleware(GZipMiddleware, minimum_size=1024)
+    # 仅压缩可压缩的 JSON/文本/前端脚本响应，避免对 PNG/JPG/ZIP/XLSX 重复压缩浪费 CPU。
+    app.add_middleware(_SelectiveGZipMiddleware, minimum_size=1024)
     app.state.runner, app.state.configs, app.state.store = runner, configs, store
     app.state.debug_log = debug_log
     app.state.model_usage = model_usage

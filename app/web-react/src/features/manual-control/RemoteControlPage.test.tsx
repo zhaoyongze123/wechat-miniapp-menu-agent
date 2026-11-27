@@ -1,14 +1,18 @@
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ToastProvider } from '../../components/ToastProvider'
+import { NotificationRuntime } from '../notifications/NotificationRuntime'
 import { RemoteControlPage } from './RemoteControlPage'
 
 describe('RemoteControlPage', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+    window.history.replaceState({}, '', '/')
   })
 
-  it('renders cleanly outside ProjectProvider without crashing to a white screen', async () => {
+  it('renders RemoteControlPage + NotificationRuntime cleanly outside ProjectProvider without white screen', async () => {
+    window.history.replaceState({}, '', '/remote-control')
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -27,7 +31,10 @@ describe('RemoteControlPage', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={client}>
-        <RemoteControlPage />
+        <ToastProvider>
+          <RemoteControlPage />
+          <NotificationRuntime />
+        </ToastProvider>
       </QueryClientProvider>,
     )
 

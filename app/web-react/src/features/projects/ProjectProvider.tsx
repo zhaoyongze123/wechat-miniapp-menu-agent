@@ -113,6 +113,11 @@ export function useProject(): ProjectContextValue {
   return value
 }
 
+/** 供 /remote-control 等不挂载 ProjectProvider 的独立轻量入口安全读取项目上下文。 */
+export function useOptionalProject(): ProjectContextValue | null {
+  return useContext(ProjectContext)
+}
+
 /** 项目业务页统一处理加载、错误、无项目与失效深链。归档项目保留读取能力。 */
 export function ProjectPageBoundary({ children }: { children: ReactNode }) {
   const { project, projectId, loading, error, invalid } = useProject()
