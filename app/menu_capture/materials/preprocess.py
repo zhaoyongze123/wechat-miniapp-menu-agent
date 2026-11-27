@@ -7,7 +7,6 @@ import json
 import math
 import os
 import shutil
-import sys
 import time
 import uuid
 from datetime import datetime
@@ -16,6 +15,8 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from PIL import Image, ImageFilter, ImageStat
+
+from menu_capture.vision.qr_detection import DetectorUnavailable, detect_qr, require_detector
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MIN_QR_EDGE_PX = 80
@@ -99,42 +100,6 @@ def _payload_purpose(payload) -> str:
     if host in _LIKELY_ORDERING_HOSTS:
         return "ordering_candidate"
     return "unknown"
-
-
-def _apple_vision_inspector(path: Path) -> list[dict]:
-    """使用本机二维码扫描器；payload 只在本函数调用链内存活。"""
-    if sys.platform == "win32":
-        from menu_capture.desktop.windows_image import qr_detections
-        return qr_detections(path)
-    if sys.platform != "darwin":
-        raise RuntimeError("默认二维码检查器仅支持 macOS Apple Vision 或 Windows OpenCV")
-    import Vision
-    from Foundation import NSURL
-
-    with Image.open(path) as image:
-        width, height = image.size
-    request = Vision.VNDetectBarcodesRequest.alloc().init()
-    request.setSymbologies_([Vision.VNBarcodeSymbologyQR])
-    url = NSURL.fileURLWithPath_(str(path.expanduser().resolve(strict=True)))
-    handler = Vision.VNImageRequestHandler.alloc().initWithURL_options_(url, None)
-    success, _error = handler.performRequests_error_([request], None)
-    if not success:
-        raise RuntimeError("Apple Vision 二维码识别失败")
-
-    detections = []
-    for observation in request.results() or []:
-        box = observation.boundingBox()
-        payload = observation.payloadStringValue()
-        detections.append({
-            "box": {
-                "x": float(box.origin.x * width),
-                "y": float((1.0 - box.origin.y - box.size.height) * height),
-                "width": float(box.size.width * width),
-                "height": float(box.size.height * height),
-            },
-            "payload": str(payload) if payload is not None else None,
-        })
-    return detections
 
 
 def _normalized_output_path(output_root: Path) -> Path:
@@ -275,6 +240,9 @@ def _detect_square(path: Path, record: dict, size: tuple[int, int], inspector: C
         # 全部检测框都越界说明坐标换算整体失真，仍按图片检查失败处理，避免静默丢码。
         if detections and not record["candidates"]:
             raise ValueError("二维码位置全部超出原图边界")
+    except DetectorUnavailable:
+        # 检测器不可用是系统性失败，不能吞成单图 error 后让任务照常 completed。
+        raise
     except Exception as exc:
         # 不记录异常文本，防止某些解码器把条码内容写入错误消息。
         record["error"] = f"本地图片/二维码检查失败（{type(exc).__name__})"
@@ -295,7 +263,7 @@ def inspect_store_images(
     on_unit: Callable[[], None] | None = None,
 ) -> dict:
     """对门店内每一张图都执行方形二维码检测；不做图片数分流。"""
-    stats = {"square_checked": True, "square_ms": 0.0}
+    stats = {"square_checked": True, "square_ms": 0.0, "image_errors": 0, "detected_images": 0}
     unit = on_unit or (lambda: None)
     started = time.perf_counter()
     for image in images:
@@ -307,9 +275,22 @@ def inspect_store_images(
         image.update(meta)
         if size is not None:
             _detect_square(path, image, size, inspector)
+        if image.get("error"):
+            stats["image_errors"] += 1
+        elif image["candidates"]:
+            stats["detected_images"] += 1
         unit()
     stats["square_ms"] = round((time.perf_counter() - started) * 1000, 1)
     return stats
+
+
+def _store_detection_state(stats: dict) -> str:
+    """门店检测状态：区分单图异常、正常未识别与识别到候选，供统计与人工复核如实展示。"""
+    if stats["image_errors"]:
+        return "image_error"
+    if stats["detected_images"]:
+        return "detected"
+    return "not_detected"
 
 
 def _select_store(store: dict) -> tuple[tuple[int, int] | None, str]:
@@ -431,10 +412,11 @@ def analyze_store(
     unit = on_unit or (lambda: None)
     resolve = resolve_path or (lambda image: Path(source_root) / image["path"])
     stats = inspect_store_images(
-        store["images"], resolve, inspector or _apple_vision_inspector, unit,
+        store["images"], resolve, inspector or detect_qr, unit,
     )
     store["square_checked"] = stats["square_checked"]
     store["square_ms"] = stats["square_ms"]
+    store["detection_state"] = _store_detection_state(stats)
     return store
 
 
@@ -451,7 +433,10 @@ def build_materials(
     progress 收到的值只有 done/total 计数。
     """
     source, target = _ensure_paths(Path(input_root), Path(output_root))
-    inspect = inspector or _apple_vision_inspector
+    inspect = inspector or detect_qr
+    if inspector is None:
+        # 命令行/无注入场景先做能力预检：依赖缺失时直接失败，不逐个图片吞异常。
+        require_detector()
     stores, duplicate_names = discover_stores(source)
     total_images = sum(len(store["images"]) for store in stores)
     total_units = total_images

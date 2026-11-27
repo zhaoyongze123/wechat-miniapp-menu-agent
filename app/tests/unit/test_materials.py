@@ -1263,3 +1263,80 @@ def test_manual_action_accepts_only_first_decision_per_store() -> None:
     with pytest.raises(ValueError, match="有效"):
         runner.manual_action("reject", "not-a-reason")
     assert runner.manual_action("reject", "not_ordering")["action"] == "reject"
+
+
+def test_start_analysis_is_blocked_when_detector_is_unavailable(tmp_path: Path, monkeypatch) -> None:
+    """检测器不可用时必须阻止任务创建，批次保持 ready_to_analyze，不能静默 completed。"""
+    service, _, _, input_root, _ = _setup(tmp_path)
+    service.inspector = None
+    _png(input_root / "Shop" / "menu.png")
+    batch = service.create_local_batch(input_root)
+    monkeypatch.setattr(
+        "menu_capture.materials.materials.probe_detector_capability",
+        lambda: {"backend": "opencv_zxing", "available": False, "detail": "OpenCV 缺失"},
+    )
+    with pytest.raises(ValueError, match="检测器不可用"):
+        service.start_analysis(batch["batch_id"])
+    current = service.get_batch(batch["batch_id"])
+    assert current["status"] == "ready_to_analyze"
+    assert current["job"] is None
+
+
+def test_detection_stats_persist_scanned_state_and_not_detected(tmp_path: Path) -> None:
+    """扫描标记与三类状态必须穿过清单清洗持久化，不能回退成 scanned_stores=0。"""
+    service, _, _, input_root, _ = _setup(tmp_path, inspector=lambda _path: [])
+    _png(input_root / "Shop" / "menu.png")
+    batch = _analyze(service, input_root)
+
+    stats = batch["summary"]["detection_stats"]["square"]
+    assert stats["scanned_stores"] == 1
+    assert stats["not_detected_stores"] == 1
+    assert stats["image_error_stores"] == 0
+    assert stats["detected_stores"] == 0
+    assert batch["summary"]["detector_capability"]["backend"] == "injected"
+
+
+def test_detection_stats_report_single_image_error(tmp_path: Path) -> None:
+    def broken(_path):
+        raise RuntimeError("boom")
+
+    service, _, _, input_root, _ = _setup(tmp_path, inspector=broken)
+    _png(input_root / "Shop" / "menu.png")
+    batch = _analyze(service, input_root)
+
+    stats = batch["summary"]["detection_stats"]["square"]
+    assert stats["image_error_stores"] == 1
+    assert stats["not_detected_stores"] == 0
+
+
+def test_job_fails_instead_of_completing_when_detector_breaks_mid_run(tmp_path: Path, monkeypatch) -> None:
+    """预检通过后检测器中途失效，任务/批次必须显性失败，禁止以 completed 收尾。"""
+    from menu_capture.materials import material_jobs
+    from menu_capture.vision.qr_detection import DetectorUnavailable
+
+    service, _, _, input_root, _ = _setup(tmp_path)
+    service.inspector = None
+    _png(input_root / "Shop" / "menu.png")
+    monkeypatch.setattr(
+        "menu_capture.materials.materials.probe_detector_capability",
+        lambda: {"backend": "opencv_zxing", "available": True, "detail": "OpenCV 可用"},
+    )
+
+    def broken(_path):
+        raise DetectorUnavailable("OpenCV 初始化失败")
+
+    monkeypatch.setattr("menu_capture.materials.materials.detect_qr", broken)
+    monkeypatch.setattr(material_jobs, "RETRY_DELAYS", (0, 0, 0))
+
+    batch = service.create_local_batch(input_root)
+    service.start_analysis(batch["batch_id"])
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        current = service.get_batch(batch["batch_id"])
+        if current["job"] is not None and current["job"]["status"] == "failed":
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("检测器失效后任务未在 20 秒内失败")
+    assert current["status"] != "completed"
+    assert current["status"] == "ready_to_analyze"
