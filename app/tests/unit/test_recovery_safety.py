@@ -395,3 +395,27 @@ def test_cleanup_verify_home_and_prune_recovery_baselines(tmp_path: Path) -> Non
     assert not b2.exists()
     assert b3.exists()
     assert other.exists()
+
+
+def test_copy_sqlite_consistently_runs_integrity_check_only_on_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一致性快照只对生成的副本执行 PRAGMA quick_check，避免对大源库重复全页扫描。"""
+    data_dir = _create_data_root(tmp_path)
+    source = data_dir / "tasks.sqlite3"
+    destination = tmp_path / "snapshot.sqlite3"
+    real_metadata = recovery.database_metadata
+    recorded: list[tuple[Path, bool]] = []
+
+    def spy_metadata(database: Path, *, check_integrity: bool = True) -> dict:
+        recorded.append((Path(database).resolve(), check_integrity))
+        return real_metadata(database, check_integrity=check_integrity)
+
+    monkeypatch.setattr(recovery, "database_metadata", spy_metadata)
+    metadata = recovery.copy_sqlite_consistently(source, destination)
+
+    assert metadata["row_counts"] == {"runs": 1, "tasks": 2}
+    assert recorded == [
+        (source.resolve(), False),
+        (destination.resolve(), True),
+    ]

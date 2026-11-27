@@ -245,7 +245,11 @@ class InstallController:
             raise ValueError("缺少已验证的发布目标")
         require_publisher_trust(extension)
 
-        # 锁外完成网络与长哈希：SDK 待安装校验、可信旧包定位/复制/复验。
+        # 锁外完成网络与长哈希：SDK 待安装校验、可信旧包定位/复制/复验、数据库基线快照。
+        # 若把大库备份与哈希放在 self._lock 内，会阻塞 /api/updates/status 轮询导致界面假死。
+        idle, reason = self.idle_check()
+        if not idle:
+            raise ValueError(reason or "采集或标注仍在执行，暂不能安装")
         try:
             pending = self.backend.verify_pending(extension, channel)
         except Exception as exc:  # noqa: BLE001
@@ -257,51 +261,59 @@ class InstallController:
         except Exception as exc:  # noqa: BLE001 - 恢复能力不可用必须拒绝，不能先开始再找退路
             raise ValueError(f"无法准备可信旧版恢复包：{exc}") from exc
 
-        with self._lock:
-            journal = self.transaction.read()
-            if journal.get("status") in ACTIVE_STATUSES:
-                raise ValueError("已有安装任务正在执行")
-            idle, reason = self.idle_check()
-            if not idle:
-                raise ValueError(reason or "采集或标注仍在执行，暂不能安装")
-            claimed = False
-            if require_authorization:
-                if self.authorization_check is None or not self.authorization_check(version):
-                    raise ValueError("更新授权已取消，安装未启动")
-                claimed = True
-            filesystem_lock = self.filesystem_lock
-            acquired_fs = False
-            if filesystem_lock is not None:
-                if not filesystem_lock.acquire(blocking=False):
-                    self._release_claim(claimed, version)
-                    raise ValueError("存储清理进行中，请稍后重试")
-                acquired_fs = True
-            try:
-                schema = schema_fingerprint(self.data_dir)
-                if schema is None:
-                    raise ValueError("无法读取有效数据库结构，拒绝自动安装")
-                # 恢复包已在锁外复制并复验；这里只确认身份未变化，避免长时间持锁。
-                self.backend.require_recovery_package(recovery)
-                from menu_capture.updates import recovery as recovery_probe
+        schema = schema_fingerprint(self.data_dir)
+        if schema is None:
+            raise ValueError("无法读取有效数据库结构，拒绝自动安装")
+        from menu_capture.updates import recovery as recovery_probe
 
-                snapshot_path = (self.data_dir / "recovery"
-                                 / f"baseline-{time.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}.sqlite3")
-                snapshot = recovery_probe.snapshot_database(self.data_dir, snapshot_path)
-                self.transaction.create(
-                    previous_version=previous, previous_commit=previous_commit,
-                    target_version=version, target_commit=extension["git_commit"],
-                    channel=channel,
-                    schema_baseline={"version": previous, "schema": schema, "snapshot": snapshot},
-                    target_asset=dict(extension), recovery_asset=dict(recovery),
-                    authorization={"claimed_at": _utc_now(), "claimed_by": self.role}
-                    if claimed else {},
-                )
-            except BaseException:
-                self._release_claim(claimed, version)
-                raise
-            finally:
-                if acquired_fs:
-                    filesystem_lock.release()
+        snapshot_path = (self.data_dir / "recovery"
+                         / f"baseline-{time.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}.sqlite3")
+        snapshot = recovery_probe.snapshot_database(self.data_dir, snapshot_path)
+
+        created = False
+        try:
+            with self._lock:
+                journal = self.transaction.read()
+                if journal.get("status") in ACTIVE_STATUSES:
+                    raise ValueError("已有安装任务正在执行")
+                idle, reason = self.idle_check()
+                if not idle:
+                    raise ValueError(reason or "采集或标注仍在执行，暂不能安装")
+                claimed = False
+                if require_authorization:
+                    if self.authorization_check is None or not self.authorization_check(version):
+                        raise ValueError("更新授权已取消，安装未启动")
+                    claimed = True
+                filesystem_lock = self.filesystem_lock
+                acquired_fs = False
+                if filesystem_lock is not None:
+                    if not filesystem_lock.acquire(blocking=False):
+                        self._release_claim(claimed, version)
+                        raise ValueError("存储清理进行中，请稍后重试")
+                    acquired_fs = True
+                try:
+                    # 恢复包与数据库快照已在锁外落盘并复验；锁内只确认身份未变并登记事务。
+                    self.backend.require_recovery_package(recovery)
+                    self.transaction.create(
+                        previous_version=previous, previous_commit=previous_commit,
+                        target_version=version, target_commit=extension["git_commit"],
+                        channel=channel,
+                        schema_baseline={"version": previous, "schema": schema, "snapshot": snapshot},
+                        target_asset=dict(extension), recovery_asset=dict(recovery),
+                        authorization={"claimed_at": _utc_now(), "claimed_by": self.role}
+                        if claimed else {},
+                    )
+                    created = True
+                except BaseException:
+                    self._release_claim(claimed, version)
+                    raise
+                finally:
+                    if acquired_fs:
+                        filesystem_lock.release()
+        finally:
+            if not created:
+                for suffix in ("", "-wal", "-shm", "-journal"):
+                    Path(f"{snapshot_path}{suffix}").unlink(missing_ok=True)
         return self.status()
 
     def _release_claim(self, claimed: bool, version: str) -> None:

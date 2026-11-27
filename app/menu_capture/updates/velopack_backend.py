@@ -389,7 +389,7 @@ class VelopackBackend:
         if record is None or source is None or package is None:
             raise VelopackError("恢复包身份未建立，拒绝继续")
         # 包内清单只作附加一致性检查，不作为信任依据。
-        require_inner_manifest(package, version=previous_version, commit=previous_commit)
+        inner = require_inner_manifest(package, version=previous_version, commit=previous_commit)
         name, size, digest = record["name"], record["size"], record["sha256"]
         destination_dir = recovery_root / f"{previous_version}-{digest[:12]}"
         destination_dir.mkdir(parents=True, exist_ok=True)
@@ -406,10 +406,21 @@ class VelopackBackend:
             raise VelopackError("恢复包路径不是普通文件")
         if destination.resolve() != package.resolve():
             if not destination.is_file() or destination.stat().st_size != size:
+                # 流式复制同时计算 SHA-256，避免复制 280 MB 后再整盘重读一遍算摘要。
                 temp = destination.with_suffix(destination.suffix + ".tmp")
-                shutil.copyfile(package, temp)
-                os.replace(temp, destination)
-            if _file_sha256(destination) != digest:
+                hasher = hashlib.sha256()
+                try:
+                    with package.open("rb") as src_stream, temp.open("wb") as dst_stream:
+                        while chunk := src_stream.read(1024 * 1024):
+                            dst_stream.write(chunk)
+                            hasher.update(chunk)
+                    copied_digest = hasher.hexdigest()
+                    if copied_digest != digest:
+                        raise VelopackError("恢复包复制后 SHA-256 不一致")
+                    os.replace(temp, destination)
+                finally:
+                    temp.unlink(missing_ok=True)
+            elif _file_sha256(destination) != digest:
                 raise VelopackError("恢复包复制后 SHA-256 不一致")
         if source["type"] == "official-release" and package != destination:
             # 已成功落位并校验，清理 .download 中的临时完整包，避免重复占用磁盘。
@@ -421,7 +432,6 @@ class VelopackBackend:
             os.chmod(destination, 0o444)
         except OSError:
             pass
-        inner = inner_release_manifest(destination)
         return {
             "version": previous_version, "commit": previous_commit,
             "channel": channel,

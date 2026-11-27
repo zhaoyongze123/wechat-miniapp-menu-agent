@@ -252,9 +252,15 @@ def _sqlite_files(data_dir: Path) -> list[Path]:
 def backup_sqlite(source: Path, destination: Path) -> None:
     """使用 SQLite backup API 生成包含 WAL 已提交内容的一致性副本。"""
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.unlink(missing_ok=True)
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        Path(f"{destination}{suffix}").unlink(missing_ok=True)
     with closing(sqlite3.connect(f"{source.resolve().as_uri()}?mode=ro", uri=True)) as src:
         with closing(sqlite3.connect(destination)) as dst:
+            # 目标文件是全新生成的一次性快照，写完后立刻由 PRAGMA quick_check 校验完整性；
+            # 关闭目标库的回滚日志与同步刷盘可避免 Windows 上大库备份耗时数分钟。
+            dst.execute("PRAGMA journal_mode = OFF")
+            dst.execute("PRAGMA synchronous = OFF")
+            dst.execute("PRAGMA locking_mode = EXCLUSIVE")
             src.backup(dst)
             dst.commit()
 
@@ -286,7 +292,7 @@ def schema_of(database: Path) -> dict | None:
         return None
 
 
-def database_metadata(database: Path) -> dict:
+def database_metadata(database: Path, *, check_integrity: bool = True) -> dict:
     """记录数据库结构与每张业务表的行数，用于确认隔离副本完整。"""
     with closing(sqlite3.connect(f"{Path(database).resolve().as_uri()}?mode=ro", uri=True)) as db:
         objects = [list(row) for row in db.execute(
@@ -304,9 +310,10 @@ def database_metadata(database: Path) -> dict:
                 for row in db.execute(f"PRAGMA table_info({quoted})")
             ]
             row_counts[table] = int(db.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0])
-        integrity = db.execute("PRAGMA quick_check").fetchone()
-        if not integrity or integrity[0] != "ok":
-            raise ValueError(f"SQLite 完整性检查失败：{database}")
+        if check_integrity:
+            integrity = db.execute("PRAGMA quick_check").fetchone()
+            if not integrity or integrity[0] != "ok":
+                raise ValueError(f"SQLite 完整性检查失败：{database}")
         return {
             "schema": {"user_version": db.execute("PRAGMA user_version").fetchone()[0],
                        "objects": objects, "table_columns": table_columns},
@@ -331,9 +338,10 @@ def copy_sqlite_consistently(source: Path, destination: Path) -> dict:
     for attempt in range(SNAPSHOT_ATTEMPTS):
         if attempt:
             time.sleep(SNAPSHOT_RETRY_DELAY)
-        before = database_metadata(source)
+        # 源库只读取结构与行数基线；完整性校验集中对生成的快照副本执行，避免大库重复全页扫描。
+        before = database_metadata(source, check_integrity=False)
         backup_sqlite(source, destination)
-        copied = database_metadata(destination)
+        copied = database_metadata(destination, check_integrity=True)
         if before == copied or _preserves_database(before, copied):
             return copied
         last_reason = f"第 {attempt + 1} 次副本丢失了源库已有的结构或行数"
