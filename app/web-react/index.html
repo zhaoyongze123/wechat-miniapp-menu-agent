@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
+    <!-- Vite 的组件样式可能先于应用样式加载，先固定层顺序，避免基础重置覆盖组件。 -->
+    <style>@layer properties, theme, base, components, utilities;</style>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>菜单采集工作台</title>
   </head>
