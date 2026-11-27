@@ -142,6 +142,7 @@ export interface UpdateStoragePreview {
     releases: UpdateCleanupScope
     downloads: UpdateCleanupScope
     logs: UpdateCleanupScope
+    recovery?: UpdateCleanupScope
   }
   reclaimable_bytes: number
 }
