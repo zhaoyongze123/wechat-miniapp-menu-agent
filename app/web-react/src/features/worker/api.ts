@@ -5,6 +5,8 @@ import type {
   ManualActionResponse,
   ManualCommandContext,
   ManualControlState,
+  ManualRecognizeStoreNameResponse,
+  ManualSaveStoreNameResponse,
   StartCaptureResponse,
   WorkerStatus,
 } from './types'
@@ -94,6 +96,29 @@ export function setManualReason(reason: string, projectId?: string): Promise<{ o
   return apiFetch<{ ok: boolean; reason: string }>(manualPath('reason', projectId), {
     method: 'POST',
     json: { reason, ...(projectId ? { project_id: projectId } : {}) },
+  })
+}
+
+/** 半自动独立辅助：对当前小程序画面执行单帧 AI 门店名称识别。 */
+export function manualRecognizeStoreName(
+  context: ManualCommandContext,
+  projectId?: string,
+): Promise<ManualRecognizeStoreNameResponse> {
+  return apiFetch<ManualRecognizeStoreNameResponse>(manualPath('recognize-store-name', projectId), {
+    method: 'POST',
+    json: { context, ...(projectId ? { project_id: projectId } : {}) },
+  })
+}
+
+/** 保存半自动采集时人工输入或微调的实际门店名称。 */
+export function manualSaveStoreName(
+  context: ManualCommandContext,
+  storeName: string,
+  projectId?: string,
+): Promise<ManualSaveStoreNameResponse> {
+  return apiFetch<ManualSaveStoreNameResponse>(manualPath('store-name', projectId), {
+    method: 'POST',
+    json: { context, store_name: storeName, ...(projectId ? { project_id: projectId } : {}) },
   })
 }
 

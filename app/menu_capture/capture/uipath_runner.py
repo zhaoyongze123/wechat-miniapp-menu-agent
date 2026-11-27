@@ -274,6 +274,11 @@ class UiPathRunner:
         self._manual_action: dict | None = None
         self._manual_reason = "not_ordering"
         self._manual_last_result = ""
+        # 半自动独立辅助能力（AI 门店名称识别）所需的当前窗口上下文；仅在 waiting=True 时有效。
+        self._manual_selector = ""
+        self._manual_output_dir: Path | None = None
+        self._manual_screenshot_lock = threading.Lock()
+        self._manual_name_version = 0
         # 共享采集端注入任务来源，只有已校验并落盘的分配包可进入桌面执行。
         self.assignment_source: Callable[[str], str] | None = None
         # Worker 项目路径必须来自持久化分配快照，不能从当前 UI 选择推断。
@@ -790,7 +795,101 @@ class UiPathRunner:
             state = dict(self._manual_state)
         state["reason"] = self._manual_reason
         state["last_result"] = self._manual_last_result
+        if "observed_store_name" not in state and state.get("run_id") and state.get("task_id"):
+            state["observed_store_name"] = self.store.observed_store_name(state["run_id"], state["task_id"])
         return state
+
+    def manual_set_store_name(self, store_name: str, *, expected: dict | None = None) -> dict:
+        """保存半自动采集时人工输入或微调的实际门店名称；不影响原有采集流程。"""
+        cleaned = " ".join("".join(ch for ch in str(store_name or "") if ch.isprintable()).split())[:40]
+        with self._manual_cond:
+            state = self._manual_state or {}
+            if expected is not None and any(expected.get(key) != state.get(key)
+                                            for key in ("run_id", "task_id", "wait_id")):
+                raise ValueError("当前门店已经切换，请重新确认后操作")
+            if not state.get("task_id") or not state.get("run_id"):
+                raise ValueError("当前没有运行中的半自动门店")
+            run_id = str(state["run_id"])
+            task_id = str(state["task_id"])
+            self.store.record_observed_store_name(run_id, task_id, cleaned)
+            self._manual_name_version += 1
+            self._manual_state = {**state, "observed_store_name": cleaned}
+            self._manual_cond.notify_all()
+        return {"ok": True, "task_id": task_id, "observed_store_name": cleaned}
+
+    def manual_recognize_store_name(self, *, expected: dict | None = None, recognizer=None) -> dict:
+        """半自动独立辅助：对当前小程序窗口拍一帧轻量截图并调用视觉模型识别门店名称。
+
+        模型请求在锁外执行，不阻塞人工截图或标记不合格；若识别期间已切店或人工已修改名称，则安全丢弃结果防止覆盖或串店。
+        """
+        with self._manual_cond:
+            state = dict(self._manual_state or {})
+            if expected is not None and any(expected.get(key) != state.get(key)
+                                            for key in ("run_id", "task_id", "wait_id")):
+                raise ValueError("当前门店已经切换，请重新确认后操作")
+            if not state.get("waiting") or not state.get("task_id") or not state.get("run_id"):
+                raise ValueError("当前没有等待人工操作的门店")
+            selector = self._manual_selector
+            output_dir = self._manual_output_dir
+            run_id = str(state["run_id"])
+            task_id = str(state["task_id"])
+            wait_id = str(state.get("wait_id") or "")
+            name_version = self._manual_name_version
+        if not selector or output_dir is None:
+            raise ValueError("当前小程序窗口尚未就绪，暂无法执行 AI 识别")
+
+        frame_name = f"manual-store-name-{uuid.uuid4().hex[:6]}.png"
+        with self._manual_screenshot_lock:
+            frame = self._screenshot(output_dir, selector, frame_name)
+        frame_path = str(frame.get("path") or "")
+        if not frame_path or not Path(frame_path).is_file():
+            raise ValueError("未能捕获当前小程序画面，请稍后重试")
+
+        if recognizer is None:
+            from menu_capture.vision.store_name_recognizer import recognize_with_factory
+
+            result = recognize_with_factory(self.configs, frame_path)
+        else:
+            result = recognizer(frame_path)
+
+        recognized = str(result.get("store_name") or "").strip()[:40]
+        reason = str(result.get("reason") or "").strip()
+
+        with self._manual_cond:
+            current = self._manual_state or {}
+            still_same = (
+                current.get("run_id") == run_id
+                and current.get("task_id") == task_id
+                and current.get("wait_id") == wait_id
+            )
+            if not still_same:
+                return {
+                    "ok": True, "task_id": task_id, "observed_store_name": "",
+                    "reason": "识别完成时门店已切换，结果已忽略", "stale": True,
+                }
+            current_name = str(current.get("observed_store_name") or "")
+            if self._manual_name_version != name_version:
+                return {
+                    "ok": True, "task_id": task_id, "observed_store_name": current_name,
+                    "recognized_name": recognized,
+                    "reason": "识别期间已手动修改名称，已保留手动结果", "stale": True,
+                }
+            if recognized:
+                self.store.record_observed_store_name(
+                    run_id, task_id, recognized, frame_id=frame_name, frame=frame_path,
+                )
+                self._manual_name_version += 1
+                self._manual_state = {**current, "observed_store_name": recognized}
+                self._manual_cond.notify_all()
+            current_name = str((self._manual_state or {}).get("observed_store_name") or "")
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "observed_store_name": recognized or current_name,
+            "recognized_name": recognized,
+            "reason": reason,
+            "stale": False,
+        }
 
     def manual_action(self, kind: str, reason: str = "", detail: str = "", *,
                       expected: dict | None = None) -> dict:
@@ -844,6 +943,7 @@ class UiPathRunner:
         return Region(x=0.0, y=height * 0.06, width=width, height=height * 0.88)
 
     def _set_manual_state(self, task: dict, index: int, total: int, stage: str, *, waiting: bool) -> None:
+        observed = self.store.observed_store_name(self.run_id or "", task["id"]) if self.run_id else ""
         with self._manual_cond:
             previous = (self._manual_state or {}).get("task_id")
             if previous != task["id"]:
@@ -853,7 +953,11 @@ class UiPathRunner:
                 "run_id": self.run_id or "", "wait_id": uuid.uuid4().hex if waiting else "",
                 "index": index + 1, "total": total, "stage": stage,
                 "waiting": waiting, "decision": "",
+                "observed_store_name": observed,
             }
+            if not waiting:
+                self._manual_selector = ""
+                self._manual_output_dir = None
             self._manual_cond.notify_all()
 
     def _wait_manual_action(self, task: dict) -> dict:
@@ -1509,13 +1613,17 @@ class UiPathRunner:
             evidence_dir = output_dir / "evidence"
             evidence_dir.mkdir(mode=0o700, exist_ok=True)
             self._prepare_trial_window(selector, evidence_dir, None)
+            with self._manual_cond:
+                self._manual_selector = selector
+                self._manual_output_dir = output_dir
             self._set_manual_state(task, index, total, "waiting_human", waiting=True)
             self._set_stage(task, "manual_waiting", "等待人工进入菜单并选择操作")
             action = self._wait_manual_action(task)
             if action["type"] == "capture":
                 self._set_manual_state(task, index, total, "capturing", waiting=False)
                 self._set_stage(task, "manual_capturing", "人工确认菜单，正在滚动截图")
-                frame = self._screenshot(output_dir, selector, "manual-start.png")
+                with self._manual_screenshot_lock:
+                    frame = self._screenshot(output_dir, selector, "manual-start.png")
                 pages = self._capture_menu(selector, frame, self._manual_region(frame),
                                            settings, profile, output_dir)
                 if not pages:
@@ -1523,7 +1631,8 @@ class UiPathRunner:
                 report["capture"] = {"status": "staged", "pages": pages}
             elif action["type"] == "reject":
                 self._set_manual_state(task, index, total, "rejected", waiting=False)
-                frame = self._screenshot(output_dir, selector, "manual-reject.png")
+                with self._manual_screenshot_lock:
+                    frame = self._screenshot(output_dir, selector, "manual-reject.png")
                 report["manual_decision"] = {"type": "reject", "reason": action.get("reason", ""),
                                              "detail": action.get("detail", "")}
                 report["evidence"] = frame.get("path", "")
@@ -1555,6 +1664,9 @@ class UiPathRunner:
                     if self._manual_state and self._manual_state.get("task_id") == task["id"]:
                         self._manual_state = {**self._manual_state, "stage": "closed", "waiting": False}
                         self._manual_cond.notify_all()
+                observed_name = self.store.observed_store_name(self.run_id or "", task["id"]) if self.run_id else ""
+                if observed_name:
+                    report["observed_store_name"] = observed_name
                 atomic_json(output_dir / "navigation-result.json", report)
         return report
 

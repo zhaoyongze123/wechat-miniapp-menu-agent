@@ -19,7 +19,19 @@ import { useRole } from '../../app/RoleProvider'
 import { useProject } from '../projects/ProjectProvider'
 import { projectQueryKey } from '../projects/scope'
 import { addSelection, removeSelection } from '../hub/selection'
-import { fetchManualState, manualCapture, manualCommandContext, manualReject, manualSkip, pauseCapture, resumeCapture, retryTask, terminateCapture } from './api'
+import {
+  fetchManualState,
+  manualCapture,
+  manualCommandContext,
+  manualRecognizeStoreName,
+  manualReject,
+  manualSaveStoreName,
+  manualSkip,
+  pauseCapture,
+  resumeCapture,
+  retryTask,
+  terminateCapture,
+} from './api'
 import {
   canResume,
   canRetry,
@@ -495,12 +507,28 @@ export function WorkerWorkbenchPage() {
 
       {run?.capture_mode === 'manual' && manual ? (
         <ManualPanel
+          key={manual.task_id}
           manual={manual}
           busy={manualAction.isPending || manualQuery.isError || !manualContext}
           error={manualQuery.isError ? '无法更新当前门店，操作已暂停' : manualError}
           onCapture={() => manualAction.mutate('capture')}
           onSkip={() => manualAction.mutate('skip')}
           onReject={(reason, detail) => manualAction.mutate({ reason, detail })}
+          onRecognizeStoreName={async () => {
+            if (!manualContext || manualQuery.isError || Date.now() - manualQuery.dataUpdatedAt > 5_000) {
+              throw new Error('当前状态已过期，请刷新后再操作')
+            }
+            const result = await manualRecognizeStoreName(manualContext, projectId)
+            void manualQuery.refetch()
+            return result
+          }}
+          onSaveStoreName={async (storeName) => {
+            if (!manualContext || manualQuery.isError || Date.now() - manualQuery.dataUpdatedAt > 5_000) {
+              throw new Error('当前状态已过期，请刷新后再操作')
+            }
+            await manualSaveStoreName(manualContext, storeName, projectId)
+            void manualQuery.refetch()
+          }}
         />
       ) : null}
 

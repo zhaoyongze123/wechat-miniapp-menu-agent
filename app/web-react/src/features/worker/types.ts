@@ -64,6 +64,7 @@ export interface ManualState {
   wait_id?: string
   task_id: string
   store_name: string
+  observed_store_name?: string
   index: number
   total: number
   stage: string
@@ -71,6 +72,23 @@ export interface ManualState {
   decision: string
   reason?: string
   last_result?: string
+}
+
+export interface ManualRecognizeStoreNameResponse {
+  ok: boolean
+  task_id: string
+  observed_store_name: string
+  recognized_name?: string
+  reason?: string
+  stale?: boolean
+  manual?: ManualState | null
+}
+
+export interface ManualSaveStoreNameResponse {
+  ok: boolean
+  task_id: string
+  observed_store_name: string
+  manual?: ManualState | null
 }
 
 export interface ManualControlState {
