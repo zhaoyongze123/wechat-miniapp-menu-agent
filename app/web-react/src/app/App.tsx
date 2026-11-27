@@ -1,25 +1,26 @@
-import type { ReactNode } from 'react'
+import { Suspense, lazy, type ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './AppShell'
 import { ErrorBoundary } from './ErrorBoundary'
-import { RoleProvider } from './RoleProvider'
+import { RoleProvider, useRole } from './RoleProvider'
 import { UnknownRoutePage } from './UnknownRoutePage'
 import { ToastProvider } from '../components/ToastProvider'
 import { UnsavedChangesProvider } from '../components/UnsavedChangesProvider'
-import { TaskCenterPage } from '../features/task-center/TaskCenterPage'
-import { HubAssignmentsPage } from '../features/hub/HubAssignmentsPage'
-import { HubDevicesPage } from '../features/hub/HubDevicesPage'
-import { MaterialsPage } from '../features/materials/MaterialsPage'
-import { QualityPage } from '../features/quality/QualityPage'
-import { SettingsPage } from '../features/settings/SettingsPage'
-import { DiagnosticsPage } from '../features/diagnostics/DiagnosticsPage'
-import { AnnotationPage } from '../features/annotation/AnnotationPage'
-import { WorkbenchRoute } from '../features/worker/WorkbenchRoute'
-import { ProjectsPage } from '../features/projects/ProjectsPage'
 import { ProjectPageBoundary, ProjectProvider } from '../features/projects/ProjectProvider'
 import type { AppRole } from '../api/types'
-import { useRole } from './RoleProvider'
 import { StatePanel } from '../components/StatePanel'
+
+// 按路由代码分割：首屏只加载当前页面与公共壳，其余模块点击时按需加载。
+const WorkbenchRoute = lazy(() => import('../features/worker/WorkbenchRoute').then((m) => ({ default: m.WorkbenchRoute })))
+const ProjectsPage = lazy(() => import('../features/projects/ProjectsPage').then((m) => ({ default: m.ProjectsPage })))
+const HubDevicesPage = lazy(() => import('../features/hub/HubDevicesPage').then((m) => ({ default: m.HubDevicesPage })))
+const HubAssignmentsPage = lazy(() => import('../features/hub/HubAssignmentsPage').then((m) => ({ default: m.HubAssignmentsPage })))
+const MaterialsPage = lazy(() => import('../features/materials/MaterialsPage').then((m) => ({ default: m.MaterialsPage })))
+const QualityPage = lazy(() => import('../features/quality/QualityPage').then((m) => ({ default: m.QualityPage })))
+const TaskCenterPage = lazy(() => import('../features/task-center/TaskCenterPage').then((m) => ({ default: m.TaskCenterPage })))
+const SettingsPage = lazy(() => import('../features/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })))
+const AnnotationPage = lazy(() => import('../features/annotation/AnnotationPage').then((m) => ({ default: m.AnnotationPage })))
+const DiagnosticsPage = lazy(() => import('../features/diagnostics/DiagnosticsPage').then((m) => ({ default: m.DiagnosticsPage })))
 
 export function App() {
   return (
@@ -29,25 +30,27 @@ export function App() {
           <UnsavedChangesProvider>
             <AppShell>
               <ErrorBoundary>
-                <Routes>
-                <Route path="/workbench" element={<ProjectBusinessRoute allow={['hub', 'worker']}><WorkbenchRoute /></ProjectBusinessRoute>} />
-                {/* 旧版 hash 深链保持可用：overview 与 environment 是仍会被收藏的入口。 */}
-                <Route path="/overview" element={<Navigate to="/workbench" replace />} />
-                <Route path="/environment" element={<Navigate to="/diagnostics" replace />} />
-                <Route path="/projects" element={<ProjectRoleRoute allow={['hub']}><ProjectsPage /></ProjectRoleRoute>} />
-                <Route path="/devices" element={<ProjectBusinessRoute allow={['hub']}><HubDevicesPage /></ProjectBusinessRoute>} />
-                <Route path="/assignments" element={<ProjectBusinessRoute allow={['hub']}><HubAssignmentsPage /></ProjectBusinessRoute>} />
-                <Route path="/materials" element={<ProjectBusinessRoute allow={['hub']}><MaterialsPage /></ProjectBusinessRoute>} />
-                <Route path="/rejections" element={<ProjectBusinessRoute allow={['hub']}><QualityPage /></ProjectBusinessRoute>} />
-                <Route path="/review-queue" element={<Navigate to="/rejections?view=review" replace />} />
-                <Route path="/task-center" element={<ProjectBusinessRoute allow={['hub', 'worker']}><TaskCenterPage /></ProjectBusinessRoute>} />
-                <Route path="/settings" element={<SettingsPage />} />
-                <Route path="/annotation" element={<ProjectBusinessRoute allow={['worker']}><AnnotationPage /></ProjectBusinessRoute>} />
-                <Route path="/diagnostics" element={<DiagnosticsPage />} />
-                {/* 首页回到采集工作台：与旧版默认入口 #overview 一致。 */}
-                <Route path="/" element={<Navigate to="/workbench" replace />} />
-                <Route path="*" element={<UnknownRoutePage />} />
-                </Routes>
+                <Suspense fallback={<StatePanel variant="loading" title="正在加载页面…" />}>
+                  <Routes>
+                  <Route path="/workbench" element={<ProjectBusinessRoute allow={['hub', 'worker']}><WorkbenchRoute /></ProjectBusinessRoute>} />
+                  {/* 旧版 hash 深链保持可用：overview 与 environment 是仍会被收藏的入口。 */}
+                  <Route path="/overview" element={<Navigate to="/workbench" replace />} />
+                  <Route path="/environment" element={<Navigate to="/diagnostics" replace />} />
+                  <Route path="/projects" element={<ProjectRoleRoute allow={['hub']}><ProjectsPage /></ProjectRoleRoute>} />
+                  <Route path="/devices" element={<ProjectBusinessRoute allow={['hub']}><HubDevicesPage /></ProjectBusinessRoute>} />
+                  <Route path="/assignments" element={<ProjectBusinessRoute allow={['hub']}><HubAssignmentsPage /></ProjectBusinessRoute>} />
+                  <Route path="/materials" element={<ProjectBusinessRoute allow={['hub']}><MaterialsPage /></ProjectBusinessRoute>} />
+                  <Route path="/rejections" element={<ProjectBusinessRoute allow={['hub']}><QualityPage /></ProjectBusinessRoute>} />
+                  <Route path="/review-queue" element={<Navigate to="/rejections?view=review" replace />} />
+                  <Route path="/task-center" element={<ProjectBusinessRoute allow={['hub', 'worker']}><TaskCenterPage /></ProjectBusinessRoute>} />
+                  <Route path="/settings" element={<SettingsPage />} />
+                  <Route path="/annotation" element={<ProjectBusinessRoute allow={['worker']}><AnnotationPage /></ProjectBusinessRoute>} />
+                  <Route path="/diagnostics" element={<DiagnosticsPage />} />
+                  {/* 首页回到采集工作台：与旧版默认入口 #overview 一致。 */}
+                  <Route path="/" element={<Navigate to="/workbench" replace />} />
+                  <Route path="*" element={<UnknownRoutePage />} />
+                  </Routes>
+                </Suspense>
               </ErrorBoundary>
             </AppShell>
           </UnsavedChangesProvider>

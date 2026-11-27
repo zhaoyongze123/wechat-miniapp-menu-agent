@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
@@ -23,7 +23,10 @@ import { BatchManagementDialog } from './BatchManagementDialog'
 import { ImportBatchDialog } from './ImportBatchDialog'
 import { PublishDialog } from './PublishDialog'
 import { ReworkPanel } from './ReworkPanel'
-import { StoreReviewWorkspace } from './StoreReviewWorkspace'
+
+const StoreReviewWorkspace = lazy(() =>
+  import('./StoreReviewWorkspace').then((m) => ({ default: m.StoreReviewWorkspace })),
+)
 import {
   RECOMMENDATION_LEVEL_LABELS,
   WECHAT_VALIDATION_LABELS,
@@ -629,7 +632,8 @@ export function MaterialsPage() {
       />
 
       {detailStoreId && batch ? (
-        <StoreReviewWorkspace
+        <Suspense fallback={<div className="fixed inset-0 z-30 flex items-center justify-center bg-surface"><StatePanel variant="loading" title="正在打开审核工作台…" /></div>}>
+          <StoreReviewWorkspace
           batchId={batchId}
           batchName={batch.name}
           batchStatus={status}
@@ -688,6 +692,7 @@ export function MaterialsPage() {
             setDetailStoreId(nextId)
           }}
         />
+        </Suspense>
       ) : null}
 
       <ConfirmActionDialog

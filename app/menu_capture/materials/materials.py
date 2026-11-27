@@ -1648,13 +1648,20 @@ class MaterialService:
         if not latest:
             return []
         publications, blocked = self.store_versions.current({item["version"]["id"] for item in latest.values()})
-        tasks = self.task_store.tasks()
-        by_id = {task["id"]: task for task in tasks if not task["archived_at"]}
         needs_snapshot_index = any(publications.get(item["version"]["id"]) is None for item in latest.values())
         by_snapshot: dict[str, list[dict]] = {}
         if needs_snapshot_index:
+            by_id = {task["id"]: task for task in self.task_store.active_tasks()}
             for task in by_id.values():
                 by_snapshot.setdefault(Path(task["source_path"]).parent.parent.name, []).append(task)
+        else:
+            needed_ids = {
+                mapping["task_id"]
+                for rows in publications.values()
+                for mapping in rows
+                if mapping.get("task_id")
+            }
+            by_id = self.task_store.active_tasks_by_ids(needed_ids)
         result: list[dict] = []
         for batch_id, item in latest.items():
             release, batch = item["version"], item["batch"]
