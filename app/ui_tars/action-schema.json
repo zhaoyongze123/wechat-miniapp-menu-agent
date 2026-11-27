@@ -5,7 +5,7 @@
   "observation": {
     "field": "observed_store_name",
     "max_chars": 40,
-    "doc": "arguments 中每轮必须包含 observed_store_name：字符串（最多 40 字，中文按字计）= 本轮页面明确显示的实际门店名称（含品牌、分店），首次看到就随该轮动作输出，需要完善/修正时更新；null = 本轮没有新的门店名称信息（保留此前名称，纯空格或换行也按 null 处理）；空字符串 = 显式撤销此前确认的错误名称。它只是附带观察，与动作字段同级写在 arguments 内，不参与动作校验、不传给桌面工具，也不能替代动作或终态；缺失时宿主按 null 处理。示例：<tool_call>{\"name\":\"computer_use\",\"arguments\":{\"action\":\"left_click\",\"coordinate\":[500,420],\"reason\":\"点击开始点餐进入菜单\",\"target_name\":\"开始点餐\",\"observed_store_name\":\"老王饭店（二店）\"}}</tool_call>"
+    "doc": "arguments 中每轮必须包含 observed_store_name：字符串（最多 40 字，中文按字计）= 本轮页面明确显示的实际门店名称（含品牌、分店），无论动作还是 success/unqualified/needs_review 终态，首次看到就随该轮动作输出，禁止填写“本餐厅”“本店”“当前门店”等泛称或附加“（已确认）”等状态后缀；null = 本轮没有新的真实门店名称信息（保留此前名称，纯空格或换行也按 null 处理）；空字符串 = 显式撤销此前确认的错误名称。它只是附带观察，与动作字段同级写在 arguments 内，不参与动作校验、不传给桌面工具，也不能替代动作或终态；缺失时宿主按 null 处理。示例：<tool_call>{\"name\":\"computer_use\",\"arguments\":{\"action\":\"left_click\",\"coordinate\":[500,420],\"reason\":\"点击开始点餐进入菜单\",\"target_name\":\"开始点餐\",\"observed_store_name\":\"老王饭店（二店）\"}}</tool_call>"
   },
   "actions": {
     "left_click": {

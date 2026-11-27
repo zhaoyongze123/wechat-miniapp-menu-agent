@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from PIL import Image
 
-from menu_capture.agent.ui_tars_trial import _record_observation
+from menu_capture.agent.ui_tars_trial import _record_observation, sanitize_observed_store_name
 from menu_capture.api.server import create_app
 from menu_capture.core.config import ConfigStore
 from menu_capture.materials.materials import MaterialService
@@ -291,4 +291,25 @@ def test_store_names_export_covers_all_states_and_current_round(tmp_path: Path) 
     assert rej_body["filename"] == "不合格门店清单.xlsx"
     assert rej_body["total"] == 1
     assert rej_body["rows"][0]["observed_store_name"] == "本轮观察店名"
+
+
+def test_sanitize_observed_store_name_filters_generics_and_status_suffixes() -> None:
+    assert sanitize_observed_store_name("本餐厅") == ""
+    assert sanitize_observed_store_name("本店") == ""
+    assert sanitize_observed_store_name("当前门店") == ""
+    assert sanitize_observed_store_name("扫码点餐") == ""
+    assert sanitize_observed_store_name("未知") == ""
+    assert sanitize_observed_store_name("澳门肥妈餐室（南京西路店）（已确认）") == "澳门肥妈餐室（南京西路店）"
+    assert sanitize_observed_store_name("“随和家宴青羊宫店”") == "随和家宴青羊宫店"
+
+    recorded: list[tuple[str, str]] = []
+    # 无效泛称被忽略，不会触发回调或覆盖已有名称；显式空字符串仍作为撤销透传
+    _record_observation(lambda n, f: recorded.append((n, f)), {"name": "本餐厅", "frame_id": "4"})
+    _record_observation(lambda n, f: recorded.append((n, f)), {"name": "澳门肥妈餐室（南京西路店）（已确认）", "frame_id": "5"})
+    _record_observation(lambda n, f: recorded.append((n, f)), {"name": "", "frame_id": "6"})
+    assert recorded == [
+        ("澳门肥妈餐室（南京西路店）", "5"),
+        ("", "6"),
+    ]
+
 

@@ -167,3 +167,40 @@ test('附带门店名称清洗控制字符与空白并限长，超长不截断',
                                         target_name: 'x', [OBSERVATION_FIELD]: ['bad'] });
   validateArgs('left_click', args);
 });
+
+test('泛称占位词会被忽略且不触发撤销，状态后缀会被清洗', () => {
+  for (const generic of ['本餐厅', '本店', '当前门店', '扫码点餐', '餐厅', '未知', 'NULL']) {
+    assert.equal(extractObservation({ action: 'noop', [OBSERVATION_FIELD]: generic }).observation, null, generic);
+  }
+  assert.deepEqual(
+    extractObservation({ action: 'terminate', outcome: 'success', reason: 'ok',
+                         [OBSERVATION_FIELD]: '澳门肥妈餐室（南京西路店）（已确认）' }).observation,
+    { name: '澳门肥妈餐室（南京西路店）' },
+  );
+});
+
+test('模型漏写 observed_store_name 时可从 reason 明确陈述中兜底提取（含 needs_review 终态）', () => {
+  const fromSuccess = extractObservation({
+    action: 'terminate',
+    outcome: 'success',
+    reason: '已进入阿强家川菜（江燕路万科里店）的菜品菜单页面，可见多道菜品及价格',
+    menu_box: [0, 150, 1000, 950],
+  });
+  assert.deepEqual(fromSuccess.observation, { name: '阿强家川菜（江燕路万科里店）' });
+
+  const fromNeedsReview = extractObservation({
+    action: 'terminate',
+    outcome: 'needs_review',
+    reason: '当前观察到门店名称为“随和家宴青羊宫店”，但无法进入菜品菜单。',
+  });
+  assert.deepEqual(fromNeedsReview.observation, { name: '随和家宴青羊宫店' });
+
+  // 显式撤销（空字符串）优先于 reason，不能被 reason 覆盖回非空名称
+  const revoked = extractObservation({
+    action: 'terminate',
+    outcome: 'needs_review',
+    reason: '当前观察到门店名称为“随和家宴青羊宫店”，但确认不准确',
+    [OBSERVATION_FIELD]: '',
+  });
+  assert.deepEqual(revoked.observation, { revoke: true });
+});

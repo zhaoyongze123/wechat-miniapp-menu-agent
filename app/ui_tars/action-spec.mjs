@@ -119,23 +119,66 @@ export const OBSERVATION_MAX_CHARS = Number(OBSERVATION.max_chars) || 40;
 // 原始值超过上限直接忽略：不截断，避免把一个错误的半截店名当成确认结果。
 const OBSERVATION_MAX_RAW_CHARS = OBSERVATION_MAX_CHARS * 3;
 const OBSERVATION_CONTROL_CHARS = /[\u0000-\u001f\u007f]+/g;
+// 剥离模型偶发附加在店名尾部的状态标注（如“（已确认）”“(已核对)”）。
+const OBSERVATION_STATUS_SUFFIX = /(?:\s*[（(]\s*(?:已确认|确认|已核对|核对|当前门店|门店名称|未确认)\s*[）)])+$/u;
+// 明确的泛称/占位词：不是实际品牌或分店名，必须忽略而非写入有效观察。
+const GENERIC_STORE_NAMES = new Set([
+  '本餐厅', '本店', '本门店', '本店铺', '本商家',
+  '当前餐厅', '当前门店', '当前店铺', '当前商家',
+  '餐厅', '门店', '店铺', '商家', '餐馆', '饭店', '小店',
+  '点餐', '点单', '扫码点餐', '微信点餐', '堂食点餐', '自助点餐', '在线点餐',
+  '堂食', '外卖', '自提', '菜单', '菜品菜单', '首页', '小程序', '微信小程序',
+  '未知', '未知门店', '无', '暂无', '空', 'null', 'none', 'n/a', 'unknown',
+]);
+// 兜底提取：仅当模型漏写 observed_store_name 但自己在 reason 中明确陈述可见店名时生效，绝不猜测。
+const REASON_STORE_NAME_PATTERNS = [
+  /(?:当前)?(?:观察到|识别到|可见|显示)?(?:的)?门店名称为[“「"《]?([^”」"》，。；\n]{2,40})[”」"》]?/u,
+  /当前门店为[“「"《]?([^”」"》，。；\n]{2,40})[”」"》]?/u,
+  /已进入[“「"《]?([^”」"》，。；\n]{2,36}?)[”」"》]?的(?:菜品)?菜单(?:页面|页|列表)?/u,
+];
+
+export function sanitizeObservedStoreName(raw) {
+  if (typeof raw !== 'string' || raw.length > OBSERVATION_MAX_RAW_CHARS) return '';
+  let name = raw.replace(OBSERVATION_CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim();
+  name = name.replace(/^[“「"《]+|[”」"》]+$/gu, '').trim();
+  name = name.replace(OBSERVATION_STATUS_SUFFIX, '').trim();
+  if (!name || [...name].length > OBSERVATION_MAX_CHARS) return '';
+  if (GENERIC_STORE_NAMES.has(name.toLowerCase())) return '';
+  return name;
+}
+
+function extractNameFromReason(reason) {
+  if (typeof reason !== 'string' || !reason.trim()) return '';
+  for (const pattern of REASON_STORE_NAME_PATTERNS) {
+    const match = reason.match(pattern);
+    if (!match || !match[1]) continue;
+    const candidate = sanitizeObservedStoreName(match[1]);
+    if (candidate) return candidate;
+  }
+  return '';
+}
 
 // 抽出并校验附带观察字段，返回去掉该字段的动作参数。
 // observation 为 { name }、{ revoke: true }（空字符串=显式撤销）或 null（没有有效的新信息）。
 export function extractObservation(args) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return { args, observation: null };
-  if (!Object.prototype.hasOwnProperty.call(args, OBSERVATION_FIELD)) return { args, observation: null };
-  const rest = { ...args };
-  const raw = rest[OBSERVATION_FIELD];
-  delete rest[OBSERVATION_FIELD];
-  // 类型错误或超长属于附带信息异常：只忽略它，不因此拒绝原本合法的动作。
-  if (typeof raw !== 'string' || raw.length > OBSERVATION_MAX_RAW_CHARS) return { args: rest, observation: null };
-  // 只有原始值恰为空字符串才是“显式撤销”。纯空格/换行/控制字符清洗后为空属于无效观察，
+  const hasField = Object.prototype.hasOwnProperty.call(args, OBSERVATION_FIELD);
+  const rest = hasField ? { ...args } : args;
+  const raw = hasField ? rest[OBSERVATION_FIELD] : undefined;
+  if (hasField) delete rest[OBSERVATION_FIELD];
+  // 只有原始值恰为空字符串才是“显式撤销”。纯空格/换行/泛称属于无效观察，
   // 不能当成撤销，否则会在模型输出噪声时误清空此前已确认的有效名称。
   if (raw === '') return { args: rest, observation: { revoke: true } };
-  const name = raw.replace(OBSERVATION_CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim();
-  if (!name || [...name].length > OBSERVATION_MAX_CHARS) return { args: rest, observation: null };
-  return { args: rest, observation: { name } };
+  if (typeof raw === 'string') {
+    const name = sanitizeObservedStoreName(raw);
+    if (name) return { args: rest, observation: { name } };
+  }
+  // 模型漏写 observed_store_name 或填了 null 时，若在 reason 里明确写出了可见门店名，兜底提取。
+  if (raw === undefined || raw === null) {
+    const fallback = extractNameFromReason(rest.reason);
+    if (fallback) return { args: rest, observation: { name: fallback } };
+  }
+  return { args: rest, observation: null };
 }
 
 // 只用于留痕的文本字段缺失时补占位符：gui-plus 实测会输出 reason:null / target_name:null

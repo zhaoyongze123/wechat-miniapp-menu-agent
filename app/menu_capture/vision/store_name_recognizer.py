@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from PIL import Image
 
+from menu_capture.agent.ui_tars_trial import sanitize_observed_store_name
 from menu_capture.vision.model import VisionModel, parse_json
 
 STORE_NAME_MAX_CHARS = 40
@@ -32,7 +33,7 @@ def recognize_store_name(model: VisionModel, image_path: Path | str) -> dict[str
     try:
         raw = model._request(rgb, _PROMPT)
         parsed = parse_json(raw)
-        name = _clean_text(parsed.get("store_name"), STORE_NAME_MAX_CHARS)
+        name = sanitize_observed_store_name(_clean_text(parsed.get("store_name"), STORE_NAME_MAX_CHARS))
         reason = _clean_text(parsed.get("reason"), 120)
         return {
             "store_name": name,
