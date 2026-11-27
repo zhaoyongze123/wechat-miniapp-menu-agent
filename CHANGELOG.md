@@ -2,6 +2,18 @@
 
 格式参考 Keep a Changelog，版本号沿用安装包的语义化版本。历史版本说明依据仓库记录与发布产物整理，未单独发布的版本只记录范围。
 
+## [0.5.5] - 2026-11-27
+
+### 修复
+
+- 修复 Windows Velopack 安装后校验路径偏差：`recovery.verify_release()` 由错误路径 `current/web/react/` 修正为与 `build.ps1` 真实打包结构一致的 `current/app/web/react/`，并区分前端入口缺失与哈希不匹配错误信息；同步修正集成测试 fixture 反映真实打包目录布局，解决 `v0.5.3 → v0.5.4` 增量重建并重启后触发 `recovery_required` 的故障（#88、#32）。
+- 修复 macOS 中文 locale 下 `recovery.process_created_at()` 解析 `ps -o lstart=` 失败的问题（强制 `LC_ALL=C`）。
+
+### 变更
+
+- 新增组件化独立构建、发布与更新能力（#119）：`deploy/tools/change_plan.py` 输出组件影响范围（`build_windows` / `build_hub` / `components`），`windows-release.yml` 支持按变更自动或通过 `components` 参数选择 `both` / `hub` / `windows` 独立构建与跨 run 复用；`velopack_trust.py` 与 `updates.py` 支持仅 Hub（顶层 Ed25519 `trust`）与仅 Windows（空 `assets` + `velopack.trust`）签名清单，单组件发布不会触发无关组件构建与客户端误更新。
+- 优化 Windows Velopack 打包速度（#119）：CI 构建排除临时目录免受 Windows Defender 实时扫描，`build.ps1` 运行环境缓存升级至 `v2` 并裁剪 `node_modules` 与 Python 标准库中的非运行期文档/测试文件，显式指定 `--delta BestSpeed` 并输出文件数与分阶段耗时。
+
 ## [0.5.4] - 2026-11-27
 
 ### 新增

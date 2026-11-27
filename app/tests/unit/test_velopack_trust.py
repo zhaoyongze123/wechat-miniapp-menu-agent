@@ -143,3 +143,35 @@ def test_signing_requires_full_manifest_and_pinned_key(signing_key, monkeypatch)
     monkeypatch.setattr(trust, "PUBLISHER_KEYS", {})
     with pytest.raises(ValueError, match="固定信任根"):
         trust.sign_manifest(_manifest(), seed)
+
+
+def test_component_independent_manifests_sign_and_isolate_updates(signing_key):
+    from menu_capture.updates.updates import _update_available, _validate_manifest
+
+    seed, _, _ = signing_key
+
+    # 1. 仅 Hub 独立发布：无 velopack 字段，由顶层 Ed25519 trust 签名保护。
+    hub_only = _manifest()
+    del hub_only["velopack"]
+    hub_only["components"] = ["hub"]
+    signed_hub = trust.sign_manifest(hub_only, seed)
+    assert "trust" in signed_hub and "velopack" not in signed_hub
+    validated_hub = _validate_manifest(signed_hub, TAG, "stable", None, repository=REPOSITORY)
+    validated_hub["eligible"] = True
+    assert _update_available(validated_hub, "0.3.4", "linux", "x64", velopack=False) is True
+    assert _update_available(validated_hub, "0.3.4", "windows", "x64", velopack=True) is False
+    # 篡改仅 Hub 清单中的镜像摘要必须验签失败。
+    tampered_hub = deepcopy(signed_hub)
+    tampered_hub["assets"][0]["sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="签名验证失败"):
+        _validate_manifest(tampered_hub, TAG, "stable", None, repository=REPOSITORY)
+
+    # 2. 仅 Windows 独立发布：assets 为空列表，由 velopack.trust 签名保护。
+    win_only = _manifest()
+    win_only["assets"] = []
+    win_only["components"] = ["windows"]
+    signed_win = trust.sign_manifest(win_only, seed)
+    validated_win = _validate_manifest(signed_win, TAG, "stable", None, repository=REPOSITORY)
+    validated_win["eligible"] = True
+    assert _update_available(validated_win, "0.3.4", "windows", "x64", velopack=True) is True
+    assert _update_available(validated_win, "0.3.4", "linux", "x64", velopack=False) is False

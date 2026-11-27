@@ -26,6 +26,31 @@ LOWER_RISK_BACKEND = {
     "app/menu_capture/desktop/checkbox_locator.py",
     "app/menu_capture/desktop/close_icon_locator.py",
 }
+# 组件级路径归属（严格保守，未列入的共享或未知路径默认同时触发 Windows 与 Hub 构建）。
+WORKER_ONLY_PREFIXES = (
+    "deploy/windows/",
+    "app/ui_tars/",
+    "app/menu_capture/agent/",
+)
+WORKER_ONLY_FILES = {
+    "app/menu_capture/desktop/template_locator.py",
+    "app/menu_capture/desktop/preview_locator.py",
+    "app/menu_capture/desktop/chat_anchor.py",
+    "app/menu_capture/desktop/chat_layout.py",
+    "app/menu_capture/desktop/chat_image_locator.py",
+    "app/menu_capture/desktop/checkbox_locator.py",
+    "app/menu_capture/desktop/close_icon_locator.py",
+    "app/menu_capture/updates/recovery.py",
+    "app/menu_capture/updates/velopack_backend.py",
+    "app/menu_capture/updates/velopack_worker.py",
+}
+HUB_ONLY_PREFIXES = (
+    "deploy/hub/",
+    "deploy/hub-update/",
+)
+HUB_ONLY_FILES = {
+    "app/menu_capture/shared/delivery.py",
+}
 DOCS = {"AGENTS.md", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE"}
 STABLE_TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+\Z")
 
@@ -38,10 +63,21 @@ def is_test(path: str) -> bool:
     return path.startswith("app/tests/") or path == "deploy/tools/test_change_plan.py"
 
 
+def _component_impact(path: str) -> tuple[bool, bool]:
+    """返回 (affects_windows, affects_hub)；未归类的运行时路径保守返回 (True, True)。"""
+    if path.startswith(WORKER_ONLY_PREFIXES) or path in WORKER_ONLY_FILES:
+        return True, False
+    if path.startswith(HUB_ONLY_PREFIXES) or path in HUB_ONLY_FILES:
+        return False, True
+    return True, True
+
+
 def classify(files: list[str], *, force_full: bool = False, uncertain: bool = False) -> dict:
     plan = dict.fromkeys(FLAGS, False)
     risk = 0
     release_needed = uncertain
+    build_windows = uncertain
+    build_hub = uncertain
     reasons = []
     for path in files:
         if is_doc(path):
@@ -53,6 +89,9 @@ def classify(files: list[str], *, force_full: bool = False, uncertain: bool = Fa
                 plan["packaging"] = True
             continue
         release_needed = True
+        affects_win, affects_hub = _component_impact(path)
+        build_windows = build_windows or affects_win
+        build_hub = build_hub or affects_hub
         if path in RUNTIME:
             plan["runtime_deps"] = True
             risk = 3
@@ -75,7 +114,10 @@ def classify(files: list[str], *, force_full: bool = False, uncertain: bool = Fa
                 plan["packaging"] = True
     if uncertain:
         risk = 3
+        build_windows = build_hub = True
         reasons.append("baseline or diff uncertain; full gates required")
+    if force_full:
+        build_windows = build_hub = True
     if risk == 3 or force_full:
         plan.update(dict.fromkeys(FLAGS, True))
         reasons.append("high risk / explicit full verification")
@@ -83,12 +125,23 @@ def classify(files: list[str], *, force_full: bool = False, uncertain: bool = Fa
         reasons.append("no runtime changes; no software release")
     if not reasons:
         reasons.append("reviewed impact rules; unrelated historical upgrade checks omitted")
+    if build_windows and build_hub:
+        components = "both"
+    elif build_windows:
+        components = "windows"
+    elif build_hub:
+        components = "hub"
+    else:
+        components = "none"
     return {
         **plan,
         "risk": f"L{max(risk, 3 if force_full else 0)}",
         "docs_only": bool(files) and all(is_doc(p) for p in files) and not uncertain,
         "release_needed": release_needed,
         "build": release_needed or force_full,
+        "build_windows": build_windows,
+        "build_hub": build_hub,
+        "components": components,
         "reasons": reasons,
     }
 
@@ -139,17 +192,16 @@ def emit(plan: dict) -> None:
             for key, val in plan.items():
                 if isinstance(val, bool):
                     stream.write(f"{key}={str(val).lower()}\n")
-                elif key in {"base_ref", "head", "risk"}:
+                elif key in {"base_ref", "head", "risk", "components"}:
                     stream.write(f"{key}={val}\n")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with Path(summary).open("a", encoding="utf-8") as stream:
             stream.write("### Change plan\n\n")
-            for key in ("base_ref", "head", "risk", *FLAGS, "docs_only", "release_needed", "build"):
+            for key in ("base_ref", "head", "risk", "components", "build_windows", "build_hub", *FLAGS, "docs_only", "release_needed", "build"):
                 stream.write(f"- {key}: {plan[key]}\n")
             stream.write(f"- changed paths: {len(plan['files'])}\n")
-            for reason in plan["reasons"]:
-                stream.write(f"- {reason}\n")
+            stream.writelines(f"- {reason}\n" for reason in plan["reasons"])
 
 
 def main() -> None:
