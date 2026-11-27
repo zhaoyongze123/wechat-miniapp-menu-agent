@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from PIL import Image
 from starlette.background import BackgroundTask
@@ -343,6 +344,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     remote_token = secrets.token_urlsafe(32) if remote_control_host else ""
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    # 压缩大体积 JSON 列表响应（如 /api/status、/api/capture/queue、/api/shared/status），提升内网/远程刷新速度。
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.state.runner, app.state.configs, app.state.store = runner, configs, store
     app.state.debug_log = debug_log
     app.state.model_usage = model_usage
@@ -1554,9 +1557,23 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 })
         return {"tasks": items}
 
-    def capture_history_task_index(project_id: str | None = None) -> dict:
+    def capture_history_task_index(project_id: str | None = None,
+                                   needed_task_ids: set[str] | None = None) -> dict:
         # 在采集端按分配记录补充旧轮次来源；在共享后台按当前发布快照提取批次。
-        tasks = {task["id"]: task for task in store.tasks()}
+        if needed_task_ids is not None:
+            unique = [tid for tid in needed_task_ids if tid]
+            tasks: dict[str, dict] = {}
+            if unique:
+                with store.connect() as db:
+                    for offset in range(0, len(unique), 500):
+                        chunk = unique[offset : offset + 500]
+                        placeholders = ",".join("?" for _ in chunk)
+                        for row in db.execute(f"SELECT * FROM tasks WHERE id IN ({placeholders})", chunk):
+                            tasks[str(row["id"])] = dict(row)
+        else:
+            tasks = {task["id"]: task for task in store.tasks()}
+        if not tasks:
+            return {}
         if worker:
             with store.connect() as db:
                 if worker._hub_supports_project_scope:
@@ -1579,8 +1596,9 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                 if row["id"] in tasks:
                     tasks[row["id"]] = row
             if project_id is not None:
+                proj_map = task_project_ids(tasks.keys())
                 tasks = {task_id: task for task_id, task in tasks.items()
-                         if task_project_id(task_id) == project_id}
+                         if proj_map.get(str(task_id)) == project_id}
         return tasks
 
     def scoped_capture_history(run: dict, result_rows: list[dict], task_index: dict, project_id: str) -> dict | None:
@@ -1596,8 +1614,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                     selected_results.append(row | {"project_id": project_id})
         else:
             selected_results = [row for row in result_rows if row.get("project_id") == project_id]
-            selected_ids = [task_id for task_id in ids
-                            if any(row.get("task_id") == task_id for row in selected_results)]
+            selected_result_ids = {row.get("task_id") for row in selected_results}
+            selected_ids = [task_id for task_id in ids if task_id in selected_result_ids]
         if not selected_ids:
             return None
         by_id = {row.get("task_id"): row for row in selected_results}
@@ -1624,7 +1642,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             # 单机历史没有多项目边界；保留旧版无 project_id 轮次的读取兼容。
             runs = store.run_history(500, project_id=None if role == "standalone" else scope) if not worker_id else []
             results = store.capture_run_results([run["id"] for run in runs])
-            task_index = capture_history_task_index(scope) if runs else {}
+            needed_ids = {tid for run in runs for tid in (run.get("task_ids") or [])}
+            task_index = capture_history_task_index(scope, needed_task_ids=needed_ids) if runs else {}
             for run in runs:
                 item = scoped_capture_history(run, results.get(run["id"], []), task_index, scope)
                 if item is None:
@@ -1634,13 +1653,24 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             if hub:
                 rows.extend(hub.history_records(worker_id=worker_id, project_id=scope))
         if kind in ("all", "materials") and not worker_id:
-            for job in materials.jobs.history(500, project_id=scope):
+            jobs = materials.jobs.history(500, project_id=scope)
+            batch_names: dict[str, str] = {}
+            if jobs:
+                unique_batches = list(dict.fromkeys(str(job["batch_id"]) for job in jobs if job.get("batch_id")))
+                with store.connect() as db:
+                    for offset in range(0, len(unique_batches), 500):
+                        chunk = unique_batches[offset : offset + 500]
+                        placeholders = ",".join("?" for _ in chunk)
+                        for brow in db.execute(f"SELECT id,name FROM material_batches WHERE id IN ({placeholders})", chunk):
+                            batch_names[str(brow["id"])] = str(brow["name"] or "")
+            for job in jobs:
+                bname = batch_names.get(str(job["batch_id"]), "") or str(job["batch_id"])
                 rows.append({
                     "kind": "materials",
                     "id": job["id"],
-                    "title": _batch_name(job["batch_id"]),
+                    "title": bname,
                     "batch_id": job["batch_id"],
-                    "batch_name": _batch_name(job["batch_id"]),
+                    "batch_name": bname,
                     "mode": job.get("kind", ""),
                     "status": job.get("status", ""),
                     "created_at": job.get("created_at", ""),

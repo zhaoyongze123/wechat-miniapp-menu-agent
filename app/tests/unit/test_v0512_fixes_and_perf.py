@@ -133,3 +133,25 @@ class TestBatchStoreNameRowsPerformance:
         assert batch_proj_calls == 1
         assert batch_name_calls == 1
         assert rows[0]["observed_store_name"].startswith("Observed-")
+
+
+class TestGzipMiddlewareEnabled:
+    """验证大体积 JSON 响应自动启用 Gzip 压缩。"""
+
+    def test_large_status_response_is_gzipped(self, tmp_path: Path):
+        from fastapi.testclient import TestClient
+        from menu_capture.api.server import create_app
+
+        app = create_app(tmp_path, role="standalone")
+        store = app.state.store
+        with store.connect() as db:
+            for i in range(40):
+                db.execute(
+                    "INSERT INTO events(time,level,message,task_id) VALUES(?,?,?,?)",
+                    ("2026-11-27T10:00:00+08:00", "info", f"事件日志内容测试文本-{i:03d}-" + "x" * 60, ""),
+                )
+        client = TestClient(app, base_url="http://127.0.0.1")
+        resp = client.get("/api/status", headers={"Accept-Encoding": "gzip"})
+        assert resp.status_code == 200
+        assert resp.headers.get("content-encoding") == "gzip"
+

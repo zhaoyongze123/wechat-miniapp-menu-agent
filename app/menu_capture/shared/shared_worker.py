@@ -128,6 +128,7 @@ class SharedWorker:
                          "project_name"):
                 if name not in columns:
                     db.execute(f"ALTER TABLE worker_assignments ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+            db.execute("CREATE INDEX IF NOT EXISTS worker_assignment_worker_project ON worker_assignments(worker_id,project_id)")
             # 旧待同步轮次仅在逐店分配能证明唯一设备身份时回填配对范围；混合或空身份保持未知。
             db.execute("""
                 UPDATE worker_run_delivery SET worker_id=(
