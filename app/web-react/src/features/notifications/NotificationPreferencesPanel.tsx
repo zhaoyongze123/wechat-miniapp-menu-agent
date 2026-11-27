@@ -59,8 +59,8 @@ const EVENT_OPTIONS: EventOption[] = [
   },
   {
     key: 'device_offline',
-    label: '采集电脑离线或恢复',
-    description: '共享后台按 60 秒心跳判断设备状态，只在在线状态发生变化时提醒。',
+    label: '采集电脑离线提醒',
+    description: '共享后台按服务端心跳窗口与连续确认判断离线，自动过滤短时波动；设备恢复后自动归档。',
     roles: ['hub'],
   },
 ]

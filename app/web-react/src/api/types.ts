@@ -1,10 +1,14 @@
 /** 共享端与采集端状态的最小 DTO；字段缺失时按“未知”展示，不推断事实。 */
 export type AppRole = 'hub' | 'worker' | 'standalone'
 
+export type WorkerConnectionState = 'online' | 'degraded' | 'offline'
+
 export interface WorkerSummary {
   id: string
   name: string
   last_seen?: string
+  connection_state?: WorkerConnectionState
+  last_seen_age_seconds?: number | null
   history_synced_at?: string
   pending_uploads?: number
   description?: string
@@ -21,6 +25,7 @@ export interface AssignmentSummary {
 
 export interface HubStatus {
   role: 'hub'
+  server_time?: string
   workers: WorkerSummary[]
   assignments: AssignmentSummary[]
 }
@@ -41,6 +46,9 @@ export interface WorkerConnectionStatus {
   role: 'worker'
   paired: boolean
   online: boolean
+  connection_state?: 'online' | 'degraded' | 'offline' | 'credential_invalid' | 'unpaired'
+  consecutive_failures?: number
+  last_connected_at?: string
   name?: string
   error?: string
   history_error?: string

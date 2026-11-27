@@ -41,13 +41,13 @@ export function assignmentStatusOf(status: string | undefined, disposition?: str
   return ASSIGNMENT_STATUS[status] ?? { label: status, tone: 'secondary' }
 }
 
-/** 设备在线判定与旧工作台一致：最近一次心跳在 60 秒内。 */
+/** 设备在线判定：旧 Hub 未返回 connection_state 时回退 90 秒心跳窗口。 */
 export function isOnline(lastSeen: string | undefined, now = Date.now()): boolean {
   const seen = Date.parse(lastSeen ?? '')
-  return Number.isFinite(seen) && now - seen < 60_000
+  return Number.isFinite(seen) && now - seen < 90_000
 }
 
-export type DeviceState = 'online' | 'offline' | 'revoked' | 'archived'
+export type DeviceState = 'online' | 'degraded' | 'offline' | 'revoked' | 'archived'
 
 export interface DeviceStateMeta {
   key: DeviceState
@@ -55,9 +55,20 @@ export interface DeviceStateMeta {
   tone: StatusTone
 }
 
-export function deviceStateOf(worker: { revoked_at?: string; archived_at?: string; last_seen?: string }, now = Date.now()): DeviceStateMeta {
+export function deviceStateOf(
+  worker: {
+    revoked_at?: string
+    archived_at?: string
+    last_seen?: string
+    connection_state?: 'online' | 'degraded' | 'offline'
+  },
+  now = Date.now(),
+): DeviceStateMeta {
   if (worker.archived_at) return { key: 'archived', label: '已移除', tone: 'secondary' }
   if (worker.revoked_at) return { key: 'revoked', label: '已解除配对', tone: 'danger' }
+  if (worker.connection_state === 'online') return { key: 'online', label: '在线', tone: 'success' }
+  if (worker.connection_state === 'degraded') return { key: 'degraded', label: '连接波动', tone: 'warning' }
+  if (worker.connection_state === 'offline') return { key: 'offline', label: '离线', tone: 'warning' }
   if (isOnline(worker.last_seen, now)) return { key: 'online', label: '在线', tone: 'success' }
   return { key: 'offline', label: '离线', tone: 'warning' }
 }
