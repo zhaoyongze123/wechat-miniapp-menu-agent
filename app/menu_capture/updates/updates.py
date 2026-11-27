@@ -2168,7 +2168,8 @@ class UpdateService:
             headers["If-None-Match"] = str(cache["etag"])
         try:
             if channel == "stable":
-                # 正式渠道走静态签名清单：不查 Release 列表，避免匿名 API 配额耗尽。
+                # 正式渠道优先走静态签名清单：零 API 配额消耗；
+                # 但当独立组件交错发布导致 latest 仅含另一端资产时，回退查 Release 列表寻找本端最新兼容版本，避免离线设备漏更。
                 status, response_headers, body = self._fetcher(
                     STATIC_MANIFEST_URL.format(repository=self.repository),
                     {"Accept": "application/json", "User-Agent": "menu-capture-updater"}, 10.0,
@@ -2178,6 +2179,22 @@ class UpdateService:
                 if not still_current():
                     return
                 latest = self._static_release(body, channel)
+                if not self._release_supports_current_platform(latest):
+                    try:
+                        api_status, _, api_body = self._fetcher(
+                            f"https://api.github.com/repos/{self.repository}/releases?per_page=20",
+                            {"Accept": "application/vnd.github+json", "User-Agent": "menu-capture-updater"},
+                            10.0,
+                        )
+                        if api_status == 200:
+                            releases = json.loads(api_body.decode("utf-8"))
+                            if isinstance(releases, list) and still_current():
+                                compatible = self._select_release(releases, channel)
+                                if compatible and self._release_supports_current_platform(compatible):
+                                    latest = compatible
+                    except Exception:
+                        # 回退查询失败（如匿名 API 限流）时保留静态清单结果，不把单次检查打成失败。
+                        pass
             else:
                 status, response_headers, body = self._fetcher(
                     f"https://api.github.com/repos/{self.repository}/releases?per_page=20", headers, 10.0
@@ -2286,22 +2303,15 @@ class UpdateService:
             **checked,
         }
 
-    def _select_release(self, releases: list[dict], channel: str) -> dict | None:
-        candidates: list[tuple[Version, dict]] = []
-        for release in releases:
-            if not isinstance(release, dict) or release.get("draft"):
-                continue
-            try:
-                version = Version.parse(str(release.get("tag_name") or ""))
-            except ValueError:
-                continue
-            if channel == "stable" and (release.get("prerelease") or version.is_prerelease):
-                continue
-            candidates.append((version, release))
-        if not candidates:
-            return None
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        version, release = candidates[0]
+    def _release_supports_current_platform(self, release: dict | None) -> bool:
+        """判断发布清单是否包含当前运行角色与平台/架构可安装的资产。"""
+        if not isinstance(release, dict) or not release.get("eligible"):
+            return False
+        if self._velopack_mode() and self.platform == "windows":
+            return self.local_arch == "x64" and isinstance(release.get("velopack"), dict)
+        return _has_asset_for_platform(release, self.platform, self.local_arch)
+
+    def _inspect_release(self, version: Version, release: dict, channel: str) -> dict:
         tag = str(release.get("tag_name") or "")
         base = {
             "version": version_text(version, tag),
@@ -2336,6 +2346,30 @@ class UpdateService:
         base["eligible"] = True
         base["reason"] = ""
         return base
+
+    def _select_release(self, releases: list[dict], channel: str) -> dict | None:
+        candidates: list[tuple[Version, dict]] = []
+        for release in releases:
+            if not isinstance(release, dict) or release.get("draft"):
+                continue
+            try:
+                version = Version.parse(str(release.get("tag_name") or ""))
+            except ValueError:
+                continue
+            if channel == "stable" and (release.get("prerelease") or version.is_prerelease):
+                continue
+            candidates.append((version, release))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        fallback: dict | None = None
+        for version, release in candidates:
+            inspected = self._inspect_release(version, release, channel)
+            if fallback is None:
+                fallback = inspected
+            if self._release_supports_current_platform(inspected):
+                return inspected
+        return fallback
 
     def _read_preferences(self) -> dict:
         data = self._read_json(self.preferences_path, {})

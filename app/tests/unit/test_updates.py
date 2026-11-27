@@ -1721,3 +1721,96 @@ def test_update_flow_treats_host_executor_pulling_as_installing(tmp_path: Path):
     assert flow["message"] == "正在分层拉取镜像"
     with pytest.raises(ValueError, match="安装已开始"):
         service.cancel_update()
+
+
+def test_interleaved_hub_only_latest_falls_back_to_latest_worker_release(tmp_path: Path):
+    """离线 Worker 遇到最新 Release 仅含 Hub 资产时，自动回退查 Release 列表发现最新兼容 Worker 版本。"""
+    worker_manifest = manifest("0.5.11")
+    hub_only_manifest = {
+        **manifest("0.5.12"),
+        "assets": [{
+            "kind": "hub_image",
+            "name": "menu-capture-hub-0.5.12-linux-amd64.tar.gz",
+            "size": 2048,
+            "sha256": "c" * 64,
+            "url": f"{BASE}/v0.5.12/menu-capture-hub-0.5.12-linux-amd64.tar.gz",
+            "platform": "linux",
+            "arch": "x64",
+        }],
+    }
+    hub_rel = release("v0.5.12", manifest=hub_only_manifest)
+    hub_rel["assets"] = [
+        hub_rel["assets"][0],
+        {
+            "name": "menu-capture-hub-0.5.12-linux-amd64.tar.gz",
+            "size": 2048,
+            "browser_download_url": f"{BASE}/v0.5.12/menu-capture-hub-0.5.12-linux-amd64.tar.gz",
+            "digest": "sha256:" + "c" * 64,
+        },
+    ]
+    worker_rel = release("v0.5.11", manifest=worker_manifest)
+    fetcher = Fetcher(
+        [hub_rel, worker_rel],
+        {"v0.5.12": hub_only_manifest, "v0.5.11": worker_manifest},
+    )
+    service = make_service(
+        tmp_path,
+        [hub_rel, worker_rel],
+        {"v0.5.12": hub_only_manifest, "v0.5.11": worker_manifest},
+        current="0.5.10",
+        fetcher=fetcher,
+    )
+
+    status = service.check(force=True)
+
+    assert status["update_available"] is True
+    assert status["latest"]["version"] == "0.5.11"
+    assert any("releases/latest/download/" in url for url in fetcher.calls)
+    assert any("api.github.com/repos/" in url for url in fetcher.calls)
+
+
+def test_interleaved_worker_only_latest_falls_back_to_latest_hub_release(tmp_path: Path):
+    """离线 Hub 遇到最新 Release 仅含 Worker 资产时，自动回退查 Release 列表发现最新兼容 Hub 版本。"""
+    hub_m = {
+        **manifest("0.5.11"),
+        "assets": [{
+            "kind": "hub_image",
+            "name": "menu-capture-hub-0.5.11-linux-amd64.tar.gz",
+            "size": 2048,
+            "sha256": "c" * 64,
+            "url": f"{BASE}/v0.5.11/menu-capture-hub-0.5.11-linux-amd64.tar.gz",
+            "platform": "linux",
+            "arch": "x64",
+        }],
+    }
+    hub_rel = release("v0.5.11", manifest=hub_m)
+    hub_rel["assets"] = [
+        hub_rel["assets"][0],
+        {
+            "name": "menu-capture-hub-0.5.11-linux-amd64.tar.gz",
+            "size": 2048,
+            "browser_download_url": f"{BASE}/v0.5.11/menu-capture-hub-0.5.11-linux-amd64.tar.gz",
+            "digest": "sha256:" + "c" * 64,
+        },
+    ]
+    worker_only_m = manifest("0.5.12")
+    worker_rel = release("v0.5.12", manifest=worker_only_m)
+    fetcher = Fetcher(
+        [worker_rel, hub_rel],
+        {"v0.5.12": worker_only_m, "v0.5.11": hub_m},
+    )
+    service = make_service(
+        tmp_path,
+        [worker_rel, hub_rel],
+        {"v0.5.12": worker_only_m, "v0.5.11": hub_m},
+        current="0.5.10",
+        fetcher=fetcher,
+    )
+    service.role = "hub"
+    service.platform = "linux"
+
+    status = service.check(force=True)
+
+    assert status["update_available"] is True
+    assert status["latest"]["version"] == "0.5.11"
+
