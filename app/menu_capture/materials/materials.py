@@ -1428,6 +1428,10 @@ class MaterialService:
         store["selected_artifact"] = None
 
     def active_release(self, active_root: Path, *, project_id: str | None = None) -> dict | None:
+        if self.role == "worker":
+            # 采集端不持有本地素材发布版本，也不在本地 projects 表复制共享端项目；
+            # 避免读取 Hub 分配的新项目时触发 ProjectNotFound("项目不存在")。
+            return None
         if self.role == "hub":
             release = self.versions.active_project(project_id) if project_id is not None else None
         else:
