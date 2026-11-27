@@ -308,6 +308,33 @@ def database_metadata(database: Path) -> dict:
         }
 
 
+SNAPSHOT_ATTEMPTS = 3
+SNAPSHOT_RETRY_DELAY = 0.2
+
+
+def copy_sqlite_consistently(source: Path, destination: Path) -> dict:
+    """对运行中的 SQLite 做一致性副本，并返回副本自身的结构与行数。
+
+    `sqlite3.backup()` 本身是原子快照；但在副本生成前后各读一次源库元数据再要求逐项相等，
+    会被后台心跳/同步在两次读取之间新增的行误判为不一致。这里改为：
+    - 以副本自己的元数据为准（它描述的正是将被保留的内容，且已通过 quick_check）；
+    - 副本必须保留读取源库时已有的全部表、字段、索引与行数（只允许多出并发新增的内容）；
+    - 偶发不满足时最多重试 SNAPSHOT_ATTEMPTS 次，仍不满足才拒绝，保持保护强度。
+    """
+    last_reason = ""
+    for attempt in range(SNAPSHOT_ATTEMPTS):
+        if attempt:
+            time.sleep(SNAPSHOT_RETRY_DELAY)
+        before = database_metadata(source)
+        backup_sqlite(source, destination)
+        copied = database_metadata(destination)
+        if before == copied or _preserves_database(before, copied):
+            return copied
+        last_reason = f"第 {attempt + 1} 次副本丢失了源库已有的结构或行数"
+        destination.unlink(missing_ok=True)
+    raise ValueError(f"SQLite 一致性快照的结构或关键表行数不一致：{last_reason}")
+
+
 def database_readable(data_dir: Path) -> tuple[bool, str]:
     path = database_path(data_dir)
     if path is None:
@@ -343,11 +370,7 @@ def snapshot_database(data_dir: Path, destination: Path) -> dict:
     path = database_path(data_dir)
     if path is None:
         raise ValueError("缺少可回滚数据库")
-    metadata = database_metadata(path)
-    backup_sqlite(path, destination)
-    copied_metadata = database_metadata(destination)
-    if metadata != copied_metadata:
-        raise ValueError("SQLite 一致性快照的结构或关键表行数不一致")
+    metadata = copy_sqlite_consistently(path, destination)
     files = {}
     for suffix in ("", "-wal", "-shm"):
         item = Path(str(path) + suffix)
@@ -471,11 +494,7 @@ def prepare_verify_home(
             raise ValueError(f"SQLite 主库及 WAL 超过隔离快照上限：{item}")
         relative = item.relative_to(source_data)
         target = data_dir / relative
-        source_metadata = database_metadata(item)
-        backup_sqlite(item, target)
-        copied_metadata = database_metadata(target)
-        if source_metadata != copied_metadata:
-            raise ValueError(f"SQLite 一致性副本的结构或关键表行数不一致：{relative}")
+        source_metadata = copy_sqlite_consistently(item, target)
         databases[str(relative)] = {
             "sha256": sha256_file(target), "size": target.stat().st_size, **source_metadata,
         }

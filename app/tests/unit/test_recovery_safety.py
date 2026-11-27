@@ -184,6 +184,70 @@ def test_snapshot_metadata_contains_schema_and_table_row_counts(tmp_path: Path) 
     assert snapshot["schema"]["objects"]
 
 
+def test_snapshot_tolerates_rows_written_while_copying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """后台同步在两次元数据读取之间新增行时，快照应成功并包含新增行，而不是误杀更新。"""
+    data_dir = _create_data_root(tmp_path)
+    database = data_dir / "tasks.sqlite3"
+    real_backup = recovery.backup_sqlite
+    calls = {"count": 0}
+
+    def backup_with_concurrent_write(source: Path, destination: Path) -> None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            with sqlite3.connect(database) as db:
+                db.execute("INSERT INTO tasks VALUES ('t3', '并发新增')")
+        real_backup(source, destination)
+
+    monkeypatch.setattr(recovery, "backup_sqlite", backup_with_concurrent_write)
+    snapshot = recovery.snapshot_database(data_dir, tmp_path / "snapshot.sqlite3")
+
+    assert snapshot["row_counts"]["tasks"] == 3
+    assert calls["count"] == 1
+
+
+def test_snapshot_still_rejects_a_copy_that_loses_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """放宽并发新增行不能削弱保护：副本少于源库已有行数必须重试后拒绝。"""
+    data_dir = _create_data_root(tmp_path)
+    real_backup = recovery.backup_sqlite
+    monkeypatch.setattr(recovery, "SNAPSHOT_RETRY_DELAY", 0)
+
+    def lossy_backup(source: Path, destination: Path) -> None:
+        real_backup(source, destination)
+        with sqlite3.connect(destination) as db:
+            db.execute("DELETE FROM tasks WHERE id='t2'")
+
+    monkeypatch.setattr(recovery, "backup_sqlite", lossy_backup)
+    with pytest.raises(ValueError, match="一致性快照"):
+        recovery.snapshot_database(data_dir, tmp_path / "snapshot.sqlite3")
+    assert not (tmp_path / "snapshot.sqlite3").exists()
+
+
+def test_verify_source_tolerates_rows_written_while_copying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    _create_data_root(source)
+    database = source / "data" / "tasks.sqlite3"
+    real_backup = recovery.backup_sqlite
+    calls = {"count": 0}
+
+    def backup_with_concurrent_write(src: Path, destination: Path) -> None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            with sqlite3.connect(database) as db:
+                db.execute("INSERT INTO runs VALUES ('r2', 'running')")
+        real_backup(src, destination)
+
+    monkeypatch.setattr(recovery, "backup_sqlite", backup_with_concurrent_write)
+    evidence = recovery.prepare_verify_home(source, tmp_path / "verify", transaction_id="tx-race")
+
+    assert evidence["databases"]["tasks.sqlite3"]["row_counts"]["runs"] == 2
+
+
 def test_verify_source_evidence_cannot_be_replaced_by_an_empty_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
