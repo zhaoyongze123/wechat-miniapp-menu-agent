@@ -12,7 +12,7 @@ from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from menu_capture.materials.materials import REJECTION_REASONS, MaterialService
-from menu_capture.projects.service import resolve_task_project
+from menu_capture.projects.service import resolve_task_project, resolve_task_projects
 from menu_capture.storage.store import TaskStore, now
 from menu_capture.capture.capture_results import STORE_STATE_LABELS, capture_outcome, store_state
 
@@ -21,13 +21,44 @@ class RejectionService:
     """提供不合格统一视图、导出和已有业务规则对应的审核处置。"""
 
     def __init__(self, tasks: TaskStore, materials: MaterialService, *, current_only: bool = False,
-                 observed_names=None, task_project_provider=None):
+                 observed_names=None, task_project_provider=None,
+                 observed_names_batch=None, task_project_ids_provider=None):
         self.tasks = tasks
         self.materials = materials
         self.current_only = current_only
         # Hub 已同步的名称落在 shared_results，Worker/单机落在本地表；由装配层注入同一查询入口。
         self.observed_names = observed_names
+        self.observed_names_batch = observed_names_batch
         self.task_project_provider = task_project_provider
+        self.task_project_ids_provider = task_project_ids_provider
+
+    def _observed_names_map(self, task_ids, project_id: str | None = None) -> dict[str, str]:
+        """批量读取任务对应的实际观察门店名称，避免大库导出/预览逐条查库。"""
+        unique = [str(tid) for tid in dict.fromkeys(str(t or "") for t in task_ids) if tid]
+        if not unique:
+            return {}
+        effective_project = None if (self.materials is not None and self.materials.role == "standalone") else project_id
+        try:
+            if self.observed_names_batch is not None:
+                return {str(k): str(v or "") for k, v in (self.observed_names_batch(unique, effective_project) or {}).items()}
+            if self.observed_names is not None:
+                return {tid: self._observed_name(tid, project_id) for tid in unique}
+            return self.tasks.observed_store_names_current(unique, project_id=effective_project)
+        except Exception:  # noqa: BLE001 - 附带信息异常不得阻断清单与导出
+            return {}
+
+    def _task_project_ids(self, task_ids) -> dict[str, str | None]:
+        """批量解析任务所属项目，避免全量导出/预览产生 N+1 查询。"""
+        unique = [str(tid) for tid in dict.fromkeys(str(t or "") for t in task_ids) if tid]
+        if not unique:
+            return {}
+        if self.task_project_ids_provider is not None:
+            return self.task_project_ids_provider(unique)
+        if self.task_project_provider is not None:
+            return {tid: self.task_project_provider(tid) for tid in unique}
+        with self.tasks.connect() as db:
+            resolved = resolve_task_projects(db, unique)
+        return {tid: (owner["id"] if owner else None) for tid, owner in resolved.items()}
 
     def _observed_name(self, task_id: str, project_id: str | None = None) -> str:
         """附带信息读取失败只返回空值，不影响不合格清单与导出主流程。
@@ -61,11 +92,15 @@ class RejectionService:
         current = ({task["id"] for task in self.materials.effective_capture_tasks(project_id=project_id)}
                    if self.current_only and self.materials is not None else None)
         batch_cache: dict[str, dict | None] = {}
-        for task in self.tasks.rejections():
-            if (current is not None and task["id"] not in current) or capture_outcome(task) != "rejected":
-                continue
-            if project_id is not None and self._task_project_id(task["id"]) != project_id:
-                continue
+        raw_rejections = [
+            task for task in self.tasks.rejections()
+            if not ((current is not None and task["id"] not in current) or capture_outcome(task) != "rejected")
+        ]
+        if project_id is not None and raw_rejections:
+            proj_map = self._task_project_ids(task["id"] for task in raw_rejections)
+            raw_rejections = [task for task in raw_rejections if proj_map.get(str(task["id"])) == project_id]
+        names_map = self._observed_names_map((task["id"] for task in raw_rejections), project_id) if raw_rejections else {}
+        for task in raw_rejections:
             code = task.get("reject_reason", "")
             source_path = Path(task["source_path"])
             batch_id = task.get("material_batch_id", "") or ""
@@ -105,7 +140,7 @@ class RejectionService:
                 "task_id": task["id"],
                 "run_id": task.get("run_id", ""),
                 # 伴随提取的实际门店名称：原始编号仍是主键，名称只作为附带信息展示/导出。
-                "observed_store_name": self._observed_name(task["id"], project_id),
+                "observed_store_name": names_map.get(str(task["id"]), ""),
                 "can_return_to_materials": can_return,
                 "return_to_materials_disabled_reason": return_disabled_reason,
             })
@@ -457,20 +492,25 @@ class RejectionService:
         """全量门店名称清单：名称提取独立于采集结果，覆盖成功、待检查与不合格。
 
         以全部未归档任务为范围；原始任务编号与原始门店名称来自任务本身，
-        实际观察名称按当前有效结果归属（Hub）或当前采集轮次（Worker/单机）读取，
+        实际观察名称按当前有效结果归属（Hub）或当前采集轮次（Worker/单机）批量读取，
         不跨轮次回退，避免历史名称掩盖本轮撤销或换版；同时附带任务/模型 reason 便于人工核对。
         """
+        active = [task for task in self.tasks.tasks() if not task.get("archived_at")]
+        if not active:
+            return []
+        if project_id is not None:
+            proj_map = self._task_project_ids(task["id"] for task in active)
+            active = [task for task in active if proj_map.get(str(task["id"])) == project_id]
+        if not active:
+            return []
+        names_map = self._observed_names_map((task["id"] for task in active), project_id)
         rows: list[dict] = []
-        for task in self.tasks.tasks():
-            if task.get("archived_at"):
-                continue
+        for task in active:
             task_id = str(task["id"])
-            if project_id is not None and self._task_project_id(task_id) != project_id:
-                continue
             rows.append({
                 "task_id": task_id,
                 "store_name": str(task.get("source_name") or ""),
-                "observed_store_name": self._observed_name(task_id, project_id),
+                "observed_store_name": names_map.get(task_id, ""),
                 "state": STORE_STATE_LABELS.get(store_state(task), ""),
                 "reason": self._task_reason(task),
             })

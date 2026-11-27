@@ -142,12 +142,41 @@ class VisionModel:
 
 
 def parse_json(text: str) -> dict:
-    stripped = text.strip()
-    if stripped.startswith("```json") and stripped.endswith("```"):
-        stripped = stripped[7:-3].strip()
-    elif stripped.startswith("```") and stripped.endswith("```"):
-        stripped = stripped[3:-3].strip()
-    value = json.loads(stripped)
-    if not isinstance(value, dict):
-        raise ValueError("响应必须为JSON对象")
-    return value
+    """从模型文本中提取首个合法 JSON 对象，容忍思维链、代码块与尾部附带说明。"""
+    stripped = re.sub(r"<think>.*?</think>", "", text or "", flags=re.DOTALL | re.IGNORECASE).strip()
+    candidates: list[str] = []
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", stripped, flags=re.IGNORECASE)
+    if fenced:
+        candidates.append(fenced.group(1).strip())
+    candidates.append(stripped)
+
+    decoder = json.JSONDecoder()
+    last_error: Exception | None = None
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            value = json.loads(candidate)
+            if isinstance(value, dict):
+                return value
+            last_error = ValueError("响应必须为JSON对象")
+            continue
+        except ValueError as exc:
+            last_error = exc
+        pos = 0
+        while True:
+            idx = candidate.find("{", pos)
+            if idx < 0:
+                break
+            try:
+                value, _ = decoder.raw_decode(candidate, idx)
+            except ValueError as exc:
+                last_error = exc
+                pos = idx + 1
+                continue
+            if isinstance(value, dict):
+                return value
+            pos = idx + 1
+    if last_error is not None:
+        raise ValueError(f"模型未返回有效 JSON 对象：{last_error}") from None
+    raise ValueError("响应必须为JSON对象")

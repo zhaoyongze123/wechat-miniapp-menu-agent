@@ -770,7 +770,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             return owner == project_id
         if role == "standalone":
             return project_id == LEGACY_ID
-        return bool(run.get("task_ids")) and {task_project_id(task_id) for task_id in run["task_ids"]} == {project_id}
+        return bool(run.get("task_ids")) and set(task_project_ids(run["task_ids"]).values()) == {project_id}
 
     def require_run_scope(project_id: str) -> dict:
         run = store.latest_run()
@@ -779,8 +779,10 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         return run
 
     rejections.task_project_provider = task_project_id
+    rejections.task_project_ids_provider = task_project_ids
     if hub:
         rejections.observed_names = hub.observed_store_name
+        rejections.observed_names_batch = hub.observed_store_names
 
     # 各业务域通过 ApiContext 注入依赖后自行注册路由，server.py 不再持有这些 handler。
     ctx = ApiContext(
@@ -1169,38 +1171,28 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         if release:
             with store.connect() as db:
                 rows = db.execute(
-                    "SELECT store_json FROM material_decisions WHERE batch_id=? AND decision='skipped'",
+                    "SELECT source_folder, source_name FROM material_decisions WHERE batch_id=? AND decision='skipped'",
                     (release["batch_id"],),
                 ).fetchall()
             task_codes = {_rejection_store_code(task.get("source_name")) for task in tasks if task.get("reject_reason")
                           and (not paged or task.get("snapshot_id") == release["snapshot_id"])}
-            material_codes = set()
-            for row in rows:
-                try:
-                    data = json.loads(row["store_json"] or "{}")
-                except (TypeError, json.JSONDecodeError):
-                    data = {}
-                code = _rejection_store_code(data.get("source_folder") or data.get("name") or "")
-                if code:
-                    material_codes.add(code)
+            material_codes = {
+                code for row in rows
+                if (code := _rejection_store_code(row["source_folder"] or row["source_name"] or ""))
+            }
             material_rejected = len(material_codes - task_codes)
         # 全部批次口径与批次管理列表保持一致：只算未删除批次（回收站不计），
         # 并扣除已经有采集不合格记录的同一门店，避免同一家店被计两次。
         with store.connect() as db:
             all_rows = db.execute(
-                "SELECT d.store_json FROM material_decisions d "
+                "SELECT d.source_folder, d.source_name FROM material_decisions d "
                 "JOIN material_batches b ON b.id=d.batch_id "
                 "WHERE d.decision='skipped' AND b.deleted_at='' AND b.project_id=?", (scope,)
             ).fetchall()
-        all_material_codes = set()
-        for row in all_rows:
-            try:
-                data = json.loads(row["store_json"] or "{}")
-            except (TypeError, json.JSONDecodeError):
-                data = {}
-            code = _rejection_store_code(data.get("source_folder") or data.get("name") or "")
-            if code:
-                all_material_codes.add(code)
+        all_material_codes = {
+            code for row in all_rows
+            if (code := _rejection_store_code(row["source_folder"] or row["source_name"] or ""))
+        }
         if all_material_codes:
             # 只有与当前素材不合格清单同门店编号的历史记录才影响去重结果。
             candidates = [(task["id"], code) for task in store.rejections()
@@ -1243,9 +1235,14 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                                                    release.get("batch_name", "")))
             else:
                 output_path = str(Path(settings.output_dir).expanduser().resolve())
+        # 空闲未选门店属于正常待命态，不应把执行引擎标为“不可用”。
+        idle_unselected = bool(ready.get("selection_missing")) and len(ready.get("issues") or []) <= 1
+        engine_ready = None if idle_unselected else ready["ready"]
+        effective_engine_message = engine_message if idle_unselected else ("；".join(ready["issues"]) or engine_message)
         return {"execution_engine": engine, "launch_mode": launch_mode,
-                "engine_ready": ready["ready"], "engine_message": "；".join(ready["issues"]) or engine_message,
-                "robot_readiness": ready, "run_directory": str(getattr(runner, "run_directory", "") or ""),
+                "engine_ready": engine_ready, "engine_message": effective_engine_message,
+                "robot_readiness": (ready | {"ready": None, "issues": []}) if idle_unselected else ready,
+                "run_directory": str(getattr(runner, "run_directory", "") or ""),
                 "running": runner.running, "stop_requested": runner.stop.is_set(),
                 "run": run, "current_task": runner.current_task if run else None,
                 "material_release": release,
@@ -2163,8 +2160,24 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         connection = worker.connection if worker else {}
         return connection.get("id") or local_name, connection.get("name") or local_name
 
+    def _manual_scope(project_id: str | None, *, write: bool = False) -> str | None:
+        """半自动独立/远程控制窗不加载项目列表：未显式传入 project_id 时按当前轮次自动定位项目。"""
+        if project_id:
+            return project_scope(project_id, write=write)
+        if role == "standalone":
+            return project_scope(None, write=write)
+        run = store.latest_run()
+        run_project = str((run or {}).get("project_id") or "")
+        if run_project:
+            return project_scope(run_project, write=write)
+        if role == "worker" and worker and not worker._hub_supports_project_scope:
+            return LEGACY_ID
+        if not write:
+            return None
+        return project_scope(None, write=True)
+
     def _manual_action(request: Request, kind: str, payload: dict) -> dict:
-        scope = project_scope(payload.get("project_id"), write=True)
+        scope = _manual_scope(payload.get("project_id"), write=True)
         expected = payload.get("context")
         manual = runner.manual_state()
         if request.state.remote_control or expected is not None:
@@ -2198,8 +2211,12 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
 
     @app.get("/api/manual/state")
     def manual_state(project_id: str | None = None):
-        scope = project_scope(project_id)
+        scope = _manual_scope(project_id, write=False)
         device_id, device_name = manual_device()
+        if scope is None:
+            return {"device_id": device_id, "device_name": device_name, "project_id": "",
+                    "manual": None, "run_name": "", "run_status": "",
+                    "remote_url": f"https://{remote_control_host}/remote-control" if remote_control_host else ""}
         run = store.latest_run()
         visible = run if run_project_matches(run, scope) else None
         manual = runner.manual_state()
@@ -2209,8 +2226,8 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
         if role == "worker" and worker and not worker._hub_supports_project_scope and not visible and manual:
             # 旧 Hub 的单工作区协议没有项目快照，旧半自动会话继续按 legacy 本地读取。
             visible = {"name": "", "status": ""}
-        return {"device_id": device_id, "device_name": device_name,
-                "manual": manual if visible else {},
+        return {"device_id": device_id, "device_name": device_name, "project_id": scope,
+                "manual": (manual or None) if visible else None,
                 "run_name": (visible.get("name") or "半自动采集") if visible else "",
                 "run_status": visible["status"] if visible else "",
                 "remote_url": f"https://{remote_control_host}/remote-control" if remote_control_host else ""}
@@ -2249,7 +2266,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
 
     def _validate_manual_aux_context(request: Request, payload: dict) -> dict | None:
         expected = payload.get("context") if isinstance(payload, dict) else None
-        scope = project_scope(payload.get("project_id") if isinstance(payload, dict) else None, write=True)
+        scope = _manual_scope(payload.get("project_id") if isinstance(payload, dict) else None, write=True)
         manual = runner.manual_state()
         if request.state.remote_control or expected is not None:
             keys = ("device_id", "run_id", "task_id", "wait_id")
