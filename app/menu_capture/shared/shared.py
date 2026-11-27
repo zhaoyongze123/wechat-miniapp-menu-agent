@@ -179,8 +179,6 @@ class SharedHub:
                     ON shared_assignments(batch_id, store) WHERE status IN ('assigned','ready');
                 CREATE INDEX IF NOT EXISTS shared_worker_assignments ON shared_assignments(worker_id,status);
                 CREATE INDEX IF NOT EXISTS shared_assignments_task_status ON shared_assignments(task_id,status);
-                CREATE INDEX IF NOT EXISTS shared_assignments_project_status
-                    ON shared_assignments(project_id,status,created_at DESC);
                 CREATE TABLE IF NOT EXISTS shared_results (
                     assignment_id TEXT PRIMARY KEY, digest TEXT NOT NULL, disposition TEXT NOT NULL,
                     status TEXT NOT NULL, message TEXT NOT NULL, received_at TEXT NOT NULL
@@ -202,6 +200,10 @@ class SharedHub:
             for column in ("project_id", "project_code", "project_name", "store_id"):
                 if column not in assignment_columns:
                     db.execute(f"ALTER TABLE shared_assignments ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS shared_assignments_project_status "
+                "ON shared_assignments(project_id,status,created_at DESC)"
+            )
             # 只依据稳定的批次外键回填既有分配；项目删除/改名不会改变已存下来的归属快照。
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'").fetchone():
                 db.execute("""UPDATE shared_assignments SET
