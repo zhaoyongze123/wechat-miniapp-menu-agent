@@ -8,6 +8,7 @@ import json
 import math
 import os
 import queue
+import re
 import select
 import shutil
 import subprocess
@@ -66,8 +67,32 @@ _OCR_MIN_CONFIDENCE = .6
 _METRIC_FIELDS = ("model_calls", "screenshots", "navigation_actions",
                   "format_retries", "tool_rejections", "format_failures", "no_progress_notices")
 # 附带观察的门店名称上限（与 action-schema.json observation.max_chars 一致）。
-# 宿主只做防御性截断，真正的清洗与限长在 adapter 内完成。
 OBSERVED_NAME_MAX_CHARS = 40
+_OBSERVED_STATUS_SUFFIX = re.compile(
+    r"(?:\s*[（(]\s*(?:已确认|确认|已核对|核对|当前门店|门店名称|未确认)\s*[）)])+$"
+)
+_GENERIC_STORE_NAMES = frozenset({
+    "本餐厅", "本店", "本门店", "本店铺", "本商家",
+    "当前餐厅", "当前门店", "当前店铺", "当前商家",
+    "餐厅", "门店", "店铺", "商家", "餐馆", "饭店", "小店",
+    "点餐", "点单", "扫码点餐", "微信点餐", "堂食点餐", "自助点餐", "在线点餐",
+    "堂食", "外卖", "自提", "菜单", "菜品菜单", "首页", "小程序", "微信小程序",
+    "未知", "未知门店", "无", "暂无", "空", "null", "none", "n/a", "unknown",
+})
+
+
+def sanitize_observed_store_name(raw: object) -> str:
+    """清洗门店名称并过滤泛称/状态后缀；返回空字符串表示无效。"""
+    if not isinstance(raw, str):
+        return ""
+    cleaned = " ".join("".join(ch for ch in raw if ch.isprintable()).split())
+    cleaned = cleaned.strip("“”「」\"《》").strip()
+    cleaned = _OBSERVED_STATUS_SUFFIX.sub("", cleaned).strip()
+    if not cleaned or len(cleaned) > OBSERVED_NAME_MAX_CHARS:
+        return ""
+    if cleaned.lower() in _GENERIC_STORE_NAMES:
+        return ""
+    return cleaned
 
 
 def _output_contract() -> str:
@@ -272,12 +297,19 @@ def _record_observation(callback, event: dict) -> None:
     """伴随提取的门店名称：旧协议、非法值或回调异常都不能影响导航主流程。"""
     if callback is None:
         return
-    name = event.get("name")
-    if not isinstance(name, str):
+    raw_name = event.get("name")
+    if not isinstance(raw_name, str):
         return
+    # 空字符串代表模型显式撤销，原样透传；非空值经清洗与泛称拦截，无效则忽略不覆盖。
+    if raw_name == "":
+        name = ""
+    else:
+        name = sanitize_observed_store_name(raw_name)
+        if not name:
+            return
     frame_id = event.get("frame_id")
     try:
-        callback(name[:OBSERVED_NAME_MAX_CHARS], frame_id if isinstance(frame_id, str) else "")
+        callback(name, frame_id if isinstance(frame_id, str) else "")
     except Exception:  # noqa: BLE001 - 伴随信息写失败不得改写导航结论
         pass
 
