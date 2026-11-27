@@ -110,22 +110,28 @@ def locate_wechat_input_region(image: Image.Image, dpi_scale: float = 1.0) -> di
     divider_y = input_divider_y(image, chat_left, pane)
     if divider_y is not None:
         span_h = max(32, height - divider_y)
+        top_pad = max(3, round(4 * scale))
         toolbar_h = min(int(span_h * 0.35), max(22, round(38 * scale)))
         send_h = min(int(span_h * 0.36), max(26, round(44 * scale)))
-        in_top = min(height - 20, divider_y + toolbar_h)
+        # 微信 4.x（Weixin.exe）工具栏在底部，首行文字紧贴 divider_y 下方；
+        # 输入区差分框从 divider_y + top_pad 开始，既能捕获 4.x 首行短文本，
+        # 3.x 顶部静态工具栏在差分中也会与空基线抵消。点击中心仍避开顶部/底部工具栏。
+        in_top = min(height - 20, divider_y + top_pad)
         in_bottom = max(in_top + 14, height - send_h)
         in_left = min(pane - 60, chat_left + max(8, round(12 * scale)))
         send_reserve = max(round(105 * scale), round((pane - chat_left) * 0.14))
         in_right = max(in_left + 40, pane - send_reserve)
+        click_top = min(in_bottom - 4, divider_y + toolbar_h)
         detected = True
     else:
         in_left = round(pane * INPUT_REGION_RATIO[0])
         in_top = round(height * INPUT_REGION_RATIO[1])
         in_right = round(pane * INPUT_REGION_RATIO[2])
         in_bottom = round(height * INPUT_REGION_RATIO[3])
+        click_top = in_top
         detected = False
     cx = (in_left + in_right) / 2.0
-    cy = (in_top + in_bottom) / 2.0
+    cy = (click_top + in_bottom) / 2.0
     return {
         "pane_right": pane,
         "chat_left": chat_left,

@@ -97,6 +97,25 @@ def test_dynamic_input_region_and_send_button_across_dpi(tmp_path: Path, scale: 
     assert UiPathRunner._send_button_active(active_path, dpi_scale=scale) is True
 
 
+def test_wechat4_top_line_text_detected_below_divider(tmp_path: Path):
+    """微信 4.x 工具栏在底部，首行短文本紧贴分界线下方（y ≈ divider_y + 10），差分检测不得裁掉首行。"""
+    base_path = tmp_path / "base.png"
+    text_path = tmp_path / "text.png"
+    width, height = _make_wechat_screenshot(base_path, scale=1.0, send_active=False)
+    _make_wechat_screenshot(text_path, scale=1.0, send_active=True)
+
+    with Image.open(text_path) as img:
+        draw = ImageDraw.Draw(img)
+        divider_y = round(height * 0.78)
+        chat_left = round(width * 0.28)
+        # 在紧贴分界线下方 10~24px 绘制一段短门店编号（模拟 ZA0070318）
+        draw.rectangle((chat_left + 20, divider_y + 10, chat_left + 100, divider_y + 24), fill=(30, 30, 30))
+        img.save(text_path)
+
+    state = UiPathRunner._input_content(text_path, base_path, dpi_scale=1.0)
+    assert state["kind"] == "text"
+
+
 def test_clear_wechat_input_multi_strategy_succeeds_and_fails_with_env_code(tmp_path: Path):
     active_img = tmp_path / "active.png"
     idle_img = tmp_path / "idle.png"
