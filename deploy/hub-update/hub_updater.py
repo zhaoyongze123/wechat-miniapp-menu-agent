@@ -67,7 +67,7 @@ COMPOSE_WAIT_MIN_VERSION = (2, 17, 0)
 # 使用 `up --wait` 后容器健康检查已由 Compose 等待，应用层核验只需一个有限窗口。
 APP_VERIFY_TIMEOUT_SECONDS = 30
 DEFAULT_WAIT_TIMEOUT_SECONDS = 180
-SCHEMA_PROBE = r'''import json, pathlib, shutil, sqlite3, sys
+SCHEMA_PROBE = r'''import json, pathlib, shutil, sqlite3, sys, time
 def q(value): return '"' + value.replace('"', '""') + '"'
 root = pathlib.Path(sys.argv[1])
 data = root / 'data'
@@ -80,31 +80,49 @@ else:
         conn.execute('PRAGMA query_only=ON')
         conn.execute('BEGIN')
         return conn
+    def read_schema(db):
+        tables = []
+        for name, sql in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name"):
+            indexes = []
+            for row in db.execute('PRAGMA index_list(' + q(name) + ')'):
+                index_name = row[1]
+                index_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (index_name,)).fetchone()[0]
+                columns = [item[2] for item in db.execute('PRAGMA index_info(' + q(index_name) + ')')]
+                indexes.append({'name': index_name, 'unique': int(row[2]), 'origin': row[3], 'partial': int(row[4]), 'columns': columns, 'sql': index_sql or ''})
+            tables.append({'name': name, 'sql': sql or '', 'columns': [list(row) for row in db.execute('PRAGMA table_xinfo(' + q(name) + ')')], 'indexes': indexes, 'foreign_keys': [list(row) for row in db.execute('PRAGMA foreign_key_list(' + q(name) + ')')]})
+        objects = [list(row) for row in db.execute("SELECT type,name,sql FROM sqlite_master WHERE type IN ('view','trigger') ORDER BY type,name")]
+        return {'exists': True, 'tables': tables, 'objects': objects}
+    # 只读挂载卷上的 WAL 库无法建立 -shm 锁，失败点可能落在首次读表而非 connect，
+    # 因此整个读取都必须纳入兜底：复制 db 与 -wal 到容器 tmpfs 再读，绝不写入源卷。
     try:
         db = open_ro(path)
+        payload = read_schema(db)
     except sqlite3.OperationalError:
-        # WAL 模式在只读挂载卷上无法创建/映射 -shm；复制到容器临时 tmpfs 只读探测，绝不写入源卷。
         tmp = pathlib.Path('/tmp/schema-probe')
         tmp.mkdir(parents=True, exist_ok=True)
         dst = tmp / 'tasks.sqlite3'
-        shutil.copyfile(path, dst)
-        wal = pathlib.Path(str(path) + '-wal')
-        if wal.is_file():
-            shutil.copyfile(wal, pathlib.Path(str(dst) + '-wal'))
-        db = sqlite3.connect(str(dst), timeout=5)
-        db.execute('PRAGMA query_only=ON')
-        db.execute('BEGIN')
-    tables = []
-    for name, sql in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name"):
-        indexes = []
-        for row in db.execute('PRAGMA index_list(' + q(name) + ')'):
-            index_name = row[1]
-            index_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (index_name,)).fetchone()[0]
-            columns = [item[2] for item in db.execute('PRAGMA index_info(' + q(index_name) + ')')]
-            indexes.append({'name': index_name, 'unique': int(row[2]), 'origin': row[3], 'partial': int(row[4]), 'columns': columns, 'sql': index_sql or ''})
-        tables.append({'name': name, 'sql': sql or '', 'columns': [list(row) for row in db.execute('PRAGMA table_xinfo(' + q(name) + ')')], 'indexes': indexes, 'foreign_keys': [list(row) for row in db.execute('PRAGMA foreign_key_list(' + q(name) + ')')]})
-    objects = [list(row) for row in db.execute("SELECT type,name,sql FROM sqlite_master WHERE type IN ('view','trigger') ORDER BY type,name")]
-    print(json.dumps({'exists': True, 'tables': tables, 'objects': objects}))
+        payload = None
+        last = None
+        for _ in range(3):
+            try:
+                # 每轮先清掉旧副本，避免上一次残留的 -wal 被应用到新复制的主库。
+                dst.unlink(missing_ok=True)
+                pathlib.Path(str(dst) + '-wal').unlink(missing_ok=True)
+                shutil.copyfile(path, dst)
+                wal = pathlib.Path(str(path) + '-wal')
+                if wal.is_file():
+                    shutil.copyfile(wal, pathlib.Path(str(dst) + '-wal'))
+                db = sqlite3.connect(str(dst), timeout=5)
+                db.execute('PRAGMA query_only=ON')
+                payload = read_schema(db)
+                break
+            except sqlite3.OperationalError as exc:
+                # 复制期间写入方可能正在 checkpoint，短暂重试以取得一致快照；仍失败则如实上报并拒绝回滚。
+                last = exc
+                db = None
+                time.sleep(0.2)
+        if payload is None: raise last
+    print(json.dumps(payload))
     db.close()
 '''
 

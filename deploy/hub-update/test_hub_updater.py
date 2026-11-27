@@ -460,6 +460,36 @@ def test_schema_probe_reads_real_temporary_sqlite_schema(tmp_path: Path) -> None
     assert database.read_bytes() == before
 
 
+def test_schema_probe_recovers_wal_database_when_shm_locked(tmp_path: Path) -> None:
+    """只读挂载卷上的 WAL 库无法建立 -shm 锁，首次读表即 CANTOPEN。
+
+    探针必须回退到复制副本读取，而不是把系统性失败误判为“架构不兼容”。
+    """
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        pytest.skip("需要非 root 的 POSIX 环境才能模拟 -shm 不可读")
+    database = create_hub_db(tmp_path)
+    holder = sqlite3.connect(database)
+    try:
+        holder.execute("PRAGMA journal_mode=WAL")
+        holder.execute("CREATE TABLE wal_only (id TEXT PRIMARY KEY)")
+        holder.commit()
+        shm = Path(str(database) + "-shm")
+        assert shm.is_file()
+        before = database.read_bytes()
+        shm.chmod(0o000)
+        completed = subprocess.run(
+            [sys.executable, "-c", hub_updater.SCHEMA_PROBE, str(database.parent.parent)],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+        payload = json.loads(completed.stdout)
+        assert payload["exists"]
+        assert "wal_only" in {table["name"] for table in payload["tables"]}
+        assert database.read_bytes() == before
+    finally:
+        Path(str(database) + "-shm").chmod(0o644)
+        holder.close()
+
+
 def test_schema_guard_blocks_new_constraint_on_existing_table(tmp_path: Path) -> None:
     create_hub_db(tmp_path)
     updater = make_updater(tmp_path, FakeDocker(), healthy=lambda version: {"ok": True, "version": version})
