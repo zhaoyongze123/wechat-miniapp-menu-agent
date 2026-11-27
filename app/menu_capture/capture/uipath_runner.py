@@ -943,7 +943,8 @@ class UiPathRunner:
         return Region(x=0.0, y=height * 0.06, width=width, height=height * 0.88)
 
     def _set_manual_state(self, task: dict, index: int, total: int, stage: str, *, waiting: bool) -> None:
-        observed = self.store.observed_store_name(self.run_id or "", task["id"]) if self.run_id else ""
+        store = getattr(self, "store", None)
+        observed = store.observed_store_name(self.run_id or "", task["id"]) if (store is not None and self.run_id) else ""
         with self._manual_cond:
             previous = (self._manual_state or {}).get("task_id")
             if previous != task["id"]:
