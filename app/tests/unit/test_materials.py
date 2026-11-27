@@ -1340,3 +1340,52 @@ def test_job_fails_instead_of_completing_when_detector_breaks_mid_run(tmp_path: 
         raise AssertionError("检测器失效后任务未在 20 秒内失败")
     assert current["status"] != "completed"
     assert current["status"] == "ready_to_analyze"
+
+
+def test_manual_box_accepts_normalized_display_coordinates_and_blocks_1x1(tmp_path: Path) -> None:
+    """人工框选提交 [0, 1] 归一化显示坐标时（含 EXIF 旋转图），必须还原为真实原图像素，避免裁出 1x1 纯色块。"""
+    service, _, _, input_root, _ = _setup(tmp_path, inspector=lambda _path: [])
+    # 1. 普通方向图片 (720x1280)
+    normal_path = input_root / "E02906_翠山" / "normal.jpg"
+    normal_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (720, 1280), (200, 180, 60)).save(normal_path, format="JPEG")
+
+    # 2. EXIF orientation=6 旋转图 (原图 1200x600，浏览器显示为 600x1200)
+    rotated_path = input_root / "E03057_匠心小厨" / "rotated.jpg"
+    rotated_path.parent.mkdir(parents=True, exist_ok=True)
+    img = Image.new("RGB", (1200, 600), (235, 178, 63))
+    exif = img.getexif()
+    exif[274] = 6
+    img.save(rotated_path, format="JPEG", exif=exif)
+
+    batch = _analyze(service, input_root)
+    by_name = {st["source_name"]: st for st in batch["stores"]}
+
+    # 提交前端 0..1 归一化坐标
+    c1 = service.decide_store(
+        batch["batch_id"], by_name["E02906_翠山"]["store_id"], "confirm", image_index=0,
+        box={"x": 0.25, "y": 0.5, "width": 0.5, "height": 0.25},
+    )
+    assert c1["selected"]["box"] == {"x": 180.0, "y": 640.0, "width": 360.0, "height": 320.0}
+
+    # EXIF=6 时 display_width=600, display_height=1200 -> 显示像素 (150, 240, 180, 360) -> 原图 (240, 270, 360, 180)
+    c2 = service.decide_store(
+        batch["batch_id"], by_name["E03057_匠心小厨"]["store_id"], "confirm", image_index=0,
+        box={"x": 0.25, "y": 0.2, "width": 0.3, "height": 0.3},
+    )
+    assert c2["selected"]["box"] == {"x": 240.0, "y": 270.0, "width": 360.0, "height": 180.0}
+
+    published = service.publish_snapshot(batch["batch_id"])
+    # EXIF=6 旋转图发布裁剪后会按 EXIF 方向转正，因此输出尺寸为显示方向 (180, 360)
+    for store_name, expected_size in [("E02906_翠山", (360, 320)), ("E03057_匠心小厨", (180, 360))]:
+        qr_path = Path(published["input_dir"]) / store_name / "二维码.png"
+        with Image.open(qr_path) as qr:
+            assert qr.size == expected_size
+
+    # 显式传入像素级极小框 (<8px) 必须被拒绝，防止裁出无效色块
+    with pytest.raises(ValueError, match="尺寸过小"):
+        service.decide_store(
+            batch["batch_id"], by_name["E02906_翠山"]["store_id"], "confirm", image_index=0,
+            box={"x": 100, "y": 100, "width": 2, "height": 2},
+        )
+

@@ -2452,11 +2452,27 @@ class MaterialService:
 
     @staticmethod
     def _display_box_to_source(box: dict, source: Path) -> dict:
-        """浏览器按 EXIF 方向显示图片，人工框选坐标属于显示方向；这里换算回原图像素坐标。"""
+        """浏览器按 EXIF 方向显示图片，人工框选坐标属于显示方向；这里换算回原图像素坐标。
+
+        兼容前端提交的 [0, 1] 归一化显示坐标与直接的显示像素坐标。
+        """
         with Image.open(source) as image:
             width, height = image.size
             orientation = int(image.getexif().get(274, 1) or 1)
         x, y, w, h = (float(box[key]) for key in ("x", "y", "width", "height"))
+        display_width, display_height = (height, width) if orientation in (5, 6, 7, 8) else (width, height)
+        # React 审核工作台人工框选提交的是 [0, 1] 归一化显示坐标；按显示尺寸还原为像素后再做 EXIF 逆变换。
+        is_normalized = (
+            display_width > 20 and display_height > 20
+            and 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0
+            and 0.0 < w <= 1.0 and 0.0 < h <= 1.0
+            and x + w <= 1.01 and y + h <= 1.01
+        )
+        if is_normalized:
+            x *= display_width
+            y *= display_height
+            w *= display_width
+            h *= display_height
         if orientation == 6:
             return {"x": y, "y": height - (x + w), "width": h, "height": w}
         if orientation == 8:
@@ -2495,6 +2511,9 @@ class MaterialService:
         y = min(max(0.0, y), max(0.0, image_height - 1.0))
         width = min(width, image_width - x)
         height = min(height, image_height - y)
+        min_edge = min(8.0, float(image_width), float(image_height))
+        if width < min_edge or height < min_edge:
+            raise ValueError("二维码 box 尺寸过小，请重新框选")
         return {"x": x, "y": y, "width": width, "height": height}
 
     @staticmethod
