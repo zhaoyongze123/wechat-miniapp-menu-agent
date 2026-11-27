@@ -253,3 +253,36 @@ def test_start_rejects_invalid_schema_before_request(tmp_path):
         controller.start("0.4.0", "0.4.0")
     assert backend.requests == []
     assert not controller.active()
+
+
+def test_start_snapshots_outside_lock_and_cleans_up_on_cancel(tmp_path, monkeypatch):
+    """数据库快照必须在锁外执行，避免阻塞 status()；若后续锁内校验失败须清理临时快照。"""
+    import threading
+    from menu_capture.updates import recovery as recovery_probe
+
+    controller, _ = make_controller(tmp_path)
+    controller.authorization_check = lambda _version: False
+    real_snapshot = recovery_probe.snapshot_database
+    status_checked = threading.Event()
+    status_result: dict = {}
+
+    def slow_snapshot(data_dir, destination):
+        snapshot = real_snapshot(data_dir, destination)
+        assert destination.is_file()
+
+        def probe_status():
+            status_result.update(controller.status())
+            status_checked.set()
+
+        worker = threading.Thread(target=probe_status, daemon=True)
+        worker.start()
+        assert status_checked.wait(timeout=2.0), "snapshot 期间 controller.status() 被锁阻塞"
+        return snapshot
+
+    monkeypatch.setattr(recovery_probe, "snapshot_database", slow_snapshot)
+    with pytest.raises(ValueError, match="更新授权已取消"):
+        controller.start("0.4.0", "0.4.0", require_authorization=True)
+
+    assert status_result.get("status") == "idle"
+    baselines = list((tmp_path / "recovery").glob("baseline-*.sqlite3*"))
+    assert baselines == []
