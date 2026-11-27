@@ -1070,7 +1070,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             batch_scope(queue_batch, scope)
         input_dir = settings.input_dir
         current_root = Path(input_dir).expanduser().resolve() if input_dir else None
-        release = materials.active_release(current_root or Path(), project_id=scope)
+        release = None if role == "worker" else materials.active_release(current_root or Path(), project_id=scope)
         paged = hub is not None and queue_page is not None
         if hub:
             # 共享模式按各批次最新发布版本取数，不需要逐条解析旧任务的文件路径。
