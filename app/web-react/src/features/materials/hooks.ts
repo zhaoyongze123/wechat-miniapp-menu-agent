@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   abortStoreUpload,
   abortUpload,
@@ -100,6 +100,7 @@ export function useBatch(batchId: string) {
     queryKey: materialsKeys.batch(projectId, batchId),
     queryFn: ({ signal }) => fetchBatch(batchId, signal, projectId),
     enabled: !!projectId && !!batchId,
+    placeholderData: keepPreviousData,
     refetchInterval: (query) => batchPollInterval(query.state.data),
   })
 }

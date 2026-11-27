@@ -567,7 +567,7 @@ try {
 
     # 发布清单：记录版本、源码提交、前端入口与哈希，升级/回滚后可用 /api/version 与文件哈希核对。
     $frontendEntry = (Get-Content (Join-Path $app 'web\react\.vite\manifest.json') -Raw | ConvertFrom-Json).
-        PSObject.Properties.Value | Where-Object { $_.isEntry } | Select-Object -First 1
+        PSObject.Properties.Value | Where-Object { ($_.PSObject.Properties.Name -contains 'isEntry') -and $_.isEntry } | Select-Object -First 1
     if (-not $frontendEntry) { throw 'React manifest has no entry.' }
     $frontendAsset = $frontendEntry.file
     $releaseManifest = [ordered]@{

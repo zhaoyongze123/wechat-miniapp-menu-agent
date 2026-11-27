@@ -320,6 +320,36 @@ class TaskStore:
         with self.connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM tasks ORDER BY source_path,id")]
 
+    def active_tasks(self) -> list[dict]:
+        """仅返回未归档任务，避免高频状态接口扫描归档历史。"""
+        with self.connect() as db:
+            return [
+                dict(row)
+                for row in db.execute(
+                    "SELECT * FROM tasks WHERE COALESCE(archived_at,'')='' ORDER BY source_path,id"
+                )
+            ]
+
+    def active_tasks_by_ids(self, task_ids: set[str] | list[str]) -> dict[str, dict]:
+        """按发布映射中的精确 task_id 批量按需查询，避免跨项目全表加载。"""
+        ids = [str(tid) for tid in task_ids if tid]
+        if not ids:
+            return {}
+        result: dict[str, dict] = {}
+        with self.connect() as db:
+            # SQLite 单次 IN 参数上限保守按 500 分块，兼顾大批次。
+            for offset in range(0, len(ids), 500):
+                chunk = ids[offset : offset + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = db.execute(
+                    f"SELECT * FROM tasks WHERE COALESCE(archived_at,'')='' AND id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    item = dict(row)
+                    result[item["id"]] = item
+        return result
+
     def rejections(self) -> list[dict]:
         with self.connect() as db:
             rows = db.execute("""

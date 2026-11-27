@@ -1,14 +1,17 @@
-import { StrictMode } from 'react'
+import { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { AppsSDKUIProvider } from '@openai/apps-sdk-ui/components/AppsSDKUIProvider'
 import { HashRouter } from 'react-router-dom'
 import './styles/index.css'
 import { App } from './app/App'
-import { RemoteControlPage } from './features/manual-control/RemoteControlPage'
 import { queryClient } from './api/query'
 import { ToastProvider } from './components/ToastProvider'
 import { NotificationRuntime } from './features/notifications/NotificationRuntime'
+
+const RemoteControlPage = lazy(() =>
+  import('./features/manual-control/RemoteControlPage').then((m) => ({ default: m.RemoteControlPage })),
+)
 
 const container = document.getElementById('root')
 if (!container) throw new Error('缺少 React 挂载节点')
@@ -26,7 +29,9 @@ createRoot(container).render(
       <QueryClientProvider client={queryClient}>
         {window.location.pathname === '/remote-control' ? (
           <ToastProvider>
-            <RemoteControlPage />
+            <Suspense fallback={null}>
+              <RemoteControlPage />
+            </Suspense>
             <NotificationRuntime />
           </ToastProvider>
         ) : (
