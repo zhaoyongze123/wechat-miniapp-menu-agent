@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import json
 import os
 import shutil
 import subprocess
@@ -14,8 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from menu_capture.core.config import ConfigStore
-from menu_capture.capture.uipath_runner import FileRobotTransport, UiPathRunner
-from menu_capture.capture.uipath_cli import cli_entry
+from menu_capture.capture.uipath_runner import UiPathRunner
 from menu_capture.desktop.window_contract import is_windows_wechat_app, select_wechat_selector
 
 
@@ -302,33 +300,12 @@ class EnvironmentDiagnostics:
 
     @staticmethod
     def _cli_check() -> dict:
-        actions = [{"id": "test_uipath", "label": "测试 UiPath 桌面能力", "kind": "test", "target": "uipath_desktop"}]
-        entry = cli_entry()
-        if not entry:
-            return _item("uipath_cli", "UiPath CLI", "error", "未找到 uip 命令", "请安装 UiPath CLI 并确保它位于服务 PATH 中。", actions=actions)
-        try:
-            result = subprocess.run([*entry, "--version"], capture_output=True, text=True, timeout=8, check=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return _item("uipath_cli", "UiPath CLI", "error", "UiPath CLI 无法启动", type(exc).__name__, actions=actions)
-        if result.returncode != 0:
-            return _item("uipath_cli", "UiPath CLI", "error", "UiPath CLI 版本检查失败", "命令存在，但未能正常返回版本。", actions=actions)
-        version = (result.stdout or result.stderr).strip().splitlines()
-        return _item("uipath_cli", "UiPath CLI", "ready", "UiPath CLI 可运行",
-                     (version[0][:120] if version else "版本命令正常返回"), actions=actions)
+        return _item("uipath_cli", "UiPath CLI", "warning", "UiPath CLI 已退役",
+                     "当前已全面采用 Windows 原生桌面采集，不再依赖 UiPath CLI。")
 
     def _project_check(self) -> dict:
-        actions = [{"id": "test_uipath", "label": "测试 UiPath 桌面能力", "kind": "test", "target": "uipath_desktop"}]
-        main = self.project_dir / "Main.xaml"
-        project = self.project_dir / "project.json"
-        if not main.is_file() or not project.is_file():
-            return _item("uipath_project", "UiPath 项目文件", "error", "缺少 Main.xaml 或 project.json", str(self.project_dir), actions=actions)
-        try:
-            json.loads(project.read_text(encoding="utf-8"))
-            if not os.access(main, os.R_OK):
-                raise OSError("Main.xaml 不可读")
-        except (OSError, ValueError):
-            return _item("uipath_project", "UiPath 项目文件", "error", "UiPath 项目文件不可读或 project.json 无效", str(self.project_dir), actions=actions)
-        return _item("uipath_project", "UiPath 项目文件", "ready", "Main.xaml 与项目配置可读取", str(self.project_dir), actions=actions)
+        return _item("uipath_project", "UiPath 项目文件", "warning", "UiPath 项目已退役",
+                     "历史 compat/uipath 工程已清理，Windows 原生采集无需 Main.xaml。")
 
     @staticmethod
     def _directory_check(check_id: str, name: str, configured: str, *, writable: bool) -> dict:
@@ -552,173 +529,16 @@ class EnvironmentDiagnostics:
         return result
 
     def _test_uipath_and_wechat(self) -> dict:
+        """UiPath CLI 桌面诊断已退役；保留结果结构以兼容历史诊断面板。"""
         checked_at = _now()
         result: dict[str, Any] = {"at": time.monotonic(), "checked_at": checked_at}
-        temp = None
-        work = None
-        process = None
-        transport = None
-        log_stream = None
-        permissions = self.system_permissions()
-        result.update(permissions)
-        try:
-            if sys.platform not in {"darwin", "win32"}:
-                raise RuntimeError("UiPath 桌面诊断需要 macOS 或 Windows")
-            entry = cli_entry()
-            if not entry:
-                raise RuntimeError("未找到 UiPath CLI（uip）")
-            temp = tempfile.TemporaryDirectory(prefix="menu-capture-uipath-check-")
-            work = Path(temp.name)
-            capture_dir = work / "captures"
-            capture_dir.mkdir(mode=0o700)
-            args_path = work / "args.json"
-            args_path.write_text(json.dumps({"in_RunDirectory": str(work)}, ensure_ascii=False), encoding="utf-8")
-            args_path.chmod(0o600)
-            log_stream = (work / "cli.log").open("wb")
-            command = [*entry, "rpa", "run", "--project-dir", str(self.project_dir), "--file-path", "Main.xaml",
-                       "--input-arguments-file", str(args_path), "--timeout", "90", "--output", "json"]
-            environment = os.environ.copy()
-            dotnet_root = Path.home() / ".dotnet"
-            if sys.platform == "darwin" and dotnet_root.is_dir():
-                environment["DOTNET_ROOT"] = str(dotnet_root)
-                environment["PATH"] = str(dotnet_root) + os.pathsep + environment.get("PATH", "")
-            environment["UIPATH_CLI_DISABLE_VERSION_SYNC"] = "true"
-            process = self.runner.process_factory(command, cwd=str(self.project_dir), env=environment,
-                                                  stdin=subprocess.DEVNULL, stdout=log_stream, stderr=subprocess.STDOUT)
-            transport = FileRobotTransport(work, capture_dir, poll_interval=0.05)
-            discovered = transport.run({"action": "discover"}, timeout=35, process=process)
-            windows = UiPathRunner._window_list(discovered.get("windows"))
-            # 保留本次枚举到的窗口摘要，选择器失效时可直接比对标题/类名，不必反复盲试。
-            result["windows"] = [
-                {"title": str(window.get("title") or ""), "app": str(window.get("app") or ""),
-                 "cls": str(window.get("cls") or ""), "position": window.get("position")}
-                for window in windows[:40]
-            ]
-            if not windows:
-                result["uipath_accessibility"] = {
-                    "status": "warning", "summary": "UiPath 已连接，但没有枚举到可用桌面窗口",
-                    "detail": "请确认微信已打开，并在 UiPath 实测时保持桌面未锁定。",
-                }
-            else:
-                detail = "这是 UiPath UIAutomation 实测；不引用 Python 服务进程权限。"
-                wechat_like = [window for window in windows
-                               if "weixin" in str(window.get("app") or "").casefold()
-                               or "wechat" in str(window.get("app") or "").casefold()]
-                if wechat_like:
-                    detail += " 微信窗口：" + "；".join(
-                        f"{window.get('title')} / {window.get('app')} / {window.get('cls')} / "
-                        f"{json.dumps(window.get('position') or {}, ensure_ascii=False)}"
-                        for window in wechat_like[:6])
-                result["uipath_accessibility"] = {
-                    "status": "ready", "summary": "UiPath 成功枚举桌面窗口",
-                    "detail": detail,
-                }
-            profile = self.runner.readiness().get("profile", {})
-            mode = profile.get("mode", "automatic")
-            wechat_selector = str(profile.get("wechat_selector") or "")
-            if not wechat_selector:
-                wechat_selector = self._find_wechat_selector(windows)
-            if not wechat_selector:
-                result["uipath_screenshot"] = {"status": "warning", "summary": "窗口枚举成功，但没有可截图的微信主窗口",
-                                                "detail": "请打开微信主窗口后重新测试。"}
-                result["wechat_login"] = {"status": "unknown", "summary": "无法确认微信登录状态", "detail": "没有可识别的微信主窗口。"}
-                result["file_transfer_assistant"] = {"status": "unknown", "summary": "无法确认文件传输助手", "detail": "没有可识别的微信主窗口。"}
-            else:
-                wechat_path = capture_dir / "wechat-diagnostic.png"
-                screenshot = transport.run({"action": "screenshot", "selector": wechat_selector, "path": str(wechat_path)}, timeout=25, process=process)
-                quality = self._screenshot_content_quality(wechat_path)
-                if quality["near_black"]:
-                    detail = (
-                        f"截图命令返回 {screenshot['width']}×{screenshot['height']} 图片，但像素近乎全黑 "
-                        f"（暗像素占比 {quality['dark_fraction']:.1%}）。窗口枚举成功不代表像素已捕获；"
-                        + ("请确认微信窗口在已登录且未锁屏的桌面中可见。"
-                           if sys.platform == "win32" else "请检查 UiPath 的屏幕录制权限及权限变更后的 Assistant 重启状态。")
-                    )
-                    result["uipath_screenshot"] = {"status": "error", "summary": "UiPath 返回了近乎全黑的微信截图", "detail": detail}
-                    result["wechat_login"] = {"status": "unknown", "summary": "截图画面为黑帧，无法判断微信登录状态", "detail": detail}
-                    result["file_transfer_assistant"] = {"status": "unknown", "summary": "截图画面为黑帧，无法确认文件传输助手", "detail": detail}
-                else:
-                    result["uipath_screenshot"] = {"status": "ready", "summary": "UiPath 成功截取微信窗口",
-                                                    "detail": f"临时截图 {screenshot['width']}×{screenshot['height']}；像素内容可读；测试结束自动删除，不进入采集输出。"}
-                    try:
-                        from menu_capture.desktop.image_tools import image_ocr
-                        rows = image_ocr(wechat_path)
-                        login, assistant = self._classify_wechat_screen(rows, screenshot["width"], screenshot["height"])
-                        result["wechat_login"] = login
-                        result["file_transfer_assistant"] = assistant
-                    except Exception as exc:
-                        result["wechat_login"] = {"status": "unknown", "summary": "截图成功，但本地 OCR 无法判断登录状态", "detail": type(exc).__name__}
-                        result["file_transfer_assistant"] = {"status": "unknown", "summary": "本地 OCR 无法确认文件传输助手", "detail": type(exc).__name__}
-                if mode == "attached":
-                    try:
-                        miniapp_selector = UiPathRunner._select_miniapp_selector(windows)
-                        miniapp_path = capture_dir / "miniapp-diagnostic.png"
-                        miniapp = transport.run({"action": "screenshot", "selector": miniapp_selector, "path": str(miniapp_path)}, timeout=25, process=process)
-                        miniapp_quality = self._screenshot_content_quality(miniapp_path)
-                        if miniapp_quality["near_black"]:
-                            result["attached_miniapp"] = {"status": "error", "summary": "小程序窗口返回近乎全黑截图",
-                                                           "detail": "窗口已找到，但截图像素近乎全黑；请检查 UiPath 屏幕录制能力。"}
-                        else:
-                            result["attached_miniapp"] = {"status": "ready", "summary": "检测到已打开的小程序窗口并成功截图",
-                                                           "detail": f"临时截图 {miniapp['width']}×{miniapp['height']}；像素内容可读，图像不会保留。"}
-                    except Exception as exc:
-                        result["attached_miniapp"] = {"status": "error", "summary": "没有可唯一识别并截图的小程序窗口",
-                                                       "detail": str(exc)[:240]}
-            result["uipath_automation"] = {"status": "unknown", "summary": "控制授权状态未单独读取",
-                                            "detail": "本次探测执行窗口枚举和截图，不点击页面；Automation 授权由 macOS 控制，需在系统设置查看。"}
-        except Exception as exc:
-            message = str(exc)
-            if work is not None:
-                try:
-                    log_text = (work / "cli.log").read_text(encoding="utf-8", errors="replace")
-                    for marker in ("请允许 UiPath UIAutomation", "Source:", "Message:"):
-                        index = log_text.rfind(marker)
-                        if index >= 0:
-                            fragment = log_text[index:index + 360]
-                            if "请允许 UiPath UIAutomation" in fragment:
-                                message = fragment.replace("\\r", "\n").replace("\\n", "\n").splitlines()[0]
-                                break
-                            if "Message:" in fragment:
-                                message = fragment.split("Message:", 1)[1].replace("\\r", "\n").replace("\\n", "\n").splitlines()[0].strip()
-                                break
-                except OSError:
-                    pass
-            permission_failure = "访问权限控制此计算机" in message or "辅助功能" in message or "Accessibility" in message
-            system_granted = permissions.get("uipath_system_accessibility", {}).get("status") == "ready"
-            status = "error" if permission_failure else "warning"
-            result.setdefault("uipath_accessibility", {"status": status,
-                           "summary": ("系统授权已开启，但自动化执行进程访问失败" if system_granted else "UiPath 执行进程报告辅助功能访问失败") if permission_failure else "UiPath 桌面枚举测试失败",
-                           "detail": ("系统授权和实际执行属于不同检测层级；请检查运行进程身份及授权后仍在运行的旧进程。\n" if permission_failure else "") + (message[:500] or type(exc).__name__)})
-            result.setdefault("uipath_screenshot", {"status": "unknown", "summary": "未能执行截图测试",
-                           "detail": "请先通过 UiPath 窗口枚举测试。"})
-            result.setdefault("uipath_automation", {"status": "unknown", "summary": "未能验证 UiPath 对微信的控制能力",
-                           "detail": "请检查 macOS 隐私设置后重新测试。"})
-            result.setdefault("wechat_login", {"status": "unknown", "summary": "未能确认微信登录状态", "detail": message[:240]})
-            result.setdefault("file_transfer_assistant", {"status": "unknown", "summary": "未能确认文件传输助手", "detail": message[:240]})
-            if self.runner.readiness().get("mode") == "attached":
-                result.setdefault("attached_miniapp", {"status": "unknown", "summary": "未能检测已打开的小程序窗口", "detail": "UiPath 桌面测试未通过。"})
-        finally:
-            if transport is not None:
-                try:
-                    transport.request_stop()
-                except Exception:
-                    pass
-            if process is not None:
-                try:
-                    process.wait(timeout=8)
-                except subprocess.TimeoutExpired:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=4)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=4)
-                except Exception:
-                    pass
-            if log_stream is not None:
-                log_stream.close()
-            if temp is not None:
-                temp.cleanup()
+        result.update(self.system_permissions())
+        message = "UiPath CLI 桌面诊断已退役；请在 Windows 上使用原生桌面诊断（windows_desktop）"
+        result["uipath_accessibility"] = {"status": "warning", "summary": "UiPath CLI 已退役", "detail": message}
+        result["uipath_screenshot"] = {"status": "warning", "summary": "UiPath CLI 已退役", "detail": message}
+        result["uipath_automation"] = {"status": "unknown", "summary": "UiPath CLI 已退役", "detail": message}
+        result["wechat_login"] = {"status": "unknown", "summary": "未执行 UiPath 诊断", "detail": message}
+        result["file_transfer_assistant"] = {"status": "unknown", "summary": "未执行 UiPath 诊断", "detail": message}
         return result
 
     @staticmethod

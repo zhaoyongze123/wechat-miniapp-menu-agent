@@ -1,6 +1,0 @@
-{
-  "Name": "compat/uipath",
-  "ProjectType": "Process",
-  "Description": "项目",
-  "MainFile": "Main.xaml"
-}

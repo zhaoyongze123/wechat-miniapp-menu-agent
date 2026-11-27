@@ -1,6 +1,8 @@
-# Deliberately manual during rollout. Enable pull_request after authorized runner validation.
+# Lightweight source-only CI: runs automatically on PRs to main and via manual dispatch.
 name: Lightweight CI
 on:
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       force_full:
