@@ -28,7 +28,7 @@ REGISTRY = "ghcr.io/zhaoyongze123/wechat-miniapp-menu-agent"
 DIGEST = "sha256:" + "a" * 64
 
 
-def make_config(tmp_path: Path, registry: str = "") -> Config:
+def make_config(tmp_path: Path, registry: str = "", *, require_oci: bool = False) -> Config:
     compose = tmp_path / "compose.yaml"
     compose.write_text("services: {}\n", encoding="utf-8")
     env = {
@@ -42,6 +42,8 @@ def make_config(tmp_path: Path, registry: str = "") -> Config:
     }
     if registry:
         env["HUB_UPDATE_REGISTRY_REPO"] = registry
+    if require_oci:
+        env["HUB_UPDATE_REQUIRE_OCI"] = "1"
     return Config(env)
 
 
@@ -140,11 +142,11 @@ class FakeDocker:
 
 
 def make_updater(tmp_path: Path, docker: FakeDocker, *, healthy: Callable[[str], dict],
-                 registry: str = "") -> HubUpdater:
+                 registry: str = "", require_oci: bool = False) -> HubUpdater:
     volume_path = tmp_path / "volume"
     volume_path.mkdir(parents=True, exist_ok=True)
     docker.volume_path = volume_path
-    return HubUpdater(make_config(tmp_path, registry), run=docker.run, run_env=docker.run_env,
+    return HubUpdater(make_config(tmp_path, registry, require_oci=require_oci), run=docker.run, run_env=docker.run_env,
                       health=healthy, sleep=lambda _seconds: None)
 
 
@@ -634,14 +636,16 @@ def healthy(version: str) -> dict:
 
 def test_status_declares_oci_capability_only_when_configured(tmp_path: Path) -> None:
     plain = make_updater(tmp_path, FakeDocker(), healthy=healthy)
-    assert plain.status()["capabilities"] == {"oci": False}
+    assert plain.status()["capabilities"] == {"oci": False, "oci_only": False}
     enabled = make_updater(tmp_path, FakeDocker(), healthy=healthy, registry=REGISTRY)
-    assert enabled.status()["capabilities"] == {"oci": True}
+    assert enabled.status()["capabilities"] == {"oci": True, "oci_only": False}
+    strict = make_updater(tmp_path, FakeDocker(), healthy=healthy, registry=REGISTRY, require_oci=True)
+    assert strict.status()["capabilities"] == {"oci": True, "oci_only": True}
 
 
 def test_apply_oci_pulls_digest_and_never_loads_archive(tmp_path: Path) -> None:
     docker = FakeDocker()
-    updater = make_updater(tmp_path, docker, healthy=healthy, registry=REGISTRY)
+    updater = make_updater(tmp_path, docker, healthy=healthy, registry=REGISTRY, require_oci=True)
 
     result = updater.apply(oci_request(tmp_path))
 
@@ -707,6 +711,36 @@ def test_apply_oci_pull_failure_falls_back_to_archive(tmp_path: Path) -> None:
     audit = (tmp_path / "state" / "hub-update-audit.jsonl").read_text(encoding="utf-8")
     assert '"action": "pull"' in audit
     assert '"result": "failed"' in audit
+
+
+def test_require_oci_rejects_archive_before_taking_action(tmp_path: Path) -> None:
+    docker = FakeDocker()
+    updater = make_updater(tmp_path, docker, healthy=healthy, registry=REGISTRY, require_oci=True)
+    with pytest.raises(UpdateError, match="仅允许 OCI 分层更新"):
+        updater.apply(archive_request(tmp_path))
+    assert docker.calls == []
+    assert updater.journal() == {}
+
+
+def test_require_oci_pull_failure_does_not_fall_back_or_switch(tmp_path: Path) -> None:
+    docker = FakeDocker()
+    docker.fail_pull = True
+    updater = make_updater(tmp_path, docker, healthy=healthy, registry=REGISTRY, require_oci=True)
+
+    with pytest.raises(UpdateError, match="已禁止下载或加载完整归档"):
+        updater.apply(oci_request(tmp_path))
+
+    assert updater.journal()["status"] == "failed"
+    assert updater.journal()["delivery"] == "oci"
+    assert ["docker", "pull", "--platform", "linux/amd64", f"{REGISTRY}@{DIGEST}"] in docker.calls
+    assert docker.loads == []
+    assert docker.switched == []
+    assert docker.current == "menu-capture-hub:0.2.3"
+
+
+def test_require_oci_needs_explicit_registry(tmp_path: Path) -> None:
+    with pytest.raises(UpdateError, match="必须配置 HUB_UPDATE_REGISTRY_REPO"):
+        make_config(tmp_path, require_oci=True).validate()
 
 
 def test_apply_oci_digest_mismatch_falls_back_to_archive(tmp_path: Path) -> None:

@@ -9,12 +9,19 @@ param(
     [string]$BundleOutput = '',
     # 一次性全量过渡：跳过历史包下载，并使用 Velopack 原生 --delta None，只产 Full 与 Setup。
     [Alias('full_only')]
-    [switch]$FullOnly
+    [switch]$FullOnly,
+    # 可选：直接从指定的正式发布基线生成并验证 Delta，绕开未部署的中间版本。
+    [ValidatePattern('^(\d+\.\d+\.\d+)?$')]
+    [string]$DeltaBaseVersion = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $totalStopwatch = [Diagnostics.Stopwatch]::StartNew()
 $channel = if ($Version -match '-') { 'win-x64-preview' } else { 'win-x64-stable' }
+if ($DeltaBaseVersion -and ($FullOnly -or $channel -ne 'win-x64-stable' -or
+        ([version]$DeltaBaseVersion -ge [version]$Version))) {
+    throw 'DeltaBaseVersion 必须低于目标正式版本，且不能与 FullOnly 同用。'
+}
 Set-Item Env:UV_PYTHON_DOWNLOADS never
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $runner = Join-Path $repo 'app'
@@ -726,9 +733,32 @@ try {
     # 历史包只用于生成 delta，放在临时目录，避免旧版本 nupkg 混入本次发布产物。
     $packDir = Join-Path $stage 'velopack'
     $null = New-Item -ItemType Directory -Path $packDir
+    $assetScript = Join-Path $PSScriptRoot 'velopack_assets.py'
+    $baselinePackage = ''
     if ($FullOnly) {
         # 全量过渡不生成 Delta，也就不需要下载任何历史包。
         Write-Host '[build.ps1] FullOnly：跳过历史包下载，本次只生成 Full 与 Setup。'
+    } elseif ($DeltaBaseVersion) {
+        # 明确基线时仅下载这一版，不允许其它 Full 干扰 vpk 的「最新本地包」选择。
+        $repository = 'zhaoyongze123/wechat-miniapp-menu-agent'
+        $tag = "v$DeltaBaseVersion"
+        $gh = (Get-Command 'gh' -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+        $release = (Invoke-Checked $gh @('release', 'view', $tag, '--repo', $repository,
+                '--json', 'tagName,isDraft,isPrerelease')) | ConvertFrom-Json
+        if ($release.tagName -cne $tag -or $release.isDraft -ne $false -or $release.isPrerelease -ne $false) {
+            throw "Delta 基线必须是已发布的正式版本：$tag"
+        }
+        $baselineManifest = Join-Path $stage 'update-manifest.json'
+        Invoke-Checked $gh @('release', 'download', $tag, '--repo', $repository,
+            '--pattern', 'update-manifest.json', '--output', $baselineManifest)
+        $baseName = Invoke-Checked $python @('-B', $assetScript, $baselineManifest,
+            $DeltaBaseVersion, '--signed-baseline')
+        Invoke-Checked $gh @('release', 'download', $tag, '--repo', $repository,
+            '--pattern', $baseName, '--dir', $packDir)
+        $baselinePackage = Join-Path $packDir $baseName
+        Invoke-Checked $python @('-B', $assetScript, $baselineManifest, $DeltaBaseVersion,
+            '--verify-baseline', $baselinePackage)
+        Write-Host "[build.ps1] 已核验指定 Delta 基线 $tag：$baseName"
     } else {
         $token = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { '' }
         $downloadArgs = @(
@@ -777,8 +807,9 @@ try {
 
     $artifactStopwatch = [Diagnostics.Stopwatch]::StartNew()
     # 复用同一索引解析器选择本次资产；不依赖 vpk 文件名的通道后缀。
-    $assetArgs = @('-B', (Join-Path $PSScriptRoot 'velopack_assets.py'), $packDir, $Version)
+    $assetArgs = @('-B', $assetScript, $packDir, $Version)
     if ($FullOnly) { $assetArgs += '--full-only' }
+    if ($DeltaBaseVersion) { $assetArgs += @('--delta-base', $DeltaBaseVersion) }
     $assetJson = Invoke-Checked $python $assetArgs
     $products = @($assetJson | ConvertFrom-Json)
     if ($FullOnly) {
@@ -786,6 +817,16 @@ try {
         if ($deltaArtifacts.Count -gt 0) {
             throw "FullOnly 构建仍产出 Delta：$($deltaArtifacts -join ', ')"
         }
+    }
+    if ($DeltaBaseVersion) {
+        # 用正式基线与刚生成的 Delta 在 CI 构建目录重建一次，强制发现客户端会回退全量的无效补丁。
+        $rebuiltPackage = Join-Path $stage 'delta-rebuilt.nupkg'
+        $targetFull = Join-Path $packDir $products[1]
+        $targetDelta = Join-Path $packDir $products[2]
+        Invoke-Checked $vpk @('delta', 'patch', '--base', $baselinePackage,
+            '--patch', $targetDelta, '--output', $rebuiltPackage)
+        Invoke-Checked $python @('-B', $assetScript, $targetFull, $Version, '--verify-rebuild', $rebuiltPackage)
+        Write-Host "[build.ps1] 已从 $DeltaBaseVersion 重建并核对 $Version 的全部安装文件。"
     }
     foreach ($name in $products) {
         $source = Join-Path $packDir $name

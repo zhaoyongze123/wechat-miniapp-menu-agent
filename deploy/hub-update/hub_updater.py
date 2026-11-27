@@ -310,6 +310,10 @@ class Config:
         self.image_repo = str(env.get("HUB_UPDATE_IMAGE_REPO") or "menu-capture-hub")
         # 留空即关闭 OCI 分层拉取；配置后只允许该固定仓库，不接受请求方任意指定镜像。
         self.registry_repo = str(env.get("HUB_UPDATE_REGISTRY_REPO") or "").strip().lower()
+        require_oci = str(env.get("HUB_UPDATE_REQUIRE_OCI") or "0").strip()
+        if require_oci not in {"0", "1"}:
+            raise UpdateError("HUB_UPDATE_REQUIRE_OCI 必须是 0 或 1")
+        self.require_oci = require_oci == "1"
         self.data_volume = str(env.get("HUB_UPDATE_DATA_VOLUME") or "")
         self.state_dir = Path(env.get("HUB_UPDATE_STATE_DIR") or "/var/lib/menu-capture-updater")
         self.archive_dir = Path(env.get("HUB_UPDATE_ARCHIVE_DIR") or str(self.state_dir / "archives"))
@@ -345,6 +349,8 @@ class Config:
             raise UpdateError("HUB_UPDATE_IMAGE_REPO 不能自带版本标签")
         if self.registry_repo and not REGISTRY_RE.fullmatch(self.registry_repo):
             raise UpdateError("HUB_UPDATE_REGISTRY_REPO 必须是 ghcr.io/<org>/<repo> 形式")
+        if self.require_oci and not self.oci_enabled:
+            raise UpdateError("仅允许 OCI 更新时必须配置 HUB_UPDATE_REGISTRY_REPO")
 
 
 def _client_allowed(ip: str, networks: list[str]) -> bool:
@@ -388,9 +394,11 @@ def validate_payload(payload: Any, config: Config) -> dict:
         raise ValidationError("归档大小超出允许范围")
     image = str(payload.get("image") or "").strip().lower()
     digest = str(payload.get("digest") or "").strip().lower()
-    # image/digest 是可选的 OCI 加速通道；url/archive 仍然是必需的归档回退依据。
+    # 保留 url/archive 请求契约供旧版本兼容；仅 OCI 模式下不会读取这些归档。
     if bool(image) != bool(digest):
         raise ValidationError("image 与 digest 必须同时提供")
+    if config.require_oci and not image:
+        raise ValidationError("宿主执行器仅允许 OCI 分层更新，缺少 image 和 digest")
     if image:
         if not config.oci_enabled:
             raise ValidationError("宿主执行器未启用镜像分层拉取")
@@ -772,7 +780,7 @@ class HubUpdater:
             "running": alive,
             "current_image": self._current_image_ref(),
             # 最小能力声明：Hub 只在 oci=true 时才发送 image/digest，旧执行器保持归档路径。
-            "capabilities": {"oci": self.config.oci_enabled},
+            "capabilities": {"oci": self.config.oci_enabled, "oci_only": self.config.require_oci},
             **journal,
             "status": status,
         }
@@ -845,6 +853,7 @@ class HubUpdater:
             self._write("pulling" if request["image"] else "downloading",
                         f"正在准备 {version} 更新", target_version=version,
                         previous_version=previous, schema_before=schema_before,
+                        delivery="oci" if request["image"] else "archive",
                         started_at=_utc_now(), finished_at="", error="")
             pulled = False
             if request["image"]:
@@ -852,8 +861,12 @@ class HubUpdater:
                             f"正在 docker pull --platform {OCI_PLATFORM} {request['image']}@{request['digest']}")
                 pulled, output = self._pull_image(request["image"], request["digest"], version)
                 if not pulled:
-                    # 拉取失败不改变事务身份：审计后在同一事务内改用完整归档。
+                    # 仅 OCI 模式失败即结束，保留当前容器及任务；普通模式仍可回退完整归档。
                     self._audit("pull", "failed", f"docker pull/inspect/tag 未通过：{output}", version)
+                    if self.config.require_oci:
+                        message = f"镜像分层拉取失败，已禁止下载或加载完整归档：{output}"
+                        self._fail(message, version)
+                        raise UpdateError(message)
                     if not self._disk_ok(request):
                         self._fail(f"镜像分层拉取失败且磁盘余量不足：{output}", version)
                         raise UpdateError(f"镜像分层拉取失败且磁盘余量不足：{output}")

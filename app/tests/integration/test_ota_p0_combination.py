@@ -485,6 +485,30 @@ def test_p0_2_lock_path_matches_between_python_and_watchdog(tmp_path: Path) -> N
     assert '"$journalPath.lock"' not in script_text
 
 
+def test_watchdog_working_directory_stays_outside_replaceable_installation(tmp_path, monkeypatch):
+    launcher = _load_launcher()
+    data_root = tmp_path / "data-root"
+    current = tmp_path / "install" / "current"
+    current.mkdir(parents=True)
+    (current / "update-watchdog.ps1").write_bytes(b"# test watchdog")
+    _, journal = _create_prepared_tx(_create_real_data_root(data_root))
+    monkeypatch.setattr(launcher, "_current_dir", lambda: current)
+    monkeypatch.setattr(launcher, "_install_root", lambda: current.parent)
+    monkeypatch.setattr(recovery, "process_state", lambda *_args: "alive")
+
+    def start(_args, **kwargs):
+        script, control_path, ready_path = launcher._watchdog_paths(data_root)
+        assert Path(kwargs["cwd"]) == script.parent == data_root / "recovery"
+        control = recovery.read_json(control_path, {})
+        recovery.write_json(ready_path, {
+            "transaction_id": control["transaction_id"], "watchdog_nonce": control["watchdog_nonce"],
+            "pid": 900, "process_started_at": 10,
+        })
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", start)
+    assert launcher._start_watchdog(data_root, journal, mode="apply", launcher_pid=800)
+
+
 def _powershell_exe() -> str | None:
     if sys.platform == "win32":
         return shutil.which("powershell.exe") or shutil.which("pwsh")
