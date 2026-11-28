@@ -111,7 +111,7 @@ export function NotificationCenterTrigger() {
               aria-label="通知偏好设置"
               onClick={() => {
                 setOpen(false)
-                navigate('/settings')
+                navigate('/settings?section=notifications')
               }}
             >
               <Settings className="h-4 w-4" aria-hidden="true" />

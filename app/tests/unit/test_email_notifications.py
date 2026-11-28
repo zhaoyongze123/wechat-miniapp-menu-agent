@@ -259,9 +259,88 @@ def test_worker_recipient_routing_and_delivery_isolation(tmp_path: Path):
     ).ok is True
     assert sent_targets[-1] == ("worker-a", ["global@example.com"])
 
-    # 4. 投递记录隔离：Hub 看全部 (3 条)，各 Worker 仅看自己
-    assert len(nstore.recent(channel="email")) == 3
+    # 4. 投递记录隔离：Hub 看全部 (3 条)，各 Worker 仅看自己，且记录包含实际解析的 recipients
+    all_logs = nstore.recent(channel="email")
+    assert len(all_logs) == 3
     xue_logs = nstore.recent(channel="email", device_id="worker-xue")
     a_logs = nstore.recent(channel="email", device_id="worker-a")
     assert len(xue_logs) == 2 and all(item["device_id"] == "worker-xue" for item in xue_logs)
+    assert xue_logs[0]["recipients"] == ["xue@example.com"]
+    assert xue_logs[1]["recipients"] == ["xue@example.com", "global@example.com"]
     assert len(a_logs) == 1 and a_logs[0]["device_id"] == "worker-a"
+    assert a_logs[0]["recipients"] == ["global@example.com"]
+
+
+def test_hub_worker_email_test_and_validation_errors(tmp_path: Path):
+    from menu_capture.notifications.channels import _format_local_time
+
+    assert "UTC" in _format_local_time("2026-11-28T14:00:00+00:00")
+    assert _format_local_time("invalid-date") == "invalid-date"
+
+    import base64
+
+    app = create_app(root=tmp_path, role="hub", admin_password="admin-test-password")
+    basic = base64.b64encode(b"admin:admin-test-password").decode("ascii")
+    with TestClient(app, base_url="http://127.0.0.1", headers={"Authorization": f"Basic {basic}"}) as client:
+        sess = client.get("/api/session").json()
+        headers = {
+            "Origin": "http://127.0.0.1",
+            "X-Capture-Token": sess["token"],
+            "Authorization": f"Basic {basic}",
+        }
+
+        # 非法邮箱返回简洁 400 中文错误
+        bad_put = client.put(
+            "/api/notifications/email",
+            json=_sample_email_payload(recipients=["not-an-email"]),
+            headers=headers,
+        )
+        assert bad_put.status_code == 400
+        assert "收件人邮箱格式无效" in bad_put.json()["detail"]
+
+        # 保存有效配置
+        assert client.put("/api/notifications/email", json=_sample_email_payload(), headers=headers).status_code == 200
+
+        # 通过真实配对接口注册一个测试 Worker
+        pair_resp = client.post("/api/shared/pairing", headers=headers)
+        assert pair_resp.status_code == 200
+        enrolled = client.post(
+            "/api/shared/worker/pair",
+            json={"code": pair_resp.json()["code"], "name": "测试A机"},
+        )
+        assert enrolled.status_code == 200
+        enrolled_data = enrolled.json()
+        worker_id = enrolled_data["id"] if "id" in enrolled_data else enrolled_data["worker_id"]
+        worker_headers = {"Authorization": f"Bearer {enrolled_data['token']}"}
+
+        # 为该 Worker 设置专属收件人
+        assert client.put(
+            f"/api/notifications/email/workers/{worker_id}",
+            json={"recipients": ["a-only@example.com"]},
+            headers=headers,
+        ).status_code == 200
+
+        # Worker 拉取配置包含 global_recipients_count 与 cc_global
+        w_get = client.get("/api/shared/worker/email-settings", headers=worker_headers)
+        assert w_get.status_code == 200
+        assert w_get.json()["cc_global_on_worker_override"] is True
+        assert w_get.json()["global_recipients_count"] == 3
+
+        # Worker 经由 Hub 发送测试邮件 + Hub 按 worker_id 定向测试
+        with patch("smtplib.SMTP_SSL") as mock_ssl:
+            client_mock = MagicMock()
+            mock_ssl.return_value.__enter__.return_value = client_mock
+
+            w_test = client.post("/api/shared/worker/email-test", headers=worker_headers)
+            assert w_test.status_code == 200
+            assert w_test.json()["ok"] is True
+            assert "a-only@example.com" in w_test.json()["recipients"]
+
+            hub_worker_test = client.post(
+                "/api/notifications/email/test",
+                json={"worker_id": worker_id},
+                headers=headers,
+            )
+            assert hub_worker_test.status_code == 200
+            assert hub_worker_test.json()["ok"] is True
+            assert "a-only@example.com" in hub_worker_test.json()["recipients"]

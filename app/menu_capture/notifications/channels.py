@@ -6,6 +6,7 @@ import html
 import smtplib
 import ssl
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import formataddr
 from typing import Protocol
@@ -45,6 +46,22 @@ def _sanitize_error(message: str, secret: str) -> str:
     return text[:280]
 
 
+def _format_local_time(iso_str: str) -> str:
+    raw = (iso_str or "").strip()
+    if not raw:
+        return ""
+    try:
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        local_dt = dt.astimezone()
+        offset = local_dt.strftime("%z")
+        tz_label = f"UTC{offset[:3]}:{offset[3:]}" if len(offset) == 5 else "本地时间"
+        return f"{local_dt.strftime('%Y-%m-%d %H:%M:%S')} ({tz_label})"
+    except ValueError:
+        return raw
+
+
 def build_email_message(event: AlertEvent, config: EmailNotificationConfig) -> EmailMessage:
     """构造同时包含纯文本与简洁 HTML 的告警邮件。"""
     event_label = ALERT_EVENT_LABELS.get(event.event_type, event.event_type)
@@ -60,7 +77,7 @@ def build_email_message(event: AlertEvent, config: EmailNotificationConfig) -> E
     meta_rows = [
         ("告警类型", event_label),
         ("严重级别", severity_label),
-        ("发生时间", event.occurred_at),
+        ("发生时间", _format_local_time(event.occurred_at)),
     ]
     if event.device_name or event.device_id:
         device_desc = event.device_name or event.device_id
