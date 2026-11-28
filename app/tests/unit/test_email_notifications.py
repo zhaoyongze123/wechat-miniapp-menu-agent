@@ -183,3 +183,85 @@ def test_notification_api_routes_roundtrip(tmp_path: Path):
             test_resp = client.post("/api/notifications/email/test", headers=headers)
             assert test_resp.status_code == 200
             assert test_resp.json()["ok"] is True
+
+
+def test_worker_recipient_routing_and_delivery_isolation(tmp_path: Path):
+    configs = ConfigStore(tmp_path, managed=True)
+    configs.save_email_notification(
+        _sample_email_payload(
+            recipients=["global@example.com"],
+            cc_global_on_worker_override=True,
+        )
+    )
+    nstore = NotificationStore(tmp_path / "data" / "tasks.sqlite3")
+    nstore.set_worker_recipients("worker-xue", ["xue@example.com"])
+
+    sent_targets: list[tuple[str, list[str]]] = []
+
+    class CaptureChannel:
+        name = "email"
+
+        def __init__(self, cfg: EmailNotificationConfig) -> None:
+            self.cfg = cfg
+
+        def send(self, event: AlertEvent) -> DeliveryResult:
+            sent_targets.append((event.device_id, list(self.cfg.recipients)))
+            return DeliveryResult(ok=True)
+
+    dispatcher = NotificationDispatcher(
+        configs,
+        nstore,
+        channel_factory=lambda cfg, _s: CaptureChannel(cfg),
+    )
+
+    # 1. worker-xue 配置了专属邮箱且开启抄送全局 -> 发给 xue + global
+    assert dispatcher.deliver_now(
+        AlertEvent(
+            dedupe_key="cb:xue-1",
+            event_type="batch_circuit_breaker_tripped",
+            title="xue 熔断",
+            body="环境异常",
+            device_id="worker-xue",
+            device_name="xue",
+        )
+    ).ok is True
+    assert sent_targets[-1] == ("worker-xue", ["xue@example.com", "global@example.com"])
+
+    # 2. 关闭抄送全局 -> 仅发给 xue 专属邮箱
+    configs.save_email_notification(
+        _sample_email_payload(
+            recipients=["global@example.com"],
+            cc_global_on_worker_override=False,
+        )
+    )
+    assert dispatcher.deliver_now(
+        AlertEvent(
+            dedupe_key="cb:xue-2",
+            event_type="batch_circuit_breaker_tripped",
+            title="xue 熔断 2",
+            body="环境异常",
+            device_id="worker-xue",
+            device_name="xue",
+        )
+    ).ok is True
+    assert sent_targets[-1] == ("worker-xue", ["xue@example.com"])
+
+    # 3. worker-a 未配置专属邮箱 -> 自动回退全局收件人
+    assert dispatcher.deliver_now(
+        AlertEvent(
+            dedupe_key="cb:a-1",
+            event_type="batch_circuit_breaker_tripped",
+            title="A机熔断",
+            body="环境异常",
+            device_id="worker-a",
+            device_name="共享端A机",
+        )
+    ).ok is True
+    assert sent_targets[-1] == ("worker-a", ["global@example.com"])
+
+    # 4. 投递记录隔离：Hub 看全部 (3 条)，各 Worker 仅看自己
+    assert len(nstore.recent(channel="email")) == 3
+    xue_logs = nstore.recent(channel="email", device_id="worker-xue")
+    a_logs = nstore.recent(channel="email", device_id="worker-a")
+    assert len(xue_logs) == 2 and all(item["device_id"] == "worker-xue" for item in xue_logs)
+    assert len(a_logs) == 1 and a_logs[0]["device_id"] == "worker-a"

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from menu_capture.notifications.models import AlertEvent, utc_now_iso
+from menu_capture.notifications.models import AlertEvent, EmailNotificationConfig, utc_now_iso
 from menu_capture.storage.migrations import Migration, apply_migrations
 
 
@@ -50,8 +51,20 @@ def _migrate_notification_deliveries(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_worker_email_recipients(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS worker_notification_recipients (
+            worker_id TEXT PRIMARY KEY,
+            recipients_json TEXT NOT NULL DEFAULT '[]',
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
 class NotificationStore:
-    """持久化邮件等外部渠道的去重、限频与投递状态，服务重启不丢失冷静期状态。"""
+    """持久化邮件等外部渠道的去重、限频、设备专属收件人与投递状态。"""
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -64,7 +77,12 @@ class NotificationStore:
                         version="20261128_02_notification_deliveries",
                         description="新增统一通知中心外部渠道投递记录与去重限频索引",
                         apply=_migrate_notification_deliveries,
-                    )
+                    ),
+                    Migration(
+                        version="20261128_03_worker_email_recipients",
+                        description="新增采集设备独立收件邮箱路由表",
+                        apply=_migrate_worker_email_recipients,
+                    ),
                 ],
             )
 
@@ -150,16 +168,81 @@ class NotificationStore:
             )
             return int(cur.lastrowid or 0)
 
-    def recent(self, *, channel: str = "email", limit: int = 15) -> list[dict]:
+    def recent(self, *, channel: str = "email", limit: int = 15, device_id: str = "") -> list[dict]:
+        capped = max(1, min(100, limit))
+        with self.connect() as conn:
+            if device_id:
+                rows = conn.execute(
+                    """
+                    SELECT id, event_id, dedupe_key, event_type, severity, channel,
+                           title, status, attempts, error, device_id, device_name, created_at, sent_at
+                    FROM notification_deliveries
+                    WHERE channel=? AND device_id=?
+                    ORDER BY id DESC LIMIT ?
+                    """,
+                    (channel, device_id, capped),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, event_id, dedupe_key, event_type, severity, channel,
+                           title, status, attempts, error, device_id, device_name, created_at, sent_at
+                    FROM notification_deliveries
+                    WHERE channel=?
+                    ORDER BY id DESC LIMIT ?
+                    """,
+                    (channel, capped),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_worker_recipients(self, worker_id: str) -> list[str]:
+        if not worker_id:
+            return []
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT recipients_json FROM worker_notification_recipients WHERE worker_id=?",
+                (worker_id,),
+            ).fetchone()
+        if not row or not row["recipients_json"]:
+            return []
+        try:
+            items = json.loads(str(row["recipients_json"]))
+            return [str(item) for item in items if isinstance(item, str) and item.strip()] if isinstance(items, list) else []
+        except ValueError:
+            return []
+
+    def set_worker_recipients(self, worker_id: str, recipients: list[str]) -> list[str]:
+        if not worker_id or not worker_id.strip():
+            raise ValueError("设备标识不能为空")
+        validated = EmailNotificationConfig.model_validate({"recipients": recipients}).recipients
+        now = utc_now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO worker_notification_recipients(worker_id, recipients_json, updated_at)
+                VALUES(?, ?, ?)
+                ON CONFLICT(worker_id) DO UPDATE SET
+                    recipients_json=excluded.recipients_json,
+                    updated_at=excluded.updated_at
+                """,
+                (worker_id.strip(), json.dumps(validated, ensure_ascii=False), now),
+            )
+        return validated
+
+    def list_worker_recipients(self) -> dict[str, list[str]]:
         with self.connect() as conn:
             rows = conn.execute(
-                """
-                SELECT id, event_id, dedupe_key, event_type, severity, channel,
-                       title, status, attempts, error, device_name, created_at, sent_at
-                FROM notification_deliveries
-                WHERE channel=?
-                ORDER BY id DESC LIMIT ?
-                """,
-                (channel, max(1, min(100, limit))),
+                "SELECT worker_id, recipients_json FROM worker_notification_recipients"
             ).fetchall()
-        return [dict(row) for row in rows]
+        result: dict[str, list[str]] = {}
+        for row in rows:
+            try:
+                items = json.loads(str(row["recipients_json"]))
+                result[str(row["worker_id"])] = (
+                    [str(item) for item in items if isinstance(item, str) and item.strip()]
+                    if isinstance(items, list)
+                    else []
+                )
+            except ValueError:
+                result[str(row["worker_id"])] = []
+        return result
