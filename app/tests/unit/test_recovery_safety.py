@@ -492,3 +492,35 @@ def test_prepare_verify_home_reuses_unchanged_baseline_and_falls_back_on_write(
     )
     assert backup_calls["n"] == 1
     assert evidence2["databases"]["tasks.sqlite3"]["row_counts"]["tasks"] == 2
+
+
+def test_trim_action_history_reclaims_old_debug_rows_without_touching_active_runs(tmp_path: Path) -> None:
+    """回收旧调试动作轨迹时，仅清理已结束批次超出保留上限的记录，不触碰活跃/暂停批次与业务结果。"""
+    from menu_capture.storage.store import TaskStore
+
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    with store.connect() as db:
+        db.execute(
+            "INSERT INTO runs(id, mode, status, task_ids, current_index, current_task_id, message, created_at, updated_at) "
+            "VALUES('run-done', 'automatic', 'completed', '[]', 0, '', '', '2026-11-28T00:00:00', '2026-11-28T00:00:00')"
+        )
+        db.execute(
+            "INSERT INTO runs(id, mode, status, task_ids, current_index, current_task_id, message, created_at, updated_at) "
+            "VALUES('run-paused', 'automatic', 'paused', '[]', 0, '', '', '2026-11-28T00:00:00', '2026-11-28T00:00:00')"
+        )
+    for i in range(10):
+        aid = store.start_action("run-done", f"t-{i}", "a1", "capturing", i, "discover", {})
+        store.finish_action(aid, 10, "ok", {})
+    for i in range(2):
+        aid = store.start_action("run-paused", f"tp-{i}", "a2", "capturing", i, "click", {})
+        store.finish_action(aid, 10, "ok", {})
+    for i in range(5):
+        aid = store.start_action("run-done", f"t-new-{i}", "a3", "capturing", i, "scroll", {})
+        store.finish_action(aid, 10, "ok", {})
+
+    deleted = store.trim_action_history(keep=5)
+    assert deleted == 10
+    with store.connect() as db:
+        remaining = db.execute("SELECT run_id, count(*) FROM run_actions GROUP BY run_id").fetchall()
+        by_run = {row[0]: row[1] for row in remaining}
+    assert by_run == {"run-done": 5, "run-paused": 2}

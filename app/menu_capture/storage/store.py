@@ -179,13 +179,21 @@ class TaskStore:
             ).fetchall()
         return [dict(row) | {"details": json.loads(row["details"])} for row in rows]
 
-    def trim_action_history(self, keep: int = 20000) -> None:
-        """仅在运行结束时回收旧的已完成动作索引，不触碰任务结果和运行状态。"""
+    def trim_action_history(self, keep: int = 20000) -> int:
+        """仅在运行结束时回收旧的已完成动作调试索引，不触碰任务结果、运行状态及未结束批次。"""
         with self.connect() as db:
             cutoff = db.execute("SELECT id FROM run_actions ORDER BY id DESC LIMIT 1 OFFSET ?",
                                 (max(1, keep) - 1,)).fetchone()
-            if cutoff:
-                db.execute("DELETE FROM run_actions WHERE id<? AND result!='running'", (cutoff["id"],))
+            if not cutoff:
+                return 0
+            deleted = db.execute(
+                "DELETE FROM run_actions WHERE id<? AND result!='running' "
+                "AND run_id NOT IN (SELECT id FROM runs WHERE status IN ('running','paused','pause_requested','blocked'))",
+                (cutoff["id"],),
+            ).rowcount or 0
+            if deleted:
+                db.execute("PRAGMA optimize")
+            return int(deleted)
 
     def connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10)

@@ -1016,6 +1016,11 @@ class UiPathRunner:
         if not message:
             message = f"{label}已完成" if status == "completed" else f"{label}已停止"
         self.store.update_run(self.run_id, status=status, message=message[:300])
+        if status in {"completed", "terminated"}:
+            try:
+                self.store.trim_action_history()
+            except Exception:
+                pass
 
     def _launch_cli(self, run_directory: Path, settings, profile: dict, *, task_count: int | None = None,
                     timeout_seconds: float | None = None, allow_skip_build: bool = True) -> None:
