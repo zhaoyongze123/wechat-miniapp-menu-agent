@@ -2217,18 +2217,18 @@ class UpdateService:
         try:
             if channel == "stable":
                 # 正式渠道优先走静态签名清单：零 API 配额消耗；
-                # 偶发连接/读超时自动重试一次，避免单次网络抖动导致检查失败。
+                # 代理/CDN 跳转偶发较慢，放宽单次超时至 20s 并在瞬时网络抖动时重试最多 2 次。
                 # 但当独立组件交错发布导致 latest 仅含另一端资产时，回退查 Release 列表寻找本端最新兼容版本，避免离线设备漏更。
                 manifest_url = STATIC_MANIFEST_URL.format(repository=self.repository)
                 manifest_headers = {"Accept": "application/json", "User-Agent": "menu-capture-updater"}
-                for fetch_attempt in range(2):
+                for fetch_attempt in range(3):
                     try:
-                        status, response_headers, body = self._fetcher(manifest_url, manifest_headers, 10.0)
+                        status, response_headers, body = self._fetcher(manifest_url, manifest_headers, 20.0)
                         break
                     except Exception as exc:
-                        if fetch_attempt >= 1 or not _is_transient_network_error(exc) or not still_current():
+                        if fetch_attempt >= 2 or not _is_transient_network_error(exc) or not still_current():
                             raise
-                        time.sleep(CHECK_RETRY_DELAY_SECONDS)
+                        time.sleep(CHECK_RETRY_DELAY_SECONDS * (fetch_attempt + 1))
                 if status != 200:
                     raise ValueError(f"发布清单下载失败（HTTP {status}）")
                 if not still_current():
@@ -2239,7 +2239,7 @@ class UpdateService:
                         api_status, _, api_body = self._fetcher(
                             f"https://api.github.com/repos/{self.repository}/releases?per_page=20",
                             {"Accept": "application/vnd.github+json", "User-Agent": "menu-capture-updater"},
-                            10.0,
+                            15.0,
                         )
                         if api_status == 200:
                             releases = json.loads(api_body.decode("utf-8"))

@@ -768,6 +768,31 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                     return scope
         raise HTTPException(404, "任务不属于当前项目或归属待核验")
 
+    def tasks_scope_batch(task_ids: list[str], project_id: str | None = None, *, write: bool = False) -> str:
+        """批量校验任务归属，消除 300 家批量开跑时的 N+1 逐条查库。"""
+        scope = project_scope(project_id, write=write)
+        if not task_ids:
+            return scope
+        if role == "worker":
+            with store.connect() as db:
+                if worker and worker._hub_supports_project_scope:
+                    rows = db.execute(
+                        "SELECT DISTINCT task_id FROM worker_assignments WHERE project_id=? AND worker_id=?",
+                        (scope, worker._current_worker_id()),
+                    ).fetchall()
+                else:
+                    rows = db.execute(
+                        "SELECT DISTINCT task_id FROM worker_assignments WHERE worker_id='' OR worker_id=?",
+                        (worker._current_worker_id() if worker else "",),
+                    ).fetchall()
+            owned = {row["task_id"] for row in rows}
+            if any(tid not in owned for tid in task_ids):
+                raise HTTPException(404, "任务不属于当前项目或采集端")
+            return scope
+        for tid in task_ids:
+            task_scope(tid, scope, write=write)
+        return scope
+
     def task_project_ids(task_ids) -> dict[str, str | None]:
         """批量解析任务归属，避免高频接口为每条记录查询相同的历史表。"""
         unique = [tid for tid in dict.fromkeys(str(t) for t in task_ids if t)]
@@ -2310,8 +2335,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             if run and run["status"] in {"paused", "blocked", "interrupted"}:
                 raise HTTPException(409, "请先继续或终止当前批次")
             try:
-                for task_id in unique_ids:
-                    task_scope(task_id, scope, write=True)
+                tasks_scope_batch(unique_ids, scope, write=True)
                 if worker:
                     worker.check_start(unique_ids, project_id=scope)
                 result = runner.start(ui_tars_trial=True, trial_task_ids=unique_ids,
@@ -2319,14 +2343,15 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
                                       project_id=scope)
             except (ValueError, RuntimeError) as exc:
                 raise HTTPException(400, str(exc)) from None
+            light_status = status(project_id=scope, include_tasks=False, include_events=False)
             if worker:
-                return {**result, "status": status(project_id=scope)}
+                return {**result, "status": light_status}
             try:
                 # 采集轮次与审核失效跟随实际开跑，失败不影响已启动的批次。
                 materials.register_capture_round(unique_ids, project_id=scope)
             except Exception:
                 logger.exception("记录采集轮次失败")
-            return {**result, "status": status(project_id=scope)}
+            return {**result, "status": light_status}
 
     def manual_device() -> tuple[str, str]:
         local_name = socket.gethostname()
