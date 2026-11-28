@@ -316,7 +316,7 @@ export function NotificationRuntime() {
               kind: 'sync_failure',
               title: '共享后台同步需要处理',
               body: reason,
-              route: '/settings',
+              route: '/settings?section=connection',
             },
             {
               dedupeKey,

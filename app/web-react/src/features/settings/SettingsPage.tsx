@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@openai/apps-sdk-ui/components/Alert'
 import { Button } from '@openai/apps-sdk-ui/components/Button'
@@ -42,6 +42,7 @@ import { settingsKeys, useConfig, useDebugSummary } from './hooks'
 import { SharedWorkbenchCard } from './SharedWorkbenchCard'
 import { ModelUsageDialog } from '../model-usage/ModelUsageDialog'
 import { NotificationPreferencesPanel } from '../notifications/NotificationPreferencesPanel'
+import { EmailNotificationSettings } from '../notifications/EmailNotificationSettings'
 import { UpdatesPanel } from '../updates/UpdatesPanel'
 import { useUpdateStatus } from '../updates/hooks'
 import type { DirectoryKind, ModelProvider, ModelTestResult, ThinkingMode } from './types'
@@ -50,7 +51,7 @@ type CategoryId = 'general' | 'notifications' | 'connection' | 'model' | 'captur
 
 const BASE_CATEGORIES: SettingsNavItem[] = [
   { id: 'general', label: '常规', description: '目录与基础偏好' },
-  { id: 'notifications', label: '通知与提醒', description: '声音与桌面提醒' },
+  { id: 'notifications', label: '通知与提醒', description: '浏览器提醒与邮件告警' },
   { id: 'connection', label: '设备与连接', description: '共享后台与配对' },
   { id: 'model', label: '模型服务', description: '接口、密钥与测试' },
   { id: 'capture', label: '采集配置', description: '页数、步数与时限' },
@@ -70,7 +71,21 @@ export function SettingsPage() {
   const toast = useToast()
   const queryClient = useQueryClient()
   const configQuery = useConfig()
-  const [active, setActive] = useState<CategoryId>('general')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const sectionParam = searchParams.get('section')
+  const validIds = new Set<CategoryId>(['general', 'notifications', 'connection', 'model', 'capture', 'storage', 'updates', 'about'])
+  const active: CategoryId = sectionParam && validIds.has(sectionParam as CategoryId) ? (sectionParam as CategoryId) : 'general'
+  const setActive = (id: CategoryId) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (id === 'general') next.delete('section')
+        else next.set('section', id)
+        return next
+      },
+      { replace: true },
+    )
+  }
   const debugQuery = useDebugSummary(active === 'storage')
   const versionQuery = useQuery({
     queryKey: ['service-version'],
@@ -530,9 +545,22 @@ export function SettingsPage() {
         ) : null}
 
         {active === 'notifications' ? (
-          <SettingSection id="notifications" title="通知与提醒" description="浏览器本地偏好，不影响 Windows 执行配置或共享后台。">
-            <NotificationPreferencesPanel role={role.role} />
-          </SettingSection>
+          <>
+            <SettingSection
+              id="notifications-browser"
+              title="浏览器站内与桌面提醒"
+              description="仅保存在当前浏览器，不影响本机或共享后台服务端配置。"
+            >
+              <NotificationPreferencesPanel role={role.role} />
+            </SettingSection>
+            <SettingSection
+              id="notifications-email"
+              title="邮件告警渠道"
+              description="当微信掉线、主窗口不可用、连续环境故障或批量熔断时发送服务端告警邮件。"
+            >
+              <EmailNotificationSettings />
+            </SettingSection>
+          </>
         ) : null}
 
         {active === 'connection' ? (

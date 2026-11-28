@@ -2302,6 +2302,14 @@ class UiPathRunner:
                 if current and current["status"] not in {"paused", "blocked", "terminated"}:
                     self.store.update_run(self.run_id, status=run_status, message=run_message,
                                           current_task_id="" if run_status == "completed" else current.get("current_task_id", ""))
+                    if run_status == "completed":
+                        self._emit_alert(
+                            "batch_completed_summary",
+                            "批量采集已完成",
+                            f"本轮批量采集已结束（共 {len(task_ids)} 家门店），请前往工作台或任务中心核对采集结果。",
+                            dedupe_key=f"batch_done:{self.run_id}",
+                            severity="info",
+                        )
             if output_dir.exists():
                 shutil.rmtree(output_dir, ignore_errors=True)
             if self.transport is not None:

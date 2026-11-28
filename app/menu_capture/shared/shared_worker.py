@@ -878,6 +878,35 @@ class SharedWorker:
         except (httpx.HTTPError, OSError, ValueError):
             return False
 
+    def send_test_email(self) -> dict | None:
+        """委托已配对的 Hub 按本机路由发送一封测试邮件；网络不可达返回 None。"""
+        connection = self.connection
+        if not connection:
+            return None
+        try:
+            response = self._http.post(
+                self._url("/email-test", connection),
+                headers=self._capability_headers(connection),
+                timeout=20,
+            )
+            data = response.json() if response.content else {}
+            if response.is_success and isinstance(data, dict):
+                return {
+                    "ok": bool(data.get("ok", True)),
+                    "error": str(data.get("error") or ""),
+                    "recipients": list(data.get("recipients") or []),
+                    "sent_at": str(data.get("sent_at") or ""),
+                }
+            detail = data.get("detail") if isinstance(data, dict) else ""
+            return {
+                "ok": False,
+                "error": str(detail or f"Hub 返回 HTTP {response.status_code}"),
+                "recipients": [],
+                "sent_at": "",
+            }
+        except (httpx.HTTPError, OSError, ValueError):
+            return None
+
     def _sync_run_history(self, connection: dict | None = None) -> None:
         connection = connection or self.connection
         if not self._hub_supports_history:

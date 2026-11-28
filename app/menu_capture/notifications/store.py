@@ -63,6 +63,27 @@ def _migrate_worker_email_recipients(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_notification_delivery_recipients(conn: sqlite3.Connection) -> None:
+    cols = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(notification_deliveries)").fetchall()
+    }
+    if "recipients" not in cols:
+        conn.execute("ALTER TABLE notification_deliveries ADD COLUMN recipients TEXT NOT NULL DEFAULT ''")
+
+
+def _parse_recipients_json(raw: object) -> list[str]:
+    if not raw or not isinstance(raw, str):
+        return []
+    try:
+        items = json.loads(raw)
+        if isinstance(items, list):
+            return [str(item) for item in items if isinstance(item, str) and item.strip()]
+    except ValueError:
+        pass
+    return []
+
+
 class NotificationStore:
     """持久化邮件等外部渠道的去重、限频、设备专属收件人与投递状态。"""
 
@@ -83,6 +104,11 @@ class NotificationStore:
                         version="20261128_03_worker_email_recipients",
                         description="新增采集设备独立收件邮箱路由表",
                         apply=_migrate_worker_email_recipients,
+                    ),
+                    Migration(
+                        version="20261128_04_notification_delivery_recipients",
+                        description="记录每次告警投递实际解析到的收件人列表",
+                        apply=_migrate_notification_delivery_recipients,
                     ),
                 ],
             )
@@ -140,16 +166,18 @@ class NotificationStore:
         attempts: int = 0,
         error: str = "",
         sent_at: str = "",
+        recipients: list[str] | None = None,
     ) -> int:
         now = utc_now_iso()
+        recipients_json = json.dumps(list(recipients or []), ensure_ascii=False)
         with self.connect() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO notification_deliveries(
                     event_id, dedupe_key, event_type, severity, channel,
                     title, body, device_id, device_name, project_id, run_id,
-                    status, attempts, error, created_at, sent_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, attempts, error, created_at, sent_at, recipients
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.event_id,
@@ -168,6 +196,7 @@ class NotificationStore:
                     error[:300],
                     now,
                     sent_at,
+                    recipients_json,
                 ),
             )
             return int(cur.lastrowid or 0)
@@ -179,7 +208,7 @@ class NotificationStore:
                 rows = conn.execute(
                     """
                     SELECT id, event_id, dedupe_key, event_type, severity, channel,
-                           title, status, attempts, error, device_id, device_name, created_at, sent_at
+                           title, status, attempts, error, device_id, device_name, created_at, sent_at, recipients
                     FROM notification_deliveries
                     WHERE channel=? AND device_id=?
                     ORDER BY id DESC LIMIT ?
@@ -190,14 +219,19 @@ class NotificationStore:
                 rows = conn.execute(
                     """
                     SELECT id, event_id, dedupe_key, event_type, severity, channel,
-                           title, status, attempts, error, device_id, device_name, created_at, sent_at
+                           title, status, attempts, error, device_id, device_name, created_at, sent_at, recipients
                     FROM notification_deliveries
                     WHERE channel=?
                     ORDER BY id DESC LIMIT ?
                     """,
                     (channel, capped),
                 ).fetchall()
-        return [dict(row) for row in rows]
+        results: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            item["recipients"] = _parse_recipients_json(item.get("recipients"))
+            results.append(item)
+        return results
 
     def get_worker_recipients(self, worker_id: str) -> list[str]:
         if not worker_id:

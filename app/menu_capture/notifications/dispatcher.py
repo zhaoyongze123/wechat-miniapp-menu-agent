@@ -75,19 +75,22 @@ class NotificationDispatcher:
             logger.warning("notification_queue_full event_type=%s dedupe_key=%s", event.event_type, event.dedupe_key)
             return False
 
-    def send_test_email(self, *, device_name: str = "") -> dict:
+    def send_test_email(self, *, device_id: str = "", device_name: str = "") -> dict:
         """同步发送测试邮件，供设置页即时校验 SMTP 连通性与授权码有效性。"""
         cfg = self.configs.load().notifications.email
         secret = self.configs.email_secret()
+        effective_recipients = self.resolve_recipients(cfg, device_id) if device_id else list(cfg.recipients)
+        effective_cfg = cfg.model_copy(update={"recipients": effective_recipients})
         event = AlertEvent(
-            dedupe_key="test:email",
+            dedupe_key=f"test:email:{device_id}" if device_id else "test:email",
             event_type="batch_completed_summary",
             severity="info",
             title="邮件告警通道连通性测试",
-            body="这是一封来自 Menu Capture 统一通知中心的测试邮件。收到此邮件说明发件配置与授权码均已生效。",
+            body="这是一封来自 Menu Capture 统一通知中心的测试邮件。收到此邮件说明发件配置、收件路由与授权码均已生效。",
+            device_id=device_id,
             device_name=device_name or "当前主机",
         )
-        channel = self._channel_factory(cfg, secret)
+        channel = self._channel_factory(effective_cfg, secret)
         result = channel.send(event)
         sent_at = utc_now_iso() if result.ok else ""
         self.store.record(
@@ -97,11 +100,12 @@ class NotificationDispatcher:
             attempts=1,
             error=result.error,
             sent_at=sent_at,
+            recipients=effective_recipients,
         )
         return {
             "ok": result.ok,
             "error": result.error,
-            "recipients": list(cfg.recipients),
+            "recipients": effective_recipients,
             "sent_at": sent_at,
         }
 
@@ -176,6 +180,7 @@ class NotificationDispatcher:
                     status="sent",
                     attempts=attempt,
                     sent_at=utc_now_iso(),
+                    recipients=effective_recipients,
                 )
                 return last_result
             if not last_result.retryable or attempt >= max_attempts:
@@ -185,6 +190,7 @@ class NotificationDispatcher:
                     status="failed",
                     attempts=attempt,
                     error=last_result.error,
+                    recipients=effective_recipients,
                 )
                 logger.warning(
                     "notification_email_failed event_type=%s attempts=%d retryable=%s err=%s",
@@ -202,6 +208,7 @@ class NotificationDispatcher:
                     status="failed",
                     attempts=attempt,
                     error="服务关闭中断重试",
+                    recipients=effective_recipients,
                 )
                 return DeliveryResult(ok=False, retryable=False, error="stopped")
         return last_result
