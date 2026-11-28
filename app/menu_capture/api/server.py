@@ -58,7 +58,10 @@ from menu_capture.annotation.annotation import AnnotationSession, RunnerExecutor
 from menu_capture.core.instance_lock import InstanceLockedError, instance_lock
 from menu_capture.shared.shared import SharedConflict, SharedHub, WorkerUnauthorized
 from menu_capture.shared.delivery import DeliveryService
+from menu_capture.api.notification_routes import register_notification_routes
 from menu_capture.api.shared_routes import register_shared_routes
+from menu_capture.notifications.dispatcher import NotificationDispatcher
+from menu_capture.notifications.store import NotificationStore
 from menu_capture.shared.shared_worker import SharedWorker
 from menu_capture.projects.service import (
     LEGACY_ID, ProjectNotFound, get_project, resolve_batch_project, resolve_task_project, resolve_task_projects,
@@ -275,6 +278,14 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     runner.update_blocked = install.active
     annotations.update_gate = install.gate
     annotations.update_blocked = install.active
+    notification_store = NotificationStore(store.path)
+    notifications = NotificationDispatcher(
+        configs,
+        notification_store,
+        forward_to_hub=(worker.report_alert if worker is not None else None),
+        suppress_check=lambda _event: install.active_nonblocking(),
+    )
+    runner.on_alert = notifications.emit
     # 真实数据迁移提交点（TaskStore 初始化）与业务/同步后台写入显式分离：
     # 隔离验证或安装事务仍处于 verifying/applying/rolling_back/recovery_required 时，
     # 禁止 recover_publishes、store.recover、materials、shared worker、connections 与 schedule 写入。
@@ -373,6 +384,7 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             except Exception:
                 pass
             connections.close()
+            notifications.close()
             debug_log.close()
 
     remote_control_host = remote_control_host.strip().lower()
@@ -398,8 +410,20 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
     app.state.shared_hub = hub
     app.state.shared_worker = worker
     app.state.updates_install = install
+    app.state.notifications = notifications
+    app.state.notification_store = notification_store
     app.state.business_gate_active = business_gate_active
     register_shared_routes(app, role, hub, worker, control_lock)
+    register_notification_routes(
+        app,
+        role=role,
+        configs=configs,
+        notification_store=notification_store,
+        notifications=notifications,
+        hub=hub,
+        worker=worker,
+        control_lock=control_lock,
+    )
 
     # Only this exact internal protocol may bypass browser CSRF, and only with its own token.
     coordinator_token = str(os.environ.get("MENU_CAPTURE_COORDINATOR_TOKEN") or "")

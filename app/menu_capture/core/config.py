@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from menu_capture.notifications.models import EmailNotificationConfig, NotificationsConfig
+
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = ROOT.parent.parent
 
@@ -76,6 +78,7 @@ class Settings(StrictModel):
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     debug_logging: DebugLoggingConfig = Field(default_factory=DebugLoggingConfig)
     materials: MaterialsConfig = Field(default_factory=MaterialsConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     people_count: int = Field(default=1, ge=1, le=12)
     # 隐私/授权类弹窗默认全部允许，不再逐次询问人工。
     auto_authorize: bool = True
@@ -108,14 +111,50 @@ class ConfigStore:
             return Settings()
         return Settings.model_validate_json(self.path.read_text(encoding="utf-8"))
 
-    def key(self) -> str:
+    def _read_secrets(self) -> dict:
         if not self.secret_path.exists():
-            return ""
-        return json.loads(self.secret_path.read_text(encoding="utf-8")).get("api_key", "")
+            return {}
+        try:
+            data = json.loads(self.secret_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _update_secrets(self, updates: dict[str, str]) -> None:
+        current = self._read_secrets()
+        current.update(updates)
+        atomic_json(self.secret_path, current)
+
+    def key(self) -> str:
+        return str(self._read_secrets().get("api_key", "") or "")
+
+    def email_secret(self) -> str:
+        return str(self._read_secrets().get("email_secret", "") or "")
+
+    def public_email_notification(self) -> dict:
+        result = self.load().notifications.email.model_dump()
+        result["secret_configured"] = bool(self.email_secret())
+        return result
+
+    def save_email_notification(self, payload: dict) -> dict:
+        data = json.loads(json.dumps(payload))
+        secret = str(data.pop("secret", "") or "")
+        clear_secret = bool(data.pop("clear_secret", False))
+        data.pop("secret_configured", None)
+        email_cfg = EmailNotificationConfig.model_validate(data)
+        settings = self.load()
+        updated = settings.model_copy(
+            update={"notifications": settings.notifications.model_copy(update={"email": email_cfg})}
+        )
+        atomic_json(self.path, updated.model_dump())
+        if clear_secret or secret:
+            self._update_secrets({"email_secret": "" if clear_secret else secret.strip()})
+        return self.public_email_notification()
 
     def public(self) -> dict:
         result = self.load().model_dump()
         result["model"]["api_key_configured"] = bool(self.key())
+        result.setdefault("notifications", {}).setdefault("email", {})["secret_configured"] = bool(self.email_secret())
         return result
 
     def save(self, payload: dict) -> dict:
@@ -124,10 +163,14 @@ class ConfigStore:
         secret = model.pop("api_key", "")
         clear = model.pop("clear_api_key", False)
         model.pop("api_key_configured", None)
-        # 控制台表单不包含归档相关字段，保存其他设置时沿用现有值，避免被默认值覆盖。
+        # 控制台设置表单不直接提交邮件通知配置或归档字段，保存其他设置时保留既有值。
         current = self.load()
         for key in ("unqualified_dir", "flat_store_output"):
             payload.setdefault(key, getattr(current, key))
+        if "notifications" not in payload:
+            payload["notifications"] = current.notifications.model_dump()
+        elif isinstance(payload["notifications"], dict) and isinstance(payload["notifications"].get("email"), dict):
+            payload["notifications"]["email"].pop("secret_configured", None)
         settings = Settings.model_validate(payload)
         source = Path(settings.input_dir).expanduser().resolve() if settings.input_dir.strip() else None
         output = Path(settings.output_dir).expanduser().resolve()
@@ -142,5 +185,5 @@ class ConfigStore:
         settings.input_dir, settings.output_dir = str(source) if source else "", str(output)
         atomic_json(self.path, settings.model_dump())
         if clear or secret:
-            atomic_json(self.secret_path, {"api_key": "" if clear else secret.strip()})
+            self._update_secrets({"api_key": "" if clear else secret.strip()})
         return self.public()
