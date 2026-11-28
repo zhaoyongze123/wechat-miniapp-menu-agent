@@ -250,6 +250,27 @@ class UiPathRunner:
         self._annotation_mode = False
         # 可选服务端告警回调（用于熔断、微信掉线、窗口阻塞等需人工介入的邮件通知）。
         self.on_alert: Callable[[Any], Any] | None = None
+        self._ui_tars_trial_active = False
+        # 本轮采集模式：auto=全自动 Agent，manual=半自动人工；空值代表历史批次。
+        self._capture_mode = ""
+        # 批量采集的暂停只在门店边界生效，不打断当前门店。
+        self._pause_at_boundary = False
+        # 半自动人工：当前等待人工操作的门店状态与一次性动作。
+        self._manual_cond = threading.Condition()
+        self._manual_state: dict | None = None
+        self._manual_action: dict | None = None
+        self._manual_reason = "not_ordering"
+        self._manual_last_result = ""
+        # 半自动独立辅助能力（AI 门店名称识别）所需的当前窗口上下文；仅在 waiting=True 时有效。
+        self._manual_selector = ""
+        self._manual_output_dir: Path | None = None
+        self._manual_screenshot_lock = threading.Lock()
+        self._manual_name_version = 0
+        # 共享采集端注入任务来源，只有已校验并落盘的分配包可进入桌面执行。
+        self.assignment_source: Callable[[str], str] | None = None
+        # Worker 项目路径必须来自持久化分配快照，不能从当前 UI 选择推断。
+        self.project_binding_provider: Callable[[str], dict | None] | None = None
+        self._capture_start_index = 0
 
     def _emit_alert(
         self,
@@ -278,27 +299,6 @@ class UiPathRunner:
             )
         except Exception:
             pass
-        self._ui_tars_trial_active = False
-        # 本轮采集模式：auto=全自动 Agent，manual=半自动人工；空值代表历史批次。
-        self._capture_mode = ""
-        # 批量采集的暂停只在门店边界生效，不打断当前门店。
-        self._pause_at_boundary = False
-        # 半自动人工：当前等待人工操作的门店状态与一次性动作。
-        self._manual_cond = threading.Condition()
-        self._manual_state: dict | None = None
-        self._manual_action: dict | None = None
-        self._manual_reason = "not_ordering"
-        self._manual_last_result = ""
-        # 半自动独立辅助能力（AI 门店名称识别）所需的当前窗口上下文；仅在 waiting=True 时有效。
-        self._manual_selector = ""
-        self._manual_output_dir: Path | None = None
-        self._manual_screenshot_lock = threading.Lock()
-        self._manual_name_version = 0
-        # 共享采集端注入任务来源，只有已校验并落盘的分配包可进入桌面执行。
-        self.assignment_source: Callable[[str], str] | None = None
-        # Worker 项目路径必须来自持久化分配快照，不能从当前 UI 选择推断。
-        self.project_binding_provider: Callable[[str], dict | None] | None = None
-        self._capture_start_index = 0
 
     @property
     def running(self) -> bool:
