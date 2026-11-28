@@ -1,6 +1,6 @@
 {
-  "_AppDataTable-B2kG_TSW.js": {
-    "file": "assets/AppDataTable-B2kG_TSW.js",
+  "_AppDataTable-CT5ZCzxF.js": {
+    "file": "assets/AppDataTable-CT5ZCzxF.js",
     "name": "AppDataTable",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
@@ -15,19 +15,19 @@
       "_vendor-ui-Y17cNEsQ.js"
     ]
   },
-  "_AssignDialog-DWPTdwHN.js": {
-    "file": "assets/AssignDialog-DWPTdwHN.js",
+  "_AssignDialog-p0to7imF.js": {
+    "file": "assets/AssignDialog-p0to7imF.js",
     "name": "AssignDialog",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
       "index.html",
-      "_hooks-DO_1sVT6.js"
+      "_hooks-DtrSfO9b.js"
     ]
   },
-  "_AssignmentDetailDrawer-BsyYNIzg.js": {
-    "file": "assets/AssignmentDetailDrawer-BsyYNIzg.js",
+  "_AssignmentDetailDrawer-BILY0Oe5.js": {
+    "file": "assets/AssignmentDetailDrawer-BILY0Oe5.js",
     "name": "AssignmentDetailDrawer",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
@@ -36,7 +36,7 @@
       "index.html",
       "_KeyValueList-BYwBpg93.js",
       "_ImagePreview-BjcVwu28.js",
-      "_hooks-DO_1sVT6.js"
+      "_hooks-DtrSfO9b.js"
     ]
   },
   "_BulkActionBar-CUfRqH6E.js": {
@@ -79,8 +79,8 @@
       "_PageHeader-ECenXmIe.js"
     ]
   },
-  "_ManualPanel-C8xMWTww.js": {
-    "file": "assets/ManualPanel-C8xMWTww.js",
+  "_ManualPanel-Ymuoy1-o.js": {
+    "file": "assets/ManualPanel-Ymuoy1-o.js",
     "name": "ManualPanel",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
@@ -95,8 +95,8 @@
       "_vendor-react-CwVrQmi-.js"
     ]
   },
-  "_RejectPendingDialog-CMrruDwl.js": {
-    "file": "assets/RejectPendingDialog-CMrruDwl.js",
+  "_RejectPendingDialog-Cb256kq8.js": {
+    "file": "assets/RejectPendingDialog-Cb256kq8.js",
     "name": "RejectPendingDialog",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
@@ -109,15 +109,15 @@
       "_format-B0h57Y3L.js"
     ]
   },
-  "_ReviewDispositionDialog-Dajv5Eu2.js": {
-    "file": "assets/ReviewDispositionDialog-Dajv5Eu2.js",
+  "_ReviewDispositionDialog-CalqbTjN.js": {
+    "file": "assets/ReviewDispositionDialog-CalqbTjN.js",
     "name": "ReviewDispositionDialog",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
       "index.html",
-      "_RejectPendingDialog-CMrruDwl.js"
+      "_RejectPendingDialog-Cb256kq8.js"
     ]
   },
   "_SearchInput-DRYbFlCa.js": {
@@ -135,8 +135,8 @@
       "_vendor-react-CwVrQmi-.js"
     ]
   },
-  "_api-BBn6SYUv.js": {
-    "file": "assets/api-BBn6SYUv.js",
+  "_api-RrekET6_.js": {
+    "file": "assets/api-RrekET6_.js",
     "name": "api",
     "imports": [
       "index.html"
@@ -154,19 +154,19 @@
     "file": "assets/format-CD3u7y7h.js",
     "name": "format"
   },
-  "_hooks-C_9S_7Jf.js": {
-    "file": "assets/hooks-C_9S_7Jf.js",
+  "_hooks-CH7FoeL0.js": {
+    "file": "assets/hooks-CH7FoeL0.js",
     "name": "hooks",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
-      "_api-BBn6SYUv.js",
+      "_api-RrekET6_.js",
       "_format-B0h57Y3L.js",
       "index.html"
     ]
   },
-  "_hooks-DO_1sVT6.js": {
-    "file": "assets/hooks-DO_1sVT6.js",
+  "_hooks-DtrSfO9b.js": {
+    "file": "assets/hooks-DtrSfO9b.js",
     "name": "hooks",
     "imports": [
       "_vendor-query-BWD6UoyK.js",
@@ -199,7 +199,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-Cihh-IKS.js",
+    "file": "assets/index-CWuPq0zl.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -226,7 +226,7 @@
     ]
   },
   "src/features/annotation/AnnotationPage.tsx": {
-    "file": "assets/AnnotationPage-GsFFLaEx.js",
+    "file": "assets/AnnotationPage-Cu_ATx4s.js",
     "name": "AnnotationPage",
     "src": "src/features/annotation/AnnotationPage.tsx",
     "isDynamicEntry": true,
@@ -240,7 +240,7 @@
     ]
   },
   "src/features/diagnostics/DiagnosticsPage.tsx": {
-    "file": "assets/DiagnosticsPage-D7xzcEQQ.js",
+    "file": "assets/DiagnosticsPage-CeFArDDr.js",
     "name": "DiagnosticsPage",
     "src": "src/features/diagnostics/DiagnosticsPage.tsx",
     "isDynamicEntry": true,
@@ -253,7 +253,7 @@
     ]
   },
   "src/features/hub/HubAssignmentsPage.tsx": {
-    "file": "assets/HubAssignmentsPage-AsWNSXy0.js",
+    "file": "assets/HubAssignmentsPage-D5U0Pf4r.js",
     "name": "HubAssignmentsPage",
     "src": "src/features/hub/HubAssignmentsPage.tsx",
     "isDynamicEntry": true,
@@ -261,22 +261,22 @@
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
-      "_AppDataTable-B2kG_TSW.js",
+      "_AppDataTable-CT5ZCzxF.js",
       "_AppPagination-D2JqPF6k.js",
       "_BulkActionBar-CUfRqH6E.js",
       "index.html",
       "_FilterToolbar-oQt65nyL.js",
       "_ListPageLayout-gZM12vQQ.js",
       "_SearchInput-DRYbFlCa.js",
-      "_AssignmentDetailDrawer-BsyYNIzg.js",
-      "_hooks-DO_1sVT6.js",
+      "_AssignmentDetailDrawer-BILY0Oe5.js",
+      "_hooks-DtrSfO9b.js",
       "_PageHeader-ECenXmIe.js",
       "_KeyValueList-BYwBpg93.js",
       "_ImagePreview-BjcVwu28.js"
     ]
   },
   "src/features/hub/HubDevicesPage.tsx": {
-    "file": "assets/HubDevicesPage-aENUYgjo.js",
+    "file": "assets/HubDevicesPage-C7dSHAmH.js",
     "name": "HubDevicesPage",
     "src": "src/features/hub/HubDevicesPage.tsx",
     "isDynamicEntry": true,
@@ -284,16 +284,16 @@
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
-      "_AppDataTable-B2kG_TSW.js",
+      "_AppDataTable-CT5ZCzxF.js",
       "index.html",
       "_PageHeader-ECenXmIe.js",
       "_StatCard-CR-mrdYt.js",
-      "_hooks-DO_1sVT6.js",
+      "_hooks-DtrSfO9b.js",
       "_KeyValueList-BYwBpg93.js"
     ]
   },
   "src/features/manual-control/RemoteControlPage.tsx": {
-    "file": "assets/RemoteControlPage-TDxCoev1.js",
+    "file": "assets/RemoteControlPage-CrST8VxP.js",
     "name": "RemoteControlPage",
     "src": "src/features/manual-control/RemoteControlPage.tsx",
     "isDynamicEntry": true,
@@ -303,11 +303,11 @@
       "_vendor-ui-Y17cNEsQ.js",
       "index.html",
       "_format-BzHyDMfi.js",
-      "_ManualPanel-C8xMWTww.js"
+      "_ManualPanel-Ymuoy1-o.js"
     ]
   },
   "src/features/materials/MaterialsPage.tsx": {
-    "file": "assets/MaterialsPage-B0Y0NlsL.js",
+    "file": "assets/MaterialsPage-Dnl_1F9x.js",
     "name": "MaterialsPage",
     "src": "src/features/materials/MaterialsPage.tsx",
     "isDynamicEntry": true,
@@ -315,18 +315,18 @@
       "index.html",
       "_vendor-react-CwVrQmi-.js",
       "_vendor-ui-Y17cNEsQ.js",
-      "_AppDataTable-B2kG_TSW.js",
+      "_AppDataTable-CT5ZCzxF.js",
       "_AppPagination-D2JqPF6k.js",
       "_FilterToolbar-oQt65nyL.js",
       "_ListPageLayout-gZM12vQQ.js",
       "_SearchInput-DRYbFlCa.js",
       "_StatCard-CR-mrdYt.js",
-      "_hooks-C_9S_7Jf.js",
+      "_hooks-CH7FoeL0.js",
       "_format-B0h57Y3L.js",
       "_BulkActionBar-CUfRqH6E.js",
       "_vendor-query-BWD6UoyK.js",
       "_PageHeader-ECenXmIe.js",
-      "_api-BBn6SYUv.js"
+      "_api-RrekET6_.js"
     ],
     "dynamicImports": [
       "src/features/materials/StoreReviewWorkspace.tsx",
@@ -334,7 +334,7 @@
     ]
   },
   "src/features/materials/StoreReviewWorkspace.tsx": {
-    "file": "assets/StoreReviewWorkspace-ByxM0-j1.js",
+    "file": "assets/StoreReviewWorkspace-d_0gkzBw.js",
     "name": "StoreReviewWorkspace",
     "src": "src/features/materials/StoreReviewWorkspace.tsx",
     "isDynamicEntry": true,
@@ -345,13 +345,13 @@
       "index.html",
       "_ImagePreview-BjcVwu28.js",
       "_SearchInput-DRYbFlCa.js",
-      "_api-BBn6SYUv.js",
+      "_api-RrekET6_.js",
       "_format-B0h57Y3L.js",
-      "_hooks-C_9S_7Jf.js"
+      "_hooks-CH7FoeL0.js"
     ]
   },
   "src/features/projects/ProjectsPage.tsx": {
-    "file": "assets/ProjectsPage-C6aRpffJ.js",
+    "file": "assets/ProjectsPage-D_NjlWgT.js",
     "name": "ProjectsPage",
     "src": "src/features/projects/ProjectsPage.tsx",
     "isDynamicEntry": true,
@@ -359,7 +359,7 @@
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
-      "_AppDataTable-B2kG_TSW.js",
+      "_AppDataTable-CT5ZCzxF.js",
       "index.html",
       "_FilterToolbar-oQt65nyL.js",
       "_ListPageLayout-gZM12vQQ.js",
@@ -368,7 +368,7 @@
     ]
   },
   "src/features/quality/QualityPage.tsx": {
-    "file": "assets/QualityPage-B3lfbnu2.js",
+    "file": "assets/QualityPage-DANdy1M-.js",
     "name": "QualityPage",
     "src": "src/features/quality/QualityPage.tsx",
     "isDynamicEntry": true,
@@ -376,7 +376,7 @@
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
-      "_AppDataTable-B2kG_TSW.js",
+      "_AppDataTable-CT5ZCzxF.js",
       "_AppPagination-D2JqPF6k.js",
       "_BulkActionBar-CUfRqH6E.js",
       "index.html",
@@ -384,20 +384,20 @@
       "_PageHeader-ECenXmIe.js",
       "_SearchInput-DRYbFlCa.js",
       "_StatCard-CR-mrdYt.js",
-      "_AssignDialog-DWPTdwHN.js",
-      "_hooks-DO_1sVT6.js",
-      "_hooks-C_9S_7Jf.js",
+      "_AssignDialog-p0to7imF.js",
+      "_hooks-DtrSfO9b.js",
+      "_hooks-CH7FoeL0.js",
       "_KeyValueList-BYwBpg93.js",
       "_ImagePreview-BjcVwu28.js",
       "_format-CD3u7y7h.js",
       "_format-BzHyDMfi.js",
-      "_RejectPendingDialog-CMrruDwl.js",
-      "_api-BBn6SYUv.js",
+      "_RejectPendingDialog-Cb256kq8.js",
+      "_api-RrekET6_.js",
       "_format-B0h57Y3L.js"
     ]
   },
   "src/features/settings/SettingsPage.tsx": {
-    "file": "assets/SettingsPage-CqeFCUdV.js",
+    "file": "assets/SettingsPage-DOrZqtb4.js",
     "name": "SettingsPage",
     "src": "src/features/settings/SettingsPage.tsx",
     "isDynamicEntry": true,
@@ -409,12 +409,12 @@
       "_KeyValueList-BYwBpg93.js",
       "_PageHeader-ECenXmIe.js",
       "_format-CD3u7y7h.js",
-      "_AppDataTable-B2kG_TSW.js",
+      "_AppDataTable-CT5ZCzxF.js",
       "_AppPagination-D2JqPF6k.js"
     ]
   },
   "src/features/task-center/TaskCenterPage.tsx": {
-    "file": "assets/TaskCenterPage-BBPva5Y4.js",
+    "file": "assets/TaskCenterPage-BOjbg4qB.js",
     "name": "TaskCenterPage",
     "src": "src/features/task-center/TaskCenterPage.tsx",
     "isDynamicEntry": true,
@@ -422,23 +422,23 @@
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
-      "_AppDataTable-B2kG_TSW.js",
+      "_AppDataTable-CT5ZCzxF.js",
       "_AppPagination-D2JqPF6k.js",
       "_PageHeader-ECenXmIe.js",
       "index.html",
       "_StatCard-CR-mrdYt.js",
       "_FilterToolbar-oQt65nyL.js",
-      "_api-BBn6SYUv.js",
+      "_api-RrekET6_.js",
       "_format-BzHyDMfi.js",
       "_KeyValueList-BYwBpg93.js",
       "_ImagePreview-BjcVwu28.js",
-      "_ReviewDispositionDialog-Dajv5Eu2.js",
-      "_RejectPendingDialog-CMrruDwl.js",
+      "_ReviewDispositionDialog-CalqbTjN.js",
+      "_RejectPendingDialog-Cb256kq8.js",
       "_format-B0h57Y3L.js"
     ]
   },
   "src/features/worker/WorkbenchRoute.tsx": {
-    "file": "assets/WorkbenchRoute-BmH2UjbM.js",
+    "file": "assets/WorkbenchRoute-BYifBui9.js",
     "name": "WorkbenchRoute",
     "src": "src/features/worker/WorkbenchRoute.tsx",
     "isDynamicEntry": true,
@@ -447,21 +447,21 @@
       "_vendor-ui-Y17cNEsQ.js",
       "index.html",
       "_vendor-query-BWD6UoyK.js",
-      "_AppDataTable-B2kG_TSW.js",
+      "_AppDataTable-CT5ZCzxF.js",
       "_AppPagination-D2JqPF6k.js",
       "_BulkActionBar-CUfRqH6E.js",
       "_PageHeader-ECenXmIe.js",
       "_SearchInput-DRYbFlCa.js",
       "_StatCard-CR-mrdYt.js",
-      "_AssignDialog-DWPTdwHN.js",
+      "_AssignDialog-p0to7imF.js",
       "_KeyValueList-BYwBpg93.js",
       "_ImagePreview-BjcVwu28.js",
-      "_ReviewDispositionDialog-Dajv5Eu2.js",
-      "_AssignmentDetailDrawer-BsyYNIzg.js",
-      "_hooks-DO_1sVT6.js",
+      "_ReviewDispositionDialog-CalqbTjN.js",
+      "_AssignmentDetailDrawer-BILY0Oe5.js",
+      "_hooks-DtrSfO9b.js",
       "_FilterToolbar-oQt65nyL.js",
-      "_ManualPanel-C8xMWTww.js",
-      "_RejectPendingDialog-CMrruDwl.js",
+      "_ManualPanel-Ymuoy1-o.js",
+      "_RejectPendingDialog-Cb256kq8.js",
       "_format-BzHyDMfi.js",
       "_format-B0h57Y3L.js"
     ]

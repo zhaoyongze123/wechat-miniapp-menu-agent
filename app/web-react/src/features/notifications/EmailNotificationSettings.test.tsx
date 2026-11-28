@@ -154,13 +154,14 @@ describe('EmailNotificationSettings', () => {
       expect((screen.getByLabelText('全局默认收件人邮箱') as HTMLInputElement).value).toBe('draft@example.com')
     })
 
-    // 按设备测试
+    // 按设备测试（验证请求携带 Content-Type: application/json）
     fireEvent.click(screen.getByRole('button', { name: '测试' }))
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         '/api/notifications/email/test',
         expect.objectContaining({
           method: 'POST',
+          headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ worker_id: 'w1' }),
         }),
       )
