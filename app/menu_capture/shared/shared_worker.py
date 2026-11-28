@@ -826,6 +826,24 @@ class SharedWorker:
             # 保活穿插失败不中断当前传输，交由下一轮主 poll 统一判定连接状态。
             pass
 
+    def report_alert(self, event) -> bool:
+        """向已配对的 Hub 上报需人工介入的关键告警事件；失败静默返回 False，不阻塞采集主链路。"""
+        connection = self.connection
+        if not connection:
+            return False
+        try:
+            payload = event.model_dump() if hasattr(event, "model_dump") else dict(event)
+            response = self._http.post(
+                self._url("/alerts", connection),
+                headers=self._capability_headers(connection),
+                json=payload,
+                timeout=8,
+            )
+            response.raise_for_status()
+            return True
+        except (httpx.HTTPError, OSError, ValueError):
+            return False
+
     def _sync_run_history(self, connection: dict | None = None) -> None:
         connection = connection or self.connection
         if not self._hub_supports_history:

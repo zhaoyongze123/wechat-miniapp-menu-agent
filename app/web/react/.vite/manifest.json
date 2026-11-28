@@ -1,6 +1,6 @@
 {
-  "_AppDataTable-BtiqU8cb.js": {
-    "file": "assets/AppDataTable-BtiqU8cb.js",
+  "_AppDataTable-D9P_EVyz.js": {
+    "file": "assets/AppDataTable-D9P_EVyz.js",
     "name": "AppDataTable",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
@@ -15,19 +15,19 @@
       "_vendor-ui-Y17cNEsQ.js"
     ]
   },
-  "_AssignDialog-BZ78Anh9.js": {
-    "file": "assets/AssignDialog-BZ78Anh9.js",
+  "_AssignDialog-BBotBdjl.js": {
+    "file": "assets/AssignDialog-BBotBdjl.js",
     "name": "AssignDialog",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
       "index.html",
-      "_hooks-CdnECT5A.js"
+      "_hooks-CRMOhm10.js"
     ]
   },
-  "_AssignmentDetailDrawer-BYIT3wJ-.js": {
-    "file": "assets/AssignmentDetailDrawer-BYIT3wJ-.js",
+  "_AssignmentDetailDrawer-X80Hmr2Y.js": {
+    "file": "assets/AssignmentDetailDrawer-X80Hmr2Y.js",
     "name": "AssignmentDetailDrawer",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
@@ -36,7 +36,7 @@
       "index.html",
       "_KeyValueList-BYwBpg93.js",
       "_ImagePreview-BjcVwu28.js",
-      "_hooks-CdnECT5A.js"
+      "_hooks-CRMOhm10.js"
     ]
   },
   "_BulkActionBar-CUfRqH6E.js": {
@@ -79,8 +79,8 @@
       "_PageHeader-ECenXmIe.js"
     ]
   },
-  "_ManualPanel-Gfw1PhTN.js": {
-    "file": "assets/ManualPanel-Gfw1PhTN.js",
+  "_ManualPanel-CBunKEUz.js": {
+    "file": "assets/ManualPanel-CBunKEUz.js",
     "name": "ManualPanel",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
@@ -95,8 +95,8 @@
       "_vendor-react-CwVrQmi-.js"
     ]
   },
-  "_RejectPendingDialog-CGfYxsXx.js": {
-    "file": "assets/RejectPendingDialog-CGfYxsXx.js",
+  "_RejectPendingDialog-0GXDRdqQ.js": {
+    "file": "assets/RejectPendingDialog-0GXDRdqQ.js",
     "name": "RejectPendingDialog",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
@@ -109,15 +109,15 @@
       "_format-B0h57Y3L.js"
     ]
   },
-  "_ReviewDispositionDialog-4VeUL1a1.js": {
-    "file": "assets/ReviewDispositionDialog-4VeUL1a1.js",
+  "_ReviewDispositionDialog-BWmvJAaW.js": {
+    "file": "assets/ReviewDispositionDialog-BWmvJAaW.js",
     "name": "ReviewDispositionDialog",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
       "index.html",
-      "_RejectPendingDialog-CGfYxsXx.js"
+      "_RejectPendingDialog-0GXDRdqQ.js"
     ]
   },
   "_SearchInput-DRYbFlCa.js": {
@@ -135,8 +135,8 @@
       "_vendor-react-CwVrQmi-.js"
     ]
   },
-  "_api-BqQPN2IM.js": {
-    "file": "assets/api-BqQPN2IM.js",
+  "_api-Bk8-5f6H.js": {
+    "file": "assets/api-Bk8-5f6H.js",
     "name": "api",
     "imports": [
       "index.html"
@@ -154,21 +154,21 @@
     "file": "assets/format-CD3u7y7h.js",
     "name": "format"
   },
-  "_hooks-CdnECT5A.js": {
-    "file": "assets/hooks-CdnECT5A.js",
+  "_hooks-CRMOhm10.js": {
+    "file": "assets/hooks-CRMOhm10.js",
     "name": "hooks",
     "imports": [
       "_vendor-query-BWD6UoyK.js",
       "index.html"
     ]
   },
-  "_hooks-CfMbtd1R.js": {
-    "file": "assets/hooks-CfMbtd1R.js",
+  "_hooks-sXVlGuUR.js": {
+    "file": "assets/hooks-sXVlGuUR.js",
     "name": "hooks",
     "imports": [
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
-      "_api-BqQPN2IM.js",
+      "_api-Bk8-5f6H.js",
       "_format-B0h57Y3L.js",
       "index.html"
     ]
@@ -199,7 +199,7 @@
     ]
   },
   "index.html": {
-    "file": "assets/index-CsM0aua1.js",
+    "file": "assets/index-C4NZV2T_.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -226,7 +226,7 @@
     ]
   },
   "src/features/annotation/AnnotationPage.tsx": {
-    "file": "assets/AnnotationPage-dHqyjxJD.js",
+    "file": "assets/AnnotationPage-pZENfQcQ.js",
     "name": "AnnotationPage",
     "src": "src/features/annotation/AnnotationPage.tsx",
     "isDynamicEntry": true,
@@ -240,7 +240,7 @@
     ]
   },
   "src/features/diagnostics/DiagnosticsPage.tsx": {
-    "file": "assets/DiagnosticsPage-DV1KZ4dI.js",
+    "file": "assets/DiagnosticsPage-CWK92jnV.js",
     "name": "DiagnosticsPage",
     "src": "src/features/diagnostics/DiagnosticsPage.tsx",
     "isDynamicEntry": true,
@@ -253,7 +253,7 @@
     ]
   },
   "src/features/hub/HubAssignmentsPage.tsx": {
-    "file": "assets/HubAssignmentsPage-BWD2pF9G.js",
+    "file": "assets/HubAssignmentsPage-D-3v40VB.js",
     "name": "HubAssignmentsPage",
     "src": "src/features/hub/HubAssignmentsPage.tsx",
     "isDynamicEntry": true,
@@ -261,22 +261,22 @@
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
-      "_AppDataTable-BtiqU8cb.js",
+      "_AppDataTable-D9P_EVyz.js",
       "_AppPagination-D2JqPF6k.js",
       "_BulkActionBar-CUfRqH6E.js",
       "index.html",
       "_FilterToolbar-oQt65nyL.js",
       "_ListPageLayout-gZM12vQQ.js",
       "_SearchInput-DRYbFlCa.js",
-      "_AssignmentDetailDrawer-BYIT3wJ-.js",
-      "_hooks-CdnECT5A.js",
+      "_AssignmentDetailDrawer-X80Hmr2Y.js",
+      "_hooks-CRMOhm10.js",
       "_PageHeader-ECenXmIe.js",
       "_KeyValueList-BYwBpg93.js",
       "_ImagePreview-BjcVwu28.js"
     ]
   },
   "src/features/hub/HubDevicesPage.tsx": {
-    "file": "assets/HubDevicesPage-jbz5Zupj.js",
+    "file": "assets/HubDevicesPage-P7AJbbfJ.js",
     "name": "HubDevicesPage",
     "src": "src/features/hub/HubDevicesPage.tsx",
     "isDynamicEntry": true,
@@ -284,16 +284,16 @@
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
-      "_AppDataTable-BtiqU8cb.js",
+      "_AppDataTable-D9P_EVyz.js",
       "index.html",
       "_PageHeader-ECenXmIe.js",
       "_StatCard-CR-mrdYt.js",
-      "_hooks-CdnECT5A.js",
+      "_hooks-CRMOhm10.js",
       "_KeyValueList-BYwBpg93.js"
     ]
   },
   "src/features/manual-control/RemoteControlPage.tsx": {
-    "file": "assets/RemoteControlPage-B7fcXpMA.js",
+    "file": "assets/RemoteControlPage-DwS1TtTl.js",
     "name": "RemoteControlPage",
     "src": "src/features/manual-control/RemoteControlPage.tsx",
     "isDynamicEntry": true,
@@ -303,11 +303,11 @@
       "_vendor-ui-Y17cNEsQ.js",
       "index.html",
       "_format-BzHyDMfi.js",
-      "_ManualPanel-Gfw1PhTN.js"
+      "_ManualPanel-CBunKEUz.js"
     ]
   },
   "src/features/materials/MaterialsPage.tsx": {
-    "file": "assets/MaterialsPage-ClRMmG2M.js",
+    "file": "assets/MaterialsPage-1pL89uEt.js",
     "name": "MaterialsPage",
     "src": "src/features/materials/MaterialsPage.tsx",
     "isDynamicEntry": true,
@@ -315,18 +315,18 @@
       "index.html",
       "_vendor-react-CwVrQmi-.js",
       "_vendor-ui-Y17cNEsQ.js",
-      "_AppDataTable-BtiqU8cb.js",
+      "_AppDataTable-D9P_EVyz.js",
       "_AppPagination-D2JqPF6k.js",
       "_FilterToolbar-oQt65nyL.js",
       "_ListPageLayout-gZM12vQQ.js",
       "_SearchInput-DRYbFlCa.js",
       "_StatCard-CR-mrdYt.js",
-      "_hooks-CfMbtd1R.js",
+      "_hooks-sXVlGuUR.js",
       "_format-B0h57Y3L.js",
       "_BulkActionBar-CUfRqH6E.js",
       "_vendor-query-BWD6UoyK.js",
       "_PageHeader-ECenXmIe.js",
-      "_api-BqQPN2IM.js"
+      "_api-Bk8-5f6H.js"
     ],
     "dynamicImports": [
       "src/features/materials/StoreReviewWorkspace.tsx",
@@ -334,7 +334,7 @@
     ]
   },
   "src/features/materials/StoreReviewWorkspace.tsx": {
-    "file": "assets/StoreReviewWorkspace-BvCDLLYL.js",
+    "file": "assets/StoreReviewWorkspace-6hEEspNL.js",
     "name": "StoreReviewWorkspace",
     "src": "src/features/materials/StoreReviewWorkspace.tsx",
     "isDynamicEntry": true,
@@ -345,13 +345,13 @@
       "index.html",
       "_ImagePreview-BjcVwu28.js",
       "_SearchInput-DRYbFlCa.js",
-      "_api-BqQPN2IM.js",
+      "_api-Bk8-5f6H.js",
       "_format-B0h57Y3L.js",
-      "_hooks-CfMbtd1R.js"
+      "_hooks-sXVlGuUR.js"
     ]
   },
   "src/features/projects/ProjectsPage.tsx": {
-    "file": "assets/ProjectsPage-CLfJa4KI.js",
+    "file": "assets/ProjectsPage-ltTvfiLv.js",
     "name": "ProjectsPage",
     "src": "src/features/projects/ProjectsPage.tsx",
     "isDynamicEntry": true,
@@ -359,7 +359,7 @@
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
-      "_AppDataTable-BtiqU8cb.js",
+      "_AppDataTable-D9P_EVyz.js",
       "index.html",
       "_FilterToolbar-oQt65nyL.js",
       "_ListPageLayout-gZM12vQQ.js",
@@ -368,7 +368,7 @@
     ]
   },
   "src/features/quality/QualityPage.tsx": {
-    "file": "assets/QualityPage-w9ufAuOv.js",
+    "file": "assets/QualityPage-CEia39Xd.js",
     "name": "QualityPage",
     "src": "src/features/quality/QualityPage.tsx",
     "isDynamicEntry": true,
@@ -376,7 +376,7 @@
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
-      "_AppDataTable-BtiqU8cb.js",
+      "_AppDataTable-D9P_EVyz.js",
       "_AppPagination-D2JqPF6k.js",
       "_BulkActionBar-CUfRqH6E.js",
       "index.html",
@@ -384,20 +384,20 @@
       "_PageHeader-ECenXmIe.js",
       "_SearchInput-DRYbFlCa.js",
       "_StatCard-CR-mrdYt.js",
-      "_AssignDialog-BZ78Anh9.js",
-      "_hooks-CdnECT5A.js",
-      "_hooks-CfMbtd1R.js",
+      "_AssignDialog-BBotBdjl.js",
+      "_hooks-CRMOhm10.js",
+      "_hooks-sXVlGuUR.js",
       "_KeyValueList-BYwBpg93.js",
       "_ImagePreview-BjcVwu28.js",
       "_format-CD3u7y7h.js",
       "_format-BzHyDMfi.js",
-      "_RejectPendingDialog-CGfYxsXx.js",
-      "_api-BqQPN2IM.js",
+      "_RejectPendingDialog-0GXDRdqQ.js",
+      "_api-Bk8-5f6H.js",
       "_format-B0h57Y3L.js"
     ]
   },
   "src/features/settings/SettingsPage.tsx": {
-    "file": "assets/SettingsPage-CnlVjziR.js",
+    "file": "assets/SettingsPage-C27NFNUk.js",
     "name": "SettingsPage",
     "src": "src/features/settings/SettingsPage.tsx",
     "isDynamicEntry": true,
@@ -409,12 +409,12 @@
       "_KeyValueList-BYwBpg93.js",
       "_PageHeader-ECenXmIe.js",
       "_format-CD3u7y7h.js",
-      "_AppDataTable-BtiqU8cb.js",
+      "_AppDataTable-D9P_EVyz.js",
       "_AppPagination-D2JqPF6k.js"
     ]
   },
   "src/features/task-center/TaskCenterPage.tsx": {
-    "file": "assets/TaskCenterPage-VtVy9FkI.js",
+    "file": "assets/TaskCenterPage-G7OHngdf.js",
     "name": "TaskCenterPage",
     "src": "src/features/task-center/TaskCenterPage.tsx",
     "isDynamicEntry": true,
@@ -422,23 +422,23 @@
       "_vendor-react-CwVrQmi-.js",
       "_vendor-query-BWD6UoyK.js",
       "_vendor-ui-Y17cNEsQ.js",
-      "_AppDataTable-BtiqU8cb.js",
+      "_AppDataTable-D9P_EVyz.js",
       "_AppPagination-D2JqPF6k.js",
       "_PageHeader-ECenXmIe.js",
       "index.html",
       "_StatCard-CR-mrdYt.js",
       "_FilterToolbar-oQt65nyL.js",
-      "_api-BqQPN2IM.js",
+      "_api-Bk8-5f6H.js",
       "_format-BzHyDMfi.js",
       "_KeyValueList-BYwBpg93.js",
       "_ImagePreview-BjcVwu28.js",
-      "_ReviewDispositionDialog-4VeUL1a1.js",
-      "_RejectPendingDialog-CGfYxsXx.js",
+      "_ReviewDispositionDialog-BWmvJAaW.js",
+      "_RejectPendingDialog-0GXDRdqQ.js",
       "_format-B0h57Y3L.js"
     ]
   },
   "src/features/worker/WorkbenchRoute.tsx": {
-    "file": "assets/WorkbenchRoute-Cq5PSD3A.js",
+    "file": "assets/WorkbenchRoute-BouSJO6o.js",
     "name": "WorkbenchRoute",
     "src": "src/features/worker/WorkbenchRoute.tsx",
     "isDynamicEntry": true,
@@ -447,21 +447,21 @@
       "_vendor-ui-Y17cNEsQ.js",
       "index.html",
       "_vendor-query-BWD6UoyK.js",
-      "_AppDataTable-BtiqU8cb.js",
+      "_AppDataTable-D9P_EVyz.js",
       "_AppPagination-D2JqPF6k.js",
       "_BulkActionBar-CUfRqH6E.js",
       "_PageHeader-ECenXmIe.js",
       "_SearchInput-DRYbFlCa.js",
       "_StatCard-CR-mrdYt.js",
-      "_AssignDialog-BZ78Anh9.js",
+      "_AssignDialog-BBotBdjl.js",
       "_KeyValueList-BYwBpg93.js",
       "_ImagePreview-BjcVwu28.js",
-      "_ReviewDispositionDialog-4VeUL1a1.js",
-      "_AssignmentDetailDrawer-BYIT3wJ-.js",
-      "_hooks-CdnECT5A.js",
+      "_ReviewDispositionDialog-BWmvJAaW.js",
+      "_AssignmentDetailDrawer-X80Hmr2Y.js",
+      "_hooks-CRMOhm10.js",
       "_FilterToolbar-oQt65nyL.js",
-      "_ManualPanel-Gfw1PhTN.js",
-      "_RejectPendingDialog-CGfYxsXx.js",
+      "_ManualPanel-CBunKEUz.js",
+      "_RejectPendingDialog-0GXDRdqQ.js",
       "_format-BzHyDMfi.js",
       "_format-B0h57Y3L.js"
     ]

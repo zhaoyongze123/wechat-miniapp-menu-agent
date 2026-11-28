@@ -6,6 +6,7 @@ import { Slider } from '@openai/apps-sdk-ui/components/Slider'
 import { StatusBadge } from '../../components/StatusBadge'
 import { SettingRow } from '../../components/SettingsLayout'
 import type { AppRole } from '../../api/types'
+import { EmailNotificationSettings } from './EmailNotificationSettings'
 import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   playNotificationSound,
@@ -258,6 +259,8 @@ export function NotificationPreferencesPanel({ role }: NotificationPreferencesPa
           恢复默认
         </Button>
       </div>
+
+      <EmailNotificationSettings />
     </div>
   )
 }

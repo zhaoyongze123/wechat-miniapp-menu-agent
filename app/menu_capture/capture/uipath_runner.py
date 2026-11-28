@@ -248,6 +248,36 @@ class UiPathRunner:
         self._last_readiness: dict | None = None
         # 人工标注复用截图/点击能力，但不得改动采集任务状态。
         self._annotation_mode = False
+        # 可选服务端告警回调（用于熔断、微信掉线、窗口阻塞等需人工介入的邮件通知）。
+        self.on_alert: Callable[[Any], Any] | None = None
+
+    def _emit_alert(
+        self,
+        event_type: str,
+        title: str,
+        body: str,
+        *,
+        dedupe_key: str,
+        severity: str = "critical",
+    ) -> None:
+        callback = getattr(self, "on_alert", None)
+        if callback is None:
+            return
+        try:
+            from menu_capture.notifications.models import AlertEvent
+
+            callback(
+                AlertEvent(
+                    dedupe_key=dedupe_key,
+                    event_type=event_type,  # type: ignore[arg-type]
+                    severity=severity,  # type: ignore[arg-type]
+                    title=title,
+                    body=body,
+                    run_id=str(getattr(self, "run_id", "") or ""),
+                )
+            )
+        except Exception:
+            pass
         self._ui_tars_trial_active = False
         # 本轮采集模式：auto=全自动 Agent，manual=半自动人工；空值代表历史批次。
         self._capture_mode = ""
@@ -1341,11 +1371,25 @@ class UiPathRunner:
                 ):
                     reason = breaker.trip_message()
                     self.store.event(reason, "warning", task["id"])
+                    self._emit_alert(
+                        "batch_circuit_breaker_tripped",
+                        "批量采集已触发熔断暂停",
+                        reason,
+                        dedupe_key=f"circuit_breaker:{self.run_id or 'batch'}:{breaker.trip_kind or 'env'}",
+                    )
                     summary.update(status="paused", reason=reason,
                                    pause_reason=breaker.trip_kind or "wechat_input_env_circuit_breaker")
                     break
                 if report["wechat_return"]["status"] != "ready":
-                    summary.update(status="blocked", reason=report["wechat_return"]["reason"])
+                    block_reason = report["wechat_return"]["reason"]
+                    event_type = "wechat_logged_out" if "登录" in block_reason else "wechat_window_unavailable"
+                    self._emit_alert(
+                        event_type,
+                        "批量采集阻塞暂停（需人工介入）",
+                        block_reason,
+                        dedupe_key=f"blocked:{self.run_id or 'batch'}:{event_type}",
+                    )
+                    summary.update(status="blocked", reason=block_reason)
                     break
                 atomic_json(summary_path, summary)
             if summary["status"] == "running":
@@ -2189,6 +2233,12 @@ class UiPathRunner:
                                           current_task_id=task_ids[batch_index + 1] if batch_index + 1 < len(task_ids) else "",
                                           message=run_message)
                     self.store.event(run_message, "warning", task["id"])
+                    self._emit_alert(
+                        "batch_circuit_breaker_tripped",
+                        "批量采集已触发熔断暂停",
+                        run_message,
+                        dedupe_key=f"circuit_breaker:{self.run_id or 'batch'}:{breaker.trip_kind or 'env'}",
+                    )
                     break
                 if status != "captured" and not safe_to_continue:
                     # 不阻塞整批：本店已落到待检查/不合格，继续下一家。
@@ -2200,6 +2250,13 @@ class UiPathRunner:
                     self.store.update_run(self.run_id, status=run_status, current_index=next_index,
                                           current_task_id=task["id"], message=run_message)
                     self.store.event(run_message, "warning", task["id"])
+                    event_type = "wechat_logged_out" if "登录" in run_message else "wechat_window_unavailable"
+                    self._emit_alert(
+                        event_type,
+                        "批量采集阻塞暂停（需人工介入）",
+                        run_message,
+                        dedupe_key=f"blocked:{self.run_id or 'batch'}:{event_type}",
+                    )
                     break
                 if self.pause_event.is_set() and absolute_index + 1 < start_index + len(task_ids):
                     run_status, run_message = "paused", "当前门店已处理，下一家尚未开始"
