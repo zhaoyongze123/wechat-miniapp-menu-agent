@@ -280,3 +280,53 @@ def test_circuit_breaker_pauses_after_three_consecutive_input_env_failures(tmp_p
     assert finished_summary["pause_reason"] == "wechat_input_env_circuit_breaker"
     assert len(finished_summary["unstarted_task_ids"]) == 4
     assert any("连续 3 家门店触发微信输入环境故障" in msg for _, msg, _ in events)
+
+
+def test_consecutive_failure_breaker_catches_runtime_and_repeated_reason_streaks():
+    from menu_capture.capture.circuit_breaker import ConsecutiveFailureBreaker
+
+    # 1. 连续 5 家 runtime 异常（如“未找到图片上方的发送文本气泡”）必须触发熔断
+    breaker = ConsecutiveFailureBreaker()
+    for i in range(1, 5):
+        assert breaker.record(
+            succeeded=False,
+            failure_code="runtime",
+            failure_reason="未找到图片上方的发送文本气泡，未点击历史二维码",
+            task_id=f"s-{i}",
+        ) is False
+    assert breaker.record(
+        succeeded=False,
+        failure_code="runtime",
+        failure_reason="未找到图片上方的发送文本气泡，未点击历史二维码",
+        task_id="s-5",
+    ) is True
+    assert breaker.trip_kind == "batch_runtime_circuit_breaker"
+    assert "连续 5 家门店出现同类异常" in breaker.trip_message()
+
+    # 2. 中间成功一家重置计数；明确业务不合格（unqualified）不计入同原因熔断
+    assert breaker.record(succeeded=True, task_id="s-ok") is False
+    for i in range(1, 7):
+        assert breaker.record(
+            succeeded=False,
+            failure_code="",
+            failure_reason="扫码点餐服务暂时关闭",
+            business_rejected=True,
+            task_id=f"u-{i}",
+        ) is False
+
+    # 3. 无 runtime_code 但连续 5 家同原因 needs_review 同样熔断（忽略坐标数字差异）
+    breaker2 = ConsecutiveFailureBreaker()
+    for i in range(1, 5):
+        assert breaker2.record(
+            succeeded=False,
+            failure_code="",
+            failure_reason=f"多次点击弹窗按钮({600 + i},650)后仍未关闭",
+            task_id=f"r-{i}",
+        ) is False
+    assert breaker2.record(
+        succeeded=False,
+        failure_code="",
+        failure_reason="多次点击弹窗按钮(699,650)后仍未关闭",
+        task_id="r-5",
+    ) is True
+    assert breaker2.trip_kind == "batch_repeated_failure_circuit_breaker"
