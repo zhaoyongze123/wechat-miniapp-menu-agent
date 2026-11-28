@@ -232,7 +232,7 @@ export function EmailNotificationSettings() {
 
       return apiFetch<EmailNotificationResponse>('/api/notifications/email', {
         method: 'PUT',
-        body: JSON.stringify({
+        json: {
           enabled: draft.enabled,
           provider: 'smtp',
           smtp_host: draft.smtpHost.trim(),
@@ -249,7 +249,7 @@ export function EmailNotificationSettings() {
           http_api_url: query.data?.email.http_api_url ?? '',
           secret: secretInput.trim(),
           clear_secret: clearSecret,
-        }),
+        },
       })
     },
     onSuccess: (next) => {
@@ -285,7 +285,7 @@ export function EmailNotificationSettings() {
         `/api/notifications/email/workers/${encodeURIComponent(workerId)}`,
         {
           method: 'PUT',
-          body: JSON.stringify({ recipients: parsed }),
+          json: { recipients: parsed },
         },
       )
     },
@@ -314,10 +314,10 @@ export function EmailNotificationSettings() {
       if (opts?.workerId) setTestingWorkerId(opts.workerId)
       return apiFetch<{ ok: boolean; recipients: string[]; sent_at: string }>('/api/notifications/email/test', {
         method: 'POST',
-        body: JSON.stringify({
+        json: {
           ...(opts?.workerId ? { worker_id: opts.workerId } : {}),
           ...(opts?.localOnly ? { local_only: true } : {}),
-        }),
+        },
       })
     },
     onSuccess: (res) => {
