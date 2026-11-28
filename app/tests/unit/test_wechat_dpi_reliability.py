@@ -330,3 +330,40 @@ def test_consecutive_failure_breaker_catches_runtime_and_repeated_reason_streaks
         task_id="r-5",
     ) is True
     assert breaker2.trip_kind == "batch_repeated_failure_circuit_breaker"
+
+    # 4. 门店不可采/素材类业务失败码即使连续 6 家也不误触发熔断
+    breaker3 = ConsecutiveFailureBreaker()
+    for i in range(1, 7):
+        assert breaker3.record(
+            succeeded=False,
+            failure_code="store_closed",
+            failure_reason="当前门店暂未营业",
+            business_rejected=False,
+            task_id=f"biz-{i}",
+        ) is False
+    for i in range(1, 7):
+        assert breaker3.record(
+            succeeded=False,
+            failure_code="startup_qr_entry_unavailable",
+            failure_reason="微信未提供二维码识别入口",
+            business_rejected=False,
+            task_id=f"mat-{i}",
+        ) is False
+
+    # 5. 网络类环境故障连续 3 家快速熔断
+    breaker4 = ConsecutiveFailureBreaker()
+    for i in range(1, 3):
+        assert breaker4.record(
+            succeeded=False,
+            failure_code="network_error",
+            failure_reason="网络连接异常",
+            task_id=f"net-{i}",
+        ) is False
+    assert breaker4.record(
+        succeeded=False,
+        failure_code="network_error",
+        failure_reason="网络连接异常",
+        task_id="net-3",
+    ) is True
+    assert breaker4.trip_kind == "batch_environment_circuit_breaker"
+    assert "环境故障" in breaker4.trip_message()

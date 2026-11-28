@@ -11,10 +11,16 @@ from __future__ import annotations
 import logging
 import re
 
+from menu_capture.quality.failures import ENVIRONMENT, MATERIAL, STORE, bucket_of
+
 logger = logging.getLogger(__name__)
 
 # 微信输入环境故障码集合：连续触发达到阈值时自动暂停熔断，不归为门店质量问题。
 WECHAT_INPUT_ENV_CODES = frozenset({"wechat_input_env_error", "wechat_context_lost", "wechat_window_frame"})
+# 其他环境级故障码（如网络中断）：同样按环境故障快速熔断，避免批量空转。
+ENVIRONMENT_FAST_TRIP_CODES = WECHAT_INPUT_ENV_CODES | frozenset({"network_error", "network_unavailable"})
+# 正常门店/素材业务失败桶：属于单店业务结果，不计入系统性/同原因成批熔断。
+_BUSINESS_FAILURE_BUCKETS = frozenset({STORE, MATERIAL})
 MAX_CONSECUTIVE_INPUT_ENV_FAILURES = 3
 MAX_CONSECUTIVE_BATCH_FAILURES = 5
 
@@ -34,7 +40,7 @@ class ConsecutiveFailureBreaker:
     def __init__(
         self,
         *,
-        codes: frozenset[str] = WECHAT_INPUT_ENV_CODES,
+        codes: frozenset[str] = ENVIRONMENT_FAST_TRIP_CODES,
         threshold: int = MAX_CONSECUTIVE_INPUT_ENV_FAILURES,
         batch_threshold: int = MAX_CONSECUTIVE_BATCH_FAILURES,
     ) -> None:
@@ -72,20 +78,31 @@ class ConsecutiveFailureBreaker:
         self.last_code = code
         self.last_reason = reason
 
-        # 1. 微信输入环境故障快速熔断（默认连续 3 家）
-        if code in self.codes:
+        # 区分环境性故障、系统性故障与正常门店/素材业务失败。
+        bucket = bucket_of(code=code, message=reason) if (code or reason) else ""
+        is_business_failure = business_rejected or bucket in _BUSINESS_FAILURE_BUCKETS
+
+        # 1. 环境级故障快速熔断（微信输入/窗口/上下文/网络，默认连续 3 家）
+        if code in self.codes or (not is_business_failure and bucket == ENVIRONMENT):
             self.streak += 1
         else:
             self.streak = 0
 
-        # 2. 任意运行/启动层异常码连续熔断（默认连续 5 家）
+        # 正常门店/素材业务失败不触发系统性或同原因成批熔断，并重置系统故障连击计数。
+        if is_business_failure:
+            self.runtime_streak = 0
+            self.same_reason_streak = 0
+            self._last_reason_key = ""
+            return False
+
+        # 2. 非业务类的任意运行/启动/技术层异常码连续熔断（默认连续 5 家）
         if code:
             self.runtime_streak += 1
         else:
             self.runtime_streak = 0
 
-        # 3. 非业务明确不合格的同原因连续失败熔断（默认连续 5 家）
-        reason_key = "" if business_rejected else _normalize_reason(reason)
+        # 3. 非业务类的同原因连续失败熔断（默认连续 5 家）
+        reason_key = _normalize_reason(reason)
         if reason_key and reason_key == self._last_reason_key:
             self.same_reason_streak += 1
         elif reason_key:
@@ -96,10 +113,14 @@ class ConsecutiveFailureBreaker:
             self.same_reason_streak = 0
 
         if self.streak >= self.threshold:
-            self.trip_kind = "wechat_input_env_circuit_breaker"
+            self.trip_kind = (
+                "wechat_input_env_circuit_breaker"
+                if (not code or code in WECHAT_INPUT_ENV_CODES)
+                else "batch_environment_circuit_breaker"
+            )
             logger.warning(
-                "wechat_input_circuit_breaker_tripped streak=%d threshold=%d failure_code=%s task_id=%s",
-                self.streak, self.threshold, code, task_id,
+                "env_circuit_breaker_tripped trip_kind=%s streak=%d threshold=%d failure_code=%s task_id=%s",
+                self.trip_kind, self.streak, self.threshold, code, task_id,
             )
             return True
 
@@ -129,5 +150,7 @@ class ConsecutiveFailureBreaker:
                 "已自动暂停批量采集；请检查微信窗口、输入法与显示缩放后恢复"
             )
         detail = f"（{self.last_reason[:60]}）" if self.last_reason else (f"（{self.last_code}）" if self.last_code else "")
+        if self.trip_kind == "batch_environment_circuit_breaker":
+            return f"连续 {self.streak} 家门店触发环境故障{detail}，已自动暂停批量采集；请检查网络或桌面环境后恢复"
         count = max(self.runtime_streak, self.same_reason_streak, self.streak)
         return f"连续 {count} 家门店出现同类异常{detail}，已自动暂停批量采集；请排查环境后恢复"

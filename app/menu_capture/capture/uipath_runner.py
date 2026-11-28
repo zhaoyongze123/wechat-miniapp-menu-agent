@@ -1336,7 +1336,7 @@ class UiPathRunner:
                     succeeded=persisted == "captured",
                     failure_code=str(report.get("runtime_code") or ""),
                     failure_reason=nav_reason,
-                    business_rejected=persisted == "rejected" or nav_info.get("outcome") == "unqualified",
+                    business_rejected=persisted in {"rejected", "unqualified"} or nav_info.get("outcome") == "unqualified",
                     task_id=task["id"],
                 ):
                     reason = breaker.trip_message()
@@ -1488,13 +1488,18 @@ class UiPathRunner:
                 remaining = list(batch_sources or {})[index + 1:]
                 self._capture_run_progress(index + 1, total, remaining[0] if remaining else "")
                 self._guard()
-                if breaker.record(succeeded=persisted == "captured",
-                                  failure_code=str(report.get("runtime_code") or ""), task_id=current["id"]):
-                    reason = (f"连续 {breaker.streak} 家门店触发微信输入环境故障，"
-                              "已自动暂停半自动采集；请检查微信窗口、输入法与显示缩放后恢复")
+                manual_reason = str(report.get("runtime_error") or (report.get("navigation") or {}).get("reason") or "")
+                if breaker.record(
+                    succeeded=persisted == "captured",
+                    failure_code=str(report.get("runtime_code") or ""),
+                    failure_reason=manual_reason,
+                    business_rejected=persisted in {"rejected", "unqualified"},
+                    task_id=current["id"],
+                ):
+                    reason = breaker.trip_message()
                     self.store.event(reason, "warning", current["id"])
                     summary.update(status="paused", reason=reason,
-                                   pause_reason="wechat_input_env_circuit_breaker")
+                                   pause_reason=breaker.trip_kind or "wechat_input_env_circuit_breaker")
                     break
                 if report.get("wechat_return", {}).get("status") != "ready":
                     summary.update(status="blocked",
