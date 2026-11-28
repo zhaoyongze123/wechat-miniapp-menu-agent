@@ -105,6 +105,20 @@ class NotificationDispatcher:
             "sent_at": sent_at,
         }
 
+    def resolve_recipients(self, cfg: EmailNotificationConfig, device_id: str) -> list[str]:
+        """按设备解析最终收件人：设备配置了专属邮箱时优先使用，按开关决定是否抄送全局收件人；否则回退全局。"""
+        worker_recipients = self.store.get_worker_recipients(device_id) if device_id else []
+        if not worker_recipients:
+            return list(cfg.recipients)
+        merged = list(worker_recipients)
+        if cfg.cc_global_on_worker_override:
+            seen = {item.lower() for item in merged}
+            for item in cfg.recipients:
+                if item.lower() not in seen:
+                    seen.add(item.lower())
+                    merged.append(item)
+        return merged
+
     def deliver_now(self, event: AlertEvent) -> DeliveryResult:
         """同步执行一次带去重、限频与退避重试的投递（供后台线程和单测调用）。"""
         if self._suppress_check and self._suppress_check(event):
@@ -148,7 +162,9 @@ class NotificationDispatcher:
             return DeliveryResult(ok=False, retryable=False, error="daily_limit")
 
         secret = self.configs.email_secret()
-        channel = self._channel_factory(cfg, secret)
+        effective_recipients = self.resolve_recipients(cfg, event.device_id)
+        effective_cfg = cfg.model_copy(update={"recipients": effective_recipients})
+        channel = self._channel_factory(effective_cfg, secret)
         max_attempts = 1 + len(self._retry_delays)
         last_result = DeliveryResult(ok=False, retryable=False, error="未知错误")
         for attempt in range(1, max_attempts + 1):

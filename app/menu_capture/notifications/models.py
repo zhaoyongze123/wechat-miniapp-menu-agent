@@ -59,6 +59,8 @@ class EmailNotificationConfig(_StrictModel):
     sender: str = ""
     username: str = ""
     recipients: list[str] = Field(default_factory=list)
+    # Worker 配置了专属收件人时，是否同时抄送 Hub 全局默认收件人（默认开启防漏报）。
+    cc_global_on_worker_override: bool = True
     cooldown_minutes: int = Field(default=30, ge=1, le=1440)
     hourly_limit: int = Field(default=10, ge=1, le=100)
     daily_limit: int = Field(default=40, ge=1, le=500)

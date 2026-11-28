@@ -844,6 +844,40 @@ class SharedWorker:
         except (httpx.HTTPError, OSError, ValueError):
             return False
 
+    def fetch_email_settings(self) -> dict | None:
+        """从已配对的 Hub 拉取本机专属收件人与属于本机的邮件投递记录；断联返回 None。"""
+        connection = self.connection
+        if not connection:
+            return None
+        try:
+            response = self._http.get(
+                self._url("/email-settings", connection),
+                headers=self._capability_headers(connection),
+                timeout=8,
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data if isinstance(data, dict) else None
+        except (httpx.HTTPError, OSError, ValueError):
+            return None
+
+    def update_email_recipients(self, recipients: list[str]) -> bool:
+        """将本机配置的专属收件邮箱同步到 Hub；断联返回 False。"""
+        connection = self.connection
+        if not connection:
+            return False
+        try:
+            response = self._http.put(
+                self._url("/email-settings", connection),
+                headers=self._capability_headers(connection),
+                json={"recipients": list(recipients)},
+                timeout=8,
+            )
+            response.raise_for_status()
+            return True
+        except (httpx.HTTPError, OSError, ValueError):
+            return False
+
     def _sync_run_history(self, connection: dict | None = None) -> None:
         connection = connection or self.connection
         if not self._hub_supports_history:
