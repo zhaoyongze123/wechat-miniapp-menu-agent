@@ -1330,13 +1330,19 @@ class UiPathRunner:
                 remaining = list(batch_sources)[index + 1:]
                 self._capture_run_progress(index + 1, total, remaining[0] if remaining else "")
                 self._guard()
-                if breaker.record(succeeded=persisted == "captured",
-                                  failure_code=str(report.get("runtime_code") or ""), task_id=task["id"]):
-                    reason = (f"连续 {breaker.streak} 家门店触发微信输入环境故障，"
-                              "已自动暂停批量采集；请检查微信窗口、输入法与显示缩放后恢复")
+                nav_info = report.get("navigation") or {}
+                nav_reason = str(nav_info.get("reason") or report.get("runtime_error") or "")
+                if breaker.record(
+                    succeeded=persisted == "captured",
+                    failure_code=str(report.get("runtime_code") or ""),
+                    failure_reason=nav_reason,
+                    business_rejected=persisted == "rejected" or nav_info.get("outcome") == "unqualified",
+                    task_id=task["id"],
+                ):
+                    reason = breaker.trip_message()
                     self.store.event(reason, "warning", task["id"])
                     summary.update(status="paused", reason=reason,
-                                   pause_reason="wechat_input_env_circuit_breaker")
+                                   pause_reason=breaker.trip_kind or "wechat_input_env_circuit_breaker")
                     break
                 if report["wechat_return"]["status"] != "ready":
                     summary.update(status="blocked", reason=report["wechat_return"]["reason"])
@@ -2170,10 +2176,15 @@ class UiPathRunner:
                     self.store.update_run(self.run_id, status=run_status, current_index=absolute_index,
                                           current_task_id=task["id"], message=run_message)
                     break
-                if breaker.record(succeeded=status == "captured", failure_code=failure_code, task_id=task["id"]):
+                if breaker.record(
+                    succeeded=status == "captured",
+                    failure_code=failure_code,
+                    failure_reason=message if isinstance(message, str) else "",
+                    business_rejected=status == "rejected",
+                    task_id=task["id"],
+                ):
                     run_status = "paused"
-                    run_message = (f"连续 {breaker.streak} 家门店触发微信输入环境故障，"
-                                   "已自动暂停批量采集；请检查微信窗口、输入法与显示缩放后恢复")
+                    run_message = breaker.trip_message()
                     self.store.update_run(self.run_id, status=run_status, current_index=next_index,
                                           current_task_id=task_ids[batch_index + 1] if batch_index + 1 < len(task_ids) else "",
                                           message=run_message)
