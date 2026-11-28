@@ -1284,25 +1284,28 @@ def create_app(root: Path = ROOT, desktop=None, *, role: str = "standalone",
             material_rejected = len(material_codes - task_codes)
         # 全部批次口径与批次管理列表保持一致：只算未删除批次（回收站不计），
         # 并扣除已经有采集不合格记录的同一门店，避免同一家店被计两次。
-        with store.connect() as db:
-            all_rows = db.execute(
-                "SELECT d.source_folder, d.source_name FROM material_decisions d "
-                "JOIN material_batches b ON b.id=d.batch_id "
-                "WHERE d.decision='skipped' AND b.deleted_at='' AND b.project_id=?", (scope,)
-            ).fetchall()
-        all_material_codes = {
-            code for row in all_rows
-            if (code := _rejection_store_code(row["source_folder"] or row["source_name"] or ""))
-        }
-        if all_material_codes:
-            # 只有与当前素材不合格清单同门店编号的历史记录才影响去重结果。
-            candidates = [(task["id"], code) for task in store.rejections()
-                          if (code := _rejection_store_code(task.get("source_name"))) in all_material_codes]
-            rej_projects = task_project_ids(task_id for task_id, _ in candidates)
-            all_material_codes.difference_update(
-                code for task_id, code in candidates if rej_projects.get(str(task_id)) == scope
-            )
-        material_rejected_all = len(all_material_codes)
+        # Worker 端不管理素材清洗，跳过无意义的 material_decisions 联表查询。
+        material_rejected_all = 0
+        if role != "worker":
+            with store.connect() as db:
+                all_rows = db.execute(
+                    "SELECT d.source_folder, d.source_name FROM material_decisions d "
+                    "JOIN material_batches b ON b.id=d.batch_id "
+                    "WHERE d.decision='skipped' AND b.deleted_at='' AND b.project_id=?", (scope,)
+                ).fetchall()
+            all_material_codes = {
+                code for row in all_rows
+                if (code := _rejection_store_code(row["source_folder"] or row["source_name"] or ""))
+            }
+            if all_material_codes:
+                # 只有与当前素材不合格清单同门店编号的历史记录才影响去重结果。
+                candidates = [(task["id"], code) for task in store.rejections()
+                              if (code := _rejection_store_code(task.get("source_name"))) in all_material_codes]
+                rej_projects = task_project_ids(task_id for task_id, _ in candidates)
+                all_material_codes.difference_update(
+                    code for task_id, code in candidates if rej_projects.get(str(task_id)) == scope
+                )
+            material_rejected_all = len(all_material_codes)
         launch_mode = ready.get("launch_mode", "manual")
         engine, engine_message = {
             "shared": ("共享工作台", "请将门店分配给已配对的 Windows 电脑"),

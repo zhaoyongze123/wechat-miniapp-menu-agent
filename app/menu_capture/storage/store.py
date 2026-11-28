@@ -30,6 +30,8 @@ class TaskStore:
         self.bind_assignments = None
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
+            # WAL 是持久化库头属性，仅在初始化时设置一次；避免每次读请求 connect() 争抢写锁。
+            db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY, source_name TEXT NOT NULL, source_path TEXT NOT NULL,
@@ -198,9 +200,15 @@ class TaskStore:
     def connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
-        # WAL 让并发 worker 的短事务读写互不阻塞；busy_timeout 缓解写-写瞬时冲突。
-        db.execute("PRAGMA journal_mode=WAL")
+        # 先设 busy_timeout；不再在每次 connect() 重复执行 PRAGMA journal_mode=WAL（该语句会请求写锁，
+        # 在机械硬盘采集写入/checkpoint 期间会阻塞只读 HTTP 刷新达 6~10 秒）。
         db.execute("PRAGMA busy_timeout=10000")
+        # WAL 模式下 synchronous=NORMAL 具备崩溃一致性，且消除机械硬盘每步动作的 fsync 卡顿；
+        # 放大页缓存、内存临时表与 mmap 显著降低大库在机械硬盘上的随机寻道。
+        db.execute("PRAGMA synchronous=NORMAL")
+        db.execute("PRAGMA cache_size=-32768")
+        db.execute("PRAGMA temp_store=MEMORY")
+        db.execute("PRAGMA mmap_size=268435456")
         return db
 
     @staticmethod
