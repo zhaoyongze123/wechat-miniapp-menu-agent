@@ -524,3 +524,28 @@ def test_trim_action_history_reclaims_old_debug_rows_without_touching_active_run
         remaining = db.execute("SELECT run_id, count(*) FROM run_actions GROUP BY run_id").fetchall()
         by_run = {row[0]: row[1] for row in remaining}
     assert by_run == {"run-done": 5, "run-paused": 2}
+
+
+def test_task_store_connect_does_not_block_readers_during_active_write_transaction(tmp_path: Path) -> None:
+    """WAL 仅在初始化设置一次；存在活跃写事务时，只读 connect() 必须立即返回而不争抢写锁。"""
+    import time
+    from menu_capture.storage.store import TaskStore
+
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    writer = sqlite3.connect(tmp_path / "tasks.sqlite3", isolation_level=None, timeout=5)
+    try:
+        assert writer.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        writer.execute("BEGIN IMMEDIATE")
+        t0 = time.monotonic()
+        with store.connect() as reader:
+            sync_mode = reader.execute("PRAGMA synchronous").fetchone()[0]
+            temp_store = reader.execute("PRAGMA temp_store").fetchone()[0]
+            count = reader.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        elapsed = time.monotonic() - t0
+        assert count == 0
+        assert sync_mode == 1  # NORMAL
+        assert temp_store == 2  # MEMORY
+        assert elapsed < 1.0, f"只读连接在并发写事务期间阻塞了 {elapsed:.2f}s"
+    finally:
+        writer.execute("ROLLBACK")
+        writer.close()
