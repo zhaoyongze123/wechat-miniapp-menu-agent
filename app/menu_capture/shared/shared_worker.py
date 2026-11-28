@@ -428,22 +428,25 @@ class SharedWorker:
         with self.store.connect() as db:
             if self._hub_supports_project_scope:
                 rows = db.execute("""
-                    SELECT task_id,shared_state,project_id FROM worker_assignments
+                    SELECT * FROM worker_assignments
                     WHERE status='ready' AND worker_id=? ORDER BY rowid
                 """, (self._current_worker_id(),)).fetchall()
             else:
                 rows = db.execute("""
-                    SELECT task_id,shared_state,project_id FROM worker_assignments
+                    SELECT * FROM worker_assignments
                     WHERE status='ready' AND (worker_id='' OR worker_id=?) ORDER BY rowid
                 """, (self._current_worker_id(),)).fetchall()
-        states = {row["task_id"]: row["shared_state"] for row in rows}
-        projects = {row["task_id"]: row["project_id"] for row in rows}
+        latest_rows = {row["task_id"]: row for row in rows}
+        states = {tid: row["shared_state"] for tid, row in latest_rows.items()}
+        projects = {tid: row["project_id"] for tid, row in latest_rows.items()}
         if any(states.get(task_id) in {"rejected", "captured", "returned"} for task_id in task_ids):
             raise ValueError("有门店已在共享端完成或标记不合格，请刷新后重新选择")
         if self._hub_supports_project_scope and any(projects.get(task_id) != project_id for task_id in task_ids):
             raise ValueError("所选门店未全部属于当前项目，请刷新任务列表")
-        if any(not self.source_root(task_id) for task_id in task_ids):
-            raise ValueError("请只选择本机已下载、可离线采集的门店")
+        for task_id in task_ids:
+            row = latest_rows.get(task_id)
+            if not row or not self._source_path(row).is_file():
+                raise ValueError("请只选择本机已下载、可离线采集的门店")
 
     def bind_run(self, db, run_id: str, task_ids: list[str]) -> None:
         # 与运行记录同一事务，退出或断电后仍知道哪次运行产出了结果。
@@ -453,13 +456,13 @@ class SharedWorker:
             worker_id = self._current_worker_id()
             if not project_id:
                 raise ValueError("项目模式下运行记录缺少固定项目身份")
-            for task_id in task_ids:
-                assignment = db.execute("""
-                    SELECT project_id FROM worker_assignments WHERE task_id=? AND status='ready' AND worker_id=?
-                    ORDER BY rowid DESC LIMIT 1
-                """, (task_id, worker_id)).fetchone()
-                if not assignment or assignment["project_id"] != project_id:
-                    raise ValueError("开跑时门店分配项目已变化，请刷新后重试")
+            rows = db.execute("""
+                SELECT task_id, project_id FROM worker_assignments
+                WHERE status='ready' AND worker_id=? ORDER BY rowid
+            """, (worker_id,)).fetchall()
+            latest_projects = {row["task_id"]: row["project_id"] for row in rows}
+            if any(latest_projects.get(task_id) != project_id for task_id in task_ids):
+                raise ValueError("开跑时门店分配项目已变化，请刷新后重试")
             db.executemany("UPDATE worker_assignments SET run_id=? WHERE task_id=? AND status='ready' AND worker_id=?",
                            ((run_id, task_id, worker_id) for task_id in task_ids))
         else:
